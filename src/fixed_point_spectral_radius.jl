@@ -12,9 +12,8 @@ where ``F_k`` is the ``k``-th component of the AC power flow residual at the cur
 state stored in `data` (i.e., `data.bus_magnitude` and `data.bus_angles`).
 
 This is matrix-free: the residual's 3-tensor of second derivatives is never
-materialized. State-vector indexing follows the PowerFlows.jl convention:
-`x[2i-1] = Vm` and `x[2i] = Va` for PQ buses, with the same column positions used
-for variable lookups via `is_PQ` / `has_θ` gates.
+materialized. See [`_create_jacobian_matrix_structure`](@ref) for the
+bus-type-dependent state vector convention.
 
 LCC state variables are not yet supported; the returned vector covers only the
 `2 * num_buses` bus state entries.
@@ -147,7 +146,7 @@ end
 
 """
     compute_fixed_point_spectral_radius(data, time_step; x0, tol, maxiter, krylovdim)
-        -> (ρ::Float64, info)
+        -> (ρ::Float64, info, condest::Float64)
 
 Estimate the spectral radius of the Jacobian of the Newton fixed-point map
 
@@ -166,13 +165,15 @@ Differentiating ``g`` and using ``\\partial F / \\partial x = J`` gives the
 identity
 
 ```math
-G := \\frac{\\partial g}{\\partial x} = J^{-1} \\sum_k H_k u_k,
+(G v)_k = \\bigl(J^{-1} w\\bigr)_k,
+\\qquad w_k = v^\\top H_k u,
 \\qquad u = J^{-1} F(x)
 ```
 
 where ``H_k`` is the Hessian of the ``k``-th residual component. ``G`` is never
-materialized: the matvec ``G v`` is computed as ``J^{-1} \\cdot (\\sum_k H_k u_k v)``
-via two `KLU` back-solves and one [`acpf_hvvp`](@ref) call. KrylovKit's
+materialized: the matvec ``G v`` is computed as one [`acpf_hvvp`](@ref) call
+(producing ``w``) followed by two `KLU` back-solves (one for ``u``, one for
+``J^{-1} w``). KrylovKit's
 matrix-free Lanczos / Arnoldi solver then extracts the eigenvalue of largest
 magnitude.
 
@@ -234,7 +235,8 @@ function _fixed_point_spectral_radius!(
     F = KLU.klu(jac.Jv)
     u = F \ copy(residual.Rv)
     matvec(v::AbstractVector) = F \ acpf_hvvp(data, time_step, v, u)
-    v_init = randn(n)
+    # Deterministic init for reproducibility across runs / CI logs.
+    v_init = ones(Float64, n) ./ sqrt(n)
     vals, _, info = KrylovKit.eigsolve(
         matvec, v_init, 1, :LM;
         tol = tol, maxiter = maxiter, krylovdim = krylovdim,
