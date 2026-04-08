@@ -37,6 +37,7 @@ import LinearAlgebra: norm, dot, ldiv!, mul!
 import LinearAlgebra: norm, dot
 import JSON3
 import KLU
+import KrylovKit
 import SparseArrays
 import InfrastructureSystems as IS
 import PowerNetworkMatrices as PNM
@@ -72,6 +73,7 @@ include("rectangular_ci_power_flow_jacobian.jl")
 include("mixed_cpb_setup.jl")
 include("mixed_cpb_power_flow_residual.jl")
 include("mixed_cpb_power_flow_jacobian.jl")
+include("fixed_point_spectral_radius.jl")
 include("solve_ac_power_flow.jl")
 include("power_flow_setup.jl")
 include("power_flow_method.jl")

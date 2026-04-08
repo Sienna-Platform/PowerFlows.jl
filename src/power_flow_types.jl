@@ -152,6 +152,7 @@ struct ACPolarPowerFlow{ACSolver <: ACPowerFlowSolverType} <: AbstractACPowerFlo
     exporter::Union{Nothing, PowerFlowEvaluationModel}
     calculate_loss_factors::Bool
     calculate_voltage_stability_factors::Bool
+    compute_fixed_point_spectral_radius::Bool
     generator_slack_participation_factors::Union{
         Nothing,
         Dict{Tuple{DataType, String}, Float64},
@@ -205,6 +206,7 @@ function ACPolarPowerFlow{ACSolver}(;
     exporter::Union{Nothing, PowerFlowEvaluationModel} = nothing,
     calculate_loss_factors::Bool = false,
     calculate_voltage_stability_factors::Bool = false,
+    compute_fixed_point_spectral_radius::Bool = false,
     generator_slack_participation_factors::Union{
         Nothing,
         Dict{Tuple{DataType, String}, Float64},
@@ -234,6 +236,7 @@ function ACPolarPowerFlow{ACSolver}(;
         exporter,
         calculate_loss_factors,
         calculate_voltage_stability_factors,
+        compute_fixed_point_spectral_radius,
         generator_slack_participation_factors,
         enhanced_flat_start,
         robust_power_flow,
@@ -275,6 +278,9 @@ get_calculate_loss_factors(pf::ACPolarPowerFlow) = pf.calculate_loss_factors
 get_calculate_voltage_stability_factors(::AbstractACPowerFlow) = false
 get_calculate_voltage_stability_factors(pf::ACPolarPowerFlow) =
     pf.calculate_voltage_stability_factors
+get_compute_fixed_point_spectral_radius(::PowerFlowEvaluationModel) = false
+get_compute_fixed_point_spectral_radius(pf::ACPolarPowerFlow) =
+    pf.compute_fixed_point_spectral_radius
 
 """
     ACRectangularPowerFlow{ACSolver}(; kwargs...) where {ACSolver <: ACPowerFlowSolverType}

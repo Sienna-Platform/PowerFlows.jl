@@ -1,3 +1,21 @@
+"""Format a per-iteration diagnostic line: ρ, ‖F‖_∞ and the bus/equation where
+that infinity-norm is attained, and a κ̂(J) condition estimate. All numerics
+rounded to 4 significant figures."""
+function _log_diagnostics(
+    label::String,
+    ρ::Float64,
+    Rv::AbstractVector{Float64},
+    condest::Float64,
+)
+    abs_max, ix = findmax(abs, Rv)
+    pow_type = ix % 2 == 1 ? "P" : "Q"
+    bus_ix = div(ix + 1, 2)
+    sf(x) = round(x; sigdigits = 4)
+    @info "$label: ρ = $(sf(ρ)), ‖F‖_∞ = $(sf(abs_max)) at bus $bus_ix ($pow_type), " *
+          "κ̂(J) = $(sf(condest))"
+    return
+end
+
 """Cache for non-linear methods.
 
 # Fields
@@ -585,6 +603,7 @@ function _run_power_flow_method(time_step::Int,
     validate_vms = validate_voltage_magnitudes
     i, converged = 1, false
     consecutive_reverts = 0
+    monitor_ρ = get_compute_fixed_point_spectral_radius(J.data)
     while i < maxIterations && !converged
         if iwamoto
             made_progress = _iwamoto_step(
@@ -622,6 +641,10 @@ function _run_power_flow_method(time_step::Int,
             vm_validation_range,
             i,
         )
+        if monitor_ρ
+            ρ, _, condest = _fixed_point_spectral_radius!(J.data, residual, J, time_step)
+            _log_diagnostics("NR iter $i", ρ, residual.Rv, condest)
+        end
         converged = norm(residual.Rv, Inf) < tol
         if !converged
             i += 1
@@ -680,6 +703,7 @@ function _run_power_flow_method(time_step::Int,
     linf = norm(residual.Rv, Inf)
     @debug "initially: sum of squares $(siground(residualSize)), L ∞ norm $(siground(linf)), Δ $(siground(delta))"
 
+    monitor_ρ = get_compute_fixed_point_spectral_radius(J.data)
     while i < maxIterations && !converged
         delta = _trust_region_step(
             time_step,
@@ -699,6 +723,10 @@ function _run_power_flow_method(time_step::Int,
             vm_validation_range,
             i,
         )
+        if monitor_ρ
+            ρ, _, condest = _fixed_point_spectral_radius!(J.data, residual, J, time_step)
+            _log_diagnostics("TR iter $i", ρ, residual.Rv, condest)
+        end
         converged = norm(residual.Rv, Inf) < tol
         if !converged
             i += 1
@@ -801,6 +829,16 @@ function _newton_power_flow(
     residual, J, x0_init = initialize_power_flow_variables(
         pf, data, time_step; init_kwargs...)
     converged = norm(residual.Rv, Inf) < tol
+
+    if get_compute_fixed_point_spectral_radius(data)
+        ρ, _, condest = _fixed_point_spectral_radius!(data, residual, J, time_step)
+        _log_diagnostics("x0 (time_step $time_step)", ρ, residual.Rv, condest)
+        if ρ >= 1.0
+            @warn "fixed-point spectral radius ρ = $(round(ρ; sigdigits = 4)) ≥ 1 " *
+                  "at x0 (time_step $time_step); Newton-Raphson may not converge " *
+                  "from this starting point"
+        end
+    end
 
     i = 0
     x_final = x0_init
