@@ -97,10 +97,13 @@ end
 function _legacy_dSbus_dV(
     V::Vector{Complex{Float64}},
     Ybus::SparseMatrixCSC{Complex{Float32}, Int64},
-)::Tuple{SparseMatrixCSC{Complex{Float64}, Int32}, SparseMatrixCSC{Complex{Float64}, Int32}}
-    diagV = SparseArrays.spdiagm(0 => V)
-    diagVnorm = SparseArrays.spdiagm(0 => V ./ abs.(V))
-    diagIbus = SparseArrays.spdiagm(0 => Ybus * V)
+)
+    # Reverted to pre-PR-#93 form (LinearAlgebra.Diagonal instead of
+    # SparseArrays.spdiagm, no return-type annotation) to test whether
+    # that refactor was what masked the Windows BoundsError.
+    diagV = LinearAlgebra.Diagonal(V)
+    diagVnorm = LinearAlgebra.Diagonal(V ./ abs.(V))
+    diagIbus = LinearAlgebra.Diagonal(Ybus * V)
     dSbus_dVm = diagV * conj.(Ybus * diagVnorm) + conj.(diagIbus) * diagVnorm
     dSbus_dVa = 1im * diagV * conj.(diagIbus - Ybus * diagV)
     return dSbus_dVa, dSbus_dVm
@@ -108,8 +111,8 @@ end
 
 # this function is for testing purposes only
 function _legacy_J(
-    dSbus_dVa::SparseMatrixCSC{Complex{Float64}, Int32},
-    dSbus_dVm::SparseMatrixCSC{Complex{Float64}, Int32},
+    dSbus_dVa::AbstractMatrix{<:Complex},
+    dSbus_dVm::AbstractMatrix{<:Complex},
     pvpq::Vector{Int64},
     pq::Vector{Int64},
 )
