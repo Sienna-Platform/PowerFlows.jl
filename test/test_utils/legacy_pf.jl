@@ -221,8 +221,11 @@ function PowerFlows._newton_power_flow(
                 )
             end
             ref_first = first(ref)
-            dSbus_dVa, dSbus_dVm = _legacy_dSbus_dV(V, Ybus)
-            J = _legacy_J(dSbus_dVa, dSbus_dVm, pvpq, pq)
+            # COMMENTED OUT to reproduce the Windows-only BoundsError on CI.
+            # On Windows, omitting these recomputes triggers a BoundsError
+            # even though the matrix shapes are unchanged.
+            # dSbus_dVa, dSbus_dVm = _legacy_dSbus_dV(V, Ybus)
+            # J = _legacy_J(dSbus_dVa, dSbus_dVm, pvpq, pq)
             dSbus_dV_ref =
                 collect(real.([dSbus_dVa[ref_first, pvpq]; dSbus_dVm[ref_first, pq]]))
             J_t = sparse(transpose(J))
