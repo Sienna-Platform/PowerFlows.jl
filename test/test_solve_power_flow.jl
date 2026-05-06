@@ -338,6 +338,47 @@ end
     )
 end
 
+# Restored to repro the Windows-only BoundsError tracked in issue #113.
+@testset "Test loss factors for larger grid" begin
+    sys = build_system(MatpowerTestSystems, "matpower_ACTIVSg2000_sys")
+
+    pf_lu = ACPowerFlow{LUACPowerFlow}(; correct_bustypes = true)
+    pf_lu_lf = ACPowerFlow{LUACPowerFlow}(;
+        calculate_loss_factors = true,
+        correct_bustypes = true,
+    )
+    pf_newton = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+        calculate_loss_factors = true,
+        correct_bustypes = true,
+    )
+
+    data_lu = PowerFlowData(pf_lu_lf, sys)
+    data_newton = PowerFlowData(pf_newton, sys)
+    data_brute_force = PowerFlowData(pf_newton, sys)
+
+    solve_power_flow!(data_lu; pf = pf_lu_lf)
+    solve_power_flow!(data_newton; pf = pf_newton)
+
+    @test all(
+        isapprox.(
+            data_lu.loss_factors,
+            data_newton.loss_factors,
+            rtol = 0,
+            atol = 1e-9,
+        ),
+    )
+
+    bf_loss_factors = penalty_factors_brute_force(data_brute_force, pf_newton)
+    @test all(
+        isapprox.(
+            data_newton.loss_factors,
+            bf_loss_factors,
+            rtol = 0,
+            atol = 1e-4,
+        ),
+    )
+end
+
 @testset "voltage_stability_factors" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
     pf_lu = ACPowerFlow{LUACPowerFlow}(;
