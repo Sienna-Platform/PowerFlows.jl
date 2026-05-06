@@ -121,7 +121,10 @@ function _legacy_J(
     j21 = imag(dSbus_dVa[pq, pvpq])
     j22 = imag(dSbus_dVm[pq, pq])
     J = sparse([j11 j12; j21 j22])
-    return J
+    # Convert to Int32-indexed to satisfy PowerFlows._singular_value_decomposition's
+    # signature (J_INDEX_TYPE = Int32). With LinearAlgebra.Diagonal restored above,
+    # `sparse(...)` yields Int64-indexed CSC.
+    return convert(SparseMatrixCSC{Float64, Int32}, J)
 end
 
 # legacy NR implementation - here we do not care about allocations, we use this function only for testing purposes
