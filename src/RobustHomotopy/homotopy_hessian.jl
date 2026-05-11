@@ -63,8 +63,15 @@ function gradient_value!(grad::Vector{Float64},
     return grad
 end
 
-function homotopy_x0(data::ACPowerFlowData, time_step::Int)
-    x = calculate_x0(data, time_step)
+function homotopy_x0(data::ACPowerFlowData, time_step::Int;
+    x0::Union{Vector{Float64}, Nothing} = nothing,
+)
+    x = if OVERRIDE_x0 && !isnothing(x0)
+        @warn "Overriding initial guess x0."
+        copy(x0)
+    else
+        calculate_x0(data, time_step)
+    end
     for (bus_ix, bt) in enumerate(get_bus_type(data)[:, time_step]) # PERF: allocating
         if bt == PSY.ACBusTypes.PQ
             x[2 * bus_ix - 1] = 1.0
