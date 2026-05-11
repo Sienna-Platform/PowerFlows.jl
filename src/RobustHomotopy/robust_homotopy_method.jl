@@ -2,10 +2,11 @@ function _newton_power_flow(pf::ACPolarPowerFlow{<:RobustHomotopyPowerFlow},
     data::ACPowerFlowData,
     time_step::Int64;
     Δt_k::Float64 = DEFAULT_Δt_k,
+    x0::Union{Vector{Float64}, Nothing} = nothing,
     _ignored...,
 )
     homHess = HomotopyHessian(data, time_step)
-    x = homotopy_x0(data, time_step)
+    x = homotopy_x0(data, time_step; x0 = x0)
     t_k = 0.0
 
     # the sparse structure of the Hessian is different at t_k = 0.0 and t_k > 0.0
