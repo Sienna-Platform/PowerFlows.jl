@@ -83,6 +83,23 @@ Off-diagonal Jacobian blocks ≡ Y_bus 2×2 real blocks and are constant across
 iterations. Per-iteration Jacobian update cost is `O(N + n_LCC)`, independent
 of `nnz(Y_bus)`.
 
+# Supported step strategies
+Pass via `solver_settings`:
+- `:simple` (default) — plain Newton-Raphson.
+- `:trust_region` — Powell dogleg trust-region.
+Optional damping flags: `iwamoto::Bool` (cubic step control, both strategies),
+`iwamoto_fallback::Bool` (trust-region only).
+
+# Not yet supported (this iteration)
+- `LevenbergMarquardtACPowerFlow`, `RobustHomotopyPowerFlow`, and
+  `GradientDescentACPowerFlow` operate on the polar residual/Jacobian only —
+  there is no rectangular CI equivalent. Use those solver types directly
+  (e.g. `ACPowerFlow{LevenbergMarquardtACPowerFlow}`).
+- `robust_power_flow=true` (DC fallback for hard-to-converge initial guesses)
+  is not implemented for the rectangular formulation. Constructor will throw.
+- The `validate_voltage_magnitudes` validator assumes polar state layout and
+  must be disabled via `solver_settings = Dict(:validate_voltage_magnitudes => false)`.
+
 Based on: Da Costa, Pereira, Garcia — "Developments in the Newton-Raphson power
 flow formulation based on current injections," IEEE TPS 2000.
 

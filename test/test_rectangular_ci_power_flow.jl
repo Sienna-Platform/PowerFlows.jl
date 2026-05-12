@@ -44,6 +44,50 @@ end
     end
 end
 
+@testset "Rectangular CI Power Flow: defensive errors on unsupported config" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
+    base_settings = _rect_pf_settings()
+
+    @testset "robust_power_flow=true rejected" begin
+        pf = ACPowerFlow{RectangularCurrentInjectionACPowerFlow}(;
+            robust_power_flow = true,
+            solver_settings = base_settings)
+        @test_throws ArgumentError solve_power_flow(pf, deepcopy(sys))
+    end
+
+    @testset "step_strategy=:levenberg_marquardt rejected with explanatory msg" begin
+        settings = merge(base_settings,
+            Dict{Symbol, Any}(:step_strategy => :levenberg_marquardt))
+        pf = ACPowerFlow{RectangularCurrentInjectionACPowerFlow}(;
+            solver_settings = settings)
+        @test_throws ArgumentError solve_power_flow(pf, deepcopy(sys))
+    end
+
+    @testset "step_strategy=:robust_homotopy rejected" begin
+        settings =
+            merge(base_settings, Dict{Symbol, Any}(:step_strategy => :robust_homotopy))
+        pf = ACPowerFlow{RectangularCurrentInjectionACPowerFlow}(;
+            solver_settings = settings)
+        @test_throws ArgumentError solve_power_flow(pf, deepcopy(sys))
+    end
+
+    @testset "step_strategy=:gradient_descent rejected" begin
+        settings =
+            merge(base_settings, Dict{Symbol, Any}(:step_strategy => :gradient_descent))
+        pf = ACPowerFlow{RectangularCurrentInjectionACPowerFlow}(;
+            solver_settings = settings)
+        @test_throws ArgumentError solve_power_flow(pf, deepcopy(sys))
+    end
+
+    @testset "step_strategy=:typo rejected with helpful msg" begin
+        settings = merge(base_settings,
+            Dict{Symbol, Any}(:step_strategy => :trust_regioon))
+        pf = ACPowerFlow{RectangularCurrentInjectionACPowerFlow}(;
+            solver_settings = settings)
+        @test_throws ArgumentError solve_power_flow(pf, deepcopy(sys))
+    end
+end
+
 @testset "Rectangular CI Power Flow: step strategy variants" begin
     # Verify Iwamoto and Trust Region wrappers converge through the rectangular CI
     # residual/Jacobian. The drivers (_simple_step, _iwamoto_step, _trust_region_step)
