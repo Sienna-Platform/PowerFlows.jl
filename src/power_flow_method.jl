@@ -67,7 +67,7 @@ end
 """Sets the Newton-Raphson step. Usually, this is just `J.Jv \\ stateVector.r`, but
 `J.Jv` might be singular."""
 function _set_Δx_nr!(stateVector::StateVectorCache,
-    J::ACPowerFlowJacobian,
+    J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian},
     linSolveCache::KLULinSolveCache{J_INDEX_TYPE},
     solver::ACPowerFlowSolverType,
     refinement_threshold::Float64,
@@ -168,7 +168,7 @@ The caller is responsible for recomputing the Jacobian via `J(time_step)` before
 calling this, so that `Jv` reflects the new state."""
 function _accept_trust_region_step!(
     stateVector::StateVectorCache,
-    residual::ACPowerFlowResidual,
+    residual::Union{ACPowerFlowResidual, ACRectangularCIResidual},
     Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
     autoscale::Bool,
 )
@@ -188,8 +188,8 @@ Returns `true` if the damped step was accepted, `false` if reverted."""
 function _iwamoto_fallback!(
     time_step::Int,
     stateVector::StateVectorCache,
-    residual::ACPowerFlowResidual,
-    J::ACPowerFlowJacobian,
+    residual::Union{ACPowerFlowResidual, ACRectangularCIResidual},
+    J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian},
     old_residual::Vector{Float64},
     old_residual_norm::Float64,
     new_residual_norm::Float64,
@@ -226,8 +226,8 @@ the value of the Jacobian at the new `x`, if needed. Unlike
 function _trust_region_step(time_step::Int,
     stateVector::StateVectorCache,
     linSolveCache::KLULinSolveCache{J_INDEX_TYPE},
-    residual::ACPowerFlowResidual,
-    J::ACPowerFlowJacobian,
+    residual::Union{ACPowerFlowResidual, ACRectangularCIResidual},
+    J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian},
     delta::Float64,
     delta_max::Float64,
     eta::Float64,
@@ -429,8 +429,8 @@ end
 function _simple_step(time_step::Int,
     stateVector::StateVectorCache,
     linSolveCache::KLULinSolveCache{J_INDEX_TYPE},
-    residual::ACPowerFlowResidual,
-    J::ACPowerFlowJacobian,
+    residual::Union{ACPowerFlowResidual, ACRectangularCIResidual},
+    J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian},
     refinement_threshold::Float64 = DEFAULT_REFINEMENT_THRESHOLD,
     refinement_eps::Float64 = DEFAULT_REFINEMENT_EPS,
 )
@@ -465,8 +465,8 @@ should terminate early."""
 function _iwamoto_step(time_step::Int,
     stateVector::StateVectorCache,
     linSolveCache::KLULinSolveCache{J_INDEX_TYPE},
-    residual::ACPowerFlowResidual,
-    J::ACPowerFlowJacobian,
+    residual::Union{ACPowerFlowResidual, ACRectangularCIResidual},
+    J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian},
     refinement_threshold::Float64 = DEFAULT_REFINEMENT_THRESHOLD,
     refinement_eps::Float64 = DEFAULT_REFINEMENT_EPS,
 )::Bool
@@ -535,8 +535,8 @@ end
 function _run_power_flow_method(time_step::Int,
     stateVector::StateVectorCache,
     linSolveCache::KLULinSolveCache{J_INDEX_TYPE},
-    residual::ACPowerFlowResidual,
-    J::ACPowerFlowJacobian,
+    residual::Union{ACPowerFlowResidual, ACRectangularCIResidual},
+    J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian},
     ::Type{NewtonRaphsonACPowerFlow};
     maxIterations::Int = DEFAULT_NR_MAX_ITER,
     tol::Float64 = DEFAULT_NR_TOL,
@@ -611,8 +611,8 @@ end
 function _run_power_flow_method(time_step::Int,
     stateVector::StateVectorCache,
     linSolveCache::KLULinSolveCache{J_INDEX_TYPE},
-    residual::ACPowerFlowResidual,
-    J::ACPowerFlowJacobian,
+    residual::Union{ACPowerFlowResidual, ACRectangularCIResidual},
+    J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian},
     ::Type{TrustRegionACPowerFlow};
     maxIterations::Int = DEFAULT_NR_MAX_ITER,
     tol::Float64 = DEFAULT_NR_TOL,
@@ -680,7 +680,7 @@ function _finalize_power_flow(
     converged::Bool,
     i::Int,
     solver_name::String,
-    residual::ACPowerFlowResidual,
+    residual::Union{ACPowerFlowResidual, ACRectangularCIResidual},
     data::ACPowerFlowData,
     Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
     time_step::Int64,
@@ -759,4 +759,71 @@ function _newton_power_flow(
         )
     end
     return _finalize_power_flow(converged, i, string(T), residual, data, J.Jv, time_step)
+end
+
+"""Run the augmented current-injection (rectangular) Newton-Raphson AC power flow.
+Mirrors the polar `_newton_power_flow` driver but builds the rectangular CI
+residual/Jacobian. Reuses the same step strategies (simple NR, Iwamoto, Trust Region)
+since they're generic over the residual/Jacobian functor interface."""
+function _newton_power_flow(
+    pf::ACPowerFlow{RectangularCurrentInjectionACPowerFlow},
+    data::ACPowerFlowData,
+    time_step::Int64;
+    tol::Float64 = DEFAULT_NR_TOL,
+    maxIterations::Int = DEFAULT_NR_MAX_ITER,
+    validate_voltage_magnitudes::Bool = DEFAULT_VALIDATE_VOLTAGES,
+    vm_validation_range::MinMax = DEFAULT_VALIDATION_RANGE,
+    refinement_threshold::Float64 = DEFAULT_REFINEMENT_THRESHOLD,
+    refinement_eps::Float64 = DEFAULT_REFINEMENT_EPS,
+    iwamoto::Bool = false,
+    factor::Float64 = DEFAULT_TRUST_REGION_FACTOR,
+    eta::Float64 = DEFAULT_TRUST_REGION_ETA,
+    autoscale::Bool = DEFAULT_AUTOSCALE,
+    iwamoto_fallback::Bool = DEFAULT_IWAMOTO_FALLBACK,
+    step_strategy::Symbol = :simple,
+    x0::Union{Vector{Float64}, Nothing} = nothing,
+    _ignored...,
+)
+    residual = ACRectangularCIResidual(data, time_step)
+    x0_computed = Vector{Float64}(undef, length(residual.Rv))
+    rect_initial_state!(
+        x0_computed, data, residual.bus_state_offset, residual.bus_block_size, time_step,
+    )
+    if OVERRIDE_x0 && !isnothing(x0)
+        copyto!(x0_computed, x0)
+    end
+    residual(x0_computed, time_step)
+    @info "Initial residual size: " *
+          "$(norm(residual.Rv, 2)) L2, " *
+          "$(norm(residual.Rv, Inf)) L∞"
+    J = ACRectangularCIJacobian(residual, time_step)
+    converged = norm(residual.Rv, Inf) < tol
+    i = 0
+    if !converged
+        linSolveCache = KLULinSolveCache(J.Jv)
+        symbolic_factor!(linSolveCache, J.Jv)
+        stateVector = StateVectorCache(x0_computed, residual.Rv)
+        T_strategy = if step_strategy == :trust_region
+            TrustRegionACPowerFlow
+        elseif step_strategy == :simple
+            NewtonRaphsonACPowerFlow
+        else
+            throw(
+                ArgumentError(
+                    "Unknown step_strategy=$(step_strategy); " *
+                    "expected :simple or :trust_region.",
+                ),
+            )
+        end
+        converged, i = _run_power_flow_method(
+            time_step, stateVector, linSolveCache, residual, J, T_strategy;
+            tol, maxIterations, validate_voltage_magnitudes,
+            vm_validation_range, refinement_threshold, refinement_eps,
+            iwamoto, factor, eta, autoscale, iwamoto_fallback,
+        )
+    end
+    return _finalize_power_flow(
+        converged, i, "RectangularCurrentInjectionACPowerFlow",
+        residual, data, J.Jv, time_step,
+    )
 end
