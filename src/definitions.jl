@@ -49,6 +49,13 @@ const BUS_VOLTAGE_MAGNITUDE_CUTOFF_MAX = 1.2
 
 const TIs = Union{Int32, Int64}
 const J_INDEX_TYPE = Int32
+const REC_INDEX_TYPE = Int32
+
+# LCC line-commutated-converter scaling factor: the fundamental component of the
+# AC-side current per unit DC current is `(√6/π)·t·I_dc`. Used in `lcc_utils.jl`,
+# `ac_power_flow_residual.jl`, `ac_power_flow_jacobian.jl`, and the rectangular
+# CI counterparts.
+const SQRT6_DIV_PI = sqrt(6) / π
 
 # voltage validation
 const DEFAULT_VALIDATE_VOLTAGES = true
