@@ -46,15 +46,11 @@ function ACPowerFlowResidual(data::ACPowerFlowData, time_step::Int64)
     P_net_set = zeros(Float64, n_buses)
     bus_type = view(data.bus_type, :, time_step)
 
-    spf_idx = Int[]
-    spf_val = Float64[]
-    sum_sl_weights = 0.0  # for scope
-
     # ref_bus is set to the first REF bus found - will be used for the total slack power
     subnetworks =
         _find_subnetworks_for_reference_buses(data.power_network_matrix.data, bus_type)
 
-    for (ix, bt) in zip(1:n_buses, bus_type)
+    for ix in 1:n_buses
         P_net[ix] =
             data.bus_active_power_injections[ix, time_step] -
             get_bus_active_power_total_withdrawals(data, ix, time_step) +
@@ -63,39 +59,10 @@ function ACPowerFlowResidual(data::ACPowerFlowData, time_step::Int64)
             data.bus_reactive_power_injections[ix, time_step] -
             get_bus_reactive_power_total_withdrawals(data, ix, time_step)
         P_net_set[ix] = P_net[ix]
-
-        bt ∈ (PSY.ACBusTypes.REF, PSY.ACBusTypes.PV) || continue
-        (spf_v = data.bus_slack_participation_factors[ix, time_step]) == 0.0 && continue
-        push!(spf_idx, ix)
-        push!(spf_val, spf_v)
-        sum_sl_weights += spf_v
     end
 
-    if sum_sl_weights == 0.0
-        throw(ArgumentError("sum of slack_participation_factors cannot be zero"))
-    end
-
-    if any(spf_val .< 0.0)
-        throw(ArgumentError("slack_participation_factors cannot be negative"))
-    end
-
-    # sum_sl_weights could differ from the sum of the time_step column of 
-    # slack participation factors: maybe a PV bus with nonzero weight got switched to PQ.
-
-    # bus slack participation factors relevant for the current time step:
-    bus_slack_participation_factors = sparsevec(spf_idx, spf_val, n_buses)
-
-    # normalize slack participation factors to sum to 1 per every subnetwork
-    for subnetwork_buses in values(subnetworks)
-        bspf_subnetwork = view(bus_slack_participation_factors, subnetwork_buses)
-        sum_bspf_subnetwork = sum(bspf_subnetwork)
-        sum_bspf_subnetwork == 0.0 && throw(
-            ArgumentError(
-                "sum of slack_participation_factors per subnetwork cannot be zero",
-            ),
-        )
-        bspf_subnetwork ./= sum_bspf_subnetwork
-    end
+    bus_slack_participation_factors =
+        _build_bus_slack_participation_factors(data, bus_type, subnetworks, time_step)
 
     return ACPowerFlowResidual(
         data,
@@ -463,4 +430,50 @@ function _find_subnetworks_for_reference_buses(
         end
     end
     return bus_groups
+end
+
+"""
+    _build_bus_slack_participation_factors(data, bus_type, subnetworks, time_step)
+
+Collect the per-bus generator-slack-participation factors (REF and PV buses
+only), validate that the sum is positive and no value is negative, and
+normalize so that each subnetwork's participating buses sum to 1. Returns
+a `SparseVector{Float64, Int}` of length `n_buses`.
+
+Shared between the polar `ACPowerFlowResidual` and rectangular CI residual
+constructors — both need identical slack-distribution semantics.
+"""
+function _build_bus_slack_participation_factors(
+    data::ACPowerFlowData,
+    bus_type::AbstractVector{PSY.ACBusTypes},
+    subnetworks::Dict{Int64, Vector{Int64}},
+    time_step::Int64,
+)
+    n_buses = length(bus_type)
+    spf_idx = Int[]
+    spf_val = Float64[]
+    sum_sl_weights = 0.0
+    for (ix, bt) in zip(1:n_buses, bus_type)
+        bt ∈ (PSY.ACBusTypes.REF, PSY.ACBusTypes.PV) || continue
+        (spf_v = data.bus_slack_participation_factors[ix, time_step]) == 0.0 && continue
+        push!(spf_idx, ix)
+        push!(spf_val, spf_v)
+        sum_sl_weights += spf_v
+    end
+    sum_sl_weights == 0.0 &&
+        throw(ArgumentError("sum of slack_participation_factors cannot be zero"))
+    any(spf_val .< 0.0) &&
+        throw(ArgumentError("slack_participation_factors cannot be negative"))
+    bus_slack_participation_factors = sparsevec(spf_idx, spf_val, n_buses)
+    for subnetwork_buses in values(subnetworks)
+        bspf_subnetwork = view(bus_slack_participation_factors, subnetwork_buses)
+        sum_bspf = sum(bspf_subnetwork)
+        sum_bspf == 0.0 && throw(
+            ArgumentError(
+                "sum of slack_participation_factors per subnetwork cannot be zero",
+            ),
+        )
+        bspf_subnetwork ./= sum_bspf
+    end
+    return bus_slack_participation_factors
 end
