@@ -137,8 +137,8 @@ function _dc_power_flow_fallback!(data::ACPowerFlowData, time_step::Int)
         data.bus_active_power_injections[valid_ix, time_step] -
         data.bus_active_power_withdrawals[valid_ix, time_step] +
         data.bus_hvdc_net_power[valid_ix, time_step]
-    # assumption: the linear algebra backend we're using implements and exports ldiv!
-    ldiv!(solver_cache, p_inj)
+    # PNM's KLUWrapper.KLULinSolveCache exposes solve! (in-place) instead of ldiv!.
+    PNM.solve!(solver_cache, p_inj)
     data.bus_angles[valid_ix, time_step] .= p_inj
 end
 
