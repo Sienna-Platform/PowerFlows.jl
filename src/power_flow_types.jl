@@ -58,13 +58,37 @@ struct LevenbergMarquardtACPowerFlow <: ACPowerFlowSolverType end
     RobustHomotopyPowerFlow <: ACPowerFlowSolverType
 
 An [`ACPowerFlowSolverType`](@ref) corresponding to a homotopy iterative method, based on the
-paper [\"Improving the robustness of Newton-based power flow methods to cope with poor 
-initial points\"](https://ieeexplore.ieee.org/document/6666905). This is significantly more 
+paper [\"Improving the robustness of Newton-based power flow methods to cope with poor
+initial points\"](https://ieeexplore.ieee.org/document/6666905). This is significantly more
 robust than Newton-Raphson, but also slower by an order of magnitude or two.
 
 See also: [`ACPowerFlow`](@ref).
 """
 struct RobustHomotopyPowerFlow <: ACPowerFlowSolverType end
+
+"""
+    RectangularCurrentInjectionACPowerFlow <: ACPowerFlowSolverType
+
+An [`ACPowerFlowSolverType`](@ref) that solves the AC power flow problem using the
+augmented current-injection (Da Costa) formulation in rectangular coordinates.
+
+State variables per bus:
+- PQ: `(eᵢ, fᵢ)` — real and imaginary parts of bus voltage.
+- PV: `(eᵢ, fᵢ, Qᵢ)` — augmented row pins `|V|² = V_set²`.
+- REF: `(P_genᵢ, Q_genᵢ)`; `(eᵢ, fᵢ)` fixed from data.
+
+Residuals: complex current mismatch `ΔIᵢ = I_specᵢ − Y_bus·V`.
+
+Off-diagonal Jacobian blocks ≡ Y_bus 2×2 real blocks and are constant across
+iterations. Per-iteration Jacobian update cost is `O(N + n_LCC)`, independent
+of `nnz(Y_bus)`.
+
+Based on: Da Costa, Pereira, Garcia — "Developments in the Newton-Raphson power
+flow formulation based on current injections," IEEE TPS 2000.
+
+See also: [`ACPowerFlow`](@ref).
+"""
+struct RectangularCurrentInjectionACPowerFlow <: ACPowerFlowSolverType end
 
 """
     ACPowerFlow{ACSolver}(; kwargs...) where {ACSolver <: ACPowerFlowSolverType}
