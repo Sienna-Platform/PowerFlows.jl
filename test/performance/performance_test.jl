@@ -59,6 +59,49 @@ for (group, name) in systems
     end
 end
 
+# Rectangular Current-Injection (Da Costa) NR — augmented current-injection
+# formulation; key benefit is constant Y_bus off-diagonal Jacobian blocks.
+# Tested with all four step strategies: plain NR, NR+Iwamoto, Trust Region,
+# Trust Region + Iwamoto fallback.
+const _RECT_CI_VARIANTS = [
+    ("RectangularCurrentInjectionACPowerFlow", Dict{Symbol, Any}()),
+    ("RectangularCurrentInjectionACPowerFlow(iwamoto)",
+        Dict{Symbol, Any}(:iwamoto => true)),
+    ("RectangularCurrentInjectionACPowerFlow(trust_region)",
+        Dict{Symbol, Any}(:step_strategy => :trust_region)),
+    ("RectangularCurrentInjectionACPowerFlow(trust_region+iwamoto)",
+        Dict{Symbol, Any}(
+            :step_strategy => :trust_region,
+            :iwamoto_fallback => true,
+        )),
+]
+for (group, name) in systems
+    sys = build_system(group, name)
+    for (solver_label, extra_settings) in _RECT_CI_VARIANTS
+        try
+            settings = merge(
+                extra_settings,
+                Dict{Symbol, Any}(:validate_voltage_magnitudes => false),
+            )
+            pf = ACPowerFlow{PF.RectangularCurrentInjectionACPowerFlow}(;
+                correct_bustypes = true,
+                solver_settings = settings)
+            pf_data = PF.PowerFlowData(pf, sys)
+            _, time_solve_1, _, _ = @timed PF.solve_power_flow!(pf_data; pf = pf)
+            record_time("$(name)-$(solver_label) First Solve", time_solve_1)
+            pf = ACPowerFlow{PF.RectangularCurrentInjectionACPowerFlow}(;
+                correct_bustypes = true,
+                solver_settings = settings)
+            pf_data = PF.PowerFlowData(pf, sys)
+            _, time_solve_2, _, _ = @timed PF.solve_power_flow!(pf_data; pf = pf)
+            record_time("$(name)-$(solver_label) Second Solve", time_solve_2)
+        catch e
+            @error exception = (e, catch_backtrace())
+            record_failure("$(name)-$(solver_label) Solve")
+        end
+    end
+end
+
 # Iwamoto step control (NR variant with damping)
 for (group, name) in systems
     sys = build_system(group, name)
