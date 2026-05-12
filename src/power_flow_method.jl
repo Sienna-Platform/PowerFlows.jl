@@ -761,10 +761,49 @@ function _newton_power_flow(
     return _finalize_power_flow(converged, i, string(T), residual, data, J.Jv, time_step)
 end
 
+"""
+Step strategies supported by the rectangular current-injection driver. Other
+polar-only solver types (`LevenbergMarquardtACPowerFlow`, `RobustHomotopyPowerFlow`,
+`GradientDescentACPowerFlow`) have their own dedicated `_newton_power_flow` methods
+that operate on the polar residual/Jacobian; they cannot be invoked through
+`ACPowerFlow{RectangularCurrentInjectionACPowerFlow}` in this iteration.
+"""
+const _RECT_CI_SUPPORTED_STEP_STRATEGIES = (:simple, :trust_region)
+
+"""
+    _check_rect_ci_unsupported_settings!(pf)
+
+Raise an informative `ArgumentError` for configuration that the rectangular
+current-injection driver does not yet support. Catches user-side mistakes
+early (constructor or first solve) rather than producing silently-wrong
+results or falling through to polar code paths that wouldn't apply.
+"""
+function _check_rect_ci_unsupported_settings(
+    pf::ACPowerFlow{RectangularCurrentInjectionACPowerFlow},
+)
+    if get_robust_power_flow(pf)
+        throw(
+            ArgumentError(
+                "robust_power_flow=true is not supported by " *
+                "RectangularCurrentInjectionACPowerFlow. The DC fallback path " *
+                "in `improve_x0` operates on the polar state vector; a " *
+                "rectangular-aware fallback has not been implemented. Set " *
+                "robust_power_flow=false, or use ACPowerFlow{NewtonRaphsonACPowerFlow}.",
+            ),
+        )
+    end
+    return
+end
+
 """Run the augmented current-injection (rectangular) Newton-Raphson AC power flow.
 Mirrors the polar `_newton_power_flow` driver but builds the rectangular CI
 residual/Jacobian. Reuses the same step strategies (simple NR, Iwamoto, Trust Region)
-since they're generic over the residual/Jacobian functor interface."""
+since they're generic over the residual/Jacobian functor interface.
+
+Polar-only solver types — `LevenbergMarquardtACPowerFlow`, `RobustHomotopyPowerFlow`,
+`GradientDescentACPowerFlow` — are NOT reachable through this driver in this
+iteration; they go through their own polar `_newton_power_flow` methods. Invoking
+them requires `ACPowerFlow{<thatType>}` directly."""
 function _newton_power_flow(
     pf::ACPowerFlow{RectangularCurrentInjectionACPowerFlow},
     data::ACPowerFlowData,
@@ -784,6 +823,7 @@ function _newton_power_flow(
     x0::Union{Vector{Float64}, Nothing} = nothing,
     _ignored...,
 )
+    _check_rect_ci_unsupported_settings(pf)
     residual = ACRectangularCIResidual(data, time_step)
     x0_computed = Vector{Float64}(undef, length(residual.Rv))
     rect_initial_state!(
@@ -807,11 +847,23 @@ function _newton_power_flow(
             TrustRegionACPowerFlow
         elseif step_strategy == :simple
             NewtonRaphsonACPowerFlow
+        elseif step_strategy in
+               (:levenberg_marquardt, :robust_homotopy, :gradient_descent)
+            throw(
+                ArgumentError(
+                    "step_strategy=$(step_strategy) is not supported by " *
+                    "RectangularCurrentInjectionACPowerFlow in this iteration. " *
+                    "Levenberg-Marquardt, Robust Homotopy, and Gradient Descent " *
+                    "currently operate on the polar formulation only — use the " *
+                    "corresponding ACPowerFlowSolverType (e.g. " *
+                    "`ACPowerFlow{LevenbergMarquardtACPowerFlow}`) directly.",
+                ),
+            )
         else
             throw(
                 ArgumentError(
-                    "Unknown step_strategy=$(step_strategy); " *
-                    "expected :simple or :trust_region.",
+                    "Unknown step_strategy=$(step_strategy); supported values " *
+                    "are $(_RECT_CI_SUPPORTED_STEP_STRATEGIES).",
                 ),
             )
         end
