@@ -12,6 +12,7 @@ A struct to keep track of the residuals in the Newton-Raphson AC power flow calc
 - `P_net_set::Vector{Float64}`: A vector of the set-points for active power injections (their initial values before power flow calculation).
 - `bus_slack_participation_factors::SparseVector{Float64, Int}`: A sparse vector of the slack participation factors aggregated at the bus level.
 - `subnetworks::Dict{Int64, Vector{Int64}}`: The dictionary that identifies subnetworks (connected components), with the key defining the REF bus, values defining the corresponding buses in the subnetwork.
+- `P_slack_buf::Vector{Float64}`: Scratch buffer of length `n_buses` used by `_update_residual_values!` to write the per-subnetwork slack distribution in place, avoiding a per-iteration allocation when indexing `bus_slack_participation_factors` by `subnetwork_buses`.
 """
 struct ACPowerFlowResidual
     data::ACPowerFlowData
@@ -393,7 +394,7 @@ function _update_residual_values!(
     # each call; iterate explicitly to keep this allocation-free.
     @inbounds for ix in eachindex(P_net)
         F[2 * ix - 1] -= P_net[ix]
-        F[2 * ix]     -= Q_net[ix]
+        F[2 * ix] -= Q_net[ix]
     end
 
     if num_lcc > 0

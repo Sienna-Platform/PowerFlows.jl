@@ -30,6 +30,9 @@ Pages = [
     "solve_ac_power_flow.jl",
     "ac_power_flow_residual.jl",
     "ac_power_flow_jacobian.jl",
+    "rectangular_ci_setup.jl",
+    "rectangular_ci_power_flow_residual.jl",
+    "rectangular_ci_power_flow_jacobian.jl",
     "power_flow_method.jl",
     "post_processing.jl"
 ]
