@@ -52,7 +52,7 @@ function _do_refinement!(stateVector::StateVectorCache,
 )
     # use stateVector.r_predict as temporary buffer.
     δ_temp = stateVector.r_predict
-    copyto!(δ_temp, A * stateVector.Δx_nr)
+    mul!(δ_temp, A, stateVector.Δx_nr)
     δ_temp .-= stateVector.r
     delta = norm(δ_temp, 1) / norm(stateVector.r, 1)
     if delta > refinement_threshold

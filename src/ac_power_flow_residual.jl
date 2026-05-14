@@ -22,6 +22,9 @@ struct ACPowerFlowResidual
     P_net_set::Vector{Float64}
     bus_slack_participation_factors::SparseVector{Float64, Int}
     subnetworks::Dict{Int64, Vector{Int64}}
+    # Scratch buffer for the per-subnetwork slack distribution. Sized to
+    # n_buses so the largest subnetwork fits without reallocation.
+    P_slack_buf::Vector{Float64}
 end
 
 """
@@ -73,6 +76,7 @@ function ACPowerFlowResidual(data::ACPowerFlowData, time_step::Int64)
         P_net_set,
         bus_slack_participation_factors,
         subnetworks,
+        Vector{Float64}(undef, n_buses),
     )
 end
 
@@ -106,6 +110,7 @@ function (Residual::ACPowerFlowResidual)(
         Residual.subnetworks,
         Residual.data,
         time_step,
+        Residual.P_slack_buf,
     )
     copyto!(Rv, Residual.Rv)
     return
@@ -135,6 +140,7 @@ function (Residual::ACPowerFlowResidual)(x::Vector{Float64}, time_step::Int64)
         Residual.subnetworks,
         Residual.data,
         time_step,
+        Residual.P_slack_buf,
     )
     return
 end
@@ -272,6 +278,7 @@ function _update_residual_values!(
     subnetworks::Dict{Int64, Vector{Int64}},
     data::ACPowerFlowData,
     time_step::Int64,
+    P_slack_buf::Vector{Float64},
 )
     # update P_net, Q_net, data.bus_angles, data.bus_magnitude based on X
     Yb = data.power_network_matrix.data
@@ -279,12 +286,19 @@ function _update_residual_values!(
     bus_types = view(data.bus_type, :, time_step)
 
     for (ref_bus, subnetwork_buses) in subnetworks
-        P_slack =
-            (x[2 * ref_bus - 1] - P_net_set[ref_bus]) .*
-            bus_slack_participation_factors[subnetwork_buses]
+        slack_scalar = x[2 * ref_bus - 1] - P_net_set[ref_bus]
+        n_sub = length(subnetwork_buses)
+        # Write per-bus slack into P_slack_buf[1:n_sub]. SparseVector indexed
+        # by a Vector{Int} allocates a fresh Vector; iterate manually instead.
+        @inbounds for k in 1:n_sub
+            ix = subnetwork_buses[k]
+            P_slack_buf[k] = slack_scalar * bus_slack_participation_factors[ix]
+        end
 
-        for (ix, bt, p_bus_slack) in
-            zip(subnetwork_buses, bus_types[subnetwork_buses], P_slack)
+        @inbounds for k in 1:n_sub
+            ix = subnetwork_buses[k]
+            bt = bus_types[ix]
+            p_bus_slack = P_slack_buf[k]
             # creating Val(bt) at runtime is slow, requires allocating: split into cases
             # explicitly, so instead it's Val(compile-time constant).
             if bt == PSY.ACBusTypes.PQ
@@ -375,8 +389,12 @@ function _update_residual_values!(
         end
     end
 
-    F[1:2:(end - 4 * num_lcc)] .-= P_net
-    F[2:2:(end - 4 * num_lcc)] .-= Q_net
+    # Strided broadcast `F[1:2:N] .-= P_net` allocates a copy of the slice on
+    # each call; iterate explicitly to keep this allocation-free.
+    @inbounds for ix in eachindex(P_net)
+        F[2 * ix - 1] -= P_net[ix]
+        F[2 * ix]     -= Q_net[ix]
+    end
 
     if num_lcc > 0
         P_lcc_from =
