@@ -52,6 +52,39 @@ end
         @test maximum(abs.(Array(J.Jv) - Jfd)) < 1e-4
     end
 
+    @testset "ZIP constant-current load at perturbed state" begin
+        sys = System(100.0)
+        b1 = _add_simple_bus!(sys, 1, PSY.ACBusTypes.REF, 230, 1.1, 0.0)
+        b2 = _add_simple_bus!(sys, 2, PSY.ACBusTypes.PQ, 230, 1.1, 0.0)
+        _add_simple_line!(sys, b1, b2, 5e-3, 5e-3, 1e-3)
+        _add_simple_source!(sys, b1, 0.0, 0.0)
+        _add_simple_zip_load!(
+            sys, b2;
+            constant_power_active_power = 0.5,
+            constant_power_reactive_power = 0.2,
+            constant_current_active_power = 2.0,
+            constant_current_reactive_power = 1.0,
+        )
+        pf_polar = ACPowerFlow{NewtonRaphsonACPowerFlow}()
+        PF.solve_and_store_power_flow!(pf_polar, sys)
+        pf_rect = ACPowerFlow{RectangularCurrentInjectionACPowerFlow}(;
+            correct_bustypes = true,
+            solver_settings = Dict{Symbol, Any}(:validate_voltage_magnitudes => false),
+        )
+        data = PF.PowerFlowData(pf_rect, sys)
+        R = PF.ACRectangularCIResidual(data, 1)
+        J = PF.ACRectangularCIJacobian(R, 1)
+        x = Vector{Float64}(undef, length(R.Rv))
+        PF.rect_initial_state!(x, data, R.bus_state_offset, R.bus_block_size, 1)
+        Random.seed!(7)
+        x .+= 0.02 .* randn(length(x))
+        R(x, 1)
+        J(1)
+        Jfd = _fd_jacobian(R, x, 1)
+        J(1)
+        @test maximum(abs.(Array(J.Jv) - Jfd)) < 1e-3
+    end
+
     @testset "c_sys5 at perturbed (non-converged) state" begin
         sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
         pf_polar = ACPowerFlow{NewtonRaphsonACPowerFlow}()

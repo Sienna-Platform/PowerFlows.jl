@@ -1,13 +1,5 @@
-# Polar-parity coverage: run scenarios that exercise polar capabilities
-# (ZIP loads, distributed slack, multi-period, large fixtures, network
-# reductions) with the rectangular CI solver, and confirm bus voltage and
-# angle parity with polar Newton-Raphson.
-#
-# For any capability NOT yet supported by rectangular CI, the corresponding
-# testset is marked `@test_broken` so the gap is visible without silently
-# failing the suite. If you remove an entry from this skip-list, the
-# rectangular CI solver must produce results matching polar within
-# `RECT_PARITY_ATOL` for both Vm and θ.
+# Solve representative scenarios with both polar NR and rectangular CI; assert
+# Vm/θ parity within RECT_PARITY_ATOL.
 
 const RECT_PARITY_ATOL = 1e-7
 
@@ -16,13 +8,13 @@ _rect_parity_settings() = Dict{Symbol, Any}(:validate_voltage_magnitudes => fals
 function _rect_polar_parity(
     sys_p::PSY.System,
     sys_r::PSY.System;
-    pf_p_kwargs::NamedTuple = NamedTuple(),
+    pf_kwargs::NamedTuple = NamedTuple(),
     pf_r_extra_settings::Dict{Symbol, Any} = Dict{Symbol, Any}(),
     atol::Float64 = RECT_PARITY_ATOL,
 )
-    pf_p = ACPowerFlow{NewtonRaphsonACPowerFlow}(; pf_p_kwargs...)
+    pf_p = ACPowerFlow{NewtonRaphsonACPowerFlow}(; pf_kwargs...)
     pf_r = ACPowerFlow{RectangularCurrentInjectionACPowerFlow}(;
-        pf_p_kwargs...,
+        pf_kwargs...,
         solver_settings = merge(_rect_parity_settings(), pf_r_extra_settings),
     )
     res_p = solve_power_flow(pf_p, sys_p)
@@ -35,6 +27,7 @@ function _rect_polar_parity(
 end
 
 function _build_zip_2bus_system(;
+    power_pq::Tuple{Float64, Float64} = (0.0, 0.0),
     current_pq::Tuple{Float64, Float64} = (0.0, 0.0),
     impedance_pq::Tuple{Float64, Float64} = (0.0, 0.0),
     zip_on_ref::Bool = false,
@@ -48,6 +41,8 @@ function _build_zip_2bus_system(;
     _add_simple_zip_load!(
         sys,
         zip_bus;
+        constant_power_active_power = power_pq[1],
+        constant_power_reactive_power = power_pq[2],
         constant_current_active_power = current_pq[1],
         constant_current_reactive_power = current_pq[2],
         constant_impedance_active_power = impedance_pq[1],
@@ -62,7 +57,7 @@ end
     _rect_polar_parity(
         sys_p,
         sys_r;
-        pf_p_kwargs = (; correct_bustypes = true),
+        pf_kwargs = (; correct_bustypes = true),
     )
 end
 
@@ -94,7 +89,25 @@ end
     _rect_polar_parity(
         sys_p,
         sys_r;
-        pf_p_kwargs = (; correct_bustypes = true),
+        pf_kwargs = (; correct_bustypes = true),
+    )
+end
+
+@testset "Rectangular CI polar parity: ZIP loads (full P+I+Z combination)" begin
+    sys_p = _build_zip_2bus_system(;
+        power_pq = (0.5, 0.2),
+        current_pq = (2.0, 1.0),
+        impedance_pq = (1.5, 0.8),
+    )
+    sys_r = _build_zip_2bus_system(;
+        power_pq = (0.5, 0.2),
+        current_pq = (2.0, 1.0),
+        impedance_pq = (1.5, 0.8),
+    )
+    _rect_polar_parity(
+        sys_p,
+        sys_r;
+        pf_kwargs = (; correct_bustypes = true),
     )
 end
 
@@ -124,7 +137,7 @@ end
     _rect_polar_parity(
         sys_p,
         sys_r;
-        pf_p_kwargs = (; correct_bustypes = true),
+        pf_kwargs = (; correct_bustypes = true),
     )
 end
 
@@ -134,7 +147,7 @@ end
     _rect_polar_parity(
         sys_p,
         sys_r;
-        pf_p_kwargs = (; check_reactive_power_limits = true),
+        pf_kwargs = (; check_reactive_power_limits = true),
     )
 end
 

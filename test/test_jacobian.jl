@@ -72,6 +72,24 @@ end
     # verify_jacobian(sys)
 end
 
+@testset "Jacobian verification with ZIP load" begin
+    sys = System(100.0)
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.0, 0.0)
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.PQ, 230, 1.0, 0.0)
+    _add_simple_line!(sys, b1, b2, 5e-3, 5e-3, 1e-3)
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    _add_simple_zip_load!(
+        sys, b2;
+        constant_power_active_power = 0.5,
+        constant_power_reactive_power = 0.2,
+        constant_current_active_power = 2.0,
+        constant_current_reactive_power = 1.0,
+        constant_impedance_active_power = 1.5,
+        constant_impedance_reactive_power = 0.8,
+    )
+    verify_jacobian(sys)
+end
+
 @testset "Jacobian verification with distributed slack" begin
     sys = PSB.build_system(PSITestSystems, "c_sys14")
     generators = collect(get_components(ThermalStandard, sys))
