@@ -701,6 +701,21 @@ function _update_jacobian_matrix_values!(
             Jv[row_from_q, col_from_va] = diag_elements[2]  # ∂Q∂θ_from
             diag_elements[3] += 2 * real(Yb[bus_from, bus_from]) * Vm[bus_from]  # ∂P∂V_from
             diag_elements[4] -= 2 * imag(Yb[bus_from, bus_from]) * Vm[bus_from]  # ∂Q∂V_from
+            # ZIP chain rule: P_net(V) = P₀ − const_I_P·V − const_Z_P·V², so ∂F_P/∂V
+            # picks up −∂P_net/∂V = +const_I_P + 2·const_Z_P·V (same shape on Q).
+            diag_elements[3] +=
+                data.bus_active_power_constant_current_withdrawals[bus_from, time_step] +
+                2 *
+                data.bus_active_power_constant_impedance_withdrawals[bus_from, time_step] *
+                Vm[bus_from]
+            diag_elements[4] +=
+                data.bus_reactive_power_constant_current_withdrawals[bus_from, time_step] +
+                2 *
+                data.bus_reactive_power_constant_impedance_withdrawals[
+                    bus_from,
+                    time_step,
+                ] *
+                Vm[bus_from]
             Jv[row_from_p, col_from_vm] = diag_elements[3]  # ∂P∂V_from
             Jv[row_from_q, col_from_vm] = diag_elements[4]  # ∂Q∂V_from
         elseif data.bus_type[bus_from, time_step] == PSY.ACBusTypes.PV

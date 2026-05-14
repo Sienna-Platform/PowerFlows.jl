@@ -32,6 +32,8 @@ struct ACRectangularCIJacobian
     Q_state::Vector{Float64}       # shared view into residual's Q_state
     P_eff_cache::Vector{Float64}   # shared view into residual's P_eff_cache
     Q_eff_cache::Vector{Float64}   # shared view into residual's Q_eff_cache (PQ-bus ZIP-corrected Q)
+    const_I_P::Vector{Float64}     # shared view into residual's const_I_P; needed for ∂P_eff/∂(e,f) chain rule
+    const_I_Q::Vector{Float64}     # shared view into residual's const_I_Q
     bus_slack_participation_factors::SparseVector{Float64, Int}
     subnetworks::Dict{Int64, Vector{Int64}}
     bus_state_offset::Vector{REC_INDEX_TYPE}
@@ -76,6 +78,8 @@ function ACRectangularCIJacobian(
         residual.Q_state,
         residual.P_eff_cache,
         residual.Q_eff_cache,
+        residual.const_I_P,
+        residual.const_I_Q,
         residual.bus_slack_participation_factors,
         residual.subnetworks,
         residual.bus_state_offset,
@@ -89,6 +93,7 @@ end
 function (J::ACRectangularCIJacobian)(time_step::Int64)
     J.Jf!(J.Jv, J.data, J.Y_bus_eff, J.Y_diag,
         J.e_state, J.f_state, J.Q_state, J.P_eff_cache, J.Q_eff_cache,
+        J.const_I_P, J.const_I_Q,
         J.bus_slack_participation_factors, J.subnetworks,
         J.bus_state_offset, J.bus_block_size, J.total_bus_state, time_step)
     return
@@ -100,6 +105,7 @@ function (J::ACRectangularCIJacobian)(
 )
     J.Jf!(J.Jv, J.data, J.Y_bus_eff, J.Y_diag,
         J.e_state, J.f_state, J.Q_state, J.P_eff_cache, J.Q_eff_cache,
+        J.const_I_P, J.const_I_Q,
         J.bus_slack_participation_factors, J.subnetworks,
         J.bus_state_offset, J.bus_block_size, J.total_bus_state, time_step)
     copyto!(Jv, J.Jv)
@@ -135,11 +141,17 @@ function _create_rect_ci_jacobian_structure(
     sizehint!(vals, 4 * SparseArrays.nnz(Y_bus_eff) + 17 * n_lccs + 2 * n_buses)
 
     Yrows = SparseArrays.rowvals(Y_bus_eff)
+    bus_types_at_t = view(data.bus_type, :, time_step)
     @inbounds for col in 1:n_buses
         col_off = Int(bus_state_offset[col])
         col_bs = bus_block_size[col]
+        is_ref_col = bus_types_at_t[col] == PSY.ACBusTypes.REF
         for j in Y_bus_eff.colptr[col]:(Y_bus_eff.colptr[col + 1] - 1)
             row = Yrows[j]
+            # REF columns hold (P_gen, Q_gen); neighbors' rows don't depend on them.
+            if is_ref_col && row != col
+                continue
+            end
             row_off = Int(bus_state_offset[row])
             row_bs = bus_block_size[row]
             # Off-diagonal blocks involve only (e, f) columns of the neighbor —
@@ -211,27 +223,21 @@ function _create_rect_ci_lcc_structure!(
         idx_tap_i = offset_lcc + 2
         idx_alpha_r = offset_lcc + 3
         idx_alpha_i = offset_lcc + 4
-        # Cross-terms (LCC residual rows depend on AC bus (e, f) and LCC vars).
-        # See spec §4 for the LCC tail; mirrors polar `_create_jacobian_matrix_structure_lcc`.
         rcv = [
-            # FB-side bus rows × LCC tail cols (∂F_block_fb / ∂t_r, ∂α_r).
             (col_e_fb, idx_tap_r, 0.0),
             (col_e_fb, idx_alpha_r, 0.0),
             (col_f_fb, idx_tap_r, 0.0),
             (col_f_fb, idx_alpha_r, 0.0),
-            # TB-side bus rows × LCC tail cols (∂F_block_tb / ∂t_i, ∂α_i).
             (col_e_tb, idx_tap_i, 0.0),
             (col_e_tb, idx_alpha_i, 0.0),
             (col_f_tb, idx_tap_i, 0.0),
             (col_f_tb, idx_alpha_i, 0.0),
-            # LCC tail rows (F_t_r, F_t_i) × bus cols.
             (idx_tap_r, col_e_fb, 0.0),
             (idx_tap_r, col_f_fb, 0.0),
             (idx_tap_i, col_e_fb, 0.0),
             (idx_tap_i, col_f_fb, 0.0),
             (idx_tap_i, col_e_tb, 0.0),
             (idx_tap_i, col_f_tb, 0.0),
-            # LCC tail rows × LCC tail cols.
             (idx_tap_r, idx_tap_r, 0.0),
             (idx_tap_r, idx_alpha_r, 0.0),
             (idx_tap_i, idx_tap_r, 0.0),
@@ -309,6 +315,8 @@ function _update_rect_ci_jacobian_values!(
     Q_state::Vector{Float64},
     P_eff_cache::Vector{Float64},
     Q_eff_cache::Vector{Float64},
+    const_I_P::Vector{Float64},
+    const_I_Q::Vector{Float64},
     bus_slack_participation_factors::SparseVector{Float64, Int},
     subnetworks::Dict{Int64, Vector{Int64}},
     bus_state_offset::Vector{REC_INDEX_TYPE},
@@ -329,10 +337,11 @@ function _update_rect_ci_jacobian_values!(
             # Use Q_eff_cache (carries ZIP const-I correction) — matches the
             # Q value the residual uses at this same bus for I_spec.
             _update_pq_diag_block!(Jv, off, e_i, f_i, Y_diag[i],
-                P_eff_cache[i], Q_eff_cache[i])
+                P_eff_cache[i], Q_eff_cache[i],
+                const_I_P[i], const_I_Q[i])
         elseif bt == PSY.ACBusTypes.PV
             _update_pv_diag_block!(Jv, off, e_i, f_i, Q_state[i], Y_diag[i],
-                P_eff_cache[i])
+                P_eff_cache[i], const_I_P[i])
         elseif bt == PSY.ACBusTypes.REF
             _update_ref_diag_block!(Jv, off, e_i, f_i,
                 bus_slack_participation_factors[i])
@@ -379,17 +388,22 @@ function _update_pq_diag_block!(
     y_ii::ComplexF64,
     P_eff::Float64,
     Q_eff::Float64,
+    const_I_P::Float64,
+    const_I_Q::Float64,
 )
     V_sq = e^2 + f^2
+    inv_V_sq = 1.0 / V_sq
+    inv_Vm = 1.0 / sqrt(V_sq)
     g_ii = real(y_ii)
     b_ii = imag(y_ii)
-    Is_r = (P_eff * e + Q_eff * f) / V_sq
-    Is_i = (P_eff * f - Q_eff * e) / V_sq
-    inv_V_sq = 1.0 / V_sq
-    Jv[off, off] = (P_eff - 2 * e * Is_r) * inv_V_sq + (-g_ii)
-    Jv[off, off + 1] = (Q_eff - 2 * f * Is_r) * inv_V_sq + b_ii
-    Jv[off + 1, off] = (-Q_eff - 2 * e * Is_i) * inv_V_sq + (-b_ii)
-    Jv[off + 1, off + 1] = (P_eff - 2 * f * Is_i) * inv_V_sq + (-g_ii)
+    Is_r = (P_eff * e + Q_eff * f) * inv_V_sq
+    Is_i = (P_eff * f - Q_eff * e) * inv_V_sq
+    term_r = (const_I_P * e + const_I_Q * f) * inv_Vm * inv_V_sq
+    term_i = (const_I_P * f - const_I_Q * e) * inv_Vm * inv_V_sq
+    Jv[off, off] = (P_eff - 2 * e * Is_r) * inv_V_sq - g_ii - e * term_r
+    Jv[off, off + 1] = (Q_eff - 2 * f * Is_r) * inv_V_sq + b_ii - f * term_r
+    Jv[off + 1, off] = (-Q_eff - 2 * e * Is_i) * inv_V_sq - b_ii - e * term_i
+    Jv[off + 1, off + 1] = (P_eff - 2 * f * Is_i) * inv_V_sq - g_ii - f * term_i
     return
 end
 
@@ -401,21 +415,24 @@ function _update_pv_diag_block!(
     Q::Float64,
     y_ii::ComplexF64,
     P_eff::Float64,
+    const_I_P::Float64,
 )
     V_sq = e^2 + f^2
+    inv_V_sq = 1.0 / V_sq
+    inv_Vm = 1.0 / sqrt(V_sq)
     g_ii = real(y_ii)
     b_ii = imag(y_ii)
-    Is_r = (P_eff * e + Q * f) / V_sq
-    Is_i = (P_eff * f - Q * e) / V_sq
-    inv_V_sq = 1.0 / V_sq
-    Jv[off, off] = (P_eff - 2 * e * Is_r) * inv_V_sq + (-g_ii)
-    Jv[off, off + 1] = (Q - 2 * f * Is_r) * inv_V_sq + b_ii
-    Jv[off + 1, off] = (-Q - 2 * e * Is_i) * inv_V_sq + (-b_ii)
-    Jv[off + 1, off + 1] = (P_eff - 2 * f * Is_i) * inv_V_sq + (-g_ii)
-    # Q-column: ∂I_spec_r/∂Q = f/V², ∂I_spec_i/∂Q = −e/V²
+    Is_r = (P_eff * e + Q * f) * inv_V_sq
+    Is_i = (P_eff * f - Q * e) * inv_V_sq
+    # Q is the state variable at PV (not Q_eff), so const_I_Q does not enter.
+    term_r = const_I_P * e * inv_Vm * inv_V_sq
+    term_i = const_I_P * f * inv_Vm * inv_V_sq
+    Jv[off, off] = (P_eff - 2 * e * Is_r) * inv_V_sq - g_ii - e * term_r
+    Jv[off, off + 1] = (Q - 2 * f * Is_r) * inv_V_sq + b_ii - f * term_r
+    Jv[off + 1, off] = (-Q - 2 * e * Is_i) * inv_V_sq - b_ii - e * term_i
+    Jv[off + 1, off + 1] = (P_eff - 2 * f * Is_i) * inv_V_sq - g_ii - f * term_i
     Jv[off, off + 2] = f * inv_V_sq
     Jv[off + 1, off + 2] = -e * inv_V_sq
-    # ΔV² row: ∂ΔV²/∂e = −2e, ∂ΔV²/∂f = −2f, ∂ΔV²/∂Q = 0 (structural zero)
     Jv[off + 2, off] = -2 * e
     Jv[off + 2, off + 1] = -2 * f
     return
@@ -552,10 +569,9 @@ function _set_entries_for_lcc_rect!(
         common_term_tb_polar = Vm_tb * SQRT6_DIV_PI * (-i_dc)
         common_term_tap_i = tap_i * SQRT6_DIV_PI * (-i_dc) * cos_alpha_i
 
-        # LCC tail row entries ∂F_t_*/∂(e, f): chain rule from ∂/∂Vm.
-        # At REF buses, the columns are (P_gen, Q_gen) — those don't affect Vm,
-        # so the LCC tail partials are zero there.
-        if bus_type_fb != PSY.ACBusTypes.REF
+        # ∂F_t_*/∂(e, f) chain rule from ∂/∂Vm. At REF buses (e, f) are not
+        # state, so the column slots there hold (P_gen, Q_gen) — write zero.
+        if bus_type_fb == PSY.ACBusTypes.PQ || bus_type_fb == PSY.ACBusTypes.PV
             de_dV_fb = e_fb / Vm_fb
             df_dV_fb = f_fb / Vm_fb
             Jv[idx_tap_r, col_e_fb] = common_term_tap_r * de_dV_fb
@@ -568,7 +584,7 @@ function _set_entries_for_lcc_rect!(
             Jv[idx_tap_i, col_e_fb] = 0.0
             Jv[idx_tap_i, col_f_fb] = 0.0
         end
-        if bus_type_tb != PSY.ACBusTypes.REF
+        if bus_type_tb == PSY.ACBusTypes.PQ || bus_type_tb == PSY.ACBusTypes.PV
             de_dV_tb = e_tb / Vm_tb
             df_dV_tb = f_tb / Vm_tb
             Jv[idx_tap_i, col_e_tb] = common_term_tap_i * de_dV_tb
@@ -578,7 +594,6 @@ function _set_entries_for_lcc_rect!(
             Jv[idx_tap_i, col_f_tb] = 0.0
         end
 
-        # LCC tail to LCC tail (identical to polar).
         Jv[idx_tap_r, idx_tap_r] = common_term_fb_polar * cos_alpha_r
         Jv[idx_tap_r, idx_alpha_r] = common_term_alpha_r
         Jv[idx_tap_i, idx_tap_r] = common_term_fb_polar * cos_alpha_r
