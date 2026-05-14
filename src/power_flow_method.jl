@@ -771,7 +771,7 @@ that operate on the polar residual/Jacobian; they cannot be invoked through
 const _RECT_CI_SUPPORTED_STEP_STRATEGIES = (:simple, :trust_region)
 
 """
-    _check_rect_ci_unsupported_settings!(pf)
+    _check_rect_ci_unsupported_settings(pf)
 
 Raise an informative `ArgumentError` for configuration that the rectangular
 current-injection driver does not yet support. Catches user-side mistakes

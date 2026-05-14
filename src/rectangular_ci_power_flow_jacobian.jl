@@ -168,7 +168,10 @@ function _create_rect_ci_jacobian_structure(
             c_k == 0.0 && continue
             bus_k == ref_bus && continue
             k_off = Int(bus_state_offset[bus_k])
-            # Only add if not already in the Y_bus pattern between k and ref
+            # Push slack cross-terms unconditionally. If (k, ref) is already in the
+            # Y_bus pattern (k directly adjacent to ref), the COO constructor merges
+            # the duplicate by summing (0.0 + 0.0 = 0.0). `sizehint!` above
+            # overprovisions, so duplicates do not trigger reallocation.
             push!(rows, J_INDEX_TYPE(k_off))
             push!(cols, J_INDEX_TYPE(ref_off))
             push!(vals, 0.0)
