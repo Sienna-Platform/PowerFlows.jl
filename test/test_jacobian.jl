@@ -7,11 +7,7 @@ function verify_jacobian(
     data = PF.PowerFlowData(pf, sys)
     time_step = 1
     residual = PF.ACPowerFlowResidual(data, time_step)
-    J = PF.ACPowerFlowJacobian(data,
-        residual.bus_slack_participation_factors,
-        residual.subnetworks,
-        time_step,
-    )
+    J = PF.ACPowerFlowJacobian(residual, time_step)
     n_lccs =
         length(collect(PSY.get_components(PSY.get_available, PSY.TwoTerminalLCCLine, sys)))
     n = 2 * length(collect(get_components(ACBus, sys))) + 4 * n_lccs

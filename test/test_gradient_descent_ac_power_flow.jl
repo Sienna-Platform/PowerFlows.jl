@@ -57,12 +57,7 @@
         residual = PF.ACPowerFlowResidual(data, time_step)
         x0 = PF.calculate_x0(data, time_step)
         residual(x0, time_step)
-        J = PF.ACPowerFlowJacobian(
-            data,
-            residual.bus_slack_participation_factors,
-            residual.subnetworks,
-            time_step,
-        )
+        J = PF.ACPowerFlowJacobian(residual, time_step)
         J(time_step)
         state = PF.AdamState(length(x0))
 

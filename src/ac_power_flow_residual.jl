@@ -23,8 +23,10 @@ struct ACPowerFlowResidual
     P_net_set::Vector{Float64}
     bus_slack_participation_factors::SparseVector{Float64, Int}
     subnetworks::Dict{Int64, Vector{Int64}}
-    # Scratch buffer for the per-subnetwork slack distribution. Sized to
-    # n_buses so the largest subnetwork fits without reallocation.
+    bus_active_constant_I::Vector{Float64}
+    bus_reactive_constant_I::Vector{Float64}
+    bus_active_constant_Z::Vector{Float64}
+    bus_reactive_constant_Z::Vector{Float64}
     P_slack_buf::Vector{Float64}
 end
 
@@ -68,6 +70,15 @@ function ACPowerFlowResidual(data::ACPowerFlowData, time_step::Int64)
     bus_slack_participation_factors =
         _build_bus_slack_participation_factors(data, bus_type, subnetworks, time_step)
 
+    bus_active_constant_I =
+        copy(view(data.bus_active_power_constant_current_withdrawals, :, time_step))
+    bus_reactive_constant_I =
+        copy(view(data.bus_reactive_power_constant_current_withdrawals, :, time_step))
+    bus_active_constant_Z =
+        copy(view(data.bus_active_power_constant_impedance_withdrawals, :, time_step))
+    bus_reactive_constant_Z =
+        copy(view(data.bus_reactive_power_constant_impedance_withdrawals, :, time_step))
+
     return ACPowerFlowResidual(
         data,
         _update_residual_values!,
@@ -77,6 +88,10 @@ function ACPowerFlowResidual(data::ACPowerFlowData, time_step::Int64)
         P_net_set,
         bus_slack_participation_factors,
         subnetworks,
+        bus_active_constant_I,
+        bus_reactive_constant_I,
+        bus_active_constant_Z,
+        bus_reactive_constant_Z,
         Vector{Float64}(undef, n_buses),
     )
 end
@@ -109,6 +124,10 @@ function (Residual::ACPowerFlowResidual)(
         Residual.P_net_set,
         Residual.bus_slack_participation_factors,
         Residual.subnetworks,
+        Residual.bus_active_constant_I,
+        Residual.bus_reactive_constant_I,
+        Residual.bus_active_constant_Z,
+        Residual.bus_reactive_constant_Z,
         Residual.data,
         time_step,
         Residual.P_slack_buf,
@@ -139,6 +158,10 @@ function (Residual::ACPowerFlowResidual)(x::Vector{Float64}, time_step::Int64)
         Residual.P_net_set,
         Residual.bus_slack_participation_factors,
         Residual.subnetworks,
+        Residual.bus_active_constant_I,
+        Residual.bus_reactive_constant_I,
+        Residual.bus_active_constant_Z,
+        Residual.bus_reactive_constant_Z,
         Residual.data,
         time_step,
         Residual.P_slack_buf,
@@ -153,8 +176,6 @@ function _setpq(
     data::ACPowerFlowData,
     time_step::Int64,
 )
-    # Set the active and reactive power injections at the bus. 
-    # same equation as in the constructor, just solved for bus injection instead of P/Q_net.
     data.bus_active_power_injections[ix, time_step] =
         P_net[ix] + get_bus_active_power_total_withdrawals(data, ix, time_step) -
         data.bus_hvdc_net_power[ix, time_step]
@@ -176,13 +197,7 @@ function _set_state_variables_at_bus!(
     # When bustype == REFERENCE PSY.ACBus, state variables are Active and Reactive Power Generated
     P_net[ix] = P_net_set[ix] + P_slack
     Q_net[ix] = StateVector[2 * ix]
-    _setpq(
-        ix,
-        P_net,
-        Q_net,
-        data,
-        time_step,
-    )
+    _setpq(ix, P_net, Q_net, data, time_step)
 end
 
 function _set_state_variables_at_bus!(
@@ -199,13 +214,7 @@ function _set_state_variables_at_bus!(
     # We still update both P and Q values in case the PV bus participates in distributed slack
     P_net[ix] = P_net_set[ix] + P_slack
     Q_net[ix] = StateVector[2 * ix - 1]
-    _setpq(
-        ix,
-        P_net,
-        Q_net,
-        data,
-        time_step,
-    )
+    _setpq(ix, P_net, Q_net, data, time_step)
     data.bus_angles[ix, time_step] = StateVector[2 * ix]
 end
 
@@ -216,33 +225,25 @@ function _set_state_variables_at_bus!(
     ::Vector{Float64},
     ::Float64,
     StateVector::Vector{Float64},
+    bus_active_constant_I::Vector{Float64},
+    bus_reactive_constant_I::Vector{Float64},
+    bus_active_constant_Z::Vector{Float64},
+    bus_reactive_constant_Z::Vector{Float64},
     data::ACPowerFlowData,
     time_step::Int64,
     ::Val{PSY.ACBusTypes.PQ})
-    # When bustype == PQ PSY.ACBus, state variables are Voltage Magnitude and Voltage Angle
-    # delta_vm = (vm_1 = data.bus_magnitude[ix, time_step]) - StateVector[2 * ix - 1]
     vm_1 = data.bus_magnitude[ix, time_step]
     vm_2 = StateVector[2 * ix - 1]
     data.bus_magnitude[ix, time_step] = vm_2
     data.bus_angles[ix, time_step] = StateVector[2 * ix]
     # update P_net and Q_net for ZIP loads
     P_net[ix] +=
-        data.bus_active_power_constant_current_withdrawals[ix, time_step] * (vm_1 - vm_2) +
-        data.bus_active_power_constant_impedance_withdrawals[ix, time_step] *
-        (vm_1^2 - vm_2^2)
+        bus_active_constant_I[ix] * (vm_1 - vm_2) +
+        bus_active_constant_Z[ix] * (vm_1^2 - vm_2^2)
     Q_net[ix] +=
-        data.bus_reactive_power_constant_current_withdrawals[ix, time_step] *
-        (vm_1 - vm_2) +
-        data.bus_reactive_power_constant_impedance_withdrawals[ix, time_step] *
-        (vm_1^2 - vm_2^2)
-    # set the active and reactive power injections at the bus
-    _setpq(
-        ix,
-        P_net,
-        Q_net,
-        data,
-        time_step,
-    )
+        bus_reactive_constant_I[ix] * (vm_1 - vm_2) +
+        bus_reactive_constant_Z[ix] * (vm_1^2 - vm_2^2)
+    _setpq(ix, P_net, Q_net, data, time_step)
 end
 
 """
@@ -277,6 +278,10 @@ function _update_residual_values!(
     P_net_set::Vector{Float64},
     bus_slack_participation_factors::SparseVector{Float64, Int},
     subnetworks::Dict{Int64, Vector{Int64}},
+    bus_active_constant_I::Vector{Float64},
+    bus_reactive_constant_I::Vector{Float64},
+    bus_active_constant_Z::Vector{Float64},
+    bus_reactive_constant_Z::Vector{Float64},
     data::ACPowerFlowData,
     time_step::Int64,
     P_slack_buf::Vector{Float64},
@@ -304,39 +309,20 @@ function _update_residual_values!(
             # explicitly, so instead it's Val(compile-time constant).
             if bt == PSY.ACBusTypes.PQ
                 _set_state_variables_at_bus!(
-                    ix,
-                    P_net,
-                    Q_net,
-                    P_net_set,
-                    p_bus_slack,
-                    x,
-                    data,
-                    time_step,
-                    Val(PSY.ACBusTypes.PQ),
+                    ix, P_net, Q_net, P_net_set, p_bus_slack, x,
+                    bus_active_constant_I, bus_reactive_constant_I,
+                    bus_active_constant_Z, bus_reactive_constant_Z,
+                    data, time_step, Val(PSY.ACBusTypes.PQ),
                 )
             elseif bt == PSY.ACBusTypes.PV
                 _set_state_variables_at_bus!(
-                    ix,
-                    P_net,
-                    Q_net,
-                    P_net_set,
-                    p_bus_slack,
-                    x,
-                    data,
-                    time_step,
-                    Val(PSY.ACBusTypes.PV),
+                    ix, P_net, Q_net, P_net_set, p_bus_slack, x,
+                    data, time_step, Val(PSY.ACBusTypes.PV),
                 )
             elseif bt == PSY.ACBusTypes.REF
                 _set_state_variables_at_bus!(
-                    ix,
-                    P_net,
-                    Q_net,
-                    P_net_set,
-                    p_bus_slack,
-                    x,
-                    data,
-                    time_step,
-                    Val(PSY.ACBusTypes.REF),
+                    ix, P_net, Q_net, P_net_set, p_bus_slack, x,
+                    data, time_step, Val(PSY.ACBusTypes.REF),
                 )
             end
         end

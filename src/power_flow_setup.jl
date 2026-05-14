@@ -163,12 +163,7 @@ function initialize_power_flow_variables(pf::ACPowerFlow{T},
           "$(norm(residual.Rv, 2)) L2, " *
           "$(norm(residual.Rv, Inf)) L∞"
 
-    J = ACPowerFlowJacobian(
-        data,
-        residual.bus_slack_participation_factors,
-        residual.subnetworks,
-        time_step,
-    )
+    J = ACPowerFlowJacobian(residual, time_step)
     J(time_step)
 
     bus_types = @view get_bus_type(J.data)[:, time_step]

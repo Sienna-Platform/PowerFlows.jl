@@ -5,12 +5,7 @@
     pf = ACPowerFlow{PF.NewtonRaphsonACPowerFlow}(; correct_bustypes = true)
     pf_data = PF.PowerFlowData(pf, sys)
     residual = PF.ACPowerFlowResidual(pf_data, 1)
-    J = PF.ACPowerFlowJacobian(
-        pf_data,
-        residual.bus_slack_participation_factors,
-        residual.subnetworks,
-        1,
-    )
+    J = PF.ACPowerFlowJacobian(residual, 1)
     x0 = PF.calculate_x0(pf_data, 1)
     residual(x0, 1)    # warm
     J(1)               # warm

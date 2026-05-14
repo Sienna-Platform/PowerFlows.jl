@@ -76,11 +76,7 @@ end
 function HomotopyHessian(data::ACPowerFlowData, time_step::Int)
     pfResidual = ACPowerFlowResidual(data, time_step)
     Hv = _create_hessian_matrix_structure(data, time_step)
-    J = ACPowerFlowJacobian(data,
-        pfResidual.bus_slack_participation_factors,
-        pfResidual.subnetworks,
-        time_step,
-    )
+    J = ACPowerFlowJacobian(pfResidual, time_step)
     nbuses = size(get_bus_type(data), 1)
     PQ_mask = get_bus_type(data)[:, time_step] .== (PSY.ACBusTypes.PQ,)
     PQ_V_mags = collect(Iterators.flatten(zip(PQ_mask, falses(nbuses))))
