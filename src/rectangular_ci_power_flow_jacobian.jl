@@ -160,18 +160,20 @@ function _create_rect_ci_jacobian_structure(
         end
     end
 
-    # Distributed-slack cross-terms: ∂F_k_{r,i}/∂x[bus_state_offset[ref]]
+    # Distributed-slack cross-terms: ∂F_k_{r,i}/∂x[bus_state_offset[ref]].
+    # Mirrors the polar structure builder (`_create_jacobian_matrix_structure`):
+    # only push when (bus_k, ref_bus) is not already in the Y_bus pattern.
+    # `data.neighbors[bus_k]` is built from the Y_bus off-diagonal pattern and
+    # includes self (PowerFlowData.jl:420), so a single `in` check handles both
+    # the `bus_k == ref_bus` case and the directly-adjacent case. Y_bus_eff
+    # shares Y_bus's off-diagonal pattern (fold_zip_constant_z! touches only
+    # diagonals), so this lookup is exact for the CI Jacobian as well.
     for (ref_bus, subnetwork_buses) in subnetworks
         ref_off = Int(bus_state_offset[ref_bus])
         for bus_k in subnetwork_buses
-            c_k = bus_slack_participation_factors[bus_k]
-            c_k == 0.0 && continue
-            bus_k == ref_bus && continue
+            bus_slack_participation_factors[bus_k] == 0.0 && continue
+            ref_bus in data.neighbors[bus_k] && continue
             k_off = Int(bus_state_offset[bus_k])
-            # Push slack cross-terms unconditionally. If (k, ref) is already in the
-            # Y_bus pattern (k directly adjacent to ref), the COO constructor merges
-            # the duplicate by summing (0.0 + 0.0 = 0.0). `sizehint!` above
-            # overprovisions, so duplicates do not trigger reallocation.
             push!(rows, J_INDEX_TYPE(k_off))
             push!(cols, J_INDEX_TYPE(ref_off))
             push!(vals, 0.0)
