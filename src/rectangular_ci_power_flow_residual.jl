@@ -202,6 +202,8 @@ function _update_rect_ci_residual_values!(
     end
 
     # 2) Compute P_eff / Q_eff (slack distribution + ZIP constant-current correction).
+    # ZIP constant-Z is folded into `Y_bus_eff` at setup (see `fold_zip_constant_z!`
+    # in `rectangular_ci_setup.jl`), so only constant-P and constant-I appear here.
     @inbounds for i in 1:n_buses
         # ZIP const-I uses |V_state| (state magnitude), not V_set.
         Vm = sqrt(e_state[i]^2 + f_state[i]^2)

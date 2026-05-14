@@ -459,8 +459,9 @@ only), validate that the sum is positive and no value is negative, and
 normalize so that each subnetwork's participating buses sum to 1. Returns
 a `SparseVector{Float64, Int}` of length `n_buses`.
 
-Shared between the polar `ACPowerFlowResidual` and rectangular CI residual
-constructors — both need identical slack-distribution semantics.
+Shared between the polar `ACPowerFlowResidual` and the rectangular
+current-injection (CI) residual (`ACRectangularCIResidual`) constructors —
+both need identical slack-distribution semantics.
 """
 function _build_bus_slack_participation_factors(
     data::ACPowerFlowData,

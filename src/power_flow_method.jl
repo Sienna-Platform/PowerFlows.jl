@@ -771,6 +771,42 @@ that operate on the polar residual/Jacobian; they cannot be invoked through
 const _RECT_CI_SUPPORTED_STEP_STRATEGIES = (:simple, :trust_region)
 
 """
+    _rect_ci_step_strategy_type(step_strategy::Symbol)
+
+Resolve a user-supplied `step_strategy` Symbol to the concrete step-driver type
+used by `_run_power_flow_method`. Throws `ArgumentError` for unsupported values
+with a tailored message that distinguishes polar-only solvers (which require
+constructing the corresponding `ACPowerFlow{T}` directly) from typos.
+
+Called from both `_check_rect_ci_unsupported_settings` (early-fail validation
+at construction time) and `_newton_power_flow` (entry to the NR loop, where the
+returned concrete `Type` keeps the dispatch into `_run_power_flow_method`
+monomorphic and type-stable).
+"""
+function _rect_ci_step_strategy_type(step_strategy::Symbol)
+    step_strategy == :simple && return NewtonRaphsonACPowerFlow
+    step_strategy == :trust_region && return TrustRegionACPowerFlow
+    if step_strategy in (:levenberg_marquardt, :robust_homotopy, :gradient_descent)
+        throw(
+            ArgumentError(
+                "step_strategy=$(step_strategy) is not supported by " *
+                "RectangularCurrentInjectionACPowerFlow in this iteration. " *
+                "Levenberg-Marquardt, Robust Homotopy, and Gradient Descent " *
+                "currently operate on the polar formulation only — use the " *
+                "corresponding ACPowerFlowSolverType (e.g. " *
+                "`ACPowerFlow{LevenbergMarquardtACPowerFlow}`) directly.",
+            ),
+        )
+    end
+    throw(
+        ArgumentError(
+            "Unknown step_strategy=$(step_strategy); supported values " *
+            "are $(_RECT_CI_SUPPORTED_STEP_STRATEGIES).",
+        ),
+    )
+end
+
+"""
     _check_rect_ci_unsupported_settings(pf)
 
 Raise an informative `ArgumentError` for configuration that the rectangular
@@ -791,6 +827,42 @@ function _check_rect_ci_unsupported_settings(
                 "robust_power_flow=false, or use ACPowerFlow{NewtonRaphsonACPowerFlow}.",
             ),
         )
+    end
+    if get_calculate_loss_factors(pf)
+        throw(
+            ArgumentError(
+                "calculate_loss_factors=true is not supported by " *
+                "RectangularCurrentInjectionACPowerFlow. `_calculate_loss_factors` " *
+                "assumes the polar Jacobian layout (2 entries per bus, partials " *
+                "interpreted as ∂P/∂θ and ∂P/∂V); rectangular CI uses a " *
+                "variable-block layout with current-mismatch rows. A CI-aware " *
+                "variant has not been implemented. Set " *
+                "calculate_loss_factors=false, or use " *
+                "ACPowerFlow{NewtonRaphsonACPowerFlow}.",
+            ),
+        )
+    end
+    if get_calculate_voltage_stability_factors(pf)
+        throw(
+            ArgumentError(
+                "calculate_voltage_stability_factors=true is not supported by " *
+                "RectangularCurrentInjectionACPowerFlow. " *
+                "`_calculate_voltage_stability_factors` assumes the polar power " *
+                "Jacobian (its smallest singular value carries the standard " *
+                "stability interpretation); rectangular CI Jacobian entries are " *
+                "derivatives of current and require a different interpretation. " *
+                "A CI-aware variant has not been implemented. Set " *
+                "calculate_voltage_stability_factors=false, or use " *
+                "ACPowerFlow{NewtonRaphsonACPowerFlow}.",
+            ),
+        )
+    end
+    # Validate step_strategy here — before the (expensive) residual / Jacobian
+    # allocation inside `_newton_power_flow`. Typos and polar-only strategies
+    # surface at construction-time instead of after the user waits for setup.
+    solver_settings = get_solver_kwargs(pf)
+    if haskey(solver_settings, :step_strategy)
+        _rect_ci_step_strategy_type(solver_settings[:step_strategy])
     end
     return
 end
@@ -843,37 +915,42 @@ function _newton_power_flow(
         linSolveCache = KLULinSolveCache(J.Jv)
         symbolic_factor!(linSolveCache, J.Jv)
         stateVector = StateVectorCache(x0_computed, residual.Rv)
-        T_strategy = if step_strategy == :trust_region
-            TrustRegionACPowerFlow
-        elseif step_strategy == :simple
-            NewtonRaphsonACPowerFlow
-        elseif step_strategy in
-               (:levenberg_marquardt, :robust_homotopy, :gradient_descent)
-            throw(
-                ArgumentError(
-                    "step_strategy=$(step_strategy) is not supported by " *
-                    "RectangularCurrentInjectionACPowerFlow in this iteration. " *
-                    "Levenberg-Marquardt, Robust Homotopy, and Gradient Descent " *
-                    "currently operate on the polar formulation only — use the " *
-                    "corresponding ACPowerFlowSolverType (e.g. " *
-                    "`ACPowerFlow{LevenbergMarquardtACPowerFlow}`) directly.",
-                ),
+        # Resolve the strategy Symbol to a concrete `Type` and immediately
+        # function-barrier into branches that pass the literal type to
+        # `_run_power_flow_method` — this keeps the call site monomorphic
+        # (no `Union{Type{...}, Type{...}}` exit) and gives the inner dispatch
+        # a stable target. Validation has already happened at construction time.
+        if step_strategy == :simple
+            converged, i = _run_power_flow_method(
+                time_step, stateVector, linSolveCache, residual, J,
+                NewtonRaphsonACPowerFlow;
+                tol, maxIterations, validate_voltage_magnitudes,
+                vm_validation_range, refinement_threshold, refinement_eps,
+                iwamoto, factor, eta, autoscale, iwamoto_fallback,
+            )
+        elseif step_strategy == :trust_region
+            converged, i = _run_power_flow_method(
+                time_step, stateVector, linSolveCache, residual, J,
+                TrustRegionACPowerFlow;
+                tol, maxIterations, validate_voltage_magnitudes,
+                vm_validation_range, refinement_threshold, refinement_eps,
+                iwamoto, factor, eta, autoscale, iwamoto_fallback,
             )
         else
-            throw(
-                ArgumentError(
-                    "Unknown step_strategy=$(step_strategy); supported values " *
-                    "are $(_RECT_CI_SUPPORTED_STEP_STRATEGIES).",
-                ),
-            )
+            # Should never reach here: construction-time validation in
+            # `_check_rect_ci_unsupported_settings` already rejected unknowns.
+            _rect_ci_step_strategy_type(step_strategy)
         end
-        converged, i = _run_power_flow_method(
-            time_step, stateVector, linSolveCache, residual, J, T_strategy;
-            tol, maxIterations, validate_voltage_magnitudes,
-            vm_validation_range, refinement_threshold, refinement_eps,
-            iwamoto, factor, eta, autoscale, iwamoto_fallback,
-        )
+        # Use the converged state for the writeback path below.
+        copyto!(x0_computed, stateVector.x)
     end
+    # Distribute the converged subnetwork slack into bus_active_power_injections
+    # and bus_reactive_power_injections at REF/PV. Done once, after the NR loop,
+    # because slack distribution is only meaningful at the converged x.
+    rect_finalize_bus_injections!(
+        data, x0_computed, residual.bus_state_offset, residual.P_net_set,
+        residual.bus_slack_participation_factors, residual.subnetworks, time_step,
+    )
     return _finalize_power_flow(
         converged, i, "RectangularCurrentInjectionACPowerFlow",
         residual, data, J.Jv, time_step,

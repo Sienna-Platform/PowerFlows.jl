@@ -55,6 +55,20 @@ end
         @test_throws ArgumentError solve_power_flow(pf, deepcopy(sys))
     end
 
+    @testset "calculate_loss_factors=true rejected" begin
+        pf = ACPowerFlow{RectangularCurrentInjectionACPowerFlow}(;
+            calculate_loss_factors = true,
+            solver_settings = base_settings)
+        @test_throws ArgumentError solve_power_flow(pf, deepcopy(sys))
+    end
+
+    @testset "calculate_voltage_stability_factors=true rejected" begin
+        pf = ACPowerFlow{RectangularCurrentInjectionACPowerFlow}(;
+            calculate_voltage_stability_factors = true,
+            solver_settings = base_settings)
+        @test_throws ArgumentError solve_power_flow(pf, deepcopy(sys))
+    end
+
     @testset "step_strategy=:levenberg_marquardt rejected with explanatory msg" begin
         settings = merge(base_settings,
             Dict{Symbol, Any}(:step_strategy => :levenberg_marquardt))

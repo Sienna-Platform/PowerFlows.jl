@@ -21,8 +21,17 @@ function _rect_polar_parity(
     res_r = solve_power_flow(pf_r, sys_r)
     @test res_p !== missing
     @test res_r !== missing
-    @test maximum(abs.(res_p["bus_results"].Vm - res_r["bus_results"].Vm)) < atol
-    @test maximum(abs.(res_p["bus_results"].θ - res_r["bus_results"].θ)) < atol
+    bus_p = res_p["bus_results"]
+    bus_r = res_r["bus_results"]
+    @test maximum(abs.(bus_p.Vm - bus_r.Vm)) < atol
+    @test maximum(abs.(bus_p.θ - bus_r.θ)) < atol
+    # P_gen / Q_gen parity catches slack-recovery and Q-writeback bugs that
+    # Vm/θ parity alone cannot — the internal residual math can converge to the
+    # correct voltages while the reported generator outputs disagree (e.g., if
+    # the subnetwork slack is over-attributed to REF instead of distributed
+    # across participating buses).
+    @test maximum(abs.(bus_p.P_gen - bus_r.P_gen)) < atol
+    @test maximum(abs.(bus_p.Q_gen - bus_r.Q_gen)) < atol
     return
 end
 
@@ -164,4 +173,12 @@ end
     @test PowerFlows.solve_power_flow!(data_r)
     @test maximum(abs.(data_p.bus_magnitude - data_r.bus_magnitude)) < RECT_PARITY_ATOL
     @test maximum(abs.(data_p.bus_angles - data_r.bus_angles)) < RECT_PARITY_ATOL
+    @test maximum(
+        abs.(data_p.bus_active_power_injections -
+             data_r.bus_active_power_injections),
+    ) < RECT_PARITY_ATOL
+    @test maximum(
+        abs.(data_p.bus_reactive_power_injections -
+             data_r.bus_reactive_power_injections),
+    ) < RECT_PARITY_ATOL
 end
