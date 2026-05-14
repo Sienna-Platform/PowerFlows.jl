@@ -37,15 +37,17 @@ end
 function _build_zip_2bus_system(;
     current_pq::Tuple{Float64, Float64} = (0.0, 0.0),
     impedance_pq::Tuple{Float64, Float64} = (0.0, 0.0),
+    zip_on_ref::Bool = false,
 )
     sys = System(100.0)
     b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.1, 0.0)
     b2 = _add_simple_bus!(sys, 2, ACBusTypes.PQ, 230, 1.1, 0.0)
     _add_simple_line!(sys, b1, b2, 5e-3, 5e-3, 1e-3)
     _add_simple_source!(sys, b1, 0.0, 0.0)
+    zip_bus = zip_on_ref ? b1 : b2
     _add_simple_zip_load!(
         sys,
-        b2;
+        zip_bus;
         constant_current_active_power = current_pq[1],
         constant_current_reactive_power = current_pq[2],
         constant_impedance_active_power = impedance_pq[1],
@@ -62,6 +64,28 @@ end
         sys_r;
         pf_p_kwargs = (; correct_bustypes = true),
     )
+end
+
+@testset "Rectangular CI polar parity: ZIP-I load at REF bus" begin
+    sys_p = _build_zip_2bus_system(; current_pq = (2.0, 1.0), zip_on_ref = true)
+    sys_r = _build_zip_2bus_system(; current_pq = (2.0, 1.0), zip_on_ref = true)
+    pf_p = ACPowerFlow{NewtonRaphsonACPowerFlow}(; correct_bustypes = true)
+    pf_r = ACPowerFlow{RectangularCurrentInjectionACPowerFlow}(;
+        correct_bustypes = true,
+        solver_settings = _rect_parity_settings(),
+    )
+    res_p = solve_power_flow(pf_p, sys_p)
+    res_r = solve_power_flow(pf_r, sys_r)
+    @test res_p !== missing
+    @test res_r !== missing
+    bus_p = res_p["bus_results"]
+    bus_r = res_r["bus_results"]
+    @test maximum(abs.(bus_p.Vm - bus_r.Vm)) < RECT_PARITY_ATOL
+    @test maximum(abs.(bus_p.θ - bus_r.θ)) < RECT_PARITY_ATOL
+    # ZIP-I at REF: reported generator P/Q must include the constant-current
+    # draw, otherwise the slack accounting is off by `const_I * |V_set|`.
+    @test maximum(abs.(bus_p.P_gen - bus_r.P_gen)) < RECT_PARITY_ATOL
+    @test maximum(abs.(bus_p.Q_gen - bus_r.Q_gen)) < RECT_PARITY_ATOL
 end
 
 @testset "Rectangular CI polar parity: ZIP loads (constant impedance)" begin

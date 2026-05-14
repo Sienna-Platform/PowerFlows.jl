@@ -253,8 +253,14 @@ function _update_rect_ci_residual_values!(
             P_slack_total = x[off] - P_net_set[i]
             P_gen = P_net_set[i] + c_ref * P_slack_total
             Q_gen = x[off + 1]
-            F[off] += (P_gen * e_i + Q_gen * f_i) / V_sq
-            F[off + 1] += (P_gen * f_i - Q_gen * e_i) / V_sq
+            # |V| at REF is fixed at V_set; subtract the ZIP constant-current draw
+            # so the recovered injection matches polar's `bus_active_power_injections`
+            # (which includes `const_I * V_set` via `get_bus_active_power_total_withdrawals`).
+            Vm = sqrt(V_sq)
+            P_eff = P_gen - const_I_P[i] * Vm
+            Q_eff = Q_gen - const_I_Q[i] * Vm
+            F[off] += (P_eff * e_i + Q_eff * f_i) / V_sq
+            F[off + 1] += (P_eff * f_i - Q_eff * e_i) / V_sq
         else
             P_i = P_eff_cache[i]
             Q_i = bt == PSY.ACBusTypes.PV ? Q_state[i] : Q_eff_cache[i]
@@ -288,9 +294,8 @@ function _update_rect_ci_residual_values!(
 
     # 6) LCC tail residuals (same formulas as polar code, but using |V_state|).
     if n_lccs > 0
-        tail_start = Int(bus_state_offset[n_buses + 1])
         for i in 1:n_lccs
-            base = tail_start + 4 * (i - 1) - 1
+            offset_lcc = total_bus_state + (i - 1) * 4
             (fb, tb) = data.lcc.bus_indices[i]
             tap_r = data.lcc.rectifier.tap[i, time_step]
             tap_i = data.lcc.inverter.tap[i, time_step]
@@ -301,17 +306,18 @@ function _update_rect_ci_residual_values!(
             Vm_tb_state = sqrt(e_state[tb]^2 + f_state[tb]^2)
             P_lcc_from = Vm_fb_state * tap_r * SQRT6_DIV_PI * i_dc * cos(phi_r)
             P_lcc_to = Vm_tb_state * tap_i * SQRT6_DIV_PI * i_dc * cos(phi_i)
-            F[base + 1] = if data.lcc.setpoint_at_rectifier[i]
+            F[offset_lcc + 1] = if data.lcc.setpoint_at_rectifier[i]
                 P_lcc_from - data.lcc.p_set[i, time_step]
             else
                 -P_lcc_to - data.lcc.p_set[i, time_step]
             end
-            F[base + 2] = P_lcc_from + P_lcc_to -
-                          data.lcc.dc_line_resistance[i] * i_dc^2
-            F[base + 3] =
+            F[offset_lcc + 2] =
+                P_lcc_from + P_lcc_to -
+                data.lcc.dc_line_resistance[i] * i_dc^2
+            F[offset_lcc + 3] =
                 data.lcc.rectifier.thyristor_angle[i, time_step] -
                 data.lcc.rectifier.min_thyristor_angle[i]
-            F[base + 4] =
+            F[offset_lcc + 4] =
                 data.lcc.inverter.thyristor_angle[i, time_step] -
                 data.lcc.inverter.min_thyristor_angle[i]
         end

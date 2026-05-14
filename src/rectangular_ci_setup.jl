@@ -94,13 +94,23 @@ function rect_initial_state!(
         end
     end
     n_lccs = size(data.lcc.p_set, 1)
-    tail_start = Int(bus_state_offset[n_buses + 1])
+    # State-vector layout. The full state is `[bus_block_1 ; … ; bus_block_N ; LCC_tail]`.
+    # The bus blocks occupy slots `1 .. total_bus_state`; the LCC tail starts at
+    # `total_bus_state + 1`. Each line-commutated converter (LCC) — a two-terminal HVDC
+    # link with a rectifier (AC→DC) on one end and an inverter (DC→AC) on the other —
+    # contributes 4 state variables: rectifier transformer tap ratio, inverter
+    # transformer tap ratio, rectifier thyristor (firing) angle α_r, and inverter
+    # thyristor angle α_i. The i-th LCC therefore occupies slots
+    # `offset_lcc + 1 .. offset_lcc + 4` with `offset_lcc = total_bus_state + (i-1)*4`.
+    # The same layout is used in `rect_update_data!`, the residual's LCC tail,
+    # and the Jacobian's LCC structure/value updaters.
+    total_bus_state = Int(bus_state_offset[n_buses + 1]) - 1
     for i in 1:n_lccs
-        base = tail_start + 4 * (i - 1) - 1
-        x[base + 1] = data.lcc.rectifier.tap[i, time_step]
-        x[base + 2] = data.lcc.inverter.tap[i, time_step]
-        x[base + 3] = data.lcc.rectifier.thyristor_angle[i, time_step]
-        x[base + 4] = data.lcc.inverter.thyristor_angle[i, time_step]
+        offset_lcc = total_bus_state + (i - 1) * 4
+        x[offset_lcc + 1] = data.lcc.rectifier.tap[i, time_step]
+        x[offset_lcc + 2] = data.lcc.inverter.tap[i, time_step]
+        x[offset_lcc + 3] = data.lcc.rectifier.thyristor_angle[i, time_step]
+        x[offset_lcc + 4] = data.lcc.inverter.thyristor_angle[i, time_step]
     end
     return
 end
@@ -146,13 +156,13 @@ function rect_update_data!(
         end
     end
     n_lccs = size(data.lcc.p_set, 1)
-    tail_start = Int(bus_state_offset[n_buses + 1])
+    total_bus_state = Int(bus_state_offset[n_buses + 1]) - 1
     for i in 1:n_lccs
-        base = tail_start + 4 * (i - 1) - 1
-        data.lcc.rectifier.tap[i, time_step] = x[base + 1]
-        data.lcc.inverter.tap[i, time_step] = x[base + 2]
-        data.lcc.rectifier.thyristor_angle[i, time_step] = x[base + 3]
-        data.lcc.inverter.thyristor_angle[i, time_step] = x[base + 4]
+        offset_lcc = total_bus_state + (i - 1) * 4
+        data.lcc.rectifier.tap[i, time_step] = x[offset_lcc + 1]
+        data.lcc.inverter.tap[i, time_step] = x[offset_lcc + 2]
+        data.lcc.rectifier.thyristor_angle[i, time_step] = x[offset_lcc + 3]
+        data.lcc.inverter.thyristor_angle[i, time_step] = x[offset_lcc + 4]
     end
     return
 end
