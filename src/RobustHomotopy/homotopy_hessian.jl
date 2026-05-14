@@ -13,7 +13,8 @@ A workaround for the fact that Julia seems to run `dropzeros!(A)` automatically 
 do `A .+= B' * B`."""
 function A_plus_eq_BT_B!(A::SparseMatrixCSC, B::SparseMatrixCSC)
     M = B' * B # shouldn't this be allocating too?
-    @assert M.colptr == A.colptr && M.rowval == A.rowval
+    IS.@assert_op M.colptr == A.colptr
+    IS.@assert_op M.rowval == A.rowval
     A.nzval .+= M.nzval
     return
 end
@@ -74,60 +75,40 @@ function homotopy_x0(data::ACPowerFlowData, time_step::Int)
 end
 
 function HomotopyHessian(data::ACPowerFlowData, time_step::Int)
+    n_lccs = length(data.lcc.bus_indices)
+    if n_lccs > 0
+        throw(
+            ArgumentError(
+                "RobustHomotopyPowerFlow does not support systems with " *
+                "LCC HVDC lines (found $n_lccs). LCCs add state variables " *
+                "to the Jacobian that the homotopy Hessian formulation " *
+                "does not account for. Use a different AC power flow method.",
+            ),
+        )
+    end
     pfResidual = ACPowerFlowResidual(data, time_step)
-    Hv = _create_hessian_matrix_structure(data, time_step)
     J = ACPowerFlowJacobian(data,
         pfResidual.bus_slack_participation_factors,
         pfResidual.subnetworks,
         time_step,
     )
+    # Allocate Hv with the maximal sparsity pattern of J' * J. Sparse `*`
+    # currently preserves structural zeros, but that isn't a documented
+    # SparseArrays contract, so we defensively fill nzval with ones to force
+    # the maximal pattern. We then restore J.Jv's original nzval — some
+    # entries (e.g. LCC angle-constraint diagonals of 1.0) are set at
+    # structure creation and not rewritten by subsequent J(time_step) calls.
+    # The per-call IS.@assert_op in A_plus_eq_BT_B! guards against any future
+    # change in Julia that would drop structural zeros at runtime.
+    original_J_nzval = copy(SparseArrays.nonzeros(J.Jv))
+    fill!(SparseArrays.nonzeros(J.Jv), 1.0)
+    Hv = J.Jv' * J.Jv
+    SparseArrays.nonzeros(Hv) .= 0.0
+    copyto!(SparseArrays.nonzeros(J.Jv), original_J_nzval)
     nbuses = size(get_bus_type(data), 1)
     PQ_mask = get_bus_type(data)[:, time_step] .== (PSY.ACBusTypes.PQ,)
     PQ_V_mags = collect(Iterators.flatten(zip(PQ_mask, falses(nbuses))))
     return HomotopyHessian(data, pfResidual, J, PQ_V_mags, zeros(2 * nbuses), Hv)
-end
-
-function _create_hessian_matrix_structure(data::ACPowerFlowData, ::Int64)
-    rows = J_INDEX_TYPE[]      # I
-    columns = J_INDEX_TYPE[]   # J
-    values = Float64[]  # V
-
-    # an over-estimate: I want ordered pairs of vertices that are 2 or fewer
-    # steps apart, whereas this counts directed paths of 2 edges.
-    numEdgePairs = sum(x -> (length(x) - 1)^2, get_neighbor(data); init = 0.0)
-    numEdgePairs += length(get_arc_axis(data))
-    sizehint!(rows, 4 * numEdgePairs)
-    sizehint!(columns, 4 * numEdgePairs)
-    sizehint!(values, 4 * numEdgePairs)
-
-    # H is J'*J + c*I
-    # J' * J is dot products of pairs of columns.
-    # so look at pairs of columns and check if there's a row in which both are nonzero.
-    # i.e. look at pairs of buses and see if they have a neighbor in common.
-
-    visited = Set{Tuple{Int, Int}}()
-    # non structurally zero block correspond to pairs of buses with a neighbor in common.
-    # instead of checking pairs of buses O(n^2 d), we travel 2 hops from each bus O(n d^2)
-    # (d = degree of typical vertex, n = number of vertices; d << n.)
-    for (ind, nbrs) in enumerate(get_neighbor(data))
-        for nbr in nbrs
-            for nbrOfNbr in get_neighbor(data)[nbr]
-                if !((ind, nbrOfNbr) in visited)
-                    bus_from, bus_to = ind, nbrOfNbr
-                    # PERF: J.Jv^T * J.Jv would have fewer nonzero entries if J.Jv's sparse
-                    # structure took into account the bus type
-                    for (i, j) in Iterators.product((2 * bus_from - 1, 2 * bus_from),
-                        (2 * bus_to - 1, 2 * bus_to))
-                        push!(rows, i) # PERF: allocating
-                        push!(columns, j) # PERF: allocating
-                        push!(values, 0.0) # (oddly enough, this line is non-allocating)
-                    end
-                    push!(visited, (ind, nbrOfNbr))
-                end
-            end
-        end
-    end
-    return SparseArrays.sparse(rows, columns, values)
 end
 
 """
