@@ -176,20 +176,20 @@ end
 
 Evaluates the provided DC power flow method `pf` on the [PowerSystems.System](@extref) `sys`,
 returning a dictionary of `DataFrame`s containing the calculated flows and bus angles.
-The flow_reporting input determines if flows are reported for arcs (FlowReporting.ARC_FLOWS)
-or for branches (FlowReporting.BRANCH_FLOWS)
+The `flow_reporting` input determines if flows are reported for arcs (`FlowReporting.ARC_FLOWS`)
+or for branches (`FlowReporting.BRANCH_FLOWS`).
 
 Configuration options like `time_steps`, `time_step_names`, `network_reductions`, and
 `correct_bustypes` should be set on the power flow object (e.g., `DCPowerFlow(; time_steps=2)`).
 
-Provided for convenience: this interface bypasses the need to create a `PowerFlowData`
+Provided for convenience: this interface bypasses the need to create a [`PowerFlowData`](@ref)
 struct, but that's still what's happening under the hood.
 
 # Example
 ```julia
 using PowerFlows, PowerSystemCaseBuilder
 sys = build_system(PSITestSystems, "c_sys5")
-d = solve_power_flow(DCPowerFlow(), sys)
+d = solve_power_flow(DCPowerFlow(), sys, FlowReporting.ARC_FLOWS)
 display(d["1"]["flow_results"])
 display(d["1"]["bus_results"])
 ```
@@ -209,13 +209,19 @@ end
 # MULTI PERIOD ###############################################################
 
 """
+    solve_power_flow(
+        data::Union{PTDFPowerFlowData, vPTDFPowerFlowData, ABAPowerFlowData},
+        sys::PSY.System,
+        flow_reporting::FlowReporting,
+    )
+
 Evaluates the power flows on the system's branches by means of the method associated with
 the `PowerFlowData` structure `data`, which can be one of `PTDFPowerFlowData`,
 `vPTDFPowerFlowData`, or `ABAPowerFlowData`.
 Returns a dictionary of `DataFrame`s, each containing the flows and bus voltages for
-the input `PSY.System` at that time_step.
-The flow_reporting input determines if flows are reported for arcs (FlowReporting.ARC_FLOWS)
-or for branches (FlowReporting.BRANCH_FLOWS)
+the input `PSY.System` at that time step.
+The `flow_reporting` argument determines if flows are reported for arcs (`FlowReporting.ARC_FLOWS`)
+or for branches (`FlowReporting.BRANCH_FLOWS`).
 
 # Arguments:
 - `data::Union{PTDFPowerFlowData, vPTDFPowerFlowData, ABAPowerFlowData}`:
@@ -234,7 +240,7 @@ Note that `data` must have been created from the [System](@extref PowerSystems.S
 using PowerFlows, PowerSystemCaseBuilder
 sys = build_system(PSITestSystems, "c_sys14")
 data = PowerFlowData(PTDFDCPowerFlow(; time_steps = 2), sys)
-d = solve_power_flow(data, sys)
+d = solve_power_flow(data, sys, FlowReporting.ARC_FLOWS)
 display(d["2"]["flow_results"])
 ```
 """

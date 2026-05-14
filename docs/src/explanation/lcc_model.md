@@ -1,4 +1,6 @@
-# Aspects of LCC implementation in PSSE
+# Line-Commutated Converter (LCC) Implementations
+
+## Implementations in PSSE
 
 In real-world operation, on-load tap changers (OLTCs) adjust transformer taps so that the converter reaches its minimum firing or extinction angle limits (α_min or γ_min). The objective is to reduce the firing/extinction angle to minimize reactive power (Q) demand.
 
@@ -16,7 +18,7 @@ In PSSE, the variable `VSched` (scheduled DC voltage) represents the DC voltage 
 
 Power flow calculation in PSSE often fails to converge with LCC. In this case, it can help to first run the Gauss-Seidel algorithm, then Newton will also converge in PSSE.
 
-# Implementation in Sienna
+## Implementation in Sienna
 
 We implement the control logic of LCC based on the principle of maintaining the thyristor angles at their respective minimum limits, and using transformer tap adjustments for active power control. This control principle is better suited for representing realistic steady-state grid conditions.
 
