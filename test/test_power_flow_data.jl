@@ -191,3 +191,56 @@ end
     set_bustype!(pv_bus, PSY.ACBusTypes.PQ)
     @test PF.PowerFlowData(PF.ACPowerFlow{NewtonRaphsonACPowerFlow}(), sys) isa Any
 end
+
+@testset "ACPowerFlow alias resolves to ACPolarPowerFlow" begin
+    @test PF.ACPowerFlow === PF.ACPolarPowerFlow
+    @test PF.ACPolarPowerFlow <: PF.AbstractACPowerFlow
+    @test PF.AbstractACPowerFlow <: PF.PowerFlowEvaluationModel
+    pf = ACPowerFlow{NewtonRaphsonACPowerFlow}()
+    @test pf isa PF.ACPolarPowerFlow{NewtonRaphsonACPowerFlow}
+    @test ACPowerFlow() isa PF.ACPolarPowerFlow{NewtonRaphsonACPowerFlow}
+end
+
+@testset "ACRectangularPowerFlow type" begin
+    pf = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}()
+    @test pf isa PF.AbstractACPowerFlow
+    @test ACRectangularPowerFlow() isa
+          PF.ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}
+    # Fields intentionally absent
+    @test !hasfield(typeof(pf), :calculate_voltage_stability_factors)
+    @test !hasfield(typeof(pf), :calculate_loss_factors)
+    @test !hasfield(typeof(pf), :robust_power_flow)
+    # Polar-only solvers rejected at construction
+    @test_throws ArgumentError ACRectangularPowerFlow{LevenbergMarquardtACPowerFlow}()
+    @test_throws ArgumentError ACRectangularPowerFlow{RobustHomotopyPowerFlow}()
+    @test_throws ArgumentError ACRectangularPowerFlow{GradientDescentACPowerFlow}()
+    # Supported solvers construct fine
+    @test ACRectangularPowerFlow{TrustRegionACPowerFlow}() isa
+          PF.ACRectangularPowerFlow
+end
+
+@testset "Rectangular getters return safe defaults" begin
+    r = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}()
+    @test PF.get_calculate_loss_factors(r) === false
+    @test PF.get_calculate_voltage_stability_factors(r) === false
+    @test PF.get_robust_power_flow(r) === false
+    @test PF.get_slack_participation_factors(r) === nothing
+    @test PF.get_time_steps(r) == 1
+    @test PF.get_enhanced_flat_start(r) === true
+    p = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
+        calculate_loss_factors = true)
+    @test PF.get_calculate_loss_factors(p) === true
+end
+
+@testset "ACPowerFlowData covers rectangular model" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
+    d_p = PF.PowerFlowData(ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(), sys)
+    d_r = PF.PowerFlowData(
+        ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
+            solver_settings = Dict{Symbol, Any}(
+                :validate_voltage_magnitudes => false)),
+        sys,
+    )
+    @test d_p isa PF.ACPowerFlowData
+    @test d_r isa PF.ACPowerFlowData
+end

@@ -7,7 +7,7 @@ end
     sys = System(raw_path)
     pf_p = ACPowerFlow{NewtonRaphsonACPowerFlow}()
     @test PF.solve_and_store_power_flow!(pf_p, sys)
-    pf_r = ACPowerFlow{RectangularCurrentInjectionACPowerFlow}(;
+    pf_r = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
         solver_settings = _rect_lcc_settings())
     data = PF.PowerFlowData(pf_r, sys)
     R = PF.ACRectangularCIResidual(data, 1)
@@ -22,7 +22,7 @@ end
     sys = System(raw_path)
     pf_p = ACPowerFlow{NewtonRaphsonACPowerFlow}()
     PF.solve_and_store_power_flow!(pf_p, sys)
-    pf_r = ACPowerFlow{RectangularCurrentInjectionACPowerFlow}(;
+    pf_r = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
         solver_settings = _rect_lcc_settings())
     data = PF.PowerFlowData(pf_r, sys)
     R = PF.ACRectangularCIResidual(data, 1)
@@ -54,7 +54,7 @@ end
     sys_p = System(raw_path)
     sys_r = System(raw_path)
     pf_p = ACPowerFlow{NewtonRaphsonACPowerFlow}()
-    pf_r = ACPowerFlow{RectangularCurrentInjectionACPowerFlow}(;
+    pf_r = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
         solver_settings = _rect_lcc_settings())
     res_p = solve_power_flow(pf_p, sys_p)
     res_r = solve_power_flow(pf_r, sys_r)
@@ -68,19 +68,17 @@ end
     raw_path = joinpath(TEST_DATA_DIR, "case5_2_lcc.raw")
     pf_p = ACPowerFlow{NewtonRaphsonACPowerFlow}()
     res_p = solve_power_flow(pf_p, System(raw_path))
-    for (label, extra_settings) in [
-        ("plain NR", Dict{Symbol, Any}()),
-        ("NR + Iwamoto", Dict{Symbol, Any}(:iwamoto => true)),
-        ("Trust Region", Dict{Symbol, Any}(:step_strategy => :trust_region)),
-        ("TR + Iwamoto FB",
-            Dict{Symbol, Any}(
-                :step_strategy => :trust_region,
-                :iwamoto_fallback => true,
-            )),
+    for (label, solver, extra_settings) in [
+        ("plain NR", NewtonRaphsonACPowerFlow, Dict{Symbol, Any}()),
+        ("NR + Iwamoto", NewtonRaphsonACPowerFlow,
+            Dict{Symbol, Any}(:iwamoto => true)),
+        ("Trust Region", TrustRegionACPowerFlow, Dict{Symbol, Any}()),
+        ("TR + Iwamoto FB", TrustRegionACPowerFlow,
+            Dict{Symbol, Any}(:iwamoto_fallback => true)),
     ]
         @testset "$label" begin
             settings = merge(extra_settings, _rect_lcc_settings())
-            pf_r = ACPowerFlow{RectangularCurrentInjectionACPowerFlow}(;
+            pf_r = ACRectangularPowerFlow{solver}(;
                 solver_settings = settings)
             res_r = solve_power_flow(pf_r, System(raw_path))
             @test res_r !== missing

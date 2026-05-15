@@ -13,7 +13,7 @@ function _rect_polar_parity(
     atol::Float64 = RECT_PARITY_ATOL,
 )
     pf_p = ACPowerFlow{NewtonRaphsonACPowerFlow}(; pf_kwargs...)
-    pf_r = ACPowerFlow{RectangularCurrentInjectionACPowerFlow}(;
+    pf_r = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
         pf_kwargs...,
         solver_settings = merge(_rect_parity_settings(), pf_r_extra_settings),
     )
@@ -74,7 +74,7 @@ end
     sys_p = _build_zip_2bus_system(; current_pq = (2.0, 1.0), zip_on_ref = true)
     sys_r = _build_zip_2bus_system(; current_pq = (2.0, 1.0), zip_on_ref = true)
     pf_p = ACPowerFlow{NewtonRaphsonACPowerFlow}(; correct_bustypes = true)
-    pf_r = ACPowerFlow{RectangularCurrentInjectionACPowerFlow}(;
+    pf_r = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
         correct_bustypes = true,
         solver_settings = _rect_parity_settings(),
     )
@@ -158,7 +158,7 @@ end
     sys_p = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
     sys_r = deepcopy(sys_p)
     pf_p = ACPowerFlow{NewtonRaphsonACPowerFlow}(; time_steps = 3)
-    pf_r = ACPowerFlow{RectangularCurrentInjectionACPowerFlow}(;
+    pf_r = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
         time_steps = 3,
         solver_settings = _rect_parity_settings())
     data_p = PowerFlowData(pf_p, sys_p)

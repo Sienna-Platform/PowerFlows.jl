@@ -3,7 +3,7 @@
         sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
         pf_polar = ACPowerFlow{NewtonRaphsonACPowerFlow}()
         @test PF.solve_and_store_power_flow!(pf_polar, sys)
-        pf_rect = ACPowerFlow{RectangularCurrentInjectionACPowerFlow}()
+        pf_rect = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}()
         data = PF.PowerFlowData(pf_rect, sys)
         R = PF.ACRectangularCIResidual(data, 1)
         x = Vector{Float64}(undef, length(R.Rv))
@@ -16,7 +16,7 @@
         sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
         pf_polar = ACPowerFlow{NewtonRaphsonACPowerFlow}()
         @test PF.solve_and_store_power_flow!(pf_polar, sys)
-        pf_rect = ACPowerFlow{RectangularCurrentInjectionACPowerFlow}()
+        pf_rect = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}()
         data = PF.PowerFlowData(pf_rect, sys)
         R = PF.ACRectangularCIResidual(data, 1)
         x = Vector{Float64}(undef, length(R.Rv))
@@ -28,7 +28,7 @@ end
 
 @testset "Rectangular CI Residual: flat start has nonzero residual" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
-    pf_rect = ACPowerFlow{RectangularCurrentInjectionACPowerFlow}()
+    pf_rect = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}()
     data = PF.PowerFlowData(pf_rect, sys)
     # Force flat start: |V|=1, θ=0
     data.bus_magnitude[:, 1] .= 1.0
@@ -43,7 +43,7 @@ end
 
 @testset "Rectangular CI Residual: state layout sanity" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
-    pf_rect = ACPowerFlow{RectangularCurrentInjectionACPowerFlow}()
+    pf_rect = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}()
     data = PF.PowerFlowData(pf_rect, sys)
     R = PF.ACRectangularCIResidual(data, 1)
     # Block sizes: 2 for PQ/REF, 3 for PV

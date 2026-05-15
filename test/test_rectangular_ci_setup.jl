@@ -34,7 +34,7 @@ end
 @testset "Rectangular CI: fold_zip_constant_z!" begin
     @testset "sign convention" begin
         sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
-        pf = ACPowerFlow{RectangularCurrentInjectionACPowerFlow}()
+        pf = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}()
         data = PF.PowerFlowData(pf, sys)
         Y = data.power_network_matrix.data
         Y_eff = SparseArrays.sparse(ComplexF64.(Y))
@@ -55,7 +55,7 @@ end
 
     @testset "zero β skipped" begin
         sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
-        pf = ACPowerFlow{RectangularCurrentInjectionACPowerFlow}()
+        pf = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}()
         data = PF.PowerFlowData(pf, sys)
         Y_eff = SparseArrays.sparse(ComplexF64.(data.power_network_matrix.data))
         Y_before = copy(Y_eff)
@@ -67,7 +67,7 @@ end
 
 @testset "Rectangular CI: rect_initial_state! / rect_update_data! roundtrip" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
-    pf = ACPowerFlow{RectangularCurrentInjectionACPowerFlow}()
+    pf = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}()
     data = PF.PowerFlowData(pf, sys)
     bt = view(data.bus_type, :, 1)
     off, bs, total = PF.compute_bus_state_offsets(bt)

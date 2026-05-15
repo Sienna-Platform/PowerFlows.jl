@@ -5,14 +5,14 @@ end
 @testset "Rectangular CI Power Flow: convergence" begin
     @testset "c_sys5 converges" begin
         sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
-        pf_rect = ACPowerFlow{RectangularCurrentInjectionACPowerFlow}(;
+        pf_rect = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
             solver_settings = _rect_pf_settings())
         @test PF.solve_and_store_power_flow!(pf_rect, sys)
     end
 
     @testset "c_sys14 converges" begin
         sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
-        pf_rect = ACPowerFlow{RectangularCurrentInjectionACPowerFlow}(;
+        pf_rect = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
             solver_settings = _rect_pf_settings())
         @test PF.solve_and_store_power_flow!(pf_rect, sys)
     end
@@ -32,7 +32,7 @@ end
             end
             sys_r = deepcopy(sys_p)
             pf_p = ACPowerFlow{NewtonRaphsonACPowerFlow}()
-            pf_r = ACPowerFlow{RectangularCurrentInjectionACPowerFlow}(;
+            pf_r = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
                 solver_settings = _rect_pf_settings())
             res_p = solve_power_flow(pf_p, sys_p)
             res_r = solve_power_flow(pf_r, sys_r)
@@ -44,62 +44,26 @@ end
     end
 end
 
-@testset "Rectangular CI Power Flow: defensive errors on unsupported config" begin
-    sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
-    base_settings = _rect_pf_settings()
-
-    @testset "robust_power_flow=true rejected" begin
-        pf = ACPowerFlow{RectangularCurrentInjectionACPowerFlow}(;
-            robust_power_flow = true,
-            solver_settings = base_settings)
-        @test_throws ArgumentError solve_power_flow(pf, deepcopy(sys))
-    end
-
-    @testset "calculate_loss_factors=true rejected" begin
-        pf = ACPowerFlow{RectangularCurrentInjectionACPowerFlow}(;
-            calculate_loss_factors = true,
-            solver_settings = base_settings)
-        @test_throws ArgumentError solve_power_flow(pf, deepcopy(sys))
-    end
-
-    @testset "calculate_voltage_stability_factors=true rejected" begin
-        pf = ACPowerFlow{RectangularCurrentInjectionACPowerFlow}(;
-            calculate_voltage_stability_factors = true,
-            solver_settings = base_settings)
-        @test_throws ArgumentError solve_power_flow(pf, deepcopy(sys))
-    end
-
-    @testset "step_strategy=:levenberg_marquardt rejected with explanatory msg" begin
-        settings = merge(base_settings,
-            Dict{Symbol, Any}(:step_strategy => :levenberg_marquardt))
-        pf = ACPowerFlow{RectangularCurrentInjectionACPowerFlow}(;
-            solver_settings = settings)
-        @test_throws ArgumentError solve_power_flow(pf, deepcopy(sys))
-    end
-
-    @testset "step_strategy=:robust_homotopy rejected" begin
-        settings =
-            merge(base_settings, Dict{Symbol, Any}(:step_strategy => :robust_homotopy))
-        pf = ACPowerFlow{RectangularCurrentInjectionACPowerFlow}(;
-            solver_settings = settings)
-        @test_throws ArgumentError solve_power_flow(pf, deepcopy(sys))
-    end
-
-    @testset "step_strategy=:gradient_descent rejected" begin
-        settings =
-            merge(base_settings, Dict{Symbol, Any}(:step_strategy => :gradient_descent))
-        pf = ACPowerFlow{RectangularCurrentInjectionACPowerFlow}(;
-            solver_settings = settings)
-        @test_throws ArgumentError solve_power_flow(pf, deepcopy(sys))
-    end
-
-    @testset "step_strategy=:typo rejected with helpful msg" begin
-        settings = merge(base_settings,
-            Dict{Symbol, Any}(:step_strategy => :trust_regioon))
-        pf = ACPowerFlow{RectangularCurrentInjectionACPowerFlow}(;
-            solver_settings = settings)
-        @test_throws ArgumentError solve_power_flow(pf, deepcopy(sys))
-    end
+@testset "Rectangular CI Power Flow: unsupported config rejected" begin
+    # Removed fields: passing them is a constructor MethodError.
+    @test_throws MethodError ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
+        robust_power_flow = true)
+    @test_throws MethodError ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
+        calculate_loss_factors = true)
+    @test_throws MethodError ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
+        calculate_voltage_stability_factors = true)
+    # Sanity: these kwargs ARE valid on the polar type — the MethodErrors above
+    # prove the fields were removed from the rectangular type, not mistyped.
+    @test ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
+        robust_power_flow = true) isa ACPolarPowerFlow
+    @test ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
+        calculate_loss_factors = true) isa ACPolarPowerFlow
+    @test ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
+        calculate_voltage_stability_factors = true) isa ACPolarPowerFlow
+    # Polar-only solvers rejected at construction.
+    @test_throws ArgumentError ACRectangularPowerFlow{LevenbergMarquardtACPowerFlow}()
+    @test_throws ArgumentError ACRectangularPowerFlow{RobustHomotopyPowerFlow}()
+    @test_throws ArgumentError ACRectangularPowerFlow{GradientDescentACPowerFlow}()
 end
 
 @testset "Rectangular CI Power Flow: step strategy variants" begin
@@ -109,14 +73,12 @@ end
     # strategies should work without any rectangular-specific code in the drivers.
     fixtures = [("c_sys5", false), ("c_sys14", false)]
     strategies = [
-        ("plain NR", Dict{Symbol, Any}()),
-        ("NR + Iwamoto", Dict{Symbol, Any}(:iwamoto => true)),
-        ("Trust Region", Dict{Symbol, Any}(:step_strategy => :trust_region)),
-        ("TR + Iwamoto FB",
-            Dict{Symbol, Any}(
-                :step_strategy => :trust_region,
-                :iwamoto_fallback => true,
-            )),
+        ("plain NR", NewtonRaphsonACPowerFlow, Dict{Symbol, Any}()),
+        ("NR + Iwamoto", NewtonRaphsonACPowerFlow,
+            Dict{Symbol, Any}(:iwamoto => true)),
+        ("Trust Region", TrustRegionACPowerFlow, Dict{Symbol, Any}()),
+        ("TR + Iwamoto FB", TrustRegionACPowerFlow,
+            Dict{Symbol, Any}(:iwamoto_fallback => true)),
     ]
     for (name, with_forecasts) in fixtures
         @testset "$name" begin
@@ -127,11 +89,11 @@ end
             end
             pf_p = ACPowerFlow{NewtonRaphsonACPowerFlow}()
             res_p = solve_power_flow(pf_p, deepcopy(sys_p))
-            for (label, extra_settings) in strategies
+            for (label, solver, extra_settings) in strategies
                 @testset "$label" begin
                     sys_r = deepcopy(sys_p)
                     settings = merge(extra_settings, _rect_pf_settings())
-                    pf_r = ACPowerFlow{RectangularCurrentInjectionACPowerFlow}(;
+                    pf_r = ACRectangularPowerFlow{solver}(;
                         solver_settings = settings)
                     res_r = solve_power_flow(pf_r, sys_r)
                     @test res_r !== missing

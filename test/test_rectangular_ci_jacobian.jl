@@ -22,7 +22,7 @@ end
         sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
         pf_polar = ACPowerFlow{NewtonRaphsonACPowerFlow}()
         PF.solve_and_store_power_flow!(pf_polar, sys)
-        pf_rect = ACPowerFlow{RectangularCurrentInjectionACPowerFlow}()
+        pf_rect = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}()
         data = PF.PowerFlowData(pf_rect, sys)
         R = PF.ACRectangularCIResidual(data, 1)
         J = PF.ACRectangularCIJacobian(R, 1)
@@ -39,7 +39,7 @@ end
         sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
         pf_polar = ACPowerFlow{NewtonRaphsonACPowerFlow}()
         PF.solve_and_store_power_flow!(pf_polar, sys)
-        pf_rect = ACPowerFlow{RectangularCurrentInjectionACPowerFlow}()
+        pf_rect = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}()
         data = PF.PowerFlowData(pf_rect, sys)
         R = PF.ACRectangularCIResidual(data, 1)
         J = PF.ACRectangularCIJacobian(R, 1)
@@ -67,7 +67,7 @@ end
         )
         pf_polar = ACPowerFlow{NewtonRaphsonACPowerFlow}()
         PF.solve_and_store_power_flow!(pf_polar, sys)
-        pf_rect = ACPowerFlow{RectangularCurrentInjectionACPowerFlow}(;
+        pf_rect = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
             correct_bustypes = true,
             solver_settings = Dict{Symbol, Any}(:validate_voltage_magnitudes => false),
         )
@@ -89,7 +89,7 @@ end
         sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
         pf_polar = ACPowerFlow{NewtonRaphsonACPowerFlow}()
         PF.solve_and_store_power_flow!(pf_polar, sys)
-        pf_rect = ACPowerFlow{RectangularCurrentInjectionACPowerFlow}()
+        pf_rect = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}()
         data = PF.PowerFlowData(pf_rect, sys)
         R = PF.ACRectangularCIResidual(data, 1)
         J = PF.ACRectangularCIJacobian(R, 1)
@@ -109,7 +109,7 @@ end
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
     pf_polar = ACPowerFlow{NewtonRaphsonACPowerFlow}()
     PF.solve_and_store_power_flow!(pf_polar, sys)
-    pf_rect = ACPowerFlow{RectangularCurrentInjectionACPowerFlow}()
+    pf_rect = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}()
     data = PF.PowerFlowData(pf_rect, sys)
     R = PF.ACRectangularCIResidual(data, 1)
     J = PF.ACRectangularCIJacobian(R, 1)
