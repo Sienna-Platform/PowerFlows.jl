@@ -71,24 +71,19 @@ function _calculate_dQ_dα_lcc(
 end
 
 """
-    _update_ybus_lcc!(data, time_step; vm_fn = (i, ts) -> data.bus_magnitude[i, ts])
+    _update_ybus_lcc!(data, time_step)
 
 Recompute `data.lcc.rectifier.phi`, `data.lcc.inverter.phi`, and
-`data.lcc.branch_admittances` for each LCC at `time_step`. By default the
-voltage magnitude at each AC terminal is read from `data.bus_magnitude`,
-which is correct for the polar formulation. The `vm_fn(bus_ix, time_step) ->
-Float64` callback lets the rectangular CI formulation override this with
-`|V_state| = sqrt(e² + f²)` — at PV buses, `data.bus_magnitude` holds `V_set`
-rather than the actual state magnitude.
+`data.lcc.branch_admittances` for each LCC at `time_step`. Reads `|V|` at each
+AC terminal from `data.bus_magnitude` (the polar convention). The
+`(e_state, f_state)` method below covers the rectangular CI case where
+`|V_state| = sqrt(e² + f²)` must be used instead — at PV buses,
+`data.bus_magnitude` holds `V_set` rather than the actual state magnitude.
 """
-function _update_ybus_lcc!(
-    data::PowerFlowData,
-    time_step::Int64;
-    vm_fn::F = (i, ts) -> data.bus_magnitude[i, ts],
-) where {F <: Function}
+function _update_ybus_lcc!(data::PowerFlowData, time_step::Int64)
     for (i, (fb, tb)) in enumerate(data.lcc.bus_indices)
-        Vm_fb = vm_fn(fb, time_step)
-        Vm_tb = vm_fn(tb, time_step)
+        Vm_fb = data.bus_magnitude[fb, time_step]
+        Vm_tb = data.bus_magnitude[tb, time_step]
         data.lcc.rectifier.phi[i, time_step] = _calculate_ϕ_lcc(
             data.lcc.rectifier.tap[i, time_step],
             data.lcc.rectifier.thyristor_angle[i, time_step],
@@ -103,7 +98,54 @@ function _update_ybus_lcc!(
             data.lcc.inverter.transformer_reactance[i],
             Vm_tb,
         )
+        rectifier_admittance = _calculate_y_lcc(
+            data.lcc.rectifier.tap[i, time_step],
+            data.lcc.i_dc[i, time_step],
+            Vm_fb,
+            data.lcc.rectifier.phi[i, time_step],
+        )
+        inverter_admittance = _calculate_y_lcc(
+            data.lcc.inverter.tap[i, time_step],
+            data.lcc.i_dc[i, time_step],
+            Vm_tb,
+            data.lcc.inverter.phi[i, time_step],
+        )
+        data.lcc.branch_admittances[i] = (rectifier_admittance, inverter_admittance)
+    end
+    return
+end
 
+"""
+    _update_ybus_lcc!(data, time_step, e_state, f_state)
+
+Rectangular variant: reads `|V|` at each AC terminal from
+`sqrt(e_state[i]^2 + f_state[i]^2)` so the LCC math stays consistent with the
+rectangular CI residual / Jacobian (which operate on `(e, f)` instead of
+`(|V|, θ)`).
+"""
+function _update_ybus_lcc!(
+    data::PowerFlowData,
+    time_step::Int64,
+    e_state::Vector{Float64},
+    f_state::Vector{Float64},
+)
+    for (i, (fb, tb)) in enumerate(data.lcc.bus_indices)
+        Vm_fb = sqrt(e_state[fb]^2 + f_state[fb]^2)
+        Vm_tb = sqrt(e_state[tb]^2 + f_state[tb]^2)
+        data.lcc.rectifier.phi[i, time_step] = _calculate_ϕ_lcc(
+            data.lcc.rectifier.tap[i, time_step],
+            data.lcc.rectifier.thyristor_angle[i, time_step],
+            data.lcc.i_dc[i, time_step],
+            data.lcc.rectifier.transformer_reactance[i],
+            Vm_fb,
+        )
+        data.lcc.inverter.phi[i, time_step] = _calculate_ϕ_lcc(
+            data.lcc.inverter.tap[i, time_step],
+            data.lcc.inverter.thyristor_angle[i, time_step],
+            -data.lcc.i_dc[i, time_step],
+            data.lcc.inverter.transformer_reactance[i],
+            Vm_tb,
+        )
         rectifier_admittance = _calculate_y_lcc(
             data.lcc.rectifier.tap[i, time_step],
             data.lcc.i_dc[i, time_step],

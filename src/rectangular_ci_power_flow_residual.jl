@@ -194,11 +194,9 @@ function _update_rect_ci_residual_values!(
         end
     end
     if n_lccs > 0
-        # At PV buses, data.bus_magnitude holds V_set (not the state magnitude).
-        # Override the magnitude provider so LCC math sees |V_state|, keeping the
-        # residual consistent with the Jacobian which operates on (e_state, f_state).
-        _update_ybus_lcc!(data, time_step;
-            vm_fn = (i, _) -> sqrt(e_state[i]^2 + f_state[i]^2))
+        # PV buses store V_set in data.bus_magnitude; use the rect form so LCC math
+        # sees |V_state| = sqrt(e² + f²), matching the rectangular Jacobian.
+        _update_ybus_lcc!(data, time_step, e_state, f_state)
     end
 
     # 2) Compute P_eff / Q_eff (slack distribution + ZIP constant-current correction).
@@ -265,6 +263,10 @@ function _update_rect_ci_residual_values!(
             F[off + 1] += (P_eff * f_i - Q_eff * e_i) / V_sq
         else
             P_i = P_eff_cache[i]
+            # PV: Q_state is the net injection unknown — at convergence it equals
+            # Q_gen − Q_load_total(|V_set|), so the ZIP-I term is implicit and a
+            # `−const_I_Q·|V|` correction here would double-count. For PQ, Q is a
+            # known input, so Q_eff_cache pre-subtracts the constant-current draw.
             Q_i = bt == PSY.ACBusTypes.PV ? Q_state[i] : Q_eff_cache[i]
             F[off] += (P_i * e_i + Q_i * f_i) / V_sq
             F[off + 1] += (P_i * f_i - Q_i * e_i) / V_sq

@@ -123,21 +123,15 @@ end
 @testset "Rectangular CI polar parity: distributed slack (uniform participation)" begin
     sys_p = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
     sys_r = deepcopy(sys_p)
-    # Default: REF carries all slack; with distribute_slack_proportional_to_headroom,
-    # PV/REF generators share according to (Pmax - Pset). Mirror the polar test pattern.
-    pf_p = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
-        distribute_slack_proportional_to_headroom = true)
-    pf_r = ACPowerFlow{RectangularCurrentInjectionACPowerFlow}(;
-        distribute_slack_proportional_to_headroom = true,
-        solver_settings = _rect_parity_settings())
-    res_p = solve_power_flow(pf_p, sys_p)
-    res_r = solve_power_flow(pf_r, sys_r)
-    @test res_p !== missing
-    @test res_r !== missing
-    @test maximum(abs.(res_p["bus_results"].Vm - res_r["bus_results"].Vm)) <
-          RECT_PARITY_ATOL
-    @test maximum(abs.(res_p["bus_results"].θ - res_r["bus_results"].θ)) <
-          RECT_PARITY_ATOL
+    # With distribute_slack_proportional_to_headroom, PV/REF generators share
+    # the slack according to (Pmax - Pset). Routed through _rect_polar_parity
+    # so P_gen / Q_gen parity is asserted alongside Vm/θ — catches slack-recovery
+    # bugs where the right voltages can mask a wrong attribution of slack.
+    _rect_polar_parity(
+        sys_p,
+        sys_r;
+        pf_kwargs = (; distribute_slack_proportional_to_headroom = true),
+    )
 end
 
 @testset "Rectangular CI polar parity: ACTIVSg2000 (large-scale)" begin
