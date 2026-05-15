@@ -587,7 +587,7 @@ Updates system voltages and powers with power flow results
 """
 function write_power_flow_solution!(
     sys::PSY.System,
-    pf::ACPowerFlow{<:ACPowerFlowSolverType},
+    pf::AbstractACPowerFlow{<:ACPowerFlowSolverType},
     data::ACPowerFlowData,
     max_iterations::Int,
     time_step::Int = 1,
@@ -1277,7 +1277,7 @@ end
 
 """
     write_results(
-        ::ACPowerFlow{<:ACPowerFlowSolverType},
+        ::AbstractACPowerFlow{<:ACPowerFlowSolverType},
         sys::PSY.System,
         data::ACPowerFlowData,
         time_step::Int64,
@@ -1297,7 +1297,7 @@ dictionary will therefore feature just one key linked to one `DataFrame`.
         vector containing the results for one single time-period.
 """
 function write_results(
-    ::ACPowerFlow{<:ACPowerFlowSolverType},
+    ::AbstractACPowerFlow{<:ACPowerFlowSolverType},
     sys::PSY.System,
     data::ACPowerFlowData,
     time_step::Int64,

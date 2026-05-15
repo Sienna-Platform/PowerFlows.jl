@@ -2,7 +2,7 @@
 structures (e.g. residual), runs the power flow method via calling `_run_power_flow_method` 
 on them, then handles post-processing (e.g. loss factors)."""
 function _newton_power_flow(
-    pf::ACPowerFlow{LevenbergMarquardtACPowerFlow},
+    pf::ACPolarPowerFlow{LevenbergMarquardtACPowerFlow},
     data::ACPowerFlowData,
     time_step::Int64;
     tol::Float64 = DEFAULT_NR_TOL,
