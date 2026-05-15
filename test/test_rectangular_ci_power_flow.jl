@@ -108,3 +108,28 @@ end
         end
     end
 end
+
+@testset "Rectangular CI: multi-period previous-solution warm start" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
+    pf = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
+        time_steps = 2,
+        time_step_names = ["1", "2"],
+    )
+    data = PF.PowerFlowData(pf, sys)
+
+    # Solve step 1, mark it converged so step 2's improve_x0 sees a `prev`.
+    res1, J1, x1 = PF.initialize_power_flow_variables(pf, data, 1)
+    data.converged[1] = true
+
+    # improve_x0 at step 2 must run the previous-solution branch without error
+    # and return a finite, correctly-sized state vector.
+    res2 = PF.ACRectangularCIResidual(data, 2)
+    x2 = PF.improve_x0(pf, data, res2, 2)
+    @test length(x2) == length(res2.Rv)
+    @test all(isfinite, x2)
+
+    # End-to-end multi-period solve converges for both steps.
+    data_e = PF.PowerFlowData(pf, sys)
+    @test PF.solve_power_flow!(data_e)
+    @test all(data_e.converged)
+end

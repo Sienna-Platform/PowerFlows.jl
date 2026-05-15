@@ -43,10 +43,48 @@ function improve_x0(pf::ACPolarPowerFlow,
     return x0
 end
 
+"""Rectangular analog of the polar [`improve_x0`](@ref): base flat start →
+previous-converged-timestep warm start → enhanced flat start (gated on
+`get_enhanced_flat_start(pf)`) → large-residual warning. No DC robust
+fallback: `ACRectangularPowerFlow` has no `robust_power_flow` field and a
+CI-aware DC fallback is out of scope (see the formulation/solver-split spec)."""
+function improve_x0(pf::ACRectangularPowerFlow,
+    data::ACPowerFlowData,
+    residual::ACRectangularCIResidual,
+    time_step::Int64,
+)
+    x0 = Vector{Float64}(undef, length(residual.Rv))
+    rect_initial_state!(
+        x0, data, residual.bus_state_offset, residual.bus_block_size, time_step,
+    )
+    residual(x0, time_step)
+    prev = findlast(@view(data.converged[1:(time_step - 1)]))
+    if !isnothing(prev)
+        newx0 = copy(x0)
+        _rect_fill_state!(newx0, data, residual.bus_state_offset, time_step, prev)
+        _pick_better_x0(x0, newx0, time_step, residual, "previous converged solution")
+    end
+    if norm(residual.Rv, 1) > LARGE_RESIDUAL * length(residual.Rv) &&
+       get_enhanced_flat_start(pf)
+        newx0 = _enhanced_flat_start(x0, data, residual, time_step)
+        _pick_better_x0(x0, newx0, time_step, residual, "enhanced flat start")
+    else
+        @debug "skipping enhanced flat start"
+    end
+    residual(x0, time_step)  # re-calculate residual for chosen x0
+    if sum(abs, residual.Rv) > LARGE_RESIDUAL * length(residual.Rv)
+        lg_res, ix = findmax(abs.(residual.Rv))
+        lg_res_rounded = round(lg_res; sigdigits = 3)
+        @warn "Initial guess provided results in a large initial residual of " *
+              "$lg_res_rounded (rectangular current-injection residual index $ix)."
+    end
+    return x0
+end
+
 function _smaller_residual(x0::Vector{Float64},
     newx0::Vector{Float64},
     time_step::Int64,
-    residual::ACPowerFlowResidual,
+    residual::Union{ACPowerFlowResidual, ACRectangularCIResidual},
 )
     residual(x0, time_step)
     residualSize = norm(residual.Rv, 1)
@@ -58,7 +96,7 @@ end
 function _pick_better_x0(x0::Vector{Float64},
     newx0::Vector{Float64},
     time_step::Int64,
-    residual::ACPowerFlowResidual,
+    residual::Union{ACPowerFlowResidual, ACRectangularCIResidual},
     improvement_method::String,
 )
     if _smaller_residual(x0, newx0, time_step, residual)
@@ -129,6 +167,53 @@ function _enhanced_flat_start(
     return newx0
 end
 
+"""Rectangular analog of [`_enhanced_flat_start`](@ref): per subnetwork, set
+PV/PQ bus angles to the mean REF-bus angle and PQ magnitudes to the mean PV
+setpoint magnitude, written back as `(e, f) = (Vm·cosθ, Vm·sinθ)`. PV buses
+keep their setpoint magnitude (only the angle changes); REF blocks and the
+PV `Q` / REF `(P,Q)` slots are left as in `x0`. Uses `residual.subnetworks`
+(ref-bus index → member bus indices) for the partition."""
+function _enhanced_flat_start(
+    x0::Vector{Float64},
+    data::ACPowerFlowData,
+    residual::ACRectangularCIResidual,
+    time_step::Int64,
+)
+    newx0 = copy(x0)
+    bus_types = view(data.bus_type, :, time_step)
+    for (_, members) in residual.subnetworks
+        ref = [i for i in members if bus_types[i] == PSY.ACBusTypes.REF]
+        pv = [i for i in members if bus_types[i] == PSY.ACBusTypes.PV]
+        pq = [i for i in members if bus_types[i] == PSY.ACBusTypes.PQ]
+        (isempty(pv) && isempty(pq)) && continue
+        ref_angle =
+            isempty(ref) ? 0.0 :
+            sum(data.bus_angles[r, time_step] for r in ref) / length(ref)
+        has_pv = !isempty(pv)
+        # Guard the no-PV-with-PQ case (polar divides by zero here and gets
+        # NaN); fall back to the per-bus base magnitude instead.
+        pq_vm =
+            has_pv ?
+            sum(data.bus_magnitude[p, time_step] for p in pv) / length(pv) :
+            0.0
+        for i in pv
+            off = Int(residual.bus_state_offset[i])
+            θ = ref_angle != 0.0 ? ref_angle : data.bus_angles[i, time_step]
+            Vm = data.bus_magnitude[i, time_step]
+            newx0[off] = Vm * cos(θ)
+            newx0[off + 1] = Vm * sin(θ)
+        end
+        for i in pq
+            off = Int(residual.bus_state_offset[i])
+            θ = ref_angle != 0.0 ? ref_angle : data.bus_angles[i, time_step]
+            Vm = has_pv ? pq_vm : data.bus_magnitude[i, time_step]
+            newx0[off] = Vm * cos(θ)
+            newx0[off + 1] = Vm * sin(θ)
+        end
+    end
+    return newx0
+end
+
 """When solving AC power flows, if the initial guess has large residual, we run a DC power
 flow as a fallback. This runs a DC power flow on `data::ACPowerFlowData` for the given
 `time_step`, and writes the solution to `data.bus_angles`."""
@@ -188,15 +273,12 @@ function initialize_power_flow_variables(pf::ACRectangularPowerFlow{T},
     _ignored...,
 ) where {T <: ACPowerFlowSolverType}
     residual = ACRectangularCIResidual(data, time_step)
-    x0_computed = Vector{Float64}(undef, length(residual.Rv))
-    rect_initial_state!(
-        x0_computed, data, residual.bus_state_offset,
-        residual.bus_block_size, time_step,
-    )
+    x0_computed = improve_x0(pf, data, residual, time_step)
     if OVERRIDE_x0 && !isnothing(x0)
         copyto!(x0_computed, x0)
+        @warn "Overriding initial guess x0."
+        residual(x0_computed, time_step)
     end
-    residual(x0_computed, time_step)
     _log_initial_residual(residual)
     J = ACRectangularCIJacobian(residual, time_step)
     return residual, J, x0_computed

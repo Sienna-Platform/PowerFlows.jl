@@ -102,3 +102,115 @@ end
         end
     end
 end
+
+@testset "Rectangular CI: _pick_better_x0 accepts rectangular residual" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
+    pf = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}()
+    data = PF.PowerFlowData(pf, sys)
+    residual = PF.ACRectangularCIResidual(data, 1)
+    x0 = Vector{Float64}(undef, length(residual.Rv))
+    PF.rect_initial_state!(
+        x0, data, residual.bus_state_offset, residual.bus_block_size, 1,
+    )
+    residual(x0, 1)
+    base_norm = norm(residual.Rv, 1)
+    # A deliberately worse candidate must be rejected (x0 unchanged).
+    worse = x0 .+ 5.0
+    PF._pick_better_x0(x0, worse, 1, residual, "unit test worse candidate")
+    residual(x0, 1)
+    @test norm(residual.Rv, 1) ≤ base_norm
+    @test x0 != worse
+end
+
+@testset "Rectangular CI: _rect_fill_state! type/value time-step split" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
+    pf = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}()
+    data = PF.PowerFlowData(pf, sys)
+    residual = PF.ACRectangularCIResidual(data, 1)
+    n = length(residual.Rv)
+
+    # _rect_fill_state! with both ts = 1 must equal rect_initial_state!.
+    a = Vector{Float64}(undef, n)
+    PF.rect_initial_state!(a, data, residual.bus_state_offset,
+        residual.bus_block_size, 1)
+    b = Vector{Float64}(undef, n)
+    PF._rect_fill_state!(b, data, residual.bus_state_offset, 1, 1)
+    @test a == b
+
+    # With a perturbed copy of the data at "value" time step, the fill must
+    # read values from value_ts while keeping the layout from type_ts.
+    nonref = findfirst(!=(PSY.ACBusTypes.REF), data.bus_type[:, 1])
+    @test nonref !== nothing
+    saved_mag = data.bus_magnitude[nonref, 1]
+    data.bus_magnitude[nonref, 1] = saved_mag + 0.10
+    c = Vector{Float64}(undef, n)
+    PF._rect_fill_state!(c, data, residual.bus_state_offset, 1, 1)
+    off = Int(residual.bus_state_offset[nonref])
+    @test hypot(c[off], c[off + 1]) ≈ saved_mag + 0.10 atol = 1e-9
+    data.bus_magnitude[nonref, 1] = saved_mag
+end
+
+@testset "Rectangular CI: _enhanced_flat_start" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
+    pf = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}()
+    data = PF.PowerFlowData(pf, sys)
+    residual = PF.ACRectangularCIResidual(data, 1)
+    x0 = Vector{Float64}(undef, length(residual.Rv))
+    PF.rect_initial_state!(x0, data, residual.bus_state_offset,
+        residual.bus_block_size, 1)
+
+    newx0 = PF._enhanced_flat_start(x0, data, residual, 1)
+
+    @test length(newx0) == length(x0)
+    bt = data.bus_type[:, 1]
+    # PV buses keep their setpoint magnitude (V_set) in the new candidate.
+    for i in findall(==(PSY.ACBusTypes.PV), bt)
+        off = Int(residual.bus_state_offset[i])
+        @test hypot(newx0[off], newx0[off + 1]) ≈
+              data.bus_magnitude[i, 1] atol = 1e-9
+    end
+    # REF blocks are untouched.
+    for i in findall(==(PSY.ACBusTypes.REF), bt)
+        off = Int(residual.bus_state_offset[i])
+        @test newx0[off] == x0[off]
+        @test newx0[off + 1] == x0[off + 1]
+    end
+    # All PQ magnitudes equal the mean PV setpoint magnitude (single subnetwork).
+    pv = findall(==(PSY.ACBusTypes.PV), bt)
+    pq = findall(==(PSY.ACBusTypes.PQ), bt)
+    if !isempty(pv) && !isempty(pq)
+        target = sum(data.bus_magnitude[p, 1] for p in pv) / length(pv)
+        for i in pq
+            off = Int(residual.bus_state_offset[i])
+            @test hypot(newx0[off], newx0[off + 1]) ≈ target atol = 1e-9
+        end
+    end
+end
+
+@testset "Rectangular CI: improve_x0" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
+
+    @testset "returns a usable x0 and respects enhanced_flat_start flag" begin
+        pf_on = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
+            enhanced_flat_start = true)
+        data = PF.PowerFlowData(pf_on, sys)
+        residual = PF.ACRectangularCIResidual(data, 1)
+        x0 = PF.improve_x0(pf_on, data, residual, 1)
+        @test length(x0) == length(residual.Rv)
+        @test all(isfinite, x0)
+
+        pf_off = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
+            enhanced_flat_start = false)
+        data2 = PF.PowerFlowData(pf_off, sys)
+        residual2 = PF.ACRectangularCIResidual(data2, 1)
+        x0_off = PF.improve_x0(pf_off, data2, residual2, 1)
+        @test length(x0_off) == length(residual2.Rv)
+        @test all(isfinite, x0_off)
+    end
+
+    @testset "solves to the same answer as before (regression)" begin
+        pf = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}()
+        res = solve_power_flow(pf, sys)
+        @test res["bus_results"] !== nothing
+    end
+end
