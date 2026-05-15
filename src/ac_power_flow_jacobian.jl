@@ -576,20 +576,18 @@ function _set_entries_for_lcc(data::ACPowerFlowData,
 
         s = _lcc_jacobian_scalars(data, i, time_step, Vm_fb, Vm_tb)
 
-        # True-φ ∂P/∂V and ∂P/∂t for the rectifier side. The polar
-        # α-approximation drops the `∂φ/∂Vm` (resp. `∂φ/∂t`) chain term —
-        # which vanishes only when `x_t = 0`. The true-φ formulas are
-        # singularity-free (the `sin(φ)` from `∂φ/∂(V,t)` cancels the
-        # `-sin(φ)` from differentiating `cos(φ)`).
-        # For ∂P/∂α the analogous cancellation makes the α-approximation
-        # exact, so those entries stay on `common_alpha_*`.
-        dP_dV_fb = _calculate_dP_dV_lcc(s.tap_r, s.i_dc, xtr_r, Vm_fb, phi_r)
-        dP_dt_fb = _calculate_dP_dt_lcc(s.tap_r, s.i_dc, xtr_r, Vm_fb, phi_r)
-        # Inverter side: `P_lcc_to = V_tb · tap_i · √6/π · I_dc · cos(phi_i)`
-        # with `phi_i` already encoding the inverter sign convention via
-        # `_calculate_ϕ_lcc(-I_dc, …)`. Pass the same positive `I_dc`.
-        dP_dV_tb = _calculate_dP_dV_lcc(s.tap_i, s.i_dc, xtr_i, Vm_tb, phi_i)
-        dP_dt_tb = _calculate_dP_dt_lcc(s.tap_i, s.i_dc, xtr_i, Vm_tb, phi_i)
+        # True-ϕ ∂P/∂{V, t, α} entries come from `_lcc_jacobian_scalars`,
+        # which calls the `_calculate_dP_d{V,t,α}_lcc` helpers (boundary-
+        # guarded at `sin(ϕ) → 0`). In the interior these are algebraically
+        # equal to the legacy α-approximation form via the ϕ-definition
+        # identity `cos(α) - cos(ϕ) = x_t·I_dc/(√2·V·tap)`; at the clamp
+        # the helpers correctly drop the chain term (where `∂ϕ/∂x = 0`),
+        # while the α-form silently uses `cos(α) ≠ cos(ϕ_clamp)`.
+        # See `test_jacobian.jl::"Jacobian verification with LCC at inverter ϕ clamp"`.
+        dP_dV_fb = s.dP_dV_fb
+        dP_dV_tb = s.dP_dV_tb
+        dP_dt_fb = s.dP_dt_fb
+        dP_dt_tb = s.dP_dt_tb
 
         if bus_type_fb == PSY.ACBusTypes.PQ
             Jv[idx_p_fb, idx_p_fb] += dP_dV_fb # ∂P_fb/∂V_fb

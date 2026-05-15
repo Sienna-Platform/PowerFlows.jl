@@ -457,11 +457,14 @@ function _lcc_jacobian_scalars(
         common_tap_i = common_tap_i,
         common_alpha_r = common_alpha_r,
         common_alpha_i = common_alpha_i,
-        # Side-specific dP helpers, exposed so polar bus-row × tail-column
-        # entries (and rect tail × bus chain rules) can use the
-        # boundary-guarded values.
+        # Side-specific dP/dx helpers (true-ϕ, with sin(ϕ) → 0 clamp guard
+        # where applicable). Exposed so polar's bus-row entries — and
+        # rect's tail × bus chain rules — can read pre-computed values
+        # instead of re-calling the helpers.
         dP_dV_fb = dP_dV_fb,
         dP_dV_tb = dP_dV_tb,
+        dP_dt_fb = dP_dt_fb,
+        dP_dt_tb = dP_dt_tb,
         dP_dα_fb = dP_dα_fb,
         dP_dα_tb = dP_dα_tb,
         # Tail-row × tail-column block (6 entries). F_t_fb has the
