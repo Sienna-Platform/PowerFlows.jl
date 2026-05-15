@@ -12,6 +12,7 @@ A struct to keep track of the residuals in the Newton-Raphson AC power flow calc
 - `P_net_set::Vector{Float64}`: A vector of the set-points for active power injections (their initial values before power flow calculation).
 - `bus_slack_participation_factors::SparseVector{Float64, Int}`: A sparse vector of the slack participation factors aggregated at the bus level.
 - `subnetworks::Dict{Int64, Vector{Int64}}`: The dictionary that identifies subnetworks (connected components), with the key defining the REF bus, values defining the corresponding buses in the subnetwork.
+- `P_slack_buf::Vector{Float64}`: Scratch buffer of length `n_buses` used by `_update_residual_values!` to write the per-subnetwork slack distribution in place, avoiding a per-iteration allocation when indexing `bus_slack_participation_factors` by `subnetwork_buses`.
 """
 struct ACPowerFlowResidual
     data::ACPowerFlowData
@@ -22,6 +23,11 @@ struct ACPowerFlowResidual
     P_net_set::Vector{Float64}
     bus_slack_participation_factors::SparseVector{Float64, Int}
     subnetworks::Dict{Int64, Vector{Int64}}
+    bus_active_constant_I::Vector{Float64}
+    bus_reactive_constant_I::Vector{Float64}
+    bus_active_constant_Z::Vector{Float64}
+    bus_reactive_constant_Z::Vector{Float64}
+    P_slack_buf::Vector{Float64}
 end
 
 """
@@ -46,15 +52,11 @@ function ACPowerFlowResidual(data::ACPowerFlowData, time_step::Int64)
     P_net_set = zeros(Float64, n_buses)
     bus_type = view(data.bus_type, :, time_step)
 
-    spf_idx = Int[]
-    spf_val = Float64[]
-    sum_sl_weights = 0.0  # for scope
-
     # ref_bus is set to the first REF bus found - will be used for the total slack power
     subnetworks =
         _find_subnetworks_for_reference_buses(data.power_network_matrix.data, bus_type)
 
-    for (ix, bt) in zip(1:n_buses, bus_type)
+    for ix in 1:n_buses
         P_net[ix] =
             data.bus_active_power_injections[ix, time_step] -
             get_bus_active_power_total_withdrawals(data, ix, time_step) +
@@ -63,39 +65,19 @@ function ACPowerFlowResidual(data::ACPowerFlowData, time_step::Int64)
             data.bus_reactive_power_injections[ix, time_step] -
             get_bus_reactive_power_total_withdrawals(data, ix, time_step)
         P_net_set[ix] = P_net[ix]
-
-        bt ∈ (PSY.ACBusTypes.REF, PSY.ACBusTypes.PV) || continue
-        (spf_v = data.bus_slack_participation_factors[ix, time_step]) == 0.0 && continue
-        push!(spf_idx, ix)
-        push!(spf_val, spf_v)
-        sum_sl_weights += spf_v
     end
 
-    if sum_sl_weights == 0.0
-        throw(ArgumentError("sum of slack_participation_factors cannot be zero"))
-    end
+    bus_slack_participation_factors =
+        _build_bus_slack_participation_factors(data, bus_type, subnetworks, time_step)
 
-    if any(spf_val .< 0.0)
-        throw(ArgumentError("slack_participation_factors cannot be negative"))
-    end
-
-    # sum_sl_weights could differ from the sum of the time_step column of 
-    # slack participation factors: maybe a PV bus with nonzero weight got switched to PQ.
-
-    # bus slack participation factors relevant for the current time step:
-    bus_slack_participation_factors = sparsevec(spf_idx, spf_val, n_buses)
-
-    # normalize slack participation factors to sum to 1 per every subnetwork
-    for subnetwork_buses in values(subnetworks)
-        bspf_subnetwork = view(bus_slack_participation_factors, subnetwork_buses)
-        sum_bspf_subnetwork = sum(bspf_subnetwork)
-        sum_bspf_subnetwork == 0.0 && throw(
-            ArgumentError(
-                "sum of slack_participation_factors per subnetwork cannot be zero",
-            ),
-        )
-        bspf_subnetwork ./= sum_bspf_subnetwork
-    end
+    bus_active_constant_I =
+        copy(view(data.bus_active_power_constant_current_withdrawals, :, time_step))
+    bus_reactive_constant_I =
+        copy(view(data.bus_reactive_power_constant_current_withdrawals, :, time_step))
+    bus_active_constant_Z =
+        copy(view(data.bus_active_power_constant_impedance_withdrawals, :, time_step))
+    bus_reactive_constant_Z =
+        copy(view(data.bus_reactive_power_constant_impedance_withdrawals, :, time_step))
 
     return ACPowerFlowResidual(
         data,
@@ -106,6 +88,11 @@ function ACPowerFlowResidual(data::ACPowerFlowData, time_step::Int64)
         P_net_set,
         bus_slack_participation_factors,
         subnetworks,
+        bus_active_constant_I,
+        bus_reactive_constant_I,
+        bus_active_constant_Z,
+        bus_reactive_constant_Z,
+        Vector{Float64}(undef, n_buses),
     )
 end
 
@@ -137,8 +124,13 @@ function (Residual::ACPowerFlowResidual)(
         Residual.P_net_set,
         Residual.bus_slack_participation_factors,
         Residual.subnetworks,
+        Residual.bus_active_constant_I,
+        Residual.bus_reactive_constant_I,
+        Residual.bus_active_constant_Z,
+        Residual.bus_reactive_constant_Z,
         Residual.data,
         time_step,
+        Residual.P_slack_buf,
     )
     copyto!(Rv, Residual.Rv)
     return
@@ -166,8 +158,13 @@ function (Residual::ACPowerFlowResidual)(x::Vector{Float64}, time_step::Int64)
         Residual.P_net_set,
         Residual.bus_slack_participation_factors,
         Residual.subnetworks,
+        Residual.bus_active_constant_I,
+        Residual.bus_reactive_constant_I,
+        Residual.bus_active_constant_Z,
+        Residual.bus_reactive_constant_Z,
         Residual.data,
         time_step,
+        Residual.P_slack_buf,
     )
     return
 end
@@ -179,8 +176,6 @@ function _setpq(
     data::ACPowerFlowData,
     time_step::Int64,
 )
-    # Set the active and reactive power injections at the bus. 
-    # same equation as in the constructor, just solved for bus injection instead of P/Q_net.
     data.bus_active_power_injections[ix, time_step] =
         P_net[ix] + get_bus_active_power_total_withdrawals(data, ix, time_step) -
         data.bus_hvdc_net_power[ix, time_step]
@@ -202,13 +197,7 @@ function _set_state_variables_at_bus!(
     # When bustype == REFERENCE PSY.ACBus, state variables are Active and Reactive Power Generated
     P_net[ix] = P_net_set[ix] + P_slack
     Q_net[ix] = StateVector[2 * ix]
-    _setpq(
-        ix,
-        P_net,
-        Q_net,
-        data,
-        time_step,
-    )
+    _setpq(ix, P_net, Q_net, data, time_step)
 end
 
 function _set_state_variables_at_bus!(
@@ -225,13 +214,7 @@ function _set_state_variables_at_bus!(
     # We still update both P and Q values in case the PV bus participates in distributed slack
     P_net[ix] = P_net_set[ix] + P_slack
     Q_net[ix] = StateVector[2 * ix - 1]
-    _setpq(
-        ix,
-        P_net,
-        Q_net,
-        data,
-        time_step,
-    )
+    _setpq(ix, P_net, Q_net, data, time_step)
     data.bus_angles[ix, time_step] = StateVector[2 * ix]
 end
 
@@ -242,33 +225,25 @@ function _set_state_variables_at_bus!(
     ::Vector{Float64},
     ::Float64,
     StateVector::Vector{Float64},
+    bus_active_constant_I::Vector{Float64},
+    bus_reactive_constant_I::Vector{Float64},
+    bus_active_constant_Z::Vector{Float64},
+    bus_reactive_constant_Z::Vector{Float64},
     data::ACPowerFlowData,
     time_step::Int64,
     ::Val{PSY.ACBusTypes.PQ})
-    # When bustype == PQ PSY.ACBus, state variables are Voltage Magnitude and Voltage Angle
-    # delta_vm = (vm_1 = data.bus_magnitude[ix, time_step]) - StateVector[2 * ix - 1]
     vm_1 = data.bus_magnitude[ix, time_step]
     vm_2 = StateVector[2 * ix - 1]
     data.bus_magnitude[ix, time_step] = vm_2
     data.bus_angles[ix, time_step] = StateVector[2 * ix]
     # update P_net and Q_net for ZIP loads
     P_net[ix] +=
-        data.bus_active_power_constant_current_withdrawals[ix, time_step] * (vm_1 - vm_2) +
-        data.bus_active_power_constant_impedance_withdrawals[ix, time_step] *
-        (vm_1^2 - vm_2^2)
+        bus_active_constant_I[ix] * (vm_1 - vm_2) +
+        bus_active_constant_Z[ix] * (vm_1^2 - vm_2^2)
     Q_net[ix] +=
-        data.bus_reactive_power_constant_current_withdrawals[ix, time_step] *
-        (vm_1 - vm_2) +
-        data.bus_reactive_power_constant_impedance_withdrawals[ix, time_step] *
-        (vm_1^2 - vm_2^2)
-    # set the active and reactive power injections at the bus
-    _setpq(
-        ix,
-        P_net,
-        Q_net,
-        data,
-        time_step,
-    )
+        bus_reactive_constant_I[ix] * (vm_1 - vm_2) +
+        bus_reactive_constant_Z[ix] * (vm_1^2 - vm_2^2)
+    _setpq(ix, P_net, Q_net, data, time_step)
 end
 
 """
@@ -303,8 +278,13 @@ function _update_residual_values!(
     P_net_set::Vector{Float64},
     bus_slack_participation_factors::SparseVector{Float64, Int},
     subnetworks::Dict{Int64, Vector{Int64}},
+    bus_active_constant_I::Vector{Float64},
+    bus_reactive_constant_I::Vector{Float64},
+    bus_active_constant_Z::Vector{Float64},
+    bus_reactive_constant_Z::Vector{Float64},
     data::ACPowerFlowData,
     time_step::Int64,
+    P_slack_buf::Vector{Float64},
 )
     # update P_net, Q_net, data.bus_angles, data.bus_magnitude based on X
     Yb = data.power_network_matrix.data
@@ -312,49 +292,37 @@ function _update_residual_values!(
     bus_types = view(data.bus_type, :, time_step)
 
     for (ref_bus, subnetwork_buses) in subnetworks
-        P_slack =
-            (x[2 * ref_bus - 1] - P_net_set[ref_bus]) .*
-            bus_slack_participation_factors[subnetwork_buses]
+        slack_scalar = x[2 * ref_bus - 1] - P_net_set[ref_bus]
+        n_sub = length(subnetwork_buses)
+        # Write per-bus slack into P_slack_buf[1:n_sub]. SparseVector indexed
+        # by a Vector{Int} allocates a fresh Vector; iterate manually instead.
+        @inbounds for k in 1:n_sub
+            ix = subnetwork_buses[k]
+            P_slack_buf[k] = slack_scalar * bus_slack_participation_factors[ix]
+        end
 
-        for (ix, bt, p_bus_slack) in
-            zip(subnetwork_buses, bus_types[subnetwork_buses], P_slack)
+        @inbounds for k in 1:n_sub
+            ix = subnetwork_buses[k]
+            bt = bus_types[ix]
+            p_bus_slack = P_slack_buf[k]
             # creating Val(bt) at runtime is slow, requires allocating: split into cases
             # explicitly, so instead it's Val(compile-time constant).
             if bt == PSY.ACBusTypes.PQ
                 _set_state_variables_at_bus!(
-                    ix,
-                    P_net,
-                    Q_net,
-                    P_net_set,
-                    p_bus_slack,
-                    x,
-                    data,
-                    time_step,
-                    Val(PSY.ACBusTypes.PQ),
+                    ix, P_net, Q_net, P_net_set, p_bus_slack, x,
+                    bus_active_constant_I, bus_reactive_constant_I,
+                    bus_active_constant_Z, bus_reactive_constant_Z,
+                    data, time_step, Val(PSY.ACBusTypes.PQ),
                 )
             elseif bt == PSY.ACBusTypes.PV
                 _set_state_variables_at_bus!(
-                    ix,
-                    P_net,
-                    Q_net,
-                    P_net_set,
-                    p_bus_slack,
-                    x,
-                    data,
-                    time_step,
-                    Val(PSY.ACBusTypes.PV),
+                    ix, P_net, Q_net, P_net_set, p_bus_slack, x,
+                    data, time_step, Val(PSY.ACBusTypes.PV),
                 )
             elseif bt == PSY.ACBusTypes.REF
                 _set_state_variables_at_bus!(
-                    ix,
-                    P_net,
-                    Q_net,
-                    P_net_set,
-                    p_bus_slack,
-                    x,
-                    data,
-                    time_step,
-                    Val(PSY.ACBusTypes.REF),
+                    ix, P_net, Q_net, P_net_set, p_bus_slack, x,
+                    data, time_step, Val(PSY.ACBusTypes.REF),
                 )
             end
         end
@@ -408,8 +376,12 @@ function _update_residual_values!(
         end
     end
 
-    F[1:2:(end - 4 * num_lcc)] .-= P_net
-    F[2:2:(end - 4 * num_lcc)] .-= Q_net
+    # Strided broadcast `F[1:2:N] .-= P_net` allocates a copy of the slice on
+    # each call; iterate explicitly to keep this allocation-free.
+    @inbounds for ix in eachindex(P_net)
+        F[2 * ix - 1] -= P_net[ix]
+        F[2 * ix] -= Q_net[ix]
+    end
 
     if num_lcc > 0
         P_lcc_from =
@@ -463,4 +435,51 @@ function _find_subnetworks_for_reference_buses(
         end
     end
     return bus_groups
+end
+
+"""
+    _build_bus_slack_participation_factors(data, bus_type, subnetworks, time_step)
+
+Collect the per-bus generator-slack-participation factors (REF and PV buses
+only), validate that the sum is positive and no value is negative, and
+normalize so that each subnetwork's participating buses sum to 1. Returns
+a `SparseVector{Float64, Int}` of length `n_buses`.
+
+Shared between the polar `ACPowerFlowResidual` and the rectangular
+current-injection (CI) residual (`ACRectangularCIResidual`) constructors —
+both need identical slack-distribution semantics.
+"""
+function _build_bus_slack_participation_factors(
+    data::ACPowerFlowData,
+    bus_type::AbstractVector{PSY.ACBusTypes},
+    subnetworks::Dict{Int64, Vector{Int64}},
+    time_step::Int64,
+)
+    n_buses = length(bus_type)
+    spf_idx = Int[]
+    spf_val = Float64[]
+    sum_sl_weights = 0.0
+    for (ix, bt) in zip(1:n_buses, bus_type)
+        bt ∈ (PSY.ACBusTypes.REF, PSY.ACBusTypes.PV) || continue
+        (spf_v = data.bus_slack_participation_factors[ix, time_step]) == 0.0 && continue
+        push!(spf_idx, ix)
+        push!(spf_val, spf_v)
+        sum_sl_weights += spf_v
+    end
+    sum_sl_weights == 0.0 &&
+        throw(ArgumentError("sum of slack_participation_factors cannot be zero"))
+    any(spf_val .< 0.0) &&
+        throw(ArgumentError("slack_participation_factors cannot be negative"))
+    bus_slack_participation_factors = sparsevec(spf_idx, spf_val, n_buses)
+    for subnetwork_buses in values(subnetworks)
+        bspf_subnetwork = view(bus_slack_participation_factors, subnetwork_buses)
+        sum_bspf = sum(bspf_subnetwork)
+        sum_bspf == 0.0 && throw(
+            ArgumentError(
+                "sum of slack_participation_factors per subnetwork cannot be zero",
+            ),
+        )
+        bspf_subnetwork ./= sum_bspf
+    end
+    return bus_slack_participation_factors
 end

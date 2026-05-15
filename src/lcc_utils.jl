@@ -70,33 +70,92 @@ function _calculate_dQ_dα_lcc(
     return Vm * t * sqrt(6) / π * I_dc * cos(ϕ) * sin(α) / sin(ϕ)
 end
 
+"""
+    _update_ybus_lcc!(data, time_step)
+
+Recompute `data.lcc.rectifier.phi`, `data.lcc.inverter.phi`, and
+`data.lcc.branch_admittances` for each LCC at `time_step`. Reads `|V|` at each
+AC terminal from `data.bus_magnitude` (the polar convention). The
+`(e_state, f_state)` method below covers the rectangular CI case where
+`|V_state| = sqrt(e² + f²)` must be used instead — at PV buses,
+`data.bus_magnitude` holds `V_set` rather than the actual state magnitude.
+"""
 function _update_ybus_lcc!(data::PowerFlowData, time_step::Int64)
     for (i, (fb, tb)) in enumerate(data.lcc.bus_indices)
+        Vm_fb = data.bus_magnitude[fb, time_step]
+        Vm_tb = data.bus_magnitude[tb, time_step]
         data.lcc.rectifier.phi[i, time_step] = _calculate_ϕ_lcc(
             data.lcc.rectifier.tap[i, time_step],
             data.lcc.rectifier.thyristor_angle[i, time_step],
             data.lcc.i_dc[i, time_step],
             data.lcc.rectifier.transformer_reactance[i],
-            data.bus_magnitude[fb, time_step],
+            Vm_fb,
         )
         data.lcc.inverter.phi[i, time_step] = _calculate_ϕ_lcc(
             data.lcc.inverter.tap[i, time_step],
             data.lcc.inverter.thyristor_angle[i, time_step],
             -data.lcc.i_dc[i, time_step],
             data.lcc.inverter.transformer_reactance[i],
-            data.bus_magnitude[tb, time_step],
+            Vm_tb,
         )
-
         rectifier_admittance = _calculate_y_lcc(
             data.lcc.rectifier.tap[i, time_step],
             data.lcc.i_dc[i, time_step],
-            data.bus_magnitude[fb, time_step],
+            Vm_fb,
             data.lcc.rectifier.phi[i, time_step],
         )
         inverter_admittance = _calculate_y_lcc(
             data.lcc.inverter.tap[i, time_step],
             data.lcc.i_dc[i, time_step],
-            data.bus_magnitude[tb, time_step],
+            Vm_tb,
+            data.lcc.inverter.phi[i, time_step],
+        )
+        data.lcc.branch_admittances[i] = (rectifier_admittance, inverter_admittance)
+    end
+    return
+end
+
+"""
+    _update_ybus_lcc!(data, time_step, e_state, f_state)
+
+Rectangular variant: reads `|V|` at each AC terminal from
+`sqrt(e_state[i]^2 + f_state[i]^2)` so the LCC math stays consistent with the
+rectangular CI residual / Jacobian (which operate on `(e, f)` instead of
+`(|V|, θ)`).
+"""
+function _update_ybus_lcc!(
+    data::PowerFlowData,
+    time_step::Int64,
+    e_state::Vector{Float64},
+    f_state::Vector{Float64},
+)
+    for (i, (fb, tb)) in enumerate(data.lcc.bus_indices)
+        Vm_fb = sqrt(e_state[fb]^2 + f_state[fb]^2)
+        Vm_tb = sqrt(e_state[tb]^2 + f_state[tb]^2)
+        data.lcc.rectifier.phi[i, time_step] = _calculate_ϕ_lcc(
+            data.lcc.rectifier.tap[i, time_step],
+            data.lcc.rectifier.thyristor_angle[i, time_step],
+            data.lcc.i_dc[i, time_step],
+            data.lcc.rectifier.transformer_reactance[i],
+            Vm_fb,
+        )
+        data.lcc.inverter.phi[i, time_step] = _calculate_ϕ_lcc(
+            data.lcc.inverter.tap[i, time_step],
+            data.lcc.inverter.thyristor_angle[i, time_step],
+            -data.lcc.i_dc[i, time_step],
+            data.lcc.inverter.transformer_reactance[i],
+            Vm_tb,
+        )
+        rectifier_admittance = _calculate_y_lcc(
+            data.lcc.rectifier.tap[i, time_step],
+            data.lcc.i_dc[i, time_step],
+            Vm_fb,
+            data.lcc.rectifier.phi[i, time_step],
+        )
+        inverter_admittance = _calculate_y_lcc(
+            data.lcc.inverter.tap[i, time_step],
+            data.lcc.i_dc[i, time_step],
+            Vm_tb,
             data.lcc.inverter.phi[i, time_step],
         )
         data.lcc.branch_admittances[i] = (rectifier_admittance, inverter_admittance)
@@ -114,7 +173,6 @@ function initialize_LCC_arcs_and_buses!(
     reverse_bus_search_map::Dict{Int, Int},
 )
     lcc_arcs = PSY.get_arc.(lccs)
-    # TODO error if LCCs are involved in reductions.
     nrd = get_network_reduction_data(data)
     for (i, arc) in enumerate(lcc_arcs)
         data.lcc.arcs[i] = PNM.get_arc_tuple(arc, nrd)
@@ -139,9 +197,16 @@ function initialize_LCCParameters!(
     sys::PSY.System,
     bus_lookup::Dict{Int, Int},
     reverse_bus_search_map::Dict{Int, Int},
+    removed_buses::Set{Int},
 )
     check_unit_setting(sys)
-    lccs = collect(PSY.get_components(PSY.get_available, PSY.TwoTerminalLCCLine, sys))
+    lccs = collect(
+        PSY.get_available_components(
+            x -> x.arc.from.number ∉ removed_buses && x.arc.to.number ∉ removed_buses,
+            PSY.TwoTerminalLCCLine,
+            sys,
+        ),
+    )
     isempty(lccs) && return
 
     initialize_LCC_arcs_and_buses!(data, lccs, bus_lookup, reverse_bus_search_map)
@@ -161,9 +226,16 @@ function initialize_LCCParameters!(
     sys::PSY.System,
     bus_lookup::Dict{Int, Int},
     reverse_bus_search_map::Dict{Int, Int},
+    removed_buses::Set{Int},
 )
     check_unit_setting(sys)
-    lccs = collect(PSY.get_components(PSY.get_available, PSY.TwoTerminalLCCLine, sys))
+    lccs = collect(
+        PSY.get_available_components(
+            x -> x.arc.from.number ∉ removed_buses && x.arc.to.number ∉ removed_buses,
+            PSY.TwoTerminalLCCLine,
+            sys,
+        ),
+    )
     isempty(lccs) && return
 
     lcc_setpoint_at_rectifier = get_lcc_setpoint_at_rectifier(data)
@@ -229,20 +301,17 @@ function hvdc_fixed_injections!(
     sys::PSY.System,
     bus_lookup::Dict{Int, Int},
     reverse_bus_search_map::Dict{Int, Int},
+    removed_buses::Set{Int},
 )
     for hvdc in PSY.get_available_components(hvdc_type, sys)
         arc = PSY.get_arc(hvdc)
+        from_number = PSY.get_number(PSY.get_from(arc))
+        to_number = PSY.get_number(PSY.get_to(arc))
+        from_number in removed_buses && continue
+        to_number in removed_buses && continue
         (P_net_from, P_net_to) = get_hvdc_injections(hvdc, sys)
-        from_bus_ix = _get_bus_ix(
-            bus_lookup,
-            reverse_bus_search_map,
-            PSY.get_number(PSY.get_from(arc)),
-        )
-        to_bus_ix = _get_bus_ix(
-            bus_lookup,
-            reverse_bus_search_map,
-            PSY.get_number(PSY.get_to(arc)),
-        )
+        from_bus_ix = _get_bus_ix(bus_lookup, reverse_bus_search_map, from_number)
+        to_bus_ix = _get_bus_ix(bus_lookup, reverse_bus_search_map, to_number)
         data.bus_hvdc_net_power[from_bus_ix, :] .+= P_net_from
         data.bus_hvdc_net_power[to_bus_ix, :] .+= P_net_to
     end
@@ -254,6 +323,7 @@ lcc_vsc_fixed_injections!(
     ::PSY.System,
     ::Dict{Int, Int},
     ::Dict{Int, Int},
+    ::Set{Int},
 ) = nothing
 
 lcc_vsc_fixed_injections!(
@@ -261,6 +331,7 @@ lcc_vsc_fixed_injections!(
     sys::PSY.System,
     bus_lookup::Dict{Int, Int},
     reverse_bus_search_map::Dict{Int, Int},
+    removed_buses::Set{Int},
 ) =
     hvdc_fixed_injections!.(
         (data,),
@@ -268,6 +339,7 @@ lcc_vsc_fixed_injections!(
         (sys,),
         (bus_lookup,),
         (reverse_bus_search_map,),
+        (removed_buses,),
     )
 
 function initialize_generic_hvdc_flows!(

@@ -9,26 +9,26 @@ jobs:
     steps:
       - uses: julia-actions/setup-julia@latest
       - uses: actions/checkout@v1
-      - name: Run Perfomance Test Main
+      - name: Run Performance Test Main
         run: |
           julia --project=test -e 'using Pkg; Pkg.add(PackageSpec(name="PowerFlows", rev="main")); Pkg.instantiate()'
           julia --project=test test/performance/performance_test.jl "Main"
-      - name: Run Perfomance Test Branch
+      - name: Run Performance Test Branch
         run: |
           julia --project=test -e 'using Pkg; Pkg.develop(PackageSpec(path=pwd())); Pkg.instantiate()'
-          julia --project=test test/performance/performance_test.jl "This Branch"
-      - name: Read precompile results
-        id: precompile_results
+          julia --project=test test/performance/performance_test.jl "Branch"
+      - name: Format results
         run: |
-          body="$(cat precompile_time.txt)"
-          body="${body//'%'/'%25'}"
-          body="${body//$'\n'/'%0A'}"
-          body="${body//$'\r'/'%0D'}"
-          echo "::set-output name=body::$body"
-      - name: Read solve results
-        id: solve_results
+          julia test/performance/format_results.jl \
+            solve_time_Main.csv \
+            solve_time_Branch.csv \
+            precompile_time_Main.txt \
+            precompile_time_Branch.txt \
+            performance_results.md
+      - name: Read results
+        id: results
         run: |
-          body="$(cat solve_time.txt)"
+          body="$(cat performance_results.md)"
           body="${body//'%'/'%25'}"
           body="${body//$'\n'/'%0A'}"
           body="${body//$'\r'/'%0D'}"
@@ -45,27 +45,11 @@ jobs:
         uses: peter-evans/create-or-update-comment@v5
         with:
           issue-number: ${{ github.event.pull_request.number }}
-          body: |
-            Performance Results
-            | Version      | Precompile Time |
-            | :---        |    :----:   |
-            ${{ steps.precompile_results.outputs.body }}
-
-            | Version      | Run Time |
-            | :---        |    :----:   |
-            ${{ steps.solve_results.outputs.body }}
+          body: ${{ steps.results.outputs.body }}
       - name: Update comment
         if: steps.fc.outputs.comment-id != ''
         uses: peter-evans/create-or-update-comment@v5
         with:
           comment-id: ${{ steps.fc.outputs.comment-id }}
-          body: |
-            Performance Results
-            | Version      | Precompile Time |
-            | :---        |    :----:   |
-            ${{ steps.precompile_results.outputs.body }}
-
-            | Version      | Solve Time |
-            | :---        |    :----:   |
-            ${{ steps.solve_results.outputs.body }}
+          body: ${{ steps.results.outputs.body }}
           edit-mode: replace

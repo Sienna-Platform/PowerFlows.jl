@@ -144,6 +144,23 @@ end
     end
 end
 
+@testset "clear_injection_data! resets NaN columns to flat start" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    data = PowerFlowData(ACPowerFlow(; correct_bustypes = true, time_steps = 2), sys)
+    # Seed column 1 with NaNs, leave column 2 untouched.
+    orig_angles_2 = copy(data.bus_angles[:, 2])
+    orig_mag_2 = copy(data.bus_magnitude[:, 2])
+    data.bus_angles[:, 1] .= NaN
+    data.bus_magnitude[:, 1] .= NaN
+    PF.clear_injection_data!(data)
+    # NaN column reset to flat start.
+    @test all(data.bus_angles[:, 1] .== 0.0)
+    @test all(data.bus_magnitude[:, 1] .== 1.0)
+    # Non-NaN column unchanged.
+    @test data.bus_angles[:, 2] == orig_angles_2
+    @test data.bus_magnitude[:, 2] == orig_mag_2
+end
+
 @testset "Wrong bus type" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
     buses = collect(PSY.get_components(PSY.ACBus, sys))

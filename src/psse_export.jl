@@ -97,7 +97,8 @@ const PSSE_V35_HEADERS = Dict{String, String}(
     "Load Data" => "@!   I,'ID',STAT,AREA,ZONE,      PL,        QL,        IP,        IQ,        YP,        YQ, OWNER,SCALE,INTRPT,  DGENP,     DGENQ,DGENF,'  LOAD TYPE '",
     "Fixed Shunt Data" => "@!   I,'ID',STATUS,  GL,        BL",
     "Generator Data" => "@!   I,'ID',      PG,        QG,        QT,        QB,     VS,    IREG,NREG,     MBASE,     ZR,         ZX,         RT,         XT,     GTAP,STAT, RMPCT,      PT,        PB,BASLOD,O1,    F1,  O2,    F2,  O3,    F3,  O4,    F4,WMOD, WPF",
-    "Non-Transformer Branch Data" => "@!   I,     J,'CKT',      R,           X,       B,                   'N A M E'                 ,  RATE1,  RATE2,  RATE3,  RATE4,  RATE5,  RATE6,  RATE7,  RATE8,  RATE9, RATE10, RATE11, RATE12,   GI,      BI,      GJ,      BJ,STAT,MET, LEN,  O1,  F1,    O2,  F2,    O3,  F3,    O4,  F4",
+    "Non-Transformer Branch Data" => "@!   I,     J,'CKT',      R,           X,       B,                   'N A M E'                 ,  RATE1,  RATE2,  RATE3,  RATE4,
+@!      RATE5,  RATE6,  RATE7,  RATE8,  RATE9, RATE10, RATE11, RATE12,   GI,      BI,      GJ,      BJ,STAT,MET, LEN,  O1,  F1,    O2,  F2,    O3,  F3,    O4,  F4",
     "Switching Device Data" => "@!   I,     J,'CKT',          X,  RATE1,  RATE2,  RATE3,  RATE4,  RATE5,  RATE6,  RATE7,  RATE8,  RATE9, RATE10, RATE11, RATE12, STAT,NSTAT,  MET,STYPE,'NAME'",
     "Transformer Data" => """
 @!   I,     J,     K,'CKT',CW,CZ,CM,     MAG1,        MAG2,NMETR,               'N A M E',               STAT,O1,  F1,    O2,  F2,    O3,  F3,    O4,  F4,     'VECGRP', ZCOD
@@ -812,9 +813,10 @@ function _write_2w_transformer_record1!(
     NAME::String,
     STAT::Int,
 )
-    CW = get_ext_key_or_default(transformer, "CW")
-    CZ = get_ext_key_or_default(transformer, "CZ")
-    CM = get_ext_key_or_default(transformer, "CM")
+    default_CW, default_CZ, default_CM = _get_cw_cz_cm_defaults(transformer)
+    CW = get_ext_key_or_default(transformer, "CW", default_CW)
+    CZ = get_ext_key_or_default(transformer, "CZ", default_CZ)
+    CM = get_ext_key_or_default(transformer, "CM", default_CM)
     mag1_default, mag2_default = _get_mag_defaults(transformer)
     MAG1 = get_ext_key_or_default(transformer, "MAG1", mag1_default)
     MAG2 = get_ext_key_or_default(transformer, "MAG2", mag2_default)
@@ -892,6 +894,69 @@ end
 _get_2w_cod1(transformer::PSY.TwoWindingTransformer) =
     get_ext_key_or_default(transformer, "COD1")
 
+_get_windv1_default(transformer::PSY.TapTransformer) = PSY.get_tap(transformer)
+_get_windv1_default(transformer::PSY.TwoWindingTransformer) =
+    PSY.get_base_voltage_primary(transformer)
+
+_get_windv2_default(::PSY.TapTransformer) = 1.0
+_get_windv2_default(transformer::PSY.TwoWindingTransformer) =
+    PSY.get_base_voltage_secondary(transformer)
+
+function _get_cw_cz_cm_defaults(transformer::PSY.Transformer2W)
+    from_base_voltage = PSY.get_base_voltage(PSY.get_from(PSY.get_arc(transformer)))
+    to_base_voltage = PSY.get_base_voltage(PSY.get_to(PSY.get_arc(transformer)))
+    windv1 =
+        get_ext_key_or_default(transformer, "WINDV1", _get_windv1_default(transformer))
+    windv2 =
+        get_ext_key_or_default(transformer, "WINDV2", _get_windv2_default(transformer))
+
+    if windv1 isa Number && windv2 isa Number &&
+       isapprox(windv1, from_base_voltage) &&
+       isapprox(windv2, to_base_voltage)
+        return (2, 2, 1)
+    end
+
+    return (PSSE_DEFAULT, PSSE_DEFAULT, PSSE_DEFAULT)
+end
+
+function _get_cw_cz_cm_defaults(transformer::PSY.Transformer3W)
+    primary_base_voltage =
+        PSY.get_base_voltage(PSY.get_from(PSY.get_primary_star_arc(transformer)))
+    secondary_base_voltage =
+        PSY.get_base_voltage(PSY.get_from(PSY.get_secondary_star_arc(transformer)))
+    tertiary_base_voltage =
+        PSY.get_base_voltage(PSY.get_from(PSY.get_tertiary_star_arc(transformer)))
+
+    windv1 = get_ext_key_or_default(
+        transformer,
+        "WINDV1",
+        PSY.get_primary_turns_ratio(transformer),
+    )
+    windv2 = get_ext_key_or_default(
+        transformer,
+        "WINDV2",
+        PSY.get_secondary_turns_ratio(transformer),
+    )
+    windv3 = get_ext_key_or_default(
+        transformer,
+        "WINDV3",
+        PSY.get_tertiary_turns_ratio(transformer),
+    )
+
+    if windv1 isa Number && windv2 isa Number && windv3 isa Number &&
+       isapprox(windv1, primary_base_voltage) &&
+       isapprox(windv2, secondary_base_voltage) &&
+       isapprox(windv3, tertiary_base_voltage)
+        return (2, 2, 1)
+    end
+
+    return (PSSE_DEFAULT, PSSE_DEFAULT, PSSE_DEFAULT)
+end
+_get_cw_cz_cm_defaults(::PSY.TwoWindingTransformer) =
+    (PSSE_DEFAULT, PSSE_DEFAULT, PSSE_DEFAULT)
+_get_cw_cz_cm_defaults(::PSY.ThreeWindingTransformer) =
+    (PSSE_DEFAULT, PSSE_DEFAULT, PSSE_DEFAULT)
+
 """Write the third record line (winding 1 data) for a 2-winding transformer."""
 function _write_2w_transformer_record3_winding1!(
     io::IO,
@@ -901,7 +966,7 @@ function _write_2w_transformer_record3_winding1!(
     WINDV1 = get_ext_key_or_default(
         transformer,
         "WINDV1",
-        PSY.get_base_voltage_primary(transformer),
+        _get_windv1_default(transformer),
     )
     NOMV1 = get_ext_key_or_default(
         transformer,
@@ -916,7 +981,8 @@ function _write_2w_transformer_record3_winding1!(
     RMI1 = get_ext_key_or_default(transformer, "RMI1")
     VMA1 = get_ext_key_or_default(transformer, "VMA1")
     VMI1 = get_ext_key_or_default(transformer, "VMI1")
-    NTP1 = get_ext_key_or_default(transformer, "NTP1")
+    # Set to default/actual value to integer, since by default is getting exported as float, causing an error when loaded into PSSE
+    NTP1 = _permissive_parse_int(get_ext_key_or_default(transformer, "NTP1"))
     NOD1 = get_ext_key_or_default(transformer, "NOD1")
     CONT1 = get_ext_key_or_default(transformer, "CONT1")
 
@@ -927,11 +993,12 @@ function _write_2w_transformer_record3_winding1!(
     CNXA1 = get_ext_key_or_default(transformer, "CNXA1")
 
     if exporter.psse_version == :v35
+        # Using 0.0 as default for rating exporter, since PSSEv35 does not allow blank values
         RATA1, RATB1, RATC1 =
             with_units_base(exporter.system, PSY.UnitSystem.NATURAL_UNITS) do
-                _value_or_default(PSY.get_rating(transformer), PSSE_DEFAULT),
-                _value_or_default(PSY.get_rating_b(transformer), PSSE_DEFAULT),
-                _value_or_default(PSY.get_rating_c(transformer), PSSE_DEFAULT)
+                _value_or_default(PSY.get_rating(transformer), 0.0),
+                _value_or_default(PSY.get_rating_b(transformer), 0.0),
+                _value_or_default(PSY.get_rating_c(transformer), 0.0)
             end
 
         rates_1 = [
@@ -940,7 +1007,7 @@ function _write_2w_transformer_record3_winding1!(
             get_ext_key_or_default(transformer, "RATE13", RATC1),
         ]
         for i in 4:12
-            push!(rates_1, get_ext_key_or_default(transformer, "RATE1$i"))
+            push!(rates_1, get_ext_key_or_default(transformer, "RATE1$i", 0.0))
         end
 
         @fastprintdelim_unroll(io, false, WINDV1, NOMV1, ANG1)
@@ -984,7 +1051,7 @@ function _write_2w_transformer_record4_winding2!(
     WINDV2 = get_ext_key_or_default(
         transformer,
         "WINDV2",
-        PSY.get_base_voltage_secondary(transformer),
+        _get_windv2_default(transformer),
     )
     NOMV2 = get_ext_key_or_default(
         transformer,
@@ -1072,7 +1139,8 @@ function _collect_3w_winding_data(
         RMI = get_ext_key_or_default(transformer, "RMI$prefix")
         VMA = get_ext_key_or_default(transformer, "VMA$prefix")
         VMI = get_ext_key_or_default(transformer, "VMI$prefix")
-        NTP = get_ext_key_or_default(transformer, "NTP$prefix")
+        # Set to default/actual value to integer, since by default is getting exported as float, causing an error when loaded into PSSE
+        NTP = _permissive_parse_int(get_ext_key_or_default(transformer, "NTP$prefix"))
         TAB = 0
         supp_attr = PSY.get_supplemental_attributes(transformer)
         for icd_tr in supp_attr
@@ -1717,11 +1785,17 @@ end
 
 """Calculate the STAT field for a 3-winding transformer based on per-winding availability."""
 function _calculate_3w_transformer_stat(transformer::PSY.ThreeWindingTransformer)
-    if PSY.get_available_primary(transformer) == false
+    primary = PSY.get_available_primary(transformer)
+    secondary = PSY.get_available_secondary(transformer)
+    tertiary = PSY.get_available_tertiary(transformer)
+    # The STAT value is determined based on the availability of the windings
+    if (!primary && !secondary) || (!primary && !tertiary) || (!secondary && !tertiary)
+        return 0
+    elseif !primary
         return 4
-    elseif PSY.get_available_secondary(transformer) == false
+    elseif !secondary
         return 2
-    elseif PSY.get_available_tertiary(transformer) == false
+    elseif !tertiary
         return 3
     else
         return PSY.get_available(transformer) ? 1 : 0
@@ -1763,14 +1837,15 @@ function _write_regular_branch_record!(
 
     if exporter.psse_version == :v35
         NAME = _psse_quote_string(get_ext_key_or_default(branch, "NAME", ""))
-        rates = [RATEA, RATEB, RATEC]
-        for i in 4:12
-            push!(rates, get_ext_key_or_default(branch, "RATE$i"))
-        end
+        # Using 0.0 as default for rating exporter, since PSSEv35 does not allow blank values
         @fastprintdelim_unroll(io, false, I, J, CKT, R, X, B, NAME)
-        for rate in rates
-            fastprintdelim(io, rate)
+        fastprintdelim(io, RATEA)
+        fastprintdelim(io, RATEB)
+        fastprintdelim(io, RATEC)
+        for i in 4:12
+            fastprintdelim(io, get_ext_key_or_default(branch, "RATE$i", 0.0))
         end
+
         @fastprintdelim_unroll(io, false, GI, BI, GJ, BJ, ST, MET, LEN)
         fastprintln_psse_default_ownership(io)
     else
@@ -1817,68 +1892,16 @@ function _write_discrete_branch_record!(
     fastprintln_psse_default_ownership(io)
 end
 
-"""Write a TapTransformer with UNDEFINED control objective as a non-transformer branch record."""
-function _write_tap_transformer_as_branch_record!(
-    io::IO,
-    exporter::PSSEExporter,
-    I::Int,
-    J::Int,
-    CKT::String,
-    branch::PSY.ACBranch;
-    B_override::Union{Float64, Nothing} = nothing,
-    RATEB_override::Union{Float64, Nothing} = nothing,
-    RATEC_override::Union{Float64, Nothing} = nothing,
-)
-    ST = PSY.get_available(branch) ? 1 : 0
-    MET = get_ext_key_or_default(branch, "MET")
-    LEN = get_ext_key_or_default(branch, "LEN")
-    R = PSY.get_r(branch)
-    X = PSY.get_x(branch)
-    B = isnothing(B_override) ? 0.0 : B_override
-    GI = get_ext_key_or_default(branch, "GI")
-    BI = get_ext_key_or_default(branch, "BI")
-    GJ = get_ext_key_or_default(branch, "GJ")
-    BJ = get_ext_key_or_default(branch, "BJ")
-
-    RATEA, RATEB, RATEC =
-        with_units_base(exporter.system, PSY.UnitSystem.NATURAL_UNITS) do
-            _value_or_default(PSY.get_rating(branch), PSSE_DEFAULT),
-            if isnothing(RATEB_override)
-                _value_or_default(PSY.get_rating_b(branch), PSSE_DEFAULT)
-            else
-                RATEB_override
-            end,
-            if isnothing(RATEC_override)
-                _value_or_default(PSY.get_rating_c(branch), PSSE_DEFAULT)
-            else
-                RATEC_override
-            end
-        end
-    (RATEA, RATEB, RATEC) =
-        (_fix_3w_transformer_rating(x) for x in (RATEA, RATEB, RATEC))
-
-    if exporter.psse_version == :v35
-        NAME = _psse_quote_string(get_ext_key_or_default(branch, "NAME", ""))
-        rates = [RATEA, RATEB, RATEC]
-        for i in 4:12
-            push!(rates, get_ext_key_or_default(branch, "RATE$i"))
-        end
-        @fastprintdelim_unroll(io, false, I, J, CKT, R, X, B, NAME)
-        for rate in rates
-            fastprintdelim(io, rate)
-        end
-        @fastprintdelim_unroll(io, false, GI, BI, GJ, BJ, ST, MET, LEN)
-        fastprintln_psse_default_ownership(io)
-    else
-        @fastprintdelim_unroll(io, false, I, J, CKT, R, X, B,
-            RATEA, RATEB, RATEC,
-            GI, BI, GJ, BJ, ST, MET, LEN)
-        fastprintln_psse_default_ownership(io)
-    end
-end
-
 _is_discrete_controlled(::PSY.DiscreteControlledACBranch) = true
 _is_discrete_controlled(::PSY.ACBranch) = false
+
+function _export_tap_transformer_as_branch(transformer::PSY.TapTransformer)
+    control_obj = PSY.get_control_objective(transformer)
+    return (
+        control_obj ==
+        PSY.TransformerControlObjectiveModule.TransformerControlObjective.UNDEFINED
+    ) && isapprox(PSY.get_tap(transformer), 1.0)
+end
 
 """
 WRITTEN TO SPEC: PSS/E 33.3/35.4 POM 5.2.1 Non-Transformer Branch Data
@@ -1898,9 +1921,7 @@ function write_to_buffers!(
 
         transformer_as_branches = Tuple{PSY.ACBranch, Tuple{Int, Int}}[]
         for transformer in PSY.get_components(PSY.TapTransformer, exporter.system)
-            control_obj = PSY.get_control_objective(transformer)
-            if control_obj ==
-               PSY.TransformerControlObjectiveModule.TransformerControlObjective.UNDEFINED
+            if _export_tap_transformer_as_branch(transformer)
                 bus_nums = branch_to_bus_numbers(transformer)
                 push!(transformer_as_branches, (transformer, bus_nums))
             end
@@ -2025,8 +2046,9 @@ function write_to_buffers!(
         RATE1 = RATE1 >= INFINITE_BOUND ? 0.0 : RATE1 / PSY.get_base_power(exporter.system)
 
         rates = [RATE1]
+        # Using 0.0 as default for rating exporter, since PSSEv35 does not allow blank values
         for i in 2:12
-            push!(rates, get_ext_key_or_default(branch, "RATE$i"))
+            push!(rates, get_ext_key_or_default(branch, "RATE$i", 0.0))
         end
 
         STAT = PSY.get_available(branch) ? 1 : 0
@@ -2195,12 +2217,11 @@ function _load_transformer_components_and_mappings(exporter::PSSEExporter)
             collect(PSY.get_components(PSY.TwoWindingTransformer, exporter.system));
             by = branch_to_bus_numbers,
         )
-        # Filter out TapTransformers with UNDEFINED control objective
+        # TapTransformers with UNDEFINED control objective and unity tap are exported as branches.
+        # Keep all others in transformer export.
         filtered_transformers = filter(transformers) do transformer
             if transformer isa PSY.TapTransformer
-                control_obj = PSY.get_control_objective(transformer)
-                return control_obj !=
-                       PSY.TransformerControlObjectiveModule.TransformerControlObjective.UNDEFINED
+                return !_export_tap_transformer_as_branch(transformer)
             end
             return true
         end

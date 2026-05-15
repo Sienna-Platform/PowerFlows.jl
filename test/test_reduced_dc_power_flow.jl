@@ -111,3 +111,15 @@ end
         unreduced,
     )
 end
+
+@testset "DC PowerFlow with Ward and multiple islands" begin
+    sys = build_system(PSISystems, "2Area 5 Bus System")
+    show_components(ACBus, sys, [:number])
+    ward_reduction = PNM.NetworkReduction[PNM.WardReduction([1, 2, 3, 4])]
+
+    ybus = Ybus(sys; network_reductions = ward_reduction)
+    @show ybus.subnetwork_axes
+    data = PF.PowerFlowData(PF.DCPowerFlow(; network_reductions = ward_reduction), sys)
+    PF.solve_power_flow!(data)
+    @test all(data.converged)
+end

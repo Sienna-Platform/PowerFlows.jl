@@ -11,6 +11,7 @@ function initialize_power_flow_data!(
     nrd = get_network_reduction_data(data)
     reverse_bus_search_map = PNM.get_reverse_bus_search_map(nrd)
     bus_reduction_map = PNM.get_bus_reduction_map(nrd)
+    removed_buses = PNM.get_removed_buses(nrd)
     bus_lookup = get_bus_lookup(data)
     n_buses = length(bus_lookup)
 
@@ -29,11 +30,10 @@ function initialize_power_flow_data!(
         sys,
         correct_bustypes,
     )
-    for i in 1:size(data.bus_type, 2)
-        data.bus_type[:, i] .= bus_type
-    end
-    data.bus_angles[:, 1] .= bus_angles
-    data.bus_magnitude[:, 1] .= bus_magnitude
+    # initialize for all time steps, or just the first?
+    data.bus_type[:, :] .= bus_type
+    data.bus_angles[:, :] .= bus_angles
+    data.bus_magnitude[:, :] .= bus_magnitude
 
     # active, reactive power injections, withdrawals
     bus_active_power_injections = zeros(Float64, n_buses)
@@ -44,6 +44,7 @@ function initialize_power_flow_data!(
         bus_reactive_power_injections,
         bus_lookup,
         reverse_bus_search_map,
+        removed_buses,
         sys,
     )
     data.bus_active_power_injections[:, 1] .= bus_active_power_injections
@@ -59,6 +60,7 @@ function initialize_power_flow_data!(
             data.bus_active_power_range,
             bus_lookup,
             reverse_bus_search_map,
+            removed_buses,
             sys,
             generator_headroom,
         )
@@ -81,6 +83,7 @@ function initialize_power_flow_data!(
         bus_reactive_power_constant_impedance_withdrawals,
         bus_lookup,
         reverse_bus_search_map,
+        removed_buses,
         sys,
     )
     data.bus_active_power_withdrawals[:, 1] .= bus_active_power_withdrawals
@@ -103,6 +106,7 @@ function initialize_power_flow_data!(
         bus_reactive_power_bounds,
         bus_lookup,
         reverse_bus_search_map,
+        removed_buses,
         sys,
     )
     data.bus_reactive_power_bounds[:, 1] .= bus_reactive_power_bounds
@@ -115,6 +119,7 @@ function initialize_power_flow_data!(
         get_slack_participation_factors(pf),
         bus_lookup,
         reverse_bus_search_map,
+        removed_buses,
         length(get_time_step_map(data)),
         n_buses,
         data.bus_type,
@@ -138,10 +143,10 @@ function initialize_power_flow_data!(
     end
     # LCCs: initialize parameters. For DC power flow, this also writes the fixed flows to
     # data.lcc.arc_active_power_flow_from_to and data.lcc.arc_active_power_flow_to_from.
-    initialize_LCCParameters!(data, sys, bus_lookup, reverse_bus_search_map)
+    initialize_LCCParameters!(data, sys, bus_lookup, reverse_bus_search_map, removed_buses)
     # TODO VSC AC power flow model goes here.
     # LCCs and VSCs, DC only: accumulate net power into bus_hvdc_net_power.
-    lcc_vsc_fixed_injections!(data, sys, bus_lookup, reverse_bus_search_map)
+    lcc_vsc_fixed_injections!(data, sys, bus_lookup, reverse_bus_search_map, removed_buses)
     # generic HVDC lines: calculate fixed flows and save to generic_hvdc_flows.
     initialize_generic_hvdc_flows!(
         data,
@@ -155,6 +160,7 @@ function initialize_power_flow_data!(
         sys,
         bus_lookup,
         reverse_bus_search_map,
+        removed_buses,
     )
     # ZIP Loads, DC only: convert constant current and impedance components to constant
     # powers via assuming V = 1.0 p.u.

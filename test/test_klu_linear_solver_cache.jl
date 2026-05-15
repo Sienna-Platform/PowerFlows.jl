@@ -59,13 +59,13 @@ function factorization_tests(dType::Type{T}) where {T <: Union{Int32, Int64}}
     @test PF.symbolic_factor!(autoRefactor, B) isa Any # shouldn't throw.
 
     # test iterative refinement. bigA here is purposefully almost singular.
-    # work in progress: hard to find the sweet spot between "iterative refinement
-    # isn't needed" and "so badly conditioned that iterative refinement goes awry."
+    # keep the diagonal perturbation positive and bounded away from zero so this
+    # near-singular construction remains stable enough for deterministic testing.
     N, d = 1000, 0.01
     epsilon = 0.004
     v1, v2 = sprandn(N, d), sprandn(N, d)
     bigA =
-        sparse(v2 * transpose(v1)) + sparse(diagm(randn(N)) * epsilon) +
+        sparse(v2 * transpose(v1)) + sparse(diagm(rand(N) .+ 0.5) * epsilon) +
         epsilon * sprand(N, N, 10 * d^2)
     bigK = PF.KLULinSolveCache(bigA)
     PF.full_factor!(bigK, bigA)

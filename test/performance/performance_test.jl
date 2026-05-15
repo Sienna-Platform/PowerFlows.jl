@@ -7,12 +7,13 @@ end
 using Dates
 
 pushed_to_args = false
-open("precompile_time.txt", "a") do io
-    if length(ARGS) == 0 && !is_running_on_ci()
-        pushed_to_args = true
-        push!(ARGS, "Local Test at $(Dates.now())")
-    end
-    write(io, "| $(ARGS[1]) | $(precompile.time) |\n")
+if length(ARGS) == 0 && !is_running_on_ci()
+    pushed_to_args = true
+    push!(ARGS, "Local Test at $(Dates.now())")
+end
+
+open("precompile_time_$(ARGS[1]).txt", "w") do io
+    write(io, string(precompile.time))
 end
 
 using PowerSystems
@@ -25,6 +26,19 @@ configure_logging(; console_level = Logging.Info)
 systems = [
     (MatpowerTestSystems, "matpower_ACTIVSg10k_sys"),
 ]
+
+function record_time(label, time)
+    open("solve_time_$(ARGS[1]).csv", "a") do io
+        write(io, "$(label),$(time)\n")
+    end
+end
+
+function record_failure(label)
+    open("solve_time_$(ARGS[1]).csv", "a") do io
+        write(io, "$(label),FAILED\n")
+    end
+end
+
 solvers = [PF.NewtonRaphsonACPowerFlow, PF.RobustHomotopyPowerFlow]
 for (group, name) in systems
     for solver in solvers
@@ -33,26 +47,57 @@ for (group, name) in systems
             pf = ACPowerFlow{solver}(; correct_bustypes = true)
             pf_data = PF.PowerFlowData(pf, sys)
             _, time_solve_1, _, _ = @timed PF.solve_power_flow!(pf_data; pf = pf)
-            open("solve_time.txt", "a") do io
-                write(
-                    io,
-                    "| $(ARGS[1])-$(name)-$(solver)- first solve | $(time_solve_1) |\n",
-                )
-            end
+            record_time("$(name)-$(solver) First Solve", time_solve_1)
             pf = ACPowerFlow{solver}(; correct_bustypes = true)
             pf_data = PF.PowerFlowData(pf, sys)
             _, time_solve_2, _, _ = @timed PF.solve_power_flow!(pf_data; pf = pf)
-            open("solve_time.txt", "a") do io
-                write(
-                    io,
-                    "| $(ARGS[1])-$(name)-$(solver)- second solve | $(time_solve_2) |\n",
-                )
-            end
+            record_time("$(name)-$(solver) Second Solve", time_solve_2)
         catch e
             @error exception = (e, catch_backtrace())
-            open("solve_time.txt", "a") do io
-                write(io, "| $(ARGS[1])-$(name)-Solve power flow | FAILED TO TEST |\n")
-            end
+            record_failure("$(name)-$(solver) Solve")
+        end
+    end
+end
+
+# Rectangular Current-Injection (Da Costa) NR — augmented current-injection
+# formulation; key benefit is constant Y_bus off-diagonal Jacobian blocks.
+# Tested with all four step strategies: plain NR, NR+Iwamoto, Trust Region,
+# Trust Region + Iwamoto fallback.
+const _RECT_CI_VARIANTS = [
+    ("RectangularCurrentInjectionACPowerFlow", Dict{Symbol, Any}()),
+    ("RectangularCurrentInjectionACPowerFlow(iwamoto)",
+        Dict{Symbol, Any}(:iwamoto => true)),
+    ("RectangularCurrentInjectionACPowerFlow(trust_region)",
+        Dict{Symbol, Any}(:step_strategy => :trust_region)),
+    ("RectangularCurrentInjectionACPowerFlow(trust_region+iwamoto)",
+        Dict{Symbol, Any}(
+            :step_strategy => :trust_region,
+            :iwamoto_fallback => true,
+        )),
+]
+for (group, name) in systems
+    sys = build_system(group, name)
+    for (solver_label, extra_settings) in _RECT_CI_VARIANTS
+        try
+            settings = merge(
+                extra_settings,
+                Dict{Symbol, Any}(:validate_voltage_magnitudes => false),
+            )
+            pf = ACPowerFlow{PF.RectangularCurrentInjectionACPowerFlow}(;
+                correct_bustypes = true,
+                solver_settings = settings)
+            pf_data = PF.PowerFlowData(pf, sys)
+            _, time_solve_1, _, _ = @timed PF.solve_power_flow!(pf_data; pf = pf)
+            record_time("$(name)-$(solver_label) First Solve", time_solve_1)
+            pf = ACPowerFlow{PF.RectangularCurrentInjectionACPowerFlow}(;
+                correct_bustypes = true,
+                solver_settings = settings)
+            pf_data = PF.PowerFlowData(pf, sys)
+            _, time_solve_2, _, _ = @timed PF.solve_power_flow!(pf_data; pf = pf)
+            record_time("$(name)-$(solver_label) Second Solve", time_solve_2)
+        catch e
+            @error exception = (e, catch_backtrace())
+            record_failure("$(name)-$(solver_label) Solve")
         end
     end
 end
@@ -67,31 +112,16 @@ for (group, name) in systems
             solver_settings = Dict{Symbol, Any}(:iwamoto => true))
         pf_data = PF.PowerFlowData(pf, sys)
         _, time_solve_1, _, _ = @timed PF.solve_power_flow!(pf_data; pf = pf)
-        open("solve_time.txt", "a") do io
-            write(
-                io,
-                "| $(ARGS[1])-$(name)-$(solver_label)- first solve | $(time_solve_1) |\n",
-            )
-        end
+        record_time("$(name)-$(solver_label) First Solve", time_solve_1)
         pf = ACPowerFlow{PF.NewtonRaphsonACPowerFlow}(;
             correct_bustypes = true,
             solver_settings = Dict{Symbol, Any}(:iwamoto => true))
         pf_data = PF.PowerFlowData(pf, sys)
         _, time_solve_2, _, _ = @timed PF.solve_power_flow!(pf_data; pf = pf)
-        open("solve_time.txt", "a") do io
-            write(
-                io,
-                "| $(ARGS[1])-$(name)-$(solver_label)- second solve | $(time_solve_2) |\n",
-            )
-        end
+        record_time("$(name)-$(solver_label) Second Solve", time_solve_2)
     catch e
         @error exception = (e, catch_backtrace())
-        open("solve_time.txt", "a") do io
-            write(
-                io,
-                "| $(ARGS[1])-$(name)-$(solver_label) | FAILED TO TEST |\n",
-            )
-        end
+        record_failure("$(name)-$(solver_label)")
     end
 end
 
@@ -105,39 +135,48 @@ for (group, name) in systems
             solver_settings = Dict{Symbol, Any}(:iwamoto => true))
         pf_data = PF.PowerFlowData(pf, sys)
         _, time_solve_1, _, _ = @timed PF.solve_power_flow!(pf_data; pf = pf)
-        open("solve_time.txt", "a") do io
-            write(
-                io,
-                "| $(ARGS[1])-$(name)-$(solver_label)- first solve | $(time_solve_1) |\n",
-            )
-        end
+        record_time("$(name)-$(solver_label) First Solve", time_solve_1)
         pf = ACPowerFlow{PF.TrustRegionACPowerFlow}(;
             correct_bustypes = true,
             solver_settings = Dict{Symbol, Any}(:iwamoto => true))
         pf_data = PF.PowerFlowData(pf, sys)
         _, time_solve_2, _, _ = @timed PF.solve_power_flow!(pf_data; pf = pf)
-        open("solve_time.txt", "a") do io
-            write(
-                io,
-                "| $(ARGS[1])-$(name)-$(solver_label)- second solve | $(time_solve_2) |\n",
-            )
-        end
+        record_time("$(name)-$(solver_label) Second Solve", time_solve_2)
     catch e
         @error exception = (e, catch_backtrace())
-        open("solve_time.txt", "a") do io
-            write(
-                io,
-                "| $(ARGS[1])-$(name)-$(solver_label) | FAILED TO TEST |\n",
-            )
+        record_failure("$(name)-$(solver_label)")
+    end
+end
+
+# DC Power Flow solvers
+dc_solvers = [
+    (DCPowerFlow(; correct_bustypes = true), "DCPowerFlow"),
+    (PTDFDCPowerFlow(; correct_bustypes = true), "PTDFDCPowerFlow"),
+    (vPTDFDCPowerFlow(; correct_bustypes = true), "vPTDFDCPowerFlow"),
+]
+for (group, name) in systems
+    sys = build_system(group, name)
+    for (dc_pf, solver_label) in dc_solvers
+        try
+            pf_data = PF.PowerFlowData(dc_pf, sys)
+            _, time_solve_1, _, _ = @timed PF.solve_power_flow!(pf_data)
+            record_time("$(name)-$(solver_label) First Solve", time_solve_1)
+            pf_data = PF.PowerFlowData(dc_pf, sys)
+            _, time_solve_2, _, _ = @timed PF.solve_power_flow!(pf_data)
+            record_time("$(name)-$(solver_label) Second Solve", time_solve_2)
+        catch e
+            @error exception = (e, catch_backtrace())
+            record_failure("$(name)-$(solver_label)")
         end
     end
 end
 
 if !is_running_on_ci()
-    for file in ["precompile_time.txt", "solve_time.txt"]
-        name = replace(file, "_" => " ")[begin:(end - 4)]
-        println("$name:")
-        for line in eachline(open(file))
+    println("Precompile time: $(precompile.time) s")
+    csv_file = "solve_time_$(ARGS[1]).csv"
+    if isfile(csv_file)
+        println("\nSolve times:")
+        for line in eachline(csv_file)
             println("\t", line)
         end
     end

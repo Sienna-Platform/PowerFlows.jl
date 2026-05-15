@@ -58,13 +58,54 @@ struct LevenbergMarquardtACPowerFlow <: ACPowerFlowSolverType end
     RobustHomotopyPowerFlow <: ACPowerFlowSolverType
 
 An [`ACPowerFlowSolverType`](@ref) corresponding to a homotopy iterative method, based on the
-paper [\"Improving the robustness of Newton-based power flow methods to cope with poor 
-initial points\"](https://ieeexplore.ieee.org/document/6666905). This is significantly more 
+paper [\"Improving the robustness of Newton-based power flow methods to cope with poor
+initial points\"](https://ieeexplore.ieee.org/document/6666905). This is significantly more
 robust than Newton-Raphson, but also slower by an order of magnitude or two.
 
 See also: [`ACPowerFlow`](@ref).
 """
 struct RobustHomotopyPowerFlow <: ACPowerFlowSolverType end
+
+"""
+    RectangularCurrentInjectionACPowerFlow <: ACPowerFlowSolverType
+
+An [`ACPowerFlowSolverType`](@ref) that solves the AC power flow problem using the
+augmented current-injection (Da Costa) formulation in rectangular coordinates.
+
+State variables per bus:
+- PQ: `(eᵢ, fᵢ)` — real and imaginary parts of bus voltage.
+- PV: `(eᵢ, fᵢ, Qᵢ)` — augmented row pins `|V|² = V_set²`.
+- REF: `(P_genᵢ, Q_genᵢ)`; `(eᵢ, fᵢ)` fixed from data.
+
+Residuals: complex current mismatch `ΔIᵢ = I_specᵢ − Y_bus·V`.
+
+Off-diagonal Jacobian blocks ≡ Y_bus 2×2 real blocks and are constant across
+iterations. Per-iteration Jacobian update cost is `O(N + n_LCC)`, independent
+of `nnz(Y_bus)`.
+
+# Supported step strategies
+Pass via `solver_settings`:
+- `:simple` (default) — plain Newton-Raphson.
+- `:trust_region` — Powell dogleg trust-region.
+Optional damping flags: `iwamoto::Bool` (cubic step control, both strategies),
+`iwamoto_fallback::Bool` (trust-region only).
+
+# Not yet supported (this iteration)
+- `LevenbergMarquardtACPowerFlow`, `RobustHomotopyPowerFlow`, and
+  `GradientDescentACPowerFlow` operate on the polar residual/Jacobian only —
+  there is no rectangular CI equivalent. Use those solver types directly
+  (e.g. `ACPowerFlow{LevenbergMarquardtACPowerFlow}`).
+- `robust_power_flow=true` (DC fallback for hard-to-converge initial guesses)
+  is not implemented for the rectangular formulation. Constructor will throw.
+- The `validate_voltage_magnitudes` validator assumes polar state layout and
+  must be disabled via `solver_settings = Dict(:validate_voltage_magnitudes => false)`.
+
+Based on: Da Costa, Pereira, Garcia — "Developments in the Newton-Raphson power
+flow formulation based on current injections," IEEE TPS 2000.
+
+See also: [`ACPowerFlow`](@ref).
+"""
+struct RectangularCurrentInjectionACPowerFlow <: ACPowerFlowSolverType end
 
 """
     ACPowerFlow{ACSolver}(; kwargs...) where {ACSolver <: ACPowerFlowSolverType}
@@ -268,6 +309,12 @@ or section 4 of the [MATPOWER docs](https://matpower.org/docs/MATPOWER-manual-4.
 - `time_step_names::Vector{String}`: Names for each time step. Default is an empty vector.
 - `correct_bustypes::Bool`: Whether to automatically correct bus types based on available generation.
     Default is `false`.
+- `lossy_flows::Bool`: Controls how branch flows and losses are computed after solving
+    for bus angles. When `true`, flows are computed from the full π-model arc admittance
+    matrices (`Y_ft`, `Y_tf`), giving asymmetric `P_from_to` and `P_to_from`; losses are
+    then `P_from_to + P_to_from` (exact real-power balance). When `false` (default),
+    flows are computed from the lossless `BA·θ` formula (symmetric), and losses are
+    approximated as `R·P²`.
 """
 @kwdef struct DCPowerFlow <: AbstractDCPowerFlow
     exporter::Union{Nothing, PowerFlowEvaluationModel} = nothing
@@ -275,6 +322,7 @@ or section 4 of the [MATPOWER docs](https://matpower.org/docs/MATPOWER-manual-4.
     time_steps::Int = 1
     time_step_names::Vector{String} = String[]
     correct_bustypes::Bool = false
+    lossy_flows::Bool = false
 end
 
 """
@@ -318,7 +366,7 @@ Factor Matrix.
 
 This is a replacement for the [`PTDFDCPowerFlow`](@ref) for large grids,
 where creating and storing the full PTDF matrix would be infeasible or slow. See the
-[PowerNetworkMatrices.jl docs](https://nrel-sienna.github.io/PowerNetworkMatrices.jl/stable/) for details.
+[PowerNetworkMatrices.jl docs](https://sienna-platform.github.io/PowerNetworkMatrices.jl/stable/) for details.
 
 # Arguments
 - `exporter::Union{Nothing, PowerFlowEvaluationModel}`: An optional exporter for the power flow results.
@@ -343,5 +391,6 @@ end
 
 get_calculate_loss_factors(pf::PTDFDCPowerFlow) = pf.calculate_loss_factors
 get_calculate_loss_factors(pf::vPTDFDCPowerFlow) = pf.calculate_loss_factors
+get_lossy_flows(pf::DCPowerFlow) = pf.lossy_flows
 
-# see also: PSSEExportPowerFlow in psse_export.jl
+# See also: PSSEExportPowerFlow in psse_export.jl

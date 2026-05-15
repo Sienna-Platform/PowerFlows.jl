@@ -438,6 +438,95 @@ end
         "modified_case25_sys.raw")
 end
 
+@testset "PSSE Exporter RTS regression: TapTransformer and v35 default ratings" begin
+    sys = with_logger(SimpleLogger(Error)) do
+        build_system(PSISystems, "modified_RTS_GMLC_DA_sys"; force_build = true)
+    end
+    isnothing(sys) && return
+    set_units_base_system!(sys, UnitSystem.SYSTEM_BASE)
+
+    undefined_obj =
+        PSY.TransformerControlObjectiveModule.TransformerControlObjective.UNDEFINED
+    tap_transformers = collect(PSY.get_components(PSY.TapTransformer, sys))
+    target_tap_idx = findfirst(
+        t ->
+            PSY.get_control_objective(t) == undefined_obj &&
+                !isapprox(PSY.get_tap(t), 1.0),
+        tap_transformers,
+    )
+    @test !isnothing(target_tap_idx)
+    isnothing(target_tap_idx) && return
+    target_tap = tap_transformers[target_tap_idx]
+
+    lines = sort!(collect(PSY.get_components(PSY.Line, sys)); by = PSY.get_name)
+    @test !isempty(lines)
+    isempty(lines) && return
+    target_line = first(lines)
+
+    # In v35, unspecified extra rating fields are exported as explicit 0.0 values.
+    export_location = joinpath(test_psse_export_dir, "v35", "rts_targeted_regressions")
+    scenario_name = "taptransformer_nonunity_and_v35_missing_ratings"
+    exporter =
+        PSSEExporter(sys, :v35, export_location; write_comments = true, overwrite = true)
+    write_export(exporter, scenario_name; overwrite = true)
+
+    raw_path, metadata_path =
+        get_psse_export_paths(joinpath(export_location, scenario_name))
+    @test isfile(raw_path)
+    @test isfile(metadata_path)
+
+    md = JSON3.read(metadata_path, Dict)
+    transformer_ckt_mapping = md["transformer_ckt_mapping"]
+    branch_name_mapping = md["branch_name_mapping"]
+
+    tap_name = PSY.get_name(target_tap)
+    tap_transformer_keys =
+        filter(k -> endswith(k, "_" * tap_name), collect(keys(transformer_ckt_mapping)))
+    tap_branch_keys =
+        filter(k -> endswith(k, "_" * tap_name), collect(keys(branch_name_mapping)))
+    @test length(tap_transformer_keys) == 1
+    @test isempty(tap_branch_keys)
+
+    line_name = PSY.get_name(target_line)
+    line_keys =
+        filter(k -> endswith(k, "_" * line_name), collect(keys(branch_name_mapping)))
+    @test length(line_keys) == 1
+    isempty(line_keys) && return
+
+    bus_number_mapping = md["bus_number_mapping"]
+    raw_lines = readlines(raw_path)
+
+    line_key = line_keys[1]
+    line_bus_pair = split(line_key, "_"; limit = 2)[1]
+    line_from_orig, line_to_orig = split(line_bus_pair, "-")
+    line_from = bus_number_mapping[line_from_orig]
+    line_to = bus_number_mapping[line_to_orig]
+    line_ckt = branch_name_mapping[line_key]
+    line_record_idx = findfirst(
+        l -> occursin("$line_from, $line_to, '$line_ckt'", l),
+        raw_lines,
+    )
+    @test !isnothing(line_record_idx)
+    isnothing(line_record_idx) && return
+    @test occursin(", 0.0, 0.0, 0.0,", raw_lines[line_record_idx])
+
+    tap_key = tap_transformer_keys[1]
+    tap_bus_pair = split(tap_key, "_"; limit = 2)[1]
+    tap_from_orig, tap_to_orig = split(tap_bus_pair, "-")
+    tap_from = bus_number_mapping[tap_from_orig]
+    tap_to = bus_number_mapping[tap_to_orig]
+    tap_ckt = transformer_ckt_mapping[tap_key]
+    tap_record1_idx = findfirst(
+        l -> occursin("$tap_from, $tap_to, 0, '$tap_ckt'", l),
+        raw_lines,
+    )
+    @test !isnothing(tap_record1_idx)
+    isnothing(tap_record1_idx) && return
+    @test tap_record1_idx + 2 <= length(raw_lines)
+    tap_winding1_record = raw_lines[tap_record1_idx + 2]
+    @test occursin(", 0.0, 0.0, 0.0,", tap_winding1_record)
+end
+
 function test_psse_exporter_inner(
     ACSolver::Type{<:ACPowerFlowSolverType},
     folder_name::String,

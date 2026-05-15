@@ -3,6 +3,7 @@ module PowerFlowsTests
 using ReTest
 using PowerFlows
 using Logging
+using Dates
 using PowerSystems
 using PowerSystemCaseBuilder
 using PowerNetworkMatrices

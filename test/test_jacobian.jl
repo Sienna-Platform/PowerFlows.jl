@@ -7,11 +7,7 @@ function verify_jacobian(
     data = PF.PowerFlowData(pf, sys)
     time_step = 1
     residual = PF.ACPowerFlowResidual(data, time_step)
-    J = PF.ACPowerFlowJacobian(data,
-        residual.bus_slack_participation_factors,
-        residual.subnetworks,
-        time_step,
-    )
+    J = PF.ACPowerFlowJacobian(residual, time_step)
     n_lccs =
         length(collect(PSY.get_components(PSY.get_available, PSY.TwoTerminalLCCLine, sys)))
     n = 2 * length(collect(get_components(ACBus, sys))) + 4 * n_lccs
@@ -70,6 +66,24 @@ end
     s1 = _add_simple_source!(sys, b1, 0.0, 0.0)
     lcc = _add_simple_lcc!(sys, b2, b3, 0.05, 0.05, 0.08)
     # verify_jacobian(sys)
+end
+
+@testset "Jacobian verification with ZIP load" begin
+    sys = System(100.0)
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.0, 0.0)
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.PQ, 230, 1.0, 0.0)
+    _add_simple_line!(sys, b1, b2, 5e-3, 5e-3, 1e-3)
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    _add_simple_zip_load!(
+        sys, b2;
+        constant_power_active_power = 0.5,
+        constant_power_reactive_power = 0.2,
+        constant_current_active_power = 2.0,
+        constant_current_reactive_power = 1.0,
+        constant_impedance_active_power = 1.5,
+        constant_impedance_reactive_power = 0.8,
+    )
+    verify_jacobian(sys)
 end
 
 @testset "Jacobian verification with distributed slack" begin

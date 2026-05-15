@@ -1,0 +1,122 @@
+{
+    "case_name": "export_1_1",
+    "export_settings": {
+        "psse_version": "v33",
+        "export_dir": "test/test_data/2area-5-bus-system",
+        "original_name": "export",
+        "write_comments": true,
+        "overwrite": true,
+        "step": "_1_1",
+        "sources_as_generators": true,
+        "storages_as_generators": true
+    },
+    "record_groups": {
+        "Case Identification Data": true,
+        "Bus Data": true,
+        "Load Data": true,
+        "Fixed Shunt Data": true,
+        "Generator Data": true,
+        "Non-Transformer Branch Data": true,
+        "Transformer Data": true,
+        "Area Interchange Data": false,
+        "Two-Terminal DC Transmission Line Data": true,
+        "Voltage Source Converter (VSC) DC Transmission Line Data": true,
+        "Transformer Impedance Correction Tables": true,
+        "Multi-Terminal DC Transmission Line Data": false,
+        "Multi-Section Line Grouping Data": false,
+        "Zone Data": true,
+        "Interarea Transfer Data": false,
+        "Owner Data": false,
+        "FACTS Device Data": true,
+        "Switched Shunt Data": true,
+        "GNE Device Data": false,
+        "Induction Machine Data": false,
+        "Q Record": true
+    },
+    "area_mapping": {
+    },
+    "zone_mapping": {
+    },
+    "bus_number_mapping": {
+        "1": 1,
+        "2": 2,
+        "3": 3,
+        "4": 4,
+        "5": 5,
+        "6": 6,
+        "7": 7,
+        "8": 8,
+        "9": 9,
+        "10": 10
+    },
+    "bus_name_mapping": {
+        "nodeA": "nodeA",
+        "nodeB": "nodeB",
+        "nodeC": "nodeC",
+        "nodeD": "nodeD",
+        "nodeE": "nodeE",
+        "nodeA2": "nodeA2",
+        "nodeB2": "nodeB2",
+        "nodeC2": "nodeC2",
+        "nodeD2": "nodeD2",
+        "nodeE2": "nodeE2"
+    },
+    "load_name_mapping": {
+        "8_Load-nodeC2": "1",
+        "3_Load-nodeC": "1",
+        "4_Load-nodeD": "1",
+        "9_Load-nodeD2": "1",
+        "7_Load-nodeB2": "1",
+        "2_Load-nodeB": "1"
+    },
+    "shunt_name_mapping": {
+    },
+    "generator_name_mapping": {
+        "4_Sundance": "1",
+        "8_nodeC-nodeC2_TO": "2",
+        "1_Park City": "2",
+        "8_Solitude-2": "1",
+        "6_Alta-2": "1",
+        "10_Brighton-2": "1",
+        "1_Alta": "1",
+        "6_Park City-2": "2",
+        "9_Sundance-2": "1",
+        "3_Solitude": "1",
+        "3_nodeC-nodeC2_FR": "2",
+        "5_Brighton": "1"
+    },
+    "branch_name_mapping": {
+        "2-3_nodeB-nodeC": "EC",
+        "7-8_nodeB2-nodeC2": "C2",
+        "1-2_nodeA-nodeB": "EB",
+        "9-10_nodeD2-nodeE2": "E2",
+        "6-9_nodeA2-nodeD2": "D2",
+        "1-4_nodeA-nodeD": "ED",
+        "3-4_nodeC-nodeD": "ED",
+        "4-5_nodeD-nodeE": "EE",
+        "6-7_nodeA2-nodeB2": "B2",
+        "1-5_nodeA-nodeE": "EE",
+        "8-9_nodeC2-nodeD2": "D2",
+        "6-10_nodeA2-nodeE2": "E2"
+    },
+    "transformer_name_mapping": {
+    },
+    "transformer_control_objective_mapping": {
+    },
+    "transformer_winding_group_category_mapping": {
+    },
+    "transformer_3w_name_mapping": {
+    },
+    "transformer_ckt_mapping": {
+    },
+    "transformer_3w_ckt_mapping": {
+    },
+    "dcline_name_mapping": {
+    },
+    "vsc_line_name_mapping": {
+    },
+    "facts_name_mapping": {
+    },
+    "switched_shunt_name_mapping": {
+    }
+}
