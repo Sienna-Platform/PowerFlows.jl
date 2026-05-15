@@ -3,52 +3,33 @@ function verify_jacobian(
     pf::PF.ACPowerFlow = PF.ACPowerFlow{NewtonRaphsonACPowerFlow}(;
         correct_bustypes = true,
     ),
+    label::String = "",
+    perturbation::Float64 = 0.02,
+    seed::Int = 42,
 )
     data = PF.PowerFlowData(pf, sys)
     time_step = 1
     residual = PF.ACPowerFlowResidual(data, time_step)
     J = PF.ACPowerFlowJacobian(residual, time_step)
-    n_lccs =
-        length(collect(PSY.get_components(PSY.get_available, PSY.TwoTerminalLCCLine, sys)))
-    n = 2 * length(collect(get_components(ACBus, sys))) + 4 * n_lccs
     x0 = PF.calculate_x0(data, time_step)
+    # Verify away from the flat-start state. At flat start θ=0 for every bus,
+    # which silently zeroes all `sin(Δθ)` cross-terms — a sign flip in the
+    # symbolic Jacobian for those entries would not be detected. A small
+    # deterministic perturbation breaks the symmetry.
+    if perturbation > 0
+        Random.seed!(seed)
+        x0 .+= perturbation .* randn(length(x0))
+    end
     residual(x0, time_step)
     J(time_step)
-    J_x0 = deepcopy(J.Jv)
-    Δx_start, Δx_stop = 1e-3, 1e-6
-    for j in 1:n
-        u = zeros(n)
-        u[j] = 1
-        Δx_mag = Δx_start
-        close_enough = false
-        while !close_enough && Δx_mag >= Δx_stop
-            inputValues = [x0 - Δx_mag * u, x0 + Δx_mag * u]
-            outputValues = Vector{Vector{Float64}}()
-            for inputVal in inputValues
-                residual(inputVal, time_step)
-                push!(outputValues, deepcopy(residual.Rv))
-            end
-            ΔF = (outputValues[2] .- outputValues[1]) ./ 2
-            floating_point_issues = all(isapprox.(ΔF, 0.0; atol = eps(Float32)))
-            if floating_point_issues
-                break
-            end
-            ∂F_∂u_numerical = ΔF ./ Δx_mag
-            ∂F_∂u_symbolic = J_x0 * u
-
-            if !isapprox(∂F_∂u_numerical, ∂F_∂u_symbolic; rtol = 1e-6, atol = eps(Float32))
-                Δx_mag /= 10.0
-            else
-                close_enough = true
-            end
-        end
-        @test close_enough
-    end
+    verify_jacobian_asymptotic(
+        residual, deepcopy(J.Jv), x0, time_step; label = label,
+    )
 end
 
 @testset "Jacobian verification" begin
     sys = PSB.build_system(PSITestSystems, "c_sys14")
-    verify_jacobian(sys)
+    verify_jacobian(sys; label = "polar c_sys14")
 end
 
 @testset "Jacobian verification with LCC" begin
@@ -68,7 +49,9 @@ end
     # _add_simple_lcc! already sets rectifier_delay_angle = 0.01 > 0; the
     # default inverter_extinction_angle is 0.0, so bump it here.
     PSY.set_inverter_extinction_angle!(lcc, 1.0)
-    verify_jacobian(sys)
+    # Smaller perturbation here so the LCC α tail entries (α_r ≈ 0.087,
+    # α_i = 1.0) stay clear of the min-thyristor-angle clamp.
+    verify_jacobian(sys; label = "polar 3-bus LCC", perturbation = 0.01)
 end
 
 @testset "Jacobian verification with ZIP load" begin
@@ -86,7 +69,7 @@ end
         constant_impedance_active_power = 1.5,
         constant_impedance_reactive_power = 0.8,
     )
-    verify_jacobian(sys)
+    verify_jacobian(sys; label = "polar ZIP")
 end
 
 @testset "Jacobian verification with distributed slack" begin
@@ -103,5 +86,5 @@ end
         correct_bustypes = true,
         generator_slack_participation_factors = gspf,
     )
-    verify_jacobian(sys; pf = pf)
+    verify_jacobian(sys; pf = pf, label = "polar c_sys14 distributed-slack")
 end

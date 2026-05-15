@@ -182,6 +182,148 @@ function _update_ybus_lcc!(
 end
 
 """
+    _set_lcc_tail_residuals!(F, data, base_offset, time_step) [polar]
+    _set_lcc_tail_residuals!(F, data, base_offset, time_step, e_state, f_state) [rect]
+
+Write the 4 LCC tail residual rows (P-setpoint, DC-line balance, two α
+limit constraints) for each LCC into `F`, starting at slot
+`base_offset + 1`. The i-th LCC occupies slots `base_offset + 4(i-1) + 1
+.. base_offset + 4i`. The polar method reads `|V|` from
+`data.bus_magnitude`; the rectangular method reads `sqrt(e² + f²)` from
+the (e, f) state (since `data.bus_magnitude` holds `V_set` at PV buses,
+not the actual state magnitude). Mirrors the two-method layout of
+[`_update_ybus_lcc!`](@ref).
+"""
+function _set_lcc_tail_residuals!(
+    F::AbstractVector{Float64},
+    data::PowerFlowData,
+    base_offset::Int,
+    time_step::Int,
+)
+    @inbounds for i in 1:size(data.lcc.p_set, 1)
+        (fb, tb) = data.lcc.bus_indices[i]
+        _write_lcc_tail!(
+            F, data, base_offset, time_step, i, fb, tb,
+            data.bus_magnitude[fb, time_step],
+            data.bus_magnitude[tb, time_step],
+        )
+    end
+    return
+end
+
+function _set_lcc_tail_residuals!(
+    F::AbstractVector{Float64},
+    data::PowerFlowData,
+    base_offset::Int,
+    time_step::Int,
+    e_state::Vector{Float64},
+    f_state::Vector{Float64},
+)
+    @inbounds for i in 1:size(data.lcc.p_set, 1)
+        (fb, tb) = data.lcc.bus_indices[i]
+        Vm_fb = sqrt(e_state[fb]^2 + f_state[fb]^2)
+        Vm_tb = sqrt(e_state[tb]^2 + f_state[tb]^2)
+        _write_lcc_tail!(F, data, base_offset, time_step, i, fb, tb, Vm_fb, Vm_tb)
+    end
+    return
+end
+
+@inline function _write_lcc_tail!(
+    F::AbstractVector{Float64},
+    data::PowerFlowData,
+    base_offset::Int,
+    time_step::Int,
+    i::Int,
+    fb::Int,
+    tb::Int,
+    Vm_fb::Float64,
+    Vm_tb::Float64,
+)
+    offset_lcc = base_offset + (i - 1) * 4
+    tap_r = data.lcc.rectifier.tap[i, time_step]
+    tap_i = data.lcc.inverter.tap[i, time_step]
+    phi_r = data.lcc.rectifier.phi[i, time_step]
+    phi_i = data.lcc.inverter.phi[i, time_step]
+    i_dc = data.lcc.i_dc[i, time_step]
+    P_lcc_from = Vm_fb * tap_r * SQRT6_DIV_PI * i_dc * cos(phi_r)
+    P_lcc_to = Vm_tb * tap_i * SQRT6_DIV_PI * i_dc * cos(phi_i)
+    F[offset_lcc + 1] = if data.lcc.setpoint_at_rectifier[i]
+        P_lcc_from - data.lcc.p_set[i, time_step]
+    else
+        -P_lcc_to - data.lcc.p_set[i, time_step]
+    end
+    F[offset_lcc + 2] =
+        P_lcc_from + P_lcc_to - data.lcc.dc_line_resistance[i] * i_dc^2
+    F[offset_lcc + 3] =
+        data.lcc.rectifier.thyristor_angle[i, time_step] -
+        data.lcc.rectifier.min_thyristor_angle[i]
+    F[offset_lcc + 4] =
+        data.lcc.inverter.thyristor_angle[i, time_step] -
+        data.lcc.inverter.min_thyristor_angle[i]
+    return
+end
+
+"""
+    _lcc_jacobian_scalars(data, i, time_step, Vm_fb, Vm_tb)
+
+Precompute the scalar coefficients used by both the polar and the
+rectangular LCC Jacobian assembly for LCC `i` at `time_step`. `Vm_fb` /
+`Vm_tb` are the AC-side voltage magnitudes — polar reads them from
+`data.bus_magnitude`; rectangular computes `sqrt(e² + f²)` from state.
+
+The returned NamedTuple includes the six tail-row × tail-column entries
+that are identical between formulations (under polar's α-approximation
+for the tail rows), plus the building blocks the FB/TB-side row entries
+chain-rule out of.
+"""
+function _lcc_jacobian_scalars(
+    data::PowerFlowData,
+    i::Int,
+    time_step::Int,
+    Vm_fb::Float64,
+    Vm_tb::Float64,
+)
+    i_dc = max(data.lcc.i_dc[i, time_step], 1e-9)
+    tap_r = data.lcc.rectifier.tap[i, time_step]
+    tap_i = data.lcc.inverter.tap[i, time_step]
+    alpha_r = data.lcc.rectifier.thyristor_angle[i, time_step]
+    alpha_i = data.lcc.inverter.thyristor_angle[i, time_step]
+    cos_alpha_r = cos(alpha_r)
+    sin_alpha_r = sin(alpha_r)
+    cos_alpha_i = cos(alpha_i)
+    sin_alpha_i = sin(alpha_i)
+    common_fb = Vm_fb * SQRT6_DIV_PI * i_dc
+    common_tb = Vm_tb * SQRT6_DIV_PI * (-i_dc)
+    common_tap_r = tap_r * SQRT6_DIV_PI * i_dc * cos_alpha_r
+    common_tap_i = tap_i * SQRT6_DIV_PI * (-i_dc) * cos_alpha_i
+    common_alpha_r = -common_fb * tap_r * sin_alpha_r
+    common_alpha_i = -common_tb * tap_i * sin_alpha_i
+    return (
+        i_dc = i_dc,
+        tap_r = tap_r,
+        tap_i = tap_i,
+        cos_alpha_r = cos_alpha_r,
+        sin_alpha_r = sin_alpha_r,
+        cos_alpha_i = cos_alpha_i,
+        sin_alpha_i = sin_alpha_i,
+        common_fb = common_fb,
+        common_tb = common_tb,
+        common_tap_r = common_tap_r,
+        common_tap_i = common_tap_i,
+        common_alpha_r = common_alpha_r,
+        common_alpha_i = common_alpha_i,
+        # Tail-row × tail-column block (6 entries, identical in polar
+        # and rectangular under the α-approximation).
+        d_Ft_fb_d_tap_r = common_fb * cos_alpha_r,
+        d_Ft_fb_d_alpha_r = common_alpha_r,
+        d_Ft_tb_d_tap_r = common_fb * cos_alpha_r,
+        d_Ft_tb_d_tap_i = common_tb * cos_alpha_i,
+        d_Ft_tb_d_alpha_r = common_alpha_r,
+        d_Ft_tb_d_alpha_i = -common_tb * tap_i * sin_alpha_i,
+    )
+end
+
+"""
 Initialize the `arcs` and `bus_indices` fields of the LCCParameters structure in the PowerFlowData.
 """
 function initialize_LCC_arcs_and_buses!(

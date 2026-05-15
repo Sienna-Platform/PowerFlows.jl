@@ -17,7 +17,7 @@ end
     @test LinearAlgebra.norm(R.Rv, Inf) < 1e-7
 end
 
-@testset "Rectangular CI LCC: FD parity on case5_2_lcc" begin
+@testset "Rectangular CI LCC: asymptotic Jacobian verification on case5_2_lcc" begin
     raw_path = joinpath(TEST_DATA_DIR, "case5_2_lcc.raw")
     sys = System(raw_path)
     pf_p = ACPowerFlow{NewtonRaphsonACPowerFlow}()
@@ -29,24 +29,16 @@ end
     J = PF.ACRectangularCIJacobian(R, 1)
     x = Vector{Float64}(undef, length(R.Rv))
     PF.rect_initial_state!(x, data, R.bus_state_offset, R.bus_block_size, 1)
+    # Verify away from the converged state. NB: case5_2_lcc has x_t = 0 for
+    # both converter sides, which forces ϕ ≡ ±α — so the α-approximation in
+    # rect's Jacobian coincides with the true-ϕ residual math regardless of
+    # perturbation. A future test on an LCC system with x_t > 0 would
+    # exercise the α-vs-true-ϕ divergence properly.
+    Random.seed!(42)
+    x .+= 0.02 .* randn(length(x))
     R(x, 1)
     J(1)
-    ε = 1e-6
-    n = length(R.Rv)
-    Jfd = zeros(n, n)
-    for k in 1:n
-        xp = copy(x)
-        xp[k] += ε
-        R(xp, 1)
-        Jfd[:, k] = copy(R.Rv) / (2ε)
-        xm = copy(x)
-        xm[k] -= ε
-        R(xm, 1)
-        Jfd[:, k] -= copy(R.Rv) / (2ε)
-    end
-    R(x, 1)
-    J(1)
-    @test maximum(abs.(Array(J.Jv) - Jfd)) < 1e-4
+    verify_jacobian_asymptotic(R, copy(J.Jv), x, 1; label = "rect CI LCC case5_2")
 end
 
 @testset "Rectangular CI LCC: solve parity with polar" begin

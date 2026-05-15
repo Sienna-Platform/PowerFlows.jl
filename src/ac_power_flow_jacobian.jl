@@ -552,7 +552,6 @@ function _set_entries_for_lcc(data::ACPowerFlowData,
     Jv::SparseArrays.SparseMatrixCSC{Float64, J_INDEX_TYPE},
     num_buses::Int,
     time_step::Int)
-    sqrt6_div_pi = sqrt(6) / π
     for (i, (fb, tb)) in enumerate(data.lcc.bus_indices)
         idx_p_fb = 2 * fb - 1
         idx_q_fb = 2 * fb
@@ -564,9 +563,6 @@ function _set_entries_for_lcc(data::ACPowerFlowData,
         idx_angle_from = offset_lcc + 3
         idx_angle_to = offset_lcc + 4
 
-        i_dc = max(data.lcc.i_dc[i, time_step], 1e-9)  # Avoid numerical issues
-        tap_r = data.lcc.rectifier.tap[i, time_step]
-        tap_i = data.lcc.inverter.tap[i, time_step]
         alpha_r = data.lcc.rectifier.thyristor_angle[i, time_step]
         alpha_i = data.lcc.inverter.thyristor_angle[i, time_step]
         phi_r = data.lcc.rectifier.phi[i, time_step]
@@ -578,60 +574,52 @@ function _set_entries_for_lcc(data::ACPowerFlowData,
         bus_type_fb = data.bus_type[fb, time_step]
         bus_type_tb = data.bus_type[tb, time_step]
 
-        cos_alpha_r = cos(alpha_r)
-        sin_alpha_r = sin(alpha_r)
-        cos_alpha_i = cos(alpha_i)
-        sin_alpha_i = sin(alpha_i)
-
-        common_term_fb = Vm_fb * sqrt6_div_pi * i_dc
-        common_term_tb = Vm_tb * sqrt6_div_pi * (-i_dc)
-        common_term_tap_r = tap_r * sqrt6_div_pi * i_dc * cos_alpha_r
-        common_term_alpha_r = -common_term_fb * tap_r * sin_alpha_r
-        common_term_tap_i = tap_i * sqrt6_div_pi * (-i_dc) * cos_alpha_i
-        common_term_alpha_i = -common_term_tb * tap_i * sin_alpha_i
+        s = _lcc_jacobian_scalars(data, i, time_step, Vm_fb, Vm_tb)
 
         if bus_type_fb == PSY.ACBusTypes.PQ
-            Jv[idx_p_fb, idx_p_fb] += common_term_tap_r # ∂P_fb/∂V_fb
-            Jv[idx_q_fb, idx_p_fb] += _calculate_dQ_dV_lcc(tap_r, i_dc, xtr_r, Vm_fb, phi_r) # ∂Q_fb/∂V_fb
+            Jv[idx_p_fb, idx_p_fb] += s.common_tap_r # ∂P_fb/∂V_fb
+            Jv[idx_q_fb, idx_p_fb] +=
+                _calculate_dQ_dV_lcc(s.tap_r, s.i_dc, xtr_r, Vm_fb, phi_r) # ∂Q_fb/∂V_fb
 
             Jv[idx_q_fb, idx_tap_from] =
-                _calculate_dQ_dt_lcc(tap_r, i_dc, xtr_r, Vm_fb, phi_r) # ∂Q_fb/∂t_fb
+                _calculate_dQ_dt_lcc(s.tap_r, s.i_dc, xtr_r, Vm_fb, phi_r) # ∂Q_fb/∂t_fb
             Jv[idx_q_fb, idx_angle_from] =
-                _calculate_dQ_dα_lcc(tap_r, i_dc, xtr_r, Vm_fb, phi_r, alpha_r) # ∂Q_fb/∂α_fb
+                _calculate_dQ_dα_lcc(s.tap_r, s.i_dc, xtr_r, Vm_fb, phi_r, alpha_r) # ∂Q_fb/∂α_fb
 
-            Jv[idx_tap_from, idx_p_fb] = common_term_tap_r # ∂F_t_fb/∂V_fb
-            Jv[idx_tap_to, idx_p_fb] = common_term_tap_r # ∂F_t_tb/∂V_fb
+            Jv[idx_tap_from, idx_p_fb] = s.common_tap_r # ∂F_t_fb/∂V_fb
+            Jv[idx_tap_to, idx_p_fb] = s.common_tap_r # ∂F_t_tb/∂V_fb
         end
 
         if bus_type_fb == PSY.ACBusTypes.PQ || bus_type_fb == PSY.ACBusTypes.PV
-            Jv[idx_p_fb, idx_tap_from] = common_term_fb * cos_alpha_r # ∂P_fb/∂t_fb
-            Jv[idx_p_fb, idx_angle_from] = common_term_alpha_r # ∂P_fb/∂α_fb
+            Jv[idx_p_fb, idx_tap_from] = s.common_fb * s.cos_alpha_r # ∂P_fb/∂t_fb
+            Jv[idx_p_fb, idx_angle_from] = s.common_alpha_r # ∂P_fb/∂α_fb
         end
 
         if bus_type_tb == PSY.ACBusTypes.PQ
-            Jv[idx_p_tb, idx_p_tb] += common_term_tap_i # ∂P_tb/∂V_tb
-            Jv[idx_q_tb, idx_p_tb] += _calculate_dQ_dV_lcc(tap_i, i_dc, xtr_i, Vm_tb, phi_i) # ∂Q_tb/∂V_tb
+            Jv[idx_p_tb, idx_p_tb] += s.common_tap_i # ∂P_tb/∂V_tb
+            Jv[idx_q_tb, idx_p_tb] +=
+                _calculate_dQ_dV_lcc(s.tap_i, s.i_dc, xtr_i, Vm_tb, phi_i) # ∂Q_tb/∂V_tb
 
             Jv[idx_q_tb, idx_tap_to] =
-                _calculate_dQ_dt_lcc(tap_i, i_dc, xtr_i, Vm_tb, phi_i) # ∂Q_tb/∂t_tb
+                _calculate_dQ_dt_lcc(s.tap_i, s.i_dc, xtr_i, Vm_tb, phi_i) # ∂Q_tb/∂t_tb
             # φ_i convention flips sign of ∂φ_i/∂α_i vs the rectifier; negate helper output
             Jv[idx_q_tb, idx_angle_to] =
-                -_calculate_dQ_dα_lcc(tap_i, i_dc, xtr_i, Vm_tb, phi_i, alpha_i) # ∂Q_tb/∂α_tb
+                -_calculate_dQ_dα_lcc(s.tap_i, s.i_dc, xtr_i, Vm_tb, phi_i, alpha_i) # ∂Q_tb/∂α_tb
 
-            Jv[idx_tap_to, idx_p_tb] = tap_i * sqrt6_div_pi * (-i_dc) * cos_alpha_i # ∂F_t_tb/∂V_tb
+            Jv[idx_tap_to, idx_p_tb] = s.common_tap_i # ∂F_t_tb/∂V_tb
         end
 
         if bus_type_tb == PSY.ACBusTypes.PQ || bus_type_tb == PSY.ACBusTypes.PV
-            Jv[idx_p_tb, idx_tap_to] = common_term_tb * cos_alpha_i # ∂P_tb/∂t_tb
-            Jv[idx_p_tb, idx_angle_to] = common_term_alpha_i # ∂P_tb/∂α_tb
+            Jv[idx_p_tb, idx_tap_to] = s.common_tb * s.cos_alpha_i # ∂P_tb/∂t_tb
+            Jv[idx_p_tb, idx_angle_to] = s.common_alpha_i # ∂P_tb/∂α_tb
         end
 
-        Jv[idx_tap_from, idx_tap_from] = common_term_fb * cos_alpha_r # ∂F_t_fb/∂t_fb
-        Jv[idx_tap_from, idx_angle_from] = common_term_alpha_r # ∂F_t_fb/∂α_fb
-        Jv[idx_tap_to, idx_tap_from] = common_term_fb * cos_alpha_r # ∂F_t_tb/∂t_fb
-        Jv[idx_tap_to, idx_tap_to] = common_term_tb * cos_alpha_i # ∂F_t_tb/∂t_tb
-        Jv[idx_tap_to, idx_angle_from] = common_term_alpha_r # ∂F_t_tb/∂α_fb
-        Jv[idx_tap_to, idx_angle_to] = -common_term_tb * tap_i * sin_alpha_i # ∂F_t_tb/∂α_tb
+        Jv[idx_tap_from, idx_tap_from] = s.d_Ft_fb_d_tap_r
+        Jv[idx_tap_from, idx_angle_from] = s.d_Ft_fb_d_alpha_r
+        Jv[idx_tap_to, idx_tap_from] = s.d_Ft_tb_d_tap_r
+        Jv[idx_tap_to, idx_tap_to] = s.d_Ft_tb_d_tap_i
+        Jv[idx_tap_to, idx_angle_from] = s.d_Ft_tb_d_alpha_r
+        Jv[idx_tap_to, idx_angle_to] = s.d_Ft_tb_d_alpha_i
     end
     return
 end

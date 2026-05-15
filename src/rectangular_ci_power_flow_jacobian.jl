@@ -672,12 +672,15 @@ with these changes:
     not polar's `ΔP_fb` / `ΔQ_fb`. The LCC contribution to `−Re(Y_lcc·V_fb)` and
     `−Im(Y_lcc·V_fb)` under the α-approximation (φ ≈ α — same approximation polar
     uses for ∂P/∂Vm) gives the bus-diagonal additions and tail cross-terms below.
-  * As in polar, the inverter-side bus diagonal block is NOT augmented for LCC
-    (this matches polar's missing `∂P_tb/∂Vm_tb` LCC partial; convergence is
-    polar-like).
 
-LCC tail row entries (∂F_t_*, ∂F_α_*) use the same polar α-approximation as the
-polar code, chain-ruled into `(e, f)` columns.
+Tail row entries (∂F_t_*, ∂F_α_*) use the same α-approximation as the polar
+formulation, chain-ruled into `(e, f)` columns. The tail × tail block is
+computed once in [`_lcc_jacobian_scalars`](@ref) and consumed by both
+formulations.
+
+Note: unlike polar, this assembly does not yet use the true-φ Q-derivative
+helpers (`_calculate_dQ_dV_lcc` etc.) on the FB/TB-side bus rows — those would
+sharpen the Jacobian for stiff LCC cases and could be ported later.
 """
 function _set_entries_for_lcc_rect!(
     data::ACPowerFlowData,
@@ -690,18 +693,8 @@ function _set_entries_for_lcc_rect!(
     time_step::Int,
 )
     @inbounds for (i, (fb, tb)) in enumerate(data.lcc.bus_indices)
-        i_dc = max(data.lcc.i_dc[i, time_step], 1e-9)
-        tap_r = data.lcc.rectifier.tap[i, time_step]
-        tap_i = data.lcc.inverter.tap[i, time_step]
-        alpha_r = data.lcc.rectifier.thyristor_angle[i, time_step]
-        alpha_i = data.lcc.inverter.thyristor_angle[i, time_step]
         bus_type_fb = data.bus_type[fb, time_step]
         bus_type_tb = data.bus_type[tb, time_step]
-
-        cos_alpha_r = cos(alpha_r)
-        sin_alpha_r = sin(alpha_r)
-        cos_alpha_i = cos(alpha_i)
-        sin_alpha_i = sin(alpha_i)
 
         e_fb = e_state[fb]
         f_fb = f_state[fb]
@@ -712,11 +705,13 @@ function _set_entries_for_lcc_rect!(
         Vm_tb_sq = e_tb^2 + f_tb^2
         Vm_tb = sqrt(Vm_tb_sq)
 
+        s = _lcc_jacobian_scalars(data, i, time_step, Vm_fb, Vm_tb)
+
         # FB-side: LCC contribution under α-approximation (φ_r ≈ α_r).
         # F_lcc_fb_r = -A_fb·u_fb,  F_lcc_fb_i = -A_fb·w_fb
-        A_fb = tap_r * SQRT6_DIV_PI * i_dc / Vm_fb
-        u_fb = cos_alpha_r * e_fb + sin_alpha_r * f_fb
-        w_fb = cos_alpha_r * f_fb - sin_alpha_r * e_fb
+        A_fb = s.tap_r * SQRT6_DIV_PI * s.i_dc / Vm_fb
+        u_fb = s.cos_alpha_r * e_fb + s.sin_alpha_r * f_fb
+        w_fb = s.cos_alpha_r * f_fb - s.sin_alpha_r * e_fb
         # Bus diagonal additions for FB (only PQ/PV — for REF, (e_fb, f_fb)
         # are fixed constants, not state variables in those columns).
         if bus_type_fb == PSY.ACBusTypes.PQ || bus_type_fb == PSY.ACBusTypes.PV
@@ -728,15 +723,15 @@ function _set_entries_for_lcc_rect!(
         end
         # FB-side cross-terms ∂F_lcc_fb / ∂(t_r, α_r) — applicable for all
         # bus types because the row is ΔI residual at fb (always exists).
-        Jvnz[lcc_nz[1, i]] = -A_fb * u_fb / tap_r       # (col_e_fb, idx_tap_r)
+        Jvnz[lcc_nz[1, i]] = -A_fb * u_fb / s.tap_r     # (col_e_fb, idx_tap_r)
         Jvnz[lcc_nz[2, i]] = -A_fb * w_fb               # (col_e_fb, idx_alpha_r)
-        Jvnz[lcc_nz[3, i]] = -A_fb * w_fb / tap_r       # (col_f_fb, idx_tap_r)
+        Jvnz[lcc_nz[3, i]] = -A_fb * w_fb / s.tap_r     # (col_f_fb, idx_tap_r)
         Jvnz[lcc_nz[4, i]] = A_fb * u_fb                # (col_f_fb, idx_alpha_r)
 
         # TB-side: F_lcc_tb_r = +A_tb·u_tb,  F_lcc_tb_i = +A_tb·w_tb
-        A_tb = tap_i * SQRT6_DIV_PI * i_dc / Vm_tb
-        u_tb = cos_alpha_i * e_tb - sin_alpha_i * f_tb
-        w_tb = cos_alpha_i * f_tb + sin_alpha_i * e_tb
+        A_tb = s.tap_i * SQRT6_DIV_PI * s.i_dc / Vm_tb
+        u_tb = s.cos_alpha_i * e_tb - s.sin_alpha_i * f_tb
+        w_tb = s.cos_alpha_i * f_tb + s.sin_alpha_i * e_tb
         if bus_type_tb == PSY.ACBusTypes.PQ || bus_type_tb == PSY.ACBusTypes.PV
             inv_Vsq_tb = 1.0 / Vm_tb_sq
             Jvnz[diag_base_nz[1, tb]] += A_tb * f_tb * w_tb * inv_Vsq_tb
@@ -744,27 +739,21 @@ function _set_entries_for_lcc_rect!(
             Jvnz[diag_base_nz[3, tb]] += -A_tb * f_tb * u_tb * inv_Vsq_tb
             Jvnz[diag_base_nz[4, tb]] += A_tb * e_tb * u_tb * inv_Vsq_tb
         end
-        Jvnz[lcc_nz[5, i]] = A_tb * u_tb / tap_i        # (col_e_tb, idx_tap_i)
+        Jvnz[lcc_nz[5, i]] = A_tb * u_tb / s.tap_i      # (col_e_tb, idx_tap_i)
         Jvnz[lcc_nz[6, i]] = -A_tb * w_tb               # (col_e_tb, idx_alpha_i)
-        Jvnz[lcc_nz[7, i]] = A_tb * w_tb / tap_i        # (col_f_tb, idx_tap_i)
+        Jvnz[lcc_nz[7, i]] = A_tb * w_tb / s.tap_i      # (col_f_tb, idx_tap_i)
         Jvnz[lcc_nz[8, i]] = A_tb * u_tb                # (col_f_tb, idx_alpha_i)
 
-        # LCC tail row entries (F_t_r, F_t_i) — mirror polar α-approx then chain-rule.
-        common_term_tap_r = tap_r * SQRT6_DIV_PI * i_dc * cos_alpha_r
-        common_term_fb_polar = Vm_fb * SQRT6_DIV_PI * i_dc
-        common_term_alpha_r = -common_term_fb_polar * tap_r * sin_alpha_r
-        common_term_tb_polar = Vm_tb * SQRT6_DIV_PI * (-i_dc)
-        common_term_tap_i = tap_i * SQRT6_DIV_PI * (-i_dc) * cos_alpha_i
-
-        # ∂F_t_*/∂(e, f) chain rule from ∂/∂Vm. At REF buses (e, f) are not
-        # state, so the column slots there hold (P_gen, Q_gen) — write zero.
+        # LCC tail row entries (F_t_r, F_t_i) — chain rule ∂/∂Vm into (e, f).
+        # At REF buses (e, f) are not state, so the column slots there hold
+        # (P_gen, Q_gen); write zero in that case.
         if bus_type_fb == PSY.ACBusTypes.PQ || bus_type_fb == PSY.ACBusTypes.PV
             de_dV_fb = e_fb / Vm_fb
             df_dV_fb = f_fb / Vm_fb
-            Jvnz[lcc_nz[9, i]] = common_term_tap_r * de_dV_fb  # (idx_tap_r, col_e_fb)
-            Jvnz[lcc_nz[10, i]] = common_term_tap_r * df_dV_fb  # (idx_tap_r, col_f_fb)
-            Jvnz[lcc_nz[11, i]] = common_term_tap_r * de_dV_fb  # (idx_tap_i, col_e_fb)
-            Jvnz[lcc_nz[12, i]] = common_term_tap_r * df_dV_fb  # (idx_tap_i, col_f_fb)
+            Jvnz[lcc_nz[9, i]] = s.common_tap_r * de_dV_fb  # (idx_tap_r, col_e_fb)
+            Jvnz[lcc_nz[10, i]] = s.common_tap_r * df_dV_fb  # (idx_tap_r, col_f_fb)
+            Jvnz[lcc_nz[11, i]] = s.common_tap_r * de_dV_fb  # (idx_tap_i, col_e_fb)
+            Jvnz[lcc_nz[12, i]] = s.common_tap_r * df_dV_fb  # (idx_tap_i, col_f_fb)
         else
             Jvnz[lcc_nz[9, i]] = 0.0
             Jvnz[lcc_nz[10, i]] = 0.0
@@ -774,19 +763,20 @@ function _set_entries_for_lcc_rect!(
         if bus_type_tb == PSY.ACBusTypes.PQ || bus_type_tb == PSY.ACBusTypes.PV
             de_dV_tb = e_tb / Vm_tb
             df_dV_tb = f_tb / Vm_tb
-            Jvnz[lcc_nz[13, i]] = common_term_tap_i * de_dV_tb  # (idx_tap_i, col_e_tb)
-            Jvnz[lcc_nz[14, i]] = common_term_tap_i * df_dV_tb  # (idx_tap_i, col_f_tb)
+            Jvnz[lcc_nz[13, i]] = s.common_tap_i * de_dV_tb  # (idx_tap_i, col_e_tb)
+            Jvnz[lcc_nz[14, i]] = s.common_tap_i * df_dV_tb  # (idx_tap_i, col_f_tb)
         else
             Jvnz[lcc_nz[13, i]] = 0.0
             Jvnz[lcc_nz[14, i]] = 0.0
         end
 
-        Jvnz[lcc_nz[15, i]] = common_term_fb_polar * cos_alpha_r        # (idx_tap_r, idx_tap_r)
-        Jvnz[lcc_nz[16, i]] = common_term_alpha_r                       # (idx_tap_r, idx_alpha_r)
-        Jvnz[lcc_nz[17, i]] = common_term_fb_polar * cos_alpha_r        # (idx_tap_i, idx_tap_r)
-        Jvnz[lcc_nz[18, i]] = common_term_tb_polar * cos_alpha_i        # (idx_tap_i, idx_tap_i)
-        Jvnz[lcc_nz[19, i]] = common_term_alpha_r                       # (idx_tap_i, idx_alpha_r)
-        Jvnz[lcc_nz[20, i]] = -common_term_tb_polar * tap_i * sin_alpha_i # (idx_tap_i, idx_alpha_i)
+        # Tail × tail block (shared with polar via _lcc_jacobian_scalars).
+        Jvnz[lcc_nz[15, i]] = s.d_Ft_fb_d_tap_r
+        Jvnz[lcc_nz[16, i]] = s.d_Ft_fb_d_alpha_r
+        Jvnz[lcc_nz[17, i]] = s.d_Ft_tb_d_tap_r
+        Jvnz[lcc_nz[18, i]] = s.d_Ft_tb_d_tap_i
+        Jvnz[lcc_nz[19, i]] = s.d_Ft_tb_d_alpha_r
+        Jvnz[lcc_nz[20, i]] = s.d_Ft_tb_d_alpha_i
         # idx_alpha_r and idx_alpha_i identity diagonals stay at 1.0 (set at pattern build).
     end
     return
