@@ -65,6 +65,8 @@ end
     # Both thyristor angles must be strictly positive at x0; otherwise the
     # arccos in _calculate_ϕ_lcc hits the clamp boundary and sin(ϕ) = 0,
     # making the analytic Q-derivatives singular at the verification point.
+    # _add_simple_lcc! already sets rectifier_delay_angle = 0.01 > 0; the
+    # default inverter_extinction_angle is 0.0, so bump it here.
     PSY.set_inverter_extinction_angle!(lcc, 1.0)
     verify_jacobian(sys)
 end
