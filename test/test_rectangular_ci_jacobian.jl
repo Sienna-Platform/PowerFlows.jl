@@ -1,24 +1,5 @@
-function _fd_jacobian(R::PF.ACRectangularCIResidual, x::Vector{Float64}, time_step::Int)
-    ε = 1e-6
-    n = length(R.Rv)
-    Jfd = zeros(n, n)
-    for k in 1:n
-        xp = copy(x)
-        xp[k] += ε
-        R(xp, time_step)
-        Fp = copy(R.Rv)
-        xm = copy(x)
-        xm[k] -= ε
-        R(xm, time_step)
-        Fm = copy(R.Rv)
-        Jfd[:, k] = (Fp - Fm) / (2ε)
-    end
-    R(x, time_step)
-    return Jfd
-end
-
-@testset "Rectangular CI Jacobian: FD parity" begin
-    @testset "c_sys5 at polar-converged state" begin
+@testset "Rectangular CI Jacobian: asymptotic verification" begin
+    @testset "c_sys5 at polar-converged + perturbation" begin
         sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
         pf_polar = ACPowerFlow{NewtonRaphsonACPowerFlow}()
         PF.solve_and_store_power_flow!(pf_polar, sys)
@@ -28,14 +9,16 @@ end
         J = PF.ACRectangularCIJacobian(R, 1)
         x = Vector{Float64}(undef, length(R.Rv))
         PF.rect_initial_state!(x, data, R.bus_state_offset, R.bus_block_size, 1)
+        # Avoid verifying at the special converged state — see note in
+        # verify_jacobian (test_jacobian.jl) about hidden zeros.
+        Random.seed!(42)
+        x .+= 0.02 .* randn(length(x))
         R(x, 1)
         J(1)
-        Jfd = _fd_jacobian(R, x, 1)
-        J(1)
-        @test maximum(abs.(Array(J.Jv) - Jfd)) < 1e-4
+        verify_jacobian_asymptotic(R, copy(J.Jv), x, 1; label = "rect CI c_sys5")
     end
 
-    @testset "c_sys14 at polar-converged state" begin
+    @testset "c_sys14 at polar-converged + perturbation" begin
         sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
         pf_polar = ACPowerFlow{NewtonRaphsonACPowerFlow}()
         PF.solve_and_store_power_flow!(pf_polar, sys)
@@ -45,11 +28,11 @@ end
         J = PF.ACRectangularCIJacobian(R, 1)
         x = Vector{Float64}(undef, length(R.Rv))
         PF.rect_initial_state!(x, data, R.bus_state_offset, R.bus_block_size, 1)
+        Random.seed!(42)
+        x .+= 0.02 .* randn(length(x))
         R(x, 1)
         J(1)
-        Jfd = _fd_jacobian(R, x, 1)
-        J(1)
-        @test maximum(abs.(Array(J.Jv) - Jfd)) < 1e-4
+        verify_jacobian_asymptotic(R, copy(J.Jv), x, 1; label = "rect CI c_sys14")
     end
 
     @testset "ZIP constant-current load at perturbed state" begin
@@ -80,9 +63,7 @@ end
         x .+= 0.02 .* randn(length(x))
         R(x, 1)
         J(1)
-        Jfd = _fd_jacobian(R, x, 1)
-        J(1)
-        @test maximum(abs.(Array(J.Jv) - Jfd)) < 1e-3
+        verify_jacobian_asymptotic(R, copy(J.Jv), x, 1; label = "rect CI ZIP perturbed")
     end
 
     @testset "c_sys5 at perturbed (non-converged) state" begin
@@ -99,9 +80,7 @@ end
         x .+= 0.05 .* randn(length(x))
         R(x, 1)
         J(1)
-        Jfd = _fd_jacobian(R, x, 1)
-        J(1)
-        @test maximum(abs.(Array(J.Jv) - Jfd)) < 1e-3
+        verify_jacobian_asymptotic(R, copy(J.Jv), x, 1; label = "rect CI c_sys5 perturbed")
     end
 end
 
