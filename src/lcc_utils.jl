@@ -33,15 +33,20 @@ end
     _calculate_dP_dV_lcc(t, I_dc, x_t, Vm, ϕ) -> Float64
 
 True-ϕ derivative of `P_lcc = Vm · t · √6/π · I_dc · cos(ϕ(Vm, t, α))` with
-respect to `Vm`, including the `∂ϕ/∂Vm` chain term. Unlike the matching
-`_calculate_dQ_dV_lcc`, the `sin(ϕ)` factor introduced by `∂ϕ/∂Vm = -∂raw/∂Vm /
-sin(ϕ)` cancels against the `-sin(ϕ)` from differentiating `cos(ϕ)` — no
-boundary guard needed.
+respect to `Vm`. Two regimes:
 
-Caller must pass `I_dc` and `ϕ` matching the side of interest: rectifier
-uses `(+I_dc, phi_r)`; inverter uses `(+I_dc, phi_i)` (the same positive
-I_dc, since `P_lcc_to = V_tb · tap_i · √6/π · I_dc · cos(phi_i)` and `phi_i`
-already encodes the sign convention via `_calculate_ϕ_lcc(-I_dc, ...)`).
+  * Interior (ϕ unclamped): `∂ϕ/∂Vm = -∂raw/∂Vm / sin(ϕ)` is nonzero; the
+    `sin(ϕ)` factor from the chain rule cancels the `-sin(ϕ)` from
+    differentiating `cos(ϕ)`, giving the second (chain) term below.
+  * Clamp (sin(ϕ) ≈ 0, i.e. ϕ ∈ {0, π}): ϕ is locally pinned (`∂ϕ/∂x = 0`)
+    and the residual sees only the leading `Vm · cos(ϕ)` dependence on
+    `Vm`. The chain term must be dropped — otherwise the analytic Jacobian
+    disagrees with the residual at the clamp, exactly analogous to the
+    `sin(ϕ)→0` guard in `_calculate_dQ_dV_lcc`.
+
+Caller passes `I_dc > 0` and the side-specific ϕ. Rectifier: `phi_r`.
+Inverter: `phi_i` (already encodes the sign convention via
+`_calculate_ϕ_lcc(-I_dc, …)`; positive `I_dc` is still passed here).
 """
 function _calculate_dP_dV_lcc(
     t::Float64,
@@ -50,16 +55,18 @@ function _calculate_dP_dV_lcc(
     Vm::Float64,
     ϕ::Float64,
 )::Float64
-    return t * sqrt(6) / π * I_dc * cos(ϕ) +
-           sqrt(6) / π * I_dc^2 * x_t / (sqrt(2) * Vm)
+    leading = t * sqrt(6) / π * I_dc * cos(ϕ)
+    sin(ϕ) < LCC_sinϕ_TOLERANCE && return leading  # clamped: ∂ϕ/∂Vm = 0
+    return leading + sqrt(6) / π * I_dc^2 * x_t / (sqrt(2) * Vm)
 end
 
 """
     _calculate_dP_dt_lcc(t, I_dc, x_t, Vm, ϕ) -> Float64
 
 True-ϕ derivative of `P_lcc` with respect to the transformer tap `t`. Same
-cancellation as `_calculate_dP_dV_lcc` — no `1/sin(ϕ)` term, no boundary
-guard required.
+two-regime structure as `_calculate_dP_dV_lcc`: chain term only when
+unclamped (`sin(ϕ) ≥ LCC_sinϕ_TOLERANCE`); leading `Vm · cos(ϕ)` term
+always present.
 """
 function _calculate_dP_dt_lcc(
     t::Float64,
@@ -68,8 +75,82 @@ function _calculate_dP_dt_lcc(
     Vm::Float64,
     ϕ::Float64,
 )::Float64
-    return Vm * sqrt(6) / π * I_dc * cos(ϕ) +
-           sqrt(6) / π * I_dc^2 * x_t / (sqrt(2) * t)
+    leading = Vm * sqrt(6) / π * I_dc * cos(ϕ)
+    sin(ϕ) < LCC_sinϕ_TOLERANCE && return leading  # clamped: ∂ϕ/∂t = 0
+    return leading + sqrt(6) / π * I_dc^2 * x_t / (sqrt(2) * t)
+end
+
+"""
+    _dphi_dV_lcc(x_t, I_dc, V, t, ϕ) -> Float64
+
+`∂ϕ/∂V` with `sin(ϕ) → 0` clamp guard returning 0. In the interior,
+`∂ϕ/∂V = -∂raw/∂V / sin(ϕ) = -x_t·I_dc / (√2·V²·t·sin(ϕ))`. At the
+clamp ϕ is pinned (`∂ϕ/∂V = 0`). Same form on both sides — the inverter
+passes the same positive `I_dc`, only its `ϕ` differs.
+"""
+function _dphi_dV_lcc(
+    x_t::Float64,
+    I_dc::Float64,
+    V::Float64,
+    t::Float64,
+    ϕ::Float64,
+)::Float64
+    sϕ = sin(ϕ)
+    sϕ < LCC_sinϕ_TOLERANCE && return 0.0
+    return -x_t * I_dc / (sqrt(2) * V^2 * t * sϕ)
+end
+
+"""
+    _dphi_dt_lcc(x_t, I_dc, V, t, ϕ) -> Float64
+
+`∂ϕ/∂t` (tap) with clamp guard. `-x_t·I_dc / (√2·V·t²·sin(ϕ))` in the
+interior, 0 at the clamp.
+"""
+function _dphi_dt_lcc(
+    x_t::Float64,
+    I_dc::Float64,
+    V::Float64,
+    t::Float64,
+    ϕ::Float64,
+)::Float64
+    sϕ = sin(ϕ)
+    sϕ < LCC_sinϕ_TOLERANCE && return 0.0
+    return -x_t * I_dc / (sqrt(2) * V * t^2 * sϕ)
+end
+
+"""
+    _dphi_dα_lcc(α, ϕ) -> Float64
+
+`∂ϕ/∂α` (rectifier sign) with clamp guard. `sin(α)/sin(ϕ)` in the
+interior, 0 at the clamp. Inverter convention flips the sign — callers
+on the inverter side negate the helper output.
+"""
+function _dphi_dα_lcc(α::Float64, ϕ::Float64)::Float64
+    sϕ = sin(ϕ)
+    sϕ < LCC_sinϕ_TOLERANCE && return 0.0
+    return sin(α) / sϕ
+end
+
+"""
+    _calculate_dP_dα_lcc(t, I_dc, Vm, α, ϕ) -> Float64
+
+True-ϕ derivative of `P_lcc` with respect to the firing/extinction angle
+`α`, rectifier sign convention. In the interior, `∂ϕ/∂α = sin(α)/sin(ϕ)`
+and combines with the `-sin(ϕ)` from differentiating `cos(ϕ)` to give the
+closed form below (no `sin(ϕ)` in the result). At the clamp, `∂ϕ/∂α = 0`
+and the true derivative is zero — same boundary handling as the dQ
+helpers. Inverter callers must negate the helper output (the inverter ϕ
+convention flips `∂ϕ_i/∂α_i`).
+"""
+function _calculate_dP_dα_lcc(
+    t::Float64,
+    I_dc::Float64,
+    Vm::Float64,
+    α::Float64,
+    ϕ::Float64,
+)::Float64
+    sin(ϕ) < LCC_sinϕ_TOLERANCE && return 0.0
+    return -Vm * t * sqrt(6) / π * I_dc * sin(α)
 end
 
 """
@@ -315,9 +396,13 @@ rectangular LCC Jacobian assembly for LCC `i` at `time_step`. `Vm_fb` /
 `data.bus_magnitude`; rectangular computes `sqrt(e² + f²)` from state.
 
 The returned NamedTuple includes the six tail-row × tail-column entries
-that are identical between formulations (under polar's α-approximation
-for the tail rows), plus the building blocks the FB/TB-side row entries
-chain-rule out of.
+that are identical between formulations (the tail rows themselves are
+identical, and so are the tail-state columns). These are computed via
+the true-ϕ helpers (`_calculate_dP_dt_lcc`, `_calculate_dP_dα_lcc`),
+which apply the `sin(ϕ) → 0` boundary guard: in the interior the
+algebraic identity makes the result equal to the α-approximation form,
+and at the clamp the guard correctly drops the chain term so the
+Jacobian matches the residual (which sees `∂ϕ/∂x = 0` at the clamp).
 """
 function _lcc_jacobian_scalars(
     data::PowerFlowData,
@@ -331,6 +416,10 @@ function _lcc_jacobian_scalars(
     tap_i = data.lcc.inverter.tap[i, time_step]
     alpha_r = data.lcc.rectifier.thyristor_angle[i, time_step]
     alpha_i = data.lcc.inverter.thyristor_angle[i, time_step]
+    phi_r = data.lcc.rectifier.phi[i, time_step]
+    phi_i = data.lcc.inverter.phi[i, time_step]
+    xtr_r = data.lcc.rectifier.transformer_reactance[i]
+    xtr_i = data.lcc.inverter.transformer_reactance[i]
     cos_alpha_r = cos(alpha_r)
     sin_alpha_r = sin(alpha_r)
     cos_alpha_i = cos(alpha_i)
@@ -341,6 +430,19 @@ function _lcc_jacobian_scalars(
     common_tap_i = tap_i * SQRT6_DIV_PI * (-i_dc) * cos_alpha_i
     common_alpha_r = -common_fb * tap_r * sin_alpha_r
     common_alpha_i = -common_tb * tap_i * sin_alpha_i
+    # True-ϕ derivatives of P_lcc_{from, to} for the tail × tail block.
+    # Inverter signs:
+    #   ∂P_lcc_to/∂tap_i: the helper returns the rectifier-style formula;
+    #     for the inverter `phi_i ≈ π − α_i` makes `cos(phi_i) < 0`, so the
+    #     helper already returns the correct negative coefficient — no sign
+    #     flip needed here.
+    #   ∂P_lcc_to/∂α_i: ϕ_i convention flips `∂ϕ_i/∂α_i`, so negate the helper.
+    dP_dV_fb = _calculate_dP_dV_lcc(tap_r, i_dc, xtr_r, Vm_fb, phi_r)
+    dP_dV_tb = _calculate_dP_dV_lcc(tap_i, i_dc, xtr_i, Vm_tb, phi_i)
+    dP_dt_fb = _calculate_dP_dt_lcc(tap_r, i_dc, xtr_r, Vm_fb, phi_r)
+    dP_dt_tb = _calculate_dP_dt_lcc(tap_i, i_dc, xtr_i, Vm_tb, phi_i)
+    dP_dα_fb = _calculate_dP_dα_lcc(tap_r, i_dc, Vm_fb, alpha_r, phi_r)
+    dP_dα_tb = -_calculate_dP_dα_lcc(tap_i, i_dc, Vm_tb, alpha_i, phi_i)
     return (
         i_dc = i_dc,
         tap_r = tap_r,
@@ -355,14 +457,23 @@ function _lcc_jacobian_scalars(
         common_tap_i = common_tap_i,
         common_alpha_r = common_alpha_r,
         common_alpha_i = common_alpha_i,
-        # Tail-row × tail-column block (6 entries, identical in polar
-        # and rectangular under the α-approximation).
-        d_Ft_fb_d_tap_r = common_fb * cos_alpha_r,
-        d_Ft_fb_d_alpha_r = common_alpha_r,
-        d_Ft_tb_d_tap_r = common_fb * cos_alpha_r,
-        d_Ft_tb_d_tap_i = common_tb * cos_alpha_i,
-        d_Ft_tb_d_alpha_r = common_alpha_r,
-        d_Ft_tb_d_alpha_i = -common_tb * tap_i * sin_alpha_i,
+        # Side-specific dP helpers, exposed so polar bus-row × tail-column
+        # entries (and rect tail × bus chain rules) can use the
+        # boundary-guarded values.
+        dP_dV_fb = dP_dV_fb,
+        dP_dV_tb = dP_dV_tb,
+        dP_dα_fb = dP_dα_fb,
+        dP_dα_tb = dP_dα_tb,
+        # Tail-row × tail-column block (6 entries). F_t_fb has the
+        # P_lcc_from contribution (in the setpoint_at_rectifier case);
+        # F_t_tb has both P_lcc_from and P_lcc_to. d_Ft_fb_d_alpha_i is
+        # zero because F_t_fb doesn't depend on α_i.
+        d_Ft_fb_d_tap_r = dP_dt_fb,
+        d_Ft_fb_d_alpha_r = dP_dα_fb,
+        d_Ft_tb_d_tap_r = dP_dt_fb,
+        d_Ft_tb_d_tap_i = dP_dt_tb,
+        d_Ft_tb_d_alpha_r = dP_dα_fb,
+        d_Ft_tb_d_alpha_i = dP_dα_tb,
     )
 end
 

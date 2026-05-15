@@ -54,6 +54,31 @@ end
     verify_jacobian(sys; label = "polar 3-bus LCC", perturbation = 0.01)
 end
 
+@testset "Jacobian verification with LCC at inverter ϕ clamp" begin
+    # Drive the inverter into the `raw < -1` clamp of `_calculate_ϕ_lcc`:
+    # need cos(α_i) + x_t·I_dc/(√2·V·tap) > 1. Large inverter x_t plus a
+    # small extinction angle does it. This exercises the `sin(ϕ) → 0`
+    # boundary guards in the dP/dV, dP/dt helpers — without those guards
+    # the analytic Jacobian disagrees with the residual at the inverter,
+    # and the asymptotic verifier would catch it as order-1 decay.
+    sys = System(100.0)
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.1, 0.0)
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.PQ, 230, 1.1, 0.0)
+    b3 = _add_simple_bus!(sys, 3, ACBusTypes.PQ, 230, 1.1, 0.0)
+    _add_simple_load!(sys, b2, 10, 5)
+    _add_simple_load!(sys, b3, 60, 20)
+    _add_simple_line!(sys, b1, b2, 5e-3, 5e-3, 1e-3)
+    _add_simple_line!(sys, b1, b3, 5e-3, 5e-3, 1e-3)
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    # xc_i = 0.20 (large), α_i = 0.1 rad (small) → inverter raw < -1, ϕ = π.
+    lcc = _add_simple_lcc!(sys, b2, b3, 0.05, 0.05, 0.20)
+    PSY.set_inverter_extinction_angle!(lcc, 0.1)
+    PSY.set_rectifier_delay_angle!(lcc, 0.1)
+    verify_jacobian(
+        sys; label = "polar 3-bus LCC, inverter ϕ-clamp", perturbation = 0.01,
+    )
+end
+
 @testset "Jacobian verification with ZIP load" begin
     sys = System(100.0)
     b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.0, 0.0)

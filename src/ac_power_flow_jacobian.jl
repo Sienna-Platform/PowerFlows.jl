@@ -607,7 +607,7 @@ function _set_entries_for_lcc(data::ACPowerFlowData,
 
         if bus_type_fb == PSY.ACBusTypes.PQ || bus_type_fb == PSY.ACBusTypes.PV
             Jv[idx_p_fb, idx_tap_from] = dP_dt_fb # ∂P_fb/∂t_fb
-            Jv[idx_p_fb, idx_angle_from] = s.common_alpha_r # ∂P_fb/∂α_fb (α-approx is exact)
+            Jv[idx_p_fb, idx_angle_from] = s.dP_dα_fb # ∂P_fb/∂α_fb (clamp-guarded)
         end
 
         if bus_type_tb == PSY.ACBusTypes.PQ
@@ -626,7 +626,7 @@ function _set_entries_for_lcc(data::ACPowerFlowData,
 
         if bus_type_tb == PSY.ACBusTypes.PQ || bus_type_tb == PSY.ACBusTypes.PV
             Jv[idx_p_tb, idx_tap_to] = dP_dt_tb # ∂P_tb/∂t_tb
-            Jv[idx_p_tb, idx_angle_to] = s.common_alpha_i # ∂P_tb/∂α_tb (α-approx is exact)
+            Jv[idx_p_tb, idx_angle_to] = s.dP_dα_tb # ∂P_tb/∂α_tb (clamp-guarded)
         end
 
         Jv[idx_tap_from, idx_tap_from] = s.d_Ft_fb_d_tap_r
