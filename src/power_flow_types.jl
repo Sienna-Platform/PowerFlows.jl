@@ -215,8 +215,9 @@ function ACPowerFlow{ACSolver}(;
     time_steps::Int = 1,
     time_step_names::Vector{String} = String[],
     correct_bustypes::Bool = false,
-    solver_settings::Dict{Symbol, Any} = Dict{Symbol, Any}(),
+    solver_settings::AbstractDict = Dict{Symbol, Any}(),
 ) where {ACSolver <: ACPowerFlowSolverType}
+    settings = Dict{Symbol, Any}(solver_settings)
     if calculate_loss_factors && ACSolver == LevenbergMarquardtACPowerFlow
         error("Loss factor calculation is not supported by the Levenberg-Marquardt solver.")
     end
@@ -249,7 +250,7 @@ function ACPowerFlow{ACSolver}(;
         time_steps,
         time_step_names,
         correct_bustypes,
-        solver_settings,
+        settings,
     )
 end
 
