@@ -45,7 +45,7 @@ function _calculate_dQ_dV_lcc(
     # On the clamp boundary (sin(ϕ) = 0), φ is locally pinned and the residual
     # is constant in this direction, so the true derivative is 0 even though
     # the analytic formula has a 1/sin(ϕ) singularity.
-    sϕ < 1e-8 && return 0.0
+    sϕ < LCC_sinϕ_TOLERANCE && return 0.0
     return t * sqrt(6) / π * I_dc * sϕ -
            sqrt(6) / π * cos(ϕ) * sign(I_dc) * I_dc^2 * x_t /
            (sqrt(2) * Vm * sϕ)
@@ -64,7 +64,7 @@ function _calculate_dQ_dt_lcc(
     ϕ::Float64,
 )::Float64
     sϕ = sin(ϕ)
-    sϕ < 1e-8 && return 0.0
+    sϕ < LCC_sinϕ_TOLERANCE && return 0.0
     return Vm * sqrt(6) / π * I_dc * sϕ -
            sqrt(6) / π * cos(ϕ) * sign(I_dc) * I_dc^2 * x_t /
            (sqrt(2) * t * sϕ)
@@ -84,7 +84,7 @@ function _calculate_dQ_dα_lcc(
     α::Float64,
 )::Float64
     sϕ = sin(ϕ)
-    sϕ < 1e-8 && return 0.0
+    sϕ < LCC_sinϕ_TOLERANCE && return 0.0
     return Vm * t * sqrt(6) / π * I_dc * cos(ϕ) * sin(α) / sϕ
 end
 

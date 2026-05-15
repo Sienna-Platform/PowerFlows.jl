@@ -28,10 +28,11 @@ The complex apparent power for a rectifier or inverter is calculated as $S = V t
 
 To allow for the Jacobian implementation, a simplified calculation of the angle between the AC current and voltage at the LCC terminals was used. The equation below represents the calculation used for the angle:
 ```math
-\phi = \arccos\left(\cos(\alpha) \text{sign}(I_{dc}) - \frac{x I_{dc}}{\sqrt{2} t V}\right)
+\phi = \arccos\left(\operatorname{sign}(I_{dc})\left(\cos(\alpha) - \frac{x I_{dc}}{\sqrt{2} t V}\right)\right)
 ```
+where, by convention, we flip the sign of $I_{dc}$ on the inverter side. The net effect of the flip is an overall negation of the $\arccos$ argument at the inverter, which is what produces the negative signs on the $\partial P_i/\partial\cdot$ rows and on $\partial Q_i/\partial\alpha_i$ in the Jacobian below. The $\operatorname{sign}(I_{dc})$ factor appears the same way in the derivative rows.
 
-In the equation above, the variable ``\alpha`` represents the thyristor angle. The active and reactive powers for a converter station are 
+In the equation above, the variable $\alpha$ represents the thyristor angle. The active and reactive powers for a converter station are 
 
 ```math
 \begin{aligned}

@@ -8,6 +8,8 @@ const LARGE_RESIDUAL = 10 # threshold for "bad initial guess": default
 
 const ISAPPROX_ZERO_TOLERANCE = 1e-6
 
+const LCC_sinϕ_TOLERANCE = 1e-8 # if sin(ϕ) < this, treat dQ/dV as zero to avoid singularity in Jacobian
+
 const DEFAULT_NR_MAX_ITER = 50 # default maxIterations for the NR power flow
 const OVERRIDE_x0 = true
 const DEFAULT_NR_TOL = 1e-9 # default tolerance for the NR power flow
