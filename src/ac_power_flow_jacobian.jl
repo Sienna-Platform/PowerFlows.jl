@@ -21,6 +21,10 @@ struct ACPowerFlowJacobian
     diag_elements::MVector{4, Float64}  # Temporary storage for diagonal elements during Jacobian update
     bus_slack_participation_factors::SparseVector{Float64, Int}
     subnetworks::Dict{Int64, Vector{Int64}}
+    bus_active_constant_I::Vector{Float64}
+    bus_reactive_constant_I::Vector{Float64}
+    bus_active_constant_Z::Vector{Float64}
+    bus_reactive_constant_Z::Vector{Float64}
 end
 
 """
@@ -36,17 +40,15 @@ Defining this method allows an instance of `ACPowerFlowJacobian` to be called as
 # Example
 ```julia
 residual = ACPowerFlowResidual(data, time_step)
-J = ACPowerFlowJacobian(data,
-        residual.bus_slack_participation_factors,
-        residual.subnetworks,
-        time_step
-    )
+J = ACPowerFlowJacobian(residual, time_step)
 J(time_step)  # Updates the Jacobian matrix Jv
 ```
 """
 function (J::ACPowerFlowJacobian)(time_step::Int64)
     J.Jf!(J.Jv, J.data, time_step, J.diag_elements,
-        J.bus_slack_participation_factors, J.subnetworks)
+        J.bus_slack_participation_factors, J.subnetworks,
+        J.bus_active_constant_I, J.bus_reactive_constant_I,
+        J.bus_active_constant_Z, J.bus_reactive_constant_Z)
     return
 end
 
@@ -66,11 +68,7 @@ This method allows an instance of ACPowerFlowJacobian to be called as a function
 # Example
 ```julia
 residual = ACPowerFlowResidual(data, time_step)
-J = ACPowerFlowJacobian(data,
-    residual.bus_slack_participation_factors,
-    residual.subnetworks,
-    time_step
-)
+J = ACPowerFlowJacobian(residual, time_step)
 Jv = SparseArrays.sparse(Float64[], J_INDEX_TYPE[], J_INDEX_TYPE[])
 J(Jv, time_step)  # Updates the Jacobian matrix Jv and writes it to J
 ```
@@ -80,67 +78,56 @@ function (J::ACPowerFlowJacobian)(
     time_step::Int64,
 )
     J.Jf!(J.Jv, J.data, time_step, J.diag_elements,
-        J.bus_slack_participation_factors, J.subnetworks)
+        J.bus_slack_participation_factors, J.subnetworks,
+        J.bus_active_constant_I, J.bus_reactive_constant_I,
+        J.bus_active_constant_Z, J.bus_reactive_constant_Z)
     copyto!(Jv, J.Jv)
     return
 end
 
 """
-    ACPowerFlowJacobian(data::ACPowerFlowData,
-        bus_slack_participation_factors::SparseVector{Float64, Int},
-        subnetworks::Dict{Int64, Vector{Int64}}, time_step::Int64) -> ACPowerFlowJacobian
+    ACPowerFlowJacobian(residual::ACPowerFlowResidual, time_step::Int64) -> ACPowerFlowJacobian
 
-This is the constructor for ACPowerFlowJacobian.
-Create an `ACPowerFlowJacobian` instance. As soon as the instance is created, it already has
-the Jacobian matrix structure initialized and its values updated, stored internally as `Jv`.
-The data instance is stored internally and used to update the Jacobian matrix because the
-structure of the Jacobian matrix is tied to the data. Changing the data requires creating a
-new instance of `ACPowerFlowJacobian`.
-
-The `bus_slack_participation_factors` and `subnetworks` are needed for the distributed slack
-Jacobian entries: each participating bus k has ∂F_P_k/∂x[2*ref-1] = -c_k in the Jacobian.
+Constructor for `ACPowerFlowJacobian`. The returned instance has its sparsity
+pattern initialized and shares the residual's slack-participation, subnetwork,
+and ZIP-coefficient caches — the residual must be constructed first against the
+same `data` and `time_step`.
 
 # Arguments
-- `data::ACPowerFlowData`: The data used for power flow calculations.
-- `bus_slack_participation_factors::SparseVector{Float64, Int}`: Normalized per-bus slack participation factors (from the `ACPowerFlowResidual`).
-- `subnetworks::Dict{Int64, Vector{Int64}}`: Subnetwork mapping from REF bus to bus list (from the `ACPowerFlowResidual`).
+- `residual::ACPowerFlowResidual`: The companion residual; supplies `data`,
+  `bus_slack_participation_factors`, `subnetworks`, and the per-bus ZIP load
+  coefficient vectors.
 - `time_step::Int64`: The time step for the calculations.
-
-# Returns
-- `ACPowerFlowJacobian`: An instance of `ACPowerFlowJacobian`.
 
 # Example
 ```julia
 residual = ACPowerFlowResidual(data, time_step)
-J = ACPowerFlowJacobian(data,
-    residual.bus_slack_participation_factors, residual.subnetworks, time_step)
+J = ACPowerFlowJacobian(residual, time_step)
 J(time_step)  # Updates the Jacobian matrix stored internally in J.
 J.Jv  # Access the Jacobian matrix stored internally in J.
 ```
 """
 function ACPowerFlowJacobian(
-    data::ACPowerFlowData,
-    bus_slack_participation_factors::SparseVector{Float64, Int},
-    subnetworks::Dict{Int64, Vector{Int64}},
+    residual::ACPowerFlowResidual,
     time_step::Int64,
 )
-    # Create the initial Jacobian matrix structure - a sparse matrix with structural zeros
-    # that will be updated by the function Jf! It has the same structure as the expected
-    # Jacobian matrix.
     Jv0 = _create_jacobian_matrix_structure(
-        data,
-        bus_slack_participation_factors,
-        subnetworks,
+        residual.data,
+        residual.bus_slack_participation_factors,
+        residual.subnetworks,
         time_step,
     )
-    # We just initialize the structure here, evaluation must happen later
     return ACPowerFlowJacobian(
-        data,
+        residual.data,
         _update_jacobian_matrix_values!,
         Jv0,
         MVector{4, Float64}(undef),
-        bus_slack_participation_factors,
-        subnetworks,
+        residual.bus_slack_participation_factors,
+        residual.subnetworks,
+        residual.bus_active_constant_I,
+        residual.bus_reactive_constant_I,
+        residual.bus_active_constant_Z,
+        residual.bus_reactive_constant_Z,
     )
 end
 
@@ -631,6 +618,10 @@ function _update_jacobian_matrix_values!(
     diag_elements::MVector{4, Float64},
     bus_slack_participation_factors::SparseVector{Float64, Int},
     subnetworks::Dict{Int64, Vector{Int64}},
+    bus_active_constant_I::Vector{Float64},
+    bus_reactive_constant_I::Vector{Float64},
+    bus_active_constant_Z::Vector{Float64},
+    bus_reactive_constant_Z::Vector{Float64},
 )
     Yb = data.power_network_matrix.data
     Vm = view(data.bus_magnitude, :, time_step)
@@ -701,6 +692,14 @@ function _update_jacobian_matrix_values!(
             Jv[row_from_q, col_from_va] = diag_elements[2]  # ∂Q∂θ_from
             diag_elements[3] += 2 * real(Yb[bus_from, bus_from]) * Vm[bus_from]  # ∂P∂V_from
             diag_elements[4] -= 2 * imag(Yb[bus_from, bus_from]) * Vm[bus_from]  # ∂Q∂V_from
+            # ZIP chain rule: P_net(V) = P₀ − const_I_P·V − const_Z_P·V², so ∂F_P/∂V
+            # picks up −∂P_net/∂V = +const_I_P + 2·const_Z_P·V (same shape on Q).
+            diag_elements[3] +=
+                bus_active_constant_I[bus_from] +
+                2 * bus_active_constant_Z[bus_from] * Vm[bus_from]
+            diag_elements[4] +=
+                bus_reactive_constant_I[bus_from] +
+                2 * bus_reactive_constant_Z[bus_from] * Vm[bus_from]
             Jv[row_from_p, col_from_vm] = diag_elements[3]  # ∂P∂V_from
             Jv[row_from_q, col_from_vm] = diag_elements[4]  # ∂Q∂V_from
         elseif data.bus_type[bus_from, time_step] == PSY.ACBusTypes.PV

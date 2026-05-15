@@ -52,7 +52,7 @@ function _do_refinement!(stateVector::StateVectorCache,
 )
     # use stateVector.r_predict as temporary buffer.
     δ_temp = stateVector.r_predict
-    copyto!(δ_temp, A * stateVector.Δx_nr)
+    mul!(δ_temp, A, stateVector.Δx_nr)
     δ_temp .-= stateVector.r
     delta = norm(δ_temp, 1) / norm(stateVector.r, 1)
     if delta > refinement_threshold
@@ -67,7 +67,7 @@ end
 """Sets the Newton-Raphson step. Usually, this is just `J.Jv \\ stateVector.r`, but
 `J.Jv` might be singular."""
 function _set_Δx_nr!(stateVector::StateVectorCache,
-    J::ACPowerFlowJacobian,
+    J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian},
     linSolveCache::KLULinSolveCache{J_INDEX_TYPE},
     solver::ACPowerFlowSolverType,
     refinement_threshold::Float64,
@@ -168,7 +168,7 @@ The caller is responsible for recomputing the Jacobian via `J(time_step)` before
 calling this, so that `Jv` reflects the new state."""
 function _accept_trust_region_step!(
     stateVector::StateVectorCache,
-    residual::ACPowerFlowResidual,
+    residual::Union{ACPowerFlowResidual, ACRectangularCIResidual},
     Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
     autoscale::Bool,
 )
@@ -188,8 +188,8 @@ Returns `true` if the damped step was accepted, `false` if reverted."""
 function _iwamoto_fallback!(
     time_step::Int,
     stateVector::StateVectorCache,
-    residual::ACPowerFlowResidual,
-    J::ACPowerFlowJacobian,
+    residual::Union{ACPowerFlowResidual, ACRectangularCIResidual},
+    J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian},
     old_residual::Vector{Float64},
     old_residual_norm::Float64,
     new_residual_norm::Float64,
@@ -226,8 +226,8 @@ the value of the Jacobian at the new `x`, if needed. Unlike
 function _trust_region_step(time_step::Int,
     stateVector::StateVectorCache,
     linSolveCache::KLULinSolveCache{J_INDEX_TYPE},
-    residual::ACPowerFlowResidual,
-    J::ACPowerFlowJacobian,
+    residual::Union{ACPowerFlowResidual, ACRectangularCIResidual},
+    J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian},
     delta::Float64,
     delta_max::Float64,
     eta::Float64,
@@ -429,8 +429,8 @@ end
 function _simple_step(time_step::Int,
     stateVector::StateVectorCache,
     linSolveCache::KLULinSolveCache{J_INDEX_TYPE},
-    residual::ACPowerFlowResidual,
-    J::ACPowerFlowJacobian,
+    residual::Union{ACPowerFlowResidual, ACRectangularCIResidual},
+    J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian},
     refinement_threshold::Float64 = DEFAULT_REFINEMENT_THRESHOLD,
     refinement_eps::Float64 = DEFAULT_REFINEMENT_EPS,
 )
@@ -465,8 +465,8 @@ should terminate early."""
 function _iwamoto_step(time_step::Int,
     stateVector::StateVectorCache,
     linSolveCache::KLULinSolveCache{J_INDEX_TYPE},
-    residual::ACPowerFlowResidual,
-    J::ACPowerFlowJacobian,
+    residual::Union{ACPowerFlowResidual, ACRectangularCIResidual},
+    J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian},
     refinement_threshold::Float64 = DEFAULT_REFINEMENT_THRESHOLD,
     refinement_eps::Float64 = DEFAULT_REFINEMENT_EPS,
 )::Bool
@@ -535,8 +535,8 @@ end
 function _run_power_flow_method(time_step::Int,
     stateVector::StateVectorCache,
     linSolveCache::KLULinSolveCache{J_INDEX_TYPE},
-    residual::ACPowerFlowResidual,
-    J::ACPowerFlowJacobian,
+    residual::Union{ACPowerFlowResidual, ACRectangularCIResidual},
+    J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian},
     ::Type{NewtonRaphsonACPowerFlow};
     maxIterations::Int = DEFAULT_NR_MAX_ITER,
     tol::Float64 = DEFAULT_NR_TOL,
@@ -611,8 +611,8 @@ end
 function _run_power_flow_method(time_step::Int,
     stateVector::StateVectorCache,
     linSolveCache::KLULinSolveCache{J_INDEX_TYPE},
-    residual::ACPowerFlowResidual,
-    J::ACPowerFlowJacobian,
+    residual::Union{ACPowerFlowResidual, ACRectangularCIResidual},
+    J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian},
     ::Type{TrustRegionACPowerFlow};
     maxIterations::Int = DEFAULT_NR_MAX_ITER,
     tol::Float64 = DEFAULT_NR_TOL,
@@ -680,7 +680,7 @@ function _finalize_power_flow(
     converged::Bool,
     i::Int,
     solver_name::String,
-    residual::ACPowerFlowResidual,
+    residual::Union{ACPowerFlowResidual, ACRectangularCIResidual},
     data::ACPowerFlowData,
     Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
     time_step::Int64,
@@ -759,4 +759,200 @@ function _newton_power_flow(
         )
     end
     return _finalize_power_flow(converged, i, string(T), residual, data, J.Jv, time_step)
+end
+
+"""
+Step strategies supported by the rectangular current-injection driver. Other
+polar-only solver types (`LevenbergMarquardtACPowerFlow`, `RobustHomotopyPowerFlow`,
+`GradientDescentACPowerFlow`) have their own dedicated `_newton_power_flow` methods
+that operate on the polar residual/Jacobian; they cannot be invoked through
+`ACPowerFlow{RectangularCurrentInjectionACPowerFlow}` in this iteration.
+"""
+const _RECT_CI_SUPPORTED_STEP_STRATEGIES = (:simple, :trust_region)
+
+"""
+    _rect_ci_step_strategy_type(step_strategy::Symbol)
+
+Resolve a user-supplied `step_strategy` Symbol to the concrete step-driver type
+used by `_run_power_flow_method`. Throws `ArgumentError` for unsupported values
+with a tailored message that distinguishes polar-only solvers (which require
+constructing the corresponding `ACPowerFlow{T}` directly) from typos.
+
+Called from both `_check_rect_ci_unsupported_settings` (early-fail validation
+at construction time) and `_newton_power_flow` (entry to the NR loop, where the
+returned concrete `Type` keeps the dispatch into `_run_power_flow_method`
+monomorphic and type-stable).
+"""
+function _rect_ci_step_strategy_type(step_strategy::Symbol)
+    step_strategy == :simple && return NewtonRaphsonACPowerFlow
+    step_strategy == :trust_region && return TrustRegionACPowerFlow
+    if step_strategy in (:levenberg_marquardt, :robust_homotopy, :gradient_descent)
+        throw(
+            ArgumentError(
+                "step_strategy=$(step_strategy) is not supported by " *
+                "RectangularCurrentInjectionACPowerFlow in this iteration. " *
+                "Levenberg-Marquardt, Robust Homotopy, and Gradient Descent " *
+                "currently operate on the polar formulation only — use the " *
+                "corresponding ACPowerFlowSolverType (e.g. " *
+                "`ACPowerFlow{LevenbergMarquardtACPowerFlow}`) directly.",
+            ),
+        )
+    end
+    throw(
+        ArgumentError(
+            "Unknown step_strategy=$(step_strategy); supported values " *
+            "are $(_RECT_CI_SUPPORTED_STEP_STRATEGIES).",
+        ),
+    )
+end
+
+"""
+    _check_rect_ci_unsupported_settings(pf)
+
+Raise an informative `ArgumentError` for configuration that the rectangular
+current-injection driver does not yet support. Catches user-side mistakes
+early (constructor or first solve) rather than producing silently-wrong
+results or falling through to polar code paths that wouldn't apply.
+"""
+function _check_rect_ci_unsupported_settings(
+    pf::ACPowerFlow{RectangularCurrentInjectionACPowerFlow},
+)
+    if get_robust_power_flow(pf)
+        throw(
+            ArgumentError(
+                "robust_power_flow=true is not supported by " *
+                "RectangularCurrentInjectionACPowerFlow. The DC fallback path " *
+                "in `improve_x0` operates on the polar state vector; a " *
+                "rectangular-aware fallback has not been implemented. Set " *
+                "robust_power_flow=false, or use ACPowerFlow{NewtonRaphsonACPowerFlow}.",
+            ),
+        )
+    end
+    if get_calculate_loss_factors(pf)
+        throw(
+            ArgumentError(
+                "calculate_loss_factors=true is not supported by " *
+                "RectangularCurrentInjectionACPowerFlow. `_calculate_loss_factors` " *
+                "assumes the polar Jacobian layout (2 entries per bus, partials " *
+                "interpreted as ∂P/∂θ and ∂P/∂V); rectangular CI uses a " *
+                "variable-block layout with current-mismatch rows. A CI-aware " *
+                "variant has not been implemented. Set " *
+                "calculate_loss_factors=false, or use " *
+                "ACPowerFlow{NewtonRaphsonACPowerFlow}.",
+            ),
+        )
+    end
+    if get_calculate_voltage_stability_factors(pf)
+        throw(
+            ArgumentError(
+                "calculate_voltage_stability_factors=true is not supported by " *
+                "RectangularCurrentInjectionACPowerFlow. " *
+                "`_calculate_voltage_stability_factors` assumes the polar power " *
+                "Jacobian (its smallest singular value carries the standard " *
+                "stability interpretation); rectangular CI Jacobian entries are " *
+                "derivatives of current and require a different interpretation. " *
+                "A CI-aware variant has not been implemented. Set " *
+                "calculate_voltage_stability_factors=false, or use " *
+                "ACPowerFlow{NewtonRaphsonACPowerFlow}.",
+            ),
+        )
+    end
+    # Validate step_strategy here — before the (expensive) residual / Jacobian
+    # allocation inside `_newton_power_flow`. Typos and polar-only strategies
+    # surface at construction-time instead of after the user waits for setup.
+    solver_settings = get_solver_kwargs(pf)
+    if haskey(solver_settings, :step_strategy)
+        _rect_ci_step_strategy_type(solver_settings[:step_strategy])
+    end
+    return
+end
+
+"""Run the augmented current-injection (rectangular) Newton-Raphson AC power flow.
+Mirrors the polar `_newton_power_flow` driver but builds the rectangular CI
+residual/Jacobian. Reuses the same step strategies (simple NR, Iwamoto, Trust Region)
+since they're generic over the residual/Jacobian functor interface.
+
+Polar-only solver types — `LevenbergMarquardtACPowerFlow`, `RobustHomotopyPowerFlow`,
+`GradientDescentACPowerFlow` — are NOT reachable through this driver in this
+iteration; they go through their own polar `_newton_power_flow` methods. Invoking
+them requires `ACPowerFlow{<thatType>}` directly."""
+function _newton_power_flow(
+    pf::ACPowerFlow{RectangularCurrentInjectionACPowerFlow},
+    data::ACPowerFlowData,
+    time_step::Int64;
+    tol::Float64 = DEFAULT_NR_TOL,
+    maxIterations::Int = DEFAULT_NR_MAX_ITER,
+    validate_voltage_magnitudes::Bool = DEFAULT_VALIDATE_VOLTAGES,
+    vm_validation_range::MinMax = DEFAULT_VALIDATION_RANGE,
+    refinement_threshold::Float64 = DEFAULT_REFINEMENT_THRESHOLD,
+    refinement_eps::Float64 = DEFAULT_REFINEMENT_EPS,
+    iwamoto::Bool = false,
+    factor::Float64 = DEFAULT_TRUST_REGION_FACTOR,
+    eta::Float64 = DEFAULT_TRUST_REGION_ETA,
+    autoscale::Bool = DEFAULT_AUTOSCALE,
+    iwamoto_fallback::Bool = DEFAULT_IWAMOTO_FALLBACK,
+    step_strategy::Symbol = :simple,
+    x0::Union{Vector{Float64}, Nothing} = nothing,
+    _ignored...,
+)
+    _check_rect_ci_unsupported_settings(pf)
+    residual = ACRectangularCIResidual(data, time_step)
+    x0_computed = Vector{Float64}(undef, length(residual.Rv))
+    rect_initial_state!(
+        x0_computed, data, residual.bus_state_offset, residual.bus_block_size, time_step,
+    )
+    if OVERRIDE_x0 && !isnothing(x0)
+        copyto!(x0_computed, x0)
+    end
+    residual(x0_computed, time_step)
+    @info "Initial residual size: " *
+          "$(norm(residual.Rv, 2)) L2, " *
+          "$(norm(residual.Rv, Inf)) L∞"
+    J = ACRectangularCIJacobian(residual, time_step)
+    converged = norm(residual.Rv, Inf) < tol
+    i = 0
+    if !converged
+        linSolveCache = KLULinSolveCache(J.Jv)
+        symbolic_factor!(linSolveCache, J.Jv)
+        stateVector = StateVectorCache(x0_computed, residual.Rv)
+        # Resolve the strategy Symbol to a concrete `Type` and immediately
+        # function-barrier into branches that pass the literal type to
+        # `_run_power_flow_method` — this keeps the call site monomorphic
+        # (no `Union{Type{...}, Type{...}}` exit) and gives the inner dispatch
+        # a stable target. Validation has already happened at construction time.
+        if step_strategy == :simple
+            converged, i = _run_power_flow_method(
+                time_step, stateVector, linSolveCache, residual, J,
+                NewtonRaphsonACPowerFlow;
+                tol, maxIterations, validate_voltage_magnitudes,
+                vm_validation_range, refinement_threshold, refinement_eps,
+                iwamoto, factor, eta, autoscale, iwamoto_fallback,
+            )
+        elseif step_strategy == :trust_region
+            converged, i = _run_power_flow_method(
+                time_step, stateVector, linSolveCache, residual, J,
+                TrustRegionACPowerFlow;
+                tol, maxIterations, validate_voltage_magnitudes,
+                vm_validation_range, refinement_threshold, refinement_eps,
+                iwamoto, factor, eta, autoscale, iwamoto_fallback,
+            )
+        else
+            # Should never reach here: construction-time validation in
+            # `_check_rect_ci_unsupported_settings` already rejected unknowns.
+            _rect_ci_step_strategy_type(step_strategy)
+        end
+        # Use the converged state for the writeback path below.
+        copyto!(x0_computed, stateVector.x)
+    end
+    # Distribute the converged subnetwork slack into bus_active_power_injections
+    # and bus_reactive_power_injections at REF/PV. Done once, after the NR loop,
+    # because slack distribution is only meaningful at the converged x.
+    rect_finalize_bus_injections!(
+        data, x0_computed, residual.bus_state_offset, residual.P_net_set,
+        residual.bus_slack_participation_factors, residual.subnetworks, time_step,
+    )
+    return _finalize_power_flow(
+        converged, i, "RectangularCurrentInjectionACPowerFlow",
+        residual, data, J.Jv, time_step,
+    )
 end

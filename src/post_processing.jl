@@ -532,7 +532,7 @@ function _compute_segment_flows(
 end
 
 function _compute_segment_flows(
-    arc_entry::PNM.BranchesParallel,
+    arc_entry::PNM.AbstractBranchesParallel,
     data::ACPowerFlowData,
     arc::Tuple{Int, Int},
     time_step::Int,
@@ -564,8 +564,8 @@ function _compute_segment_flows(
         current_V = (i == length(arc_entry)) ? V_endpoints[2] : x[i]
 
         (V_from, V_to) = reversed ? (current_V, prev_V) : (prev_V, current_V)
-        if segment isa PNM.BranchesParallel
-            # All branches in a BranchesParallel share the same arc orientation,
+        if segment isa PNM.AbstractBranchesParallel
+            # All branches in a parallel set share the same arc orientation,
             # so _segment_flow_entry works directly on each individual branch.
             for branch in segment
                 push!(entries, _segment_flow_entry(branch, V_from, V_to))
@@ -749,7 +749,7 @@ end
 
 function _apply_flow_entries!(
     entries::Vector{BranchFlowEntry},
-    segment::PNM.BranchesParallel,
+    segment::PNM.AbstractBranchesParallel,
     entry_ix::Int = 1,
 )
     for branch in segment
@@ -1107,7 +1107,7 @@ function _distribute_arc_flows(
 end
 
 function _distribute_arc_flows(
-    arc_entry::PNM.BranchesParallel,
+    arc_entry::PNM.AbstractBranchesParallel,
     P_from_to::Float64,
     Q_from_to::Float64,
     P_to_from::Float64,

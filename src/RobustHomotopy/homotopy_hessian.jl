@@ -87,11 +87,7 @@ function HomotopyHessian(data::ACPowerFlowData, time_step::Int)
         )
     end
     pfResidual = ACPowerFlowResidual(data, time_step)
-    J = ACPowerFlowJacobian(data,
-        pfResidual.bus_slack_participation_factors,
-        pfResidual.subnetworks,
-        time_step,
-    )
+    J = ACPowerFlowJacobian(pfResidual, time_step)
     # Allocate Hv with the maximal sparsity pattern of J' * J. Sparse `*`
     # currently preserves structural zeros, but that isn't a documented
     # SparseArrays contract, so we defensively fill nzval with ones to force

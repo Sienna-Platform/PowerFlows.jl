@@ -93,3 +93,38 @@ Pages = [
     "ac_power_flow_jacobian.jl",
 ]
 ```
+
+# Rectangular Current-Injection AC Power Flow
+
+## Setup
+
+```@autodocs
+Modules = [PowerFlows]
+Public = false
+Private = true
+Pages = [
+    "rectangular_ci_setup.jl",
+]
+```
+
+## Residuals
+
+```@autodocs
+Modules = [PowerFlows]
+Public = false
+Private = true
+Pages = [
+    "rectangular_ci_power_flow_residual.jl",
+]
+```
+
+## Jacobian
+
+```@autodocs
+Modules = [PowerFlows]
+Public = false
+Private = true
+Pages = [
+    "rectangular_ci_power_flow_jacobian.jl",
+]
+```
