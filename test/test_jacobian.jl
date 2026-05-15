@@ -43,15 +43,37 @@ end
     l13 = _add_simple_line!(sys, b1, b3, 5e-3, 5e-3, 1e-3)
     s1 = _add_simple_source!(sys, b1, 0.0, 0.0)
     lcc = _add_simple_lcc!(sys, b2, b3, 0.05, 0.05, 0.08)
-    # Both thyristor angles must be strictly positive at x0; otherwise the
-    # arccos in _calculate_ϕ_lcc hits the clamp boundary and sin(ϕ) = 0,
-    # making the analytic Q-derivatives singular at the verification point.
-    # _add_simple_lcc! already sets rectifier_delay_angle = 0.01 > 0; the
-    # default inverter_extinction_angle is 0.0, so bump it here.
+    # `_add_simple_lcc!` already sets rectifier_delay_angle = 0.01 > 0; the
+    # default inverter_extinction_angle is 0.0 which makes ϕ_i hit the
+    # acos clamp boundary (sin(ϕ_i) = 0) at x0 — that's a separate boundary
+    # test (see "Jacobian verification with LCC at inverter ϕ clamp"
+    # below). Bump α_i here to verify the interior regime.
     PSY.set_inverter_extinction_angle!(lcc, 1.0)
     # Smaller perturbation here so the LCC α tail entries (α_r ≈ 0.087,
     # α_i = 1.0) stay clear of the min-thyristor-angle clamp.
     verify_jacobian(sys; label = "polar 3-bus LCC", perturbation = 0.01)
+end
+
+@testset "Jacobian verification with LCC at a PV terminal" begin
+    # An LCC terminal at a PV bus: state is (Q_gen, θ), with V fixed at V_set.
+    # The bus Q-balance still depends on tap_r/α_r through the LCC's Q
+    # contribution, so ∂Q/∂tap and ∂Q/∂α must be filled in the Jacobian
+    # for the PV terminal — they previously weren't, leaving these entries
+    # stuck at 0 from the sparsity pattern.
+    sys = System(100.0)
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.1, 0.0)
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.PV, 230, 1.05, 0.0)   # PV terminal
+    b3 = _add_simple_bus!(sys, 3, ACBusTypes.PQ, 230, 1.1, 0.0)
+    _add_simple_thermal_standard!(sys, b2, 0.2, 0.1)  # generator at PV bus
+    _add_simple_load!(sys, b2, 10, 5)
+    _add_simple_load!(sys, b3, 60, 20)
+    _add_simple_line!(sys, b1, b2, 5e-3, 5e-3, 1e-3)
+    _add_simple_line!(sys, b1, b3, 5e-3, 5e-3, 1e-3)
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    lcc = _add_simple_lcc!(sys, b2, b3, 0.05, 0.05, 0.08)
+    PSY.set_inverter_extinction_angle!(lcc, 1.0)
+    verify_jacobian(sys; label = "polar 3-bus LCC, PV rectifier terminal",
+        perturbation = 0.01)
 end
 
 @testset "Jacobian verification with LCC at inverter ϕ clamp" begin

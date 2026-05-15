@@ -576,55 +576,43 @@ function _set_entries_for_lcc(data::ACPowerFlowData,
 
         s = _lcc_jacobian_scalars(data, i, time_step, Vm_fb, Vm_tb)
 
-        # True-ϕ ∂P/∂{V, t, α} entries come from `_lcc_jacobian_scalars`,
-        # which calls the `_calculate_dP_d{V,t,α}_lcc` helpers (boundary-
-        # guarded at `sin(ϕ) → 0`). In the interior these are algebraically
-        # equal to the legacy α-approximation form via the ϕ-definition
-        # identity `cos(α) - cos(ϕ) = x_t·I_dc/(√2·V·tap)`; at the clamp
-        # the helpers correctly drop the chain term (where `∂ϕ/∂x = 0`),
-        # while the α-form silently uses `cos(α) ≠ cos(ϕ_clamp)`.
-        # See `test_jacobian.jl::"Jacobian verification with LCC at inverter ϕ clamp"`.
         dP_dV_fb = s.dP_dV_fb
         dP_dV_tb = s.dP_dV_tb
         dP_dt_fb = s.dP_dt_fb
         dP_dt_tb = s.dP_dt_tb
 
+        # Bus-row × tail-column entries (∂{P,Q}/∂{tap, α}) are written
+        # unconditionally — the bus residual rows exist for all bus types,
+        # and tap/α are state variables regardless of which AC terminal is
+        # PQ/PV/REF. ∂{P,Q}/∂V is gated by PQ (V is a state only there);
+        # likewise the tail × bus-V chain rule.
+        Jv[idx_p_fb, idx_tap_from] = dP_dt_fb # ∂P_fb/∂t_fb
+        Jv[idx_p_fb, idx_angle_from] = s.dP_dα_fb # ∂P_fb/∂α_fb
+        Jv[idx_q_fb, idx_tap_from] =
+            _calculate_dQ_dt_lcc(s.tap_r, s.i_dc, xtr_r, Vm_fb, phi_r) # ∂Q_fb/∂t_fb
+        Jv[idx_q_fb, idx_angle_from] =
+            _calculate_dQ_dα_lcc(s.tap_r, s.i_dc, xtr_r, Vm_fb, phi_r, alpha_r) # ∂Q_fb/∂α_fb
+        Jv[idx_p_tb, idx_tap_to] = dP_dt_tb # ∂P_tb/∂t_tb
+        Jv[idx_p_tb, idx_angle_to] = s.dP_dα_tb # ∂P_tb/∂α_tb
+        Jv[idx_q_tb, idx_tap_to] =
+            _calculate_dQ_dt_lcc(s.tap_i, s.i_dc, xtr_i, Vm_tb, phi_i) # ∂Q_tb/∂t_tb
+        # φ_i convention flips sign of ∂φ_i/∂α_i vs the rectifier; negate helper output.
+        Jv[idx_q_tb, idx_angle_to] =
+            -_calculate_dQ_dα_lcc(s.tap_i, s.i_dc, xtr_i, Vm_tb, phi_i, alpha_i) # ∂Q_tb/∂α_tb
+
         if bus_type_fb == PSY.ACBusTypes.PQ
             Jv[idx_p_fb, idx_p_fb] += dP_dV_fb # ∂P_fb/∂V_fb
             Jv[idx_q_fb, idx_p_fb] +=
                 _calculate_dQ_dV_lcc(s.tap_r, s.i_dc, xtr_r, Vm_fb, phi_r) # ∂Q_fb/∂V_fb
-
-            Jv[idx_q_fb, idx_tap_from] =
-                _calculate_dQ_dt_lcc(s.tap_r, s.i_dc, xtr_r, Vm_fb, phi_r) # ∂Q_fb/∂t_fb
-            Jv[idx_q_fb, idx_angle_from] =
-                _calculate_dQ_dα_lcc(s.tap_r, s.i_dc, xtr_r, Vm_fb, phi_r, alpha_r) # ∂Q_fb/∂α_fb
-
             Jv[idx_tap_from, idx_p_fb] = dP_dV_fb # ∂F_t_fb/∂V_fb
             Jv[idx_tap_to, idx_p_fb] = dP_dV_fb # ∂F_t_tb/∂V_fb
-        end
-
-        if bus_type_fb == PSY.ACBusTypes.PQ || bus_type_fb == PSY.ACBusTypes.PV
-            Jv[idx_p_fb, idx_tap_from] = dP_dt_fb # ∂P_fb/∂t_fb
-            Jv[idx_p_fb, idx_angle_from] = s.dP_dα_fb # ∂P_fb/∂α_fb (clamp-guarded)
         end
 
         if bus_type_tb == PSY.ACBusTypes.PQ
             Jv[idx_p_tb, idx_p_tb] += dP_dV_tb # ∂P_tb/∂V_tb
             Jv[idx_q_tb, idx_p_tb] +=
                 _calculate_dQ_dV_lcc(s.tap_i, s.i_dc, xtr_i, Vm_tb, phi_i) # ∂Q_tb/∂V_tb
-
-            Jv[idx_q_tb, idx_tap_to] =
-                _calculate_dQ_dt_lcc(s.tap_i, s.i_dc, xtr_i, Vm_tb, phi_i) # ∂Q_tb/∂t_tb
-            # φ_i convention flips sign of ∂φ_i/∂α_i vs the rectifier; negate helper output
-            Jv[idx_q_tb, idx_angle_to] =
-                -_calculate_dQ_dα_lcc(s.tap_i, s.i_dc, xtr_i, Vm_tb, phi_i, alpha_i) # ∂Q_tb/∂α_tb
-
             Jv[idx_tap_to, idx_p_tb] = dP_dV_tb # ∂F_t_tb/∂V_tb
-        end
-
-        if bus_type_tb == PSY.ACBusTypes.PQ || bus_type_tb == PSY.ACBusTypes.PV
-            Jv[idx_p_tb, idx_tap_to] = dP_dt_tb # ∂P_tb/∂t_tb
-            Jv[idx_p_tb, idx_angle_to] = s.dP_dα_tb # ∂P_tb/∂α_tb (clamp-guarded)
         end
 
         Jv[idx_tap_from, idx_tap_from] = s.d_Ft_fb_d_tap_r

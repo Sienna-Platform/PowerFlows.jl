@@ -26,7 +26,7 @@ end
 Compute the admittance value Y for LCC converter calculations.
 """
 function _calculate_y_lcc(t::Float64, I_dc::Float64, Vm::Float64, ϕ::Float64)::ComplexF64
-    return t / Vm * sqrt(6) / π * I_dc * exp(-1im * ϕ)
+    return t / Vm * SQRT6_DIV_PI * I_dc * exp(-1im * ϕ)
 end
 
 """
@@ -55,9 +55,9 @@ function _calculate_dP_dV_lcc(
     Vm::Float64,
     ϕ::Float64,
 )::Float64
-    leading = t * sqrt(6) / π * I_dc * cos(ϕ)
+    leading = t * SQRT6_DIV_PI * I_dc * cos(ϕ)
     sin(ϕ) < LCC_sinϕ_TOLERANCE && return leading  # clamped: ∂ϕ/∂Vm = 0
-    return leading + sqrt(6) / π * I_dc^2 * x_t / (sqrt(2) * Vm)
+    return leading + SQRT6_DIV_PI * I_dc^2 * x_t / (sqrt(2) * Vm)
 end
 
 """
@@ -75,9 +75,9 @@ function _calculate_dP_dt_lcc(
     Vm::Float64,
     ϕ::Float64,
 )::Float64
-    leading = Vm * sqrt(6) / π * I_dc * cos(ϕ)
+    leading = Vm * SQRT6_DIV_PI * I_dc * cos(ϕ)
     sin(ϕ) < LCC_sinϕ_TOLERANCE && return leading  # clamped: ∂ϕ/∂t = 0
-    return leading + sqrt(6) / π * I_dc^2 * x_t / (sqrt(2) * t)
+    return leading + SQRT6_DIV_PI * I_dc^2 * x_t / (sqrt(2) * t)
 end
 
 """
@@ -150,7 +150,7 @@ function _calculate_dP_dα_lcc(
     ϕ::Float64,
 )::Float64
     sin(ϕ) < LCC_sinϕ_TOLERANCE && return 0.0
-    return -Vm * t * sqrt(6) / π * I_dc * sin(α)
+    return -Vm * t * SQRT6_DIV_PI * I_dc * sin(α)
 end
 
 """
@@ -170,8 +170,8 @@ function _calculate_dQ_dV_lcc(
     # is constant in this direction, so the true derivative is 0 even though
     # the analytic formula has a 1/sin(ϕ) singularity.
     sϕ < LCC_sinϕ_TOLERANCE && return 0.0
-    return t * sqrt(6) / π * I_dc * sϕ -
-           sqrt(6) / π * cos(ϕ) * sign(I_dc) * I_dc^2 * x_t /
+    return t * SQRT6_DIV_PI * I_dc * sϕ -
+           SQRT6_DIV_PI * cos(ϕ) * sign(I_dc) * I_dc^2 * x_t /
            (sqrt(2) * Vm * sϕ)
 end
 
@@ -189,8 +189,8 @@ function _calculate_dQ_dt_lcc(
 )::Float64
     sϕ = sin(ϕ)
     sϕ < LCC_sinϕ_TOLERANCE && return 0.0
-    return Vm * sqrt(6) / π * I_dc * sϕ -
-           sqrt(6) / π * cos(ϕ) * sign(I_dc) * I_dc^2 * x_t /
+    return Vm * SQRT6_DIV_PI * I_dc * sϕ -
+           SQRT6_DIV_PI * cos(ϕ) * sign(I_dc) * I_dc^2 * x_t /
            (sqrt(2) * t * sϕ)
 end
 
@@ -209,7 +209,7 @@ function _calculate_dQ_dα_lcc(
 )::Float64
     sϕ = sin(ϕ)
     sϕ < LCC_sinϕ_TOLERANCE && return 0.0
-    return Vm * t * sqrt(6) / π * I_dc * cos(ϕ) * sin(α) / sϕ
+    return Vm * t * SQRT6_DIV_PI * I_dc * cos(ϕ) * sin(α) / sϕ
 end
 
 """
