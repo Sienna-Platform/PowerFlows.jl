@@ -30,6 +30,49 @@ function _calculate_y_lcc(t::Float64, I_dc::Float64, Vm::Float64, ϕ::Float64)::
 end
 
 """
+    _calculate_dP_dV_lcc(t, I_dc, x_t, Vm, ϕ) -> Float64
+
+True-ϕ derivative of `P_lcc = Vm · t · √6/π · I_dc · cos(ϕ(Vm, t, α))` with
+respect to `Vm`, including the `∂ϕ/∂Vm` chain term. Unlike the matching
+`_calculate_dQ_dV_lcc`, the `sin(ϕ)` factor introduced by `∂ϕ/∂Vm = -∂raw/∂Vm /
+sin(ϕ)` cancels against the `-sin(ϕ)` from differentiating `cos(ϕ)` — no
+boundary guard needed.
+
+Caller must pass `I_dc` and `ϕ` matching the side of interest: rectifier
+uses `(+I_dc, phi_r)`; inverter uses `(+I_dc, phi_i)` (the same positive
+I_dc, since `P_lcc_to = V_tb · tap_i · √6/π · I_dc · cos(phi_i)` and `phi_i`
+already encodes the sign convention via `_calculate_ϕ_lcc(-I_dc, ...)`).
+"""
+function _calculate_dP_dV_lcc(
+    t::Float64,
+    I_dc::Float64,
+    x_t::Float64,
+    Vm::Float64,
+    ϕ::Float64,
+)::Float64
+    return t * sqrt(6) / π * I_dc * cos(ϕ) +
+           sqrt(6) / π * I_dc^2 * x_t / (sqrt(2) * Vm)
+end
+
+"""
+    _calculate_dP_dt_lcc(t, I_dc, x_t, Vm, ϕ) -> Float64
+
+True-ϕ derivative of `P_lcc` with respect to the transformer tap `t`. Same
+cancellation as `_calculate_dP_dV_lcc` — no `1/sin(ϕ)` term, no boundary
+guard required.
+"""
+function _calculate_dP_dt_lcc(
+    t::Float64,
+    I_dc::Float64,
+    x_t::Float64,
+    Vm::Float64,
+    ϕ::Float64,
+)::Float64
+    return Vm * sqrt(6) / π * I_dc * cos(ϕ) +
+           sqrt(6) / π * I_dc^2 * x_t / (sqrt(2) * t)
+end
+
+"""
     _calculate_dQ_dV_lcc(t::Float64, I_dc::Float64, x_t::Float64, Vm::Float64, ϕ::Float64) -> Float64
 
 Compute the derivative of reactive power Q with respect to voltage magnitude Vm for LCC converter calculations.

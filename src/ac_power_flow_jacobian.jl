@@ -576,8 +576,23 @@ function _set_entries_for_lcc(data::ACPowerFlowData,
 
         s = _lcc_jacobian_scalars(data, i, time_step, Vm_fb, Vm_tb)
 
+        # True-φ ∂P/∂V and ∂P/∂t for the rectifier side. The polar
+        # α-approximation drops the `∂φ/∂Vm` (resp. `∂φ/∂t`) chain term —
+        # which vanishes only when `x_t = 0`. The true-φ formulas are
+        # singularity-free (the `sin(φ)` from `∂φ/∂(V,t)` cancels the
+        # `-sin(φ)` from differentiating `cos(φ)`).
+        # For ∂P/∂α the analogous cancellation makes the α-approximation
+        # exact, so those entries stay on `common_alpha_*`.
+        dP_dV_fb = _calculate_dP_dV_lcc(s.tap_r, s.i_dc, xtr_r, Vm_fb, phi_r)
+        dP_dt_fb = _calculate_dP_dt_lcc(s.tap_r, s.i_dc, xtr_r, Vm_fb, phi_r)
+        # Inverter side: `P_lcc_to = V_tb · tap_i · √6/π · I_dc · cos(phi_i)`
+        # with `phi_i` already encoding the inverter sign convention via
+        # `_calculate_ϕ_lcc(-I_dc, …)`. Pass the same positive `I_dc`.
+        dP_dV_tb = _calculate_dP_dV_lcc(s.tap_i, s.i_dc, xtr_i, Vm_tb, phi_i)
+        dP_dt_tb = _calculate_dP_dt_lcc(s.tap_i, s.i_dc, xtr_i, Vm_tb, phi_i)
+
         if bus_type_fb == PSY.ACBusTypes.PQ
-            Jv[idx_p_fb, idx_p_fb] += s.common_tap_r # ∂P_fb/∂V_fb
+            Jv[idx_p_fb, idx_p_fb] += dP_dV_fb # ∂P_fb/∂V_fb
             Jv[idx_q_fb, idx_p_fb] +=
                 _calculate_dQ_dV_lcc(s.tap_r, s.i_dc, xtr_r, Vm_fb, phi_r) # ∂Q_fb/∂V_fb
 
@@ -586,17 +601,17 @@ function _set_entries_for_lcc(data::ACPowerFlowData,
             Jv[idx_q_fb, idx_angle_from] =
                 _calculate_dQ_dα_lcc(s.tap_r, s.i_dc, xtr_r, Vm_fb, phi_r, alpha_r) # ∂Q_fb/∂α_fb
 
-            Jv[idx_tap_from, idx_p_fb] = s.common_tap_r # ∂F_t_fb/∂V_fb
-            Jv[idx_tap_to, idx_p_fb] = s.common_tap_r # ∂F_t_tb/∂V_fb
+            Jv[idx_tap_from, idx_p_fb] = dP_dV_fb # ∂F_t_fb/∂V_fb
+            Jv[idx_tap_to, idx_p_fb] = dP_dV_fb # ∂F_t_tb/∂V_fb
         end
 
         if bus_type_fb == PSY.ACBusTypes.PQ || bus_type_fb == PSY.ACBusTypes.PV
-            Jv[idx_p_fb, idx_tap_from] = s.common_fb * s.cos_alpha_r # ∂P_fb/∂t_fb
-            Jv[idx_p_fb, idx_angle_from] = s.common_alpha_r # ∂P_fb/∂α_fb
+            Jv[idx_p_fb, idx_tap_from] = dP_dt_fb # ∂P_fb/∂t_fb
+            Jv[idx_p_fb, idx_angle_from] = s.common_alpha_r # ∂P_fb/∂α_fb (α-approx is exact)
         end
 
         if bus_type_tb == PSY.ACBusTypes.PQ
-            Jv[idx_p_tb, idx_p_tb] += s.common_tap_i # ∂P_tb/∂V_tb
+            Jv[idx_p_tb, idx_p_tb] += dP_dV_tb # ∂P_tb/∂V_tb
             Jv[idx_q_tb, idx_p_tb] +=
                 _calculate_dQ_dV_lcc(s.tap_i, s.i_dc, xtr_i, Vm_tb, phi_i) # ∂Q_tb/∂V_tb
 
@@ -606,12 +621,12 @@ function _set_entries_for_lcc(data::ACPowerFlowData,
             Jv[idx_q_tb, idx_angle_to] =
                 -_calculate_dQ_dα_lcc(s.tap_i, s.i_dc, xtr_i, Vm_tb, phi_i, alpha_i) # ∂Q_tb/∂α_tb
 
-            Jv[idx_tap_to, idx_p_tb] = s.common_tap_i # ∂F_t_tb/∂V_tb
+            Jv[idx_tap_to, idx_p_tb] = dP_dV_tb # ∂F_t_tb/∂V_tb
         end
 
         if bus_type_tb == PSY.ACBusTypes.PQ || bus_type_tb == PSY.ACBusTypes.PV
-            Jv[idx_p_tb, idx_tap_to] = s.common_tb * s.cos_alpha_i # ∂P_tb/∂t_tb
-            Jv[idx_p_tb, idx_angle_to] = s.common_alpha_i # ∂P_tb/∂α_tb
+            Jv[idx_p_tb, idx_tap_to] = dP_dt_tb # ∂P_tb/∂t_tb
+            Jv[idx_p_tb, idx_angle_to] = s.common_alpha_i # ∂P_tb/∂α_tb (α-approx is exact)
         end
 
         Jv[idx_tap_from, idx_tap_from] = s.d_Ft_fb_d_tap_r
