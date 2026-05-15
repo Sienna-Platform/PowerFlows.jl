@@ -187,8 +187,11 @@ function _enhanced_flat_start(
         pq = [i for i in members if bus_types[i] == PSY.ACBusTypes.PQ]
         (isempty(pv) && isempty(pq)) && continue
         ref_angle =
-            isempty(ref) ? 0.0 :
-            sum(data.bus_angles[r, time_step] for r in ref) / length(ref)
+            if isempty(ref)
+                0.0
+            else
+                sum(data.bus_angles[r, time_step] for r in ref) / length(ref)
+            end
         has_pv = !isempty(pv)
         # Guard the no-PV-with-PQ case (polar divides by zero here and gets
         # NaN); fall back to the per-bus base magnitude instead.
