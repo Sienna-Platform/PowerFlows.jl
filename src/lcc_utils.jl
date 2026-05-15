@@ -10,7 +10,14 @@ function _calculate_ϕ_lcc(
     x_t::Float64,
     Vm::Float64,
 )::Float64
-    return acos(clamp(sign(I_dc) * (cos(α) - (x_t * I_dc) / (sqrt(2) * Vm * t)), -1.0, 1.0))
+    raw = sign(I_dc) * (cos(α) - (x_t * I_dc) / (sqrt(2) * Vm * t))
+    if raw < -1.0 || raw > 1.0
+        @warn "LCC ϕ argument outside [-1, 1] (got $raw); clamping. \
+               Derivative formulas in lcc_utils.jl are singular on this boundary \
+               and the analytic Jacobian disagrees with the residual past it — \
+               Newton-Raphson may struggle. Check α, I_dc, x_t, t, Vm." maxlog = 5
+    end
+    return acos(clamp(raw, -1.0, 1.0))
 end
 
 """
@@ -34,8 +41,14 @@ function _calculate_dQ_dV_lcc(
     Vm::Float64,
     ϕ::Float64,
 )::Float64
-    return Vm * t * sqrt(6) / π * I_dc *
-           (sin(ϕ) - cos(ϕ) * x_t * I_dc / (sqrt(2) * Vm * t * sin(ϕ)^2))
+    sϕ = sin(ϕ)
+    # On the clamp boundary (sin(ϕ) = 0), φ is locally pinned and the residual
+    # is constant in this direction, so the true derivative is 0 even though
+    # the analytic formula has a 1/sin(ϕ) singularity.
+    sϕ < 1e-8 && return 0.0
+    return t * sqrt(6) / π * I_dc * sϕ -
+           sqrt(6) / π * cos(ϕ) * sign(I_dc) * I_dc^2 * x_t /
+           (sqrt(2) * Vm * sϕ)
 end
 
 """
@@ -50,8 +63,11 @@ function _calculate_dQ_dt_lcc(
     Vm::Float64,
     ϕ::Float64,
 )::Float64
-    return Vm * t * sqrt(6) / π * I_dc *
-           (sin(ϕ) / t - cos(ϕ) * x_t * I_dc / (sqrt(2) * Vm * t^2 * sin(ϕ)^2))
+    sϕ = sin(ϕ)
+    sϕ < 1e-8 && return 0.0
+    return Vm * sqrt(6) / π * I_dc * sϕ -
+           sqrt(6) / π * cos(ϕ) * sign(I_dc) * I_dc^2 * x_t /
+           (sqrt(2) * t * sϕ)
 end
 
 """
@@ -67,7 +83,9 @@ function _calculate_dQ_dα_lcc(
     ϕ::Float64,
     α::Float64,
 )::Float64
-    return Vm * t * sqrt(6) / π * I_dc * cos(ϕ) * sin(α) / sin(ϕ)
+    sϕ = sin(ϕ)
+    sϕ < 1e-8 && return 0.0
+    return Vm * t * sqrt(6) / π * I_dc * cos(ϕ) * sin(α) / sϕ
 end
 
 """

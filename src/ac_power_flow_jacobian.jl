@@ -293,6 +293,7 @@ function _create_jacobian_matrix_structure_lcc(
         idx_p_fb = 2 * fb - 1
         idx_q_fb = 2 * fb
         idx_p_tb = 2 * tb - 1
+        idx_q_tb = 2 * tb
         offset_lcc = num_buses * 2 + (i - 1) * 4
         idx_tap_from = offset_lcc + 1
         idx_tap_to = offset_lcc + 2
@@ -306,6 +307,12 @@ function _create_jacobian_matrix_structure_lcc(
             (idx_p_fb, idx_angle_from, 0.0),  # ∂Pᵢ/∂αᵢ
             (idx_q_fb, idx_tap_from, 0.0),  # ∂Qᵢ/∂tᵢ
             (idx_q_fb, idx_angle_from, 0.0),  # ∂Qᵢ/∂αᵢ
+            (idx_p_tb, idx_p_tb, 0.0),  # ∂Pⱼ/∂Vⱼ
+            (idx_q_tb, idx_p_tb, 0.0),  # ∂Qⱼ/∂Vⱼ
+            (idx_p_tb, idx_tap_to, 0.0),  # ∂Pⱼ/∂tⱼ
+            (idx_p_tb, idx_angle_to, 0.0),  # ∂Pⱼ/∂αⱼ
+            (idx_q_tb, idx_tap_to, 0.0),  # ∂Qⱼ/∂tⱼ
+            (idx_q_tb, idx_angle_to, 0.0),  # ∂Qⱼ/∂αⱼ
             (idx_tap_from, idx_p_fb, 0.0),  # ∂Fₜᵢ/∂Vᵢ
             (idx_tap_to, idx_p_fb, 0.0),  # ∂Fₜⱼ/∂Vᵢ
             (idx_tap_to, idx_p_tb, 0.0),  # ∂Fₜⱼ/∂Vⱼ
@@ -550,6 +557,7 @@ function _set_entries_for_lcc(data::ACPowerFlowData,
         idx_p_fb = 2 * fb - 1
         idx_q_fb = 2 * fb
         idx_p_tb = 2 * tb - 1
+        idx_q_tb = 2 * tb
         offset_lcc = num_buses * 2 + (i - 1) * 4
         idx_tap_from = offset_lcc + 1
         idx_tap_to = offset_lcc + 2
@@ -562,7 +570,9 @@ function _set_entries_for_lcc(data::ACPowerFlowData,
         alpha_r = data.lcc.rectifier.thyristor_angle[i, time_step]
         alpha_i = data.lcc.inverter.thyristor_angle[i, time_step]
         phi_r = data.lcc.rectifier.phi[i, time_step]
+        phi_i = data.lcc.inverter.phi[i, time_step]
         xtr_r = data.lcc.rectifier.transformer_reactance[i]
+        xtr_i = data.lcc.inverter.transformer_reactance[i]
         Vm_fb = data.bus_magnitude[fb, time_step]
         Vm_tb = data.bus_magnitude[tb, time_step]
         bus_type_fb = data.bus_type[fb, time_step]
@@ -577,6 +587,8 @@ function _set_entries_for_lcc(data::ACPowerFlowData,
         common_term_tb = Vm_tb * sqrt6_div_pi * (-i_dc)
         common_term_tap_r = tap_r * sqrt6_div_pi * i_dc * cos_alpha_r
         common_term_alpha_r = -common_term_fb * tap_r * sin_alpha_r
+        common_term_tap_i = tap_i * sqrt6_div_pi * (-i_dc) * cos_alpha_i
+        common_term_alpha_i = -common_term_tb * tap_i * sin_alpha_i
 
         if bus_type_fb == PSY.ACBusTypes.PQ
             Jv[idx_p_fb, idx_p_fb] += common_term_tap_r # ∂P_fb/∂V_fb
@@ -597,7 +609,21 @@ function _set_entries_for_lcc(data::ACPowerFlowData,
         end
 
         if bus_type_tb == PSY.ACBusTypes.PQ
+            Jv[idx_p_tb, idx_p_tb] += common_term_tap_i # ∂P_tb/∂V_tb
+            Jv[idx_q_tb, idx_p_tb] += _calculate_dQ_dV_lcc(tap_i, i_dc, xtr_i, Vm_tb, phi_i) # ∂Q_tb/∂V_tb
+
+            Jv[idx_q_tb, idx_tap_to] =
+                _calculate_dQ_dt_lcc(tap_i, i_dc, xtr_i, Vm_tb, phi_i) # ∂Q_tb/∂t_tb
+            # φ_i convention flips sign of ∂φ_i/∂α_i vs the rectifier; negate helper output
+            Jv[idx_q_tb, idx_angle_to] =
+                -_calculate_dQ_dα_lcc(tap_i, i_dc, xtr_i, Vm_tb, phi_i, alpha_i) # ∂Q_tb/∂α_tb
+
             Jv[idx_tap_to, idx_p_tb] = tap_i * sqrt6_div_pi * (-i_dc) * cos_alpha_i # ∂F_t_tb/∂V_tb
+        end
+
+        if bus_type_tb == PSY.ACBusTypes.PQ || bus_type_tb == PSY.ACBusTypes.PV
+            Jv[idx_p_tb, idx_tap_to] = common_term_tb * cos_alpha_i # ∂P_tb/∂t_tb
+            Jv[idx_p_tb, idx_angle_to] = common_term_alpha_i # ∂P_tb/∂α_tb
         end
 
         Jv[idx_tap_from, idx_tap_from] = common_term_fb * cos_alpha_r # ∂F_t_fb/∂t_fb

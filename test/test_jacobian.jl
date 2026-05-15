@@ -22,13 +22,13 @@ function verify_jacobian(
         Δx_mag = Δx_start
         close_enough = false
         while !close_enough && Δx_mag >= Δx_stop
-            inputValues = [x0, x0 + Δx_mag * u]
+            inputValues = [x0 - Δx_mag * u, x0 + Δx_mag * u]
             outputValues = Vector{Vector{Float64}}()
             for inputVal in inputValues
                 residual(inputVal, time_step)
                 push!(outputValues, deepcopy(residual.Rv))
             end
-            ΔF = outputValues[2] .- outputValues[1]
+            ΔF = (outputValues[2] .- outputValues[1]) ./ 2
             floating_point_issues = all(isapprox.(ΔF, 0.0; atol = eps(Float32)))
             if floating_point_issues
                 break
@@ -51,9 +51,6 @@ end
     verify_jacobian(sys)
 end
 
-# This fails. Might be a problem, or might just be because (according to Roman) we treat
-# the angle \phi as constant, to avoid super messy expressions in the Jacobian, 
-# and update it separately between iterations.
 @testset "Jacobian verification with LCC" begin
     sys = System(100.0)
     b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.1, 0.0)
@@ -65,7 +62,11 @@ end
     l13 = _add_simple_line!(sys, b1, b3, 5e-3, 5e-3, 1e-3)
     s1 = _add_simple_source!(sys, b1, 0.0, 0.0)
     lcc = _add_simple_lcc!(sys, b2, b3, 0.05, 0.05, 0.08)
-    # verify_jacobian(sys)
+    # Both thyristor angles must be strictly positive at x0; otherwise the
+    # arccos in _calculate_ϕ_lcc hits the clamp boundary and sin(ϕ) = 0,
+    # making the analytic Q-derivatives singular at the verification point.
+    PSY.set_inverter_extinction_angle!(lcc, 1.0)
+    verify_jacobian(sys)
 end
 
 @testset "Jacobian verification with ZIP load" begin

@@ -45,11 +45,17 @@ The relevant non-zero entries in the Jacobian matrix for the rectifier (r) and i
 ```math
 \begin{aligned}
 \frac{\partial P_r}{\partial V_r} &= t_r \frac{\sqrt{6}}{\pi} I_{dc} \cos(\alpha_r) \\
-\frac{\partial Q_r}{\partial V_r} &= V_r t_r \frac{\sqrt{6}}{\pi} I_{dc} \left(\sin(\phi_r) - \cos(\phi_r) \frac{x_r I_{dc}}{\sqrt{2} V_r t_r \sin^2(\phi_r)}\right) \\
-\frac{\partial Q_r}{\partial t_r} &= V_r t_r \frac{\sqrt{6}}{\pi} I_{dc} \left(\frac{\sin(\phi_r)}{t_r} - \cos(\phi_r) \frac{x_r I_{dc}}{\sqrt{2} V_r t_r^2 \sin^2(\phi_r)}\right) \\
+\frac{\partial Q_r}{\partial V_r} &= t_r \frac{\sqrt{6}}{\pi} I_{dc} \sin(\phi_r) - \frac{\sqrt{6}}{\pi} \cos(\phi_r) \frac{\operatorname{sign}(I_{dc})\,x_r I_{dc}^2}{\sqrt{2} V_r \sin(\phi_r)} \\
+\frac{\partial Q_r}{\partial t_r} &= V_r \frac{\sqrt{6}}{\pi} I_{dc} \sin(\phi_r) - \frac{\sqrt{6}}{\pi} \cos(\phi_r) \frac{\operatorname{sign}(I_{dc})\,x_r I_{dc}^2}{\sqrt{2} t_r \sin(\phi_r)} \\
 \frac{\partial Q_r}{\partial \alpha_r} &= V_r t_r \frac{\sqrt{6}}{\pi} I_{dc} \frac{\cos(\phi_r) \sin(\alpha_r)}{\sin(\phi_r)} \\
 \frac{\partial P_r}{\partial t_r} &= V_r \frac{\sqrt{6}}{\pi} I_{dc} \cos(\alpha_r) \\
 \frac{\partial P_r}{\partial \alpha_r} &= -V_r \frac{\sqrt{6}}{\pi} I_{dc} t_r \sin(\alpha_r) \\
+\frac{\partial P_i}{\partial V_i} &= -t_i \frac{\sqrt{6}}{\pi} I_{dc} \cos(\alpha_i) \\
+\frac{\partial P_i}{\partial t_i} &= -V_i \frac{\sqrt{6}}{\pi} I_{dc} \cos(\alpha_i) \\
+\frac{\partial P_i}{\partial \alpha_i} &= V_i \frac{\sqrt{6}}{\pi} I_{dc} t_i \sin(\alpha_i) \\
+\frac{\partial Q_i}{\partial V_i} &= t_i \frac{\sqrt{6}}{\pi} I_{dc} \sin(\phi_i) - \frac{\sqrt{6}}{\pi} \cos(\phi_i) \frac{\operatorname{sign}(I_{dc})\,x_i I_{dc}^2}{\sqrt{2} V_i \sin(\phi_i)} \\
+\frac{\partial Q_i}{\partial t_i} &= V_i \frac{\sqrt{6}}{\pi} I_{dc} \sin(\phi_i) - \frac{\sqrt{6}}{\pi} \cos(\phi_i) \frac{\operatorname{sign}(I_{dc})\,x_i I_{dc}^2}{\sqrt{2} t_i \sin(\phi_i)} \\
+\frac{\partial Q_i}{\partial \alpha_i} &= -V_i t_i \frac{\sqrt{6}}{\pi} I_{dc} \frac{\cos(\phi_i) \sin(\alpha_i)}{\sin(\phi_i)} \\
 \frac{\partial F_{t_i}}{\partial V_i} &= t_i \frac{\sqrt{6}}{\pi} (-I_{dc}) \cos(\alpha_i) \\
 \frac{\partial F_{t_r}}{\partial t_r} &= V_r \frac{\sqrt{6}}{\pi} I_{dc} \cos(\alpha_r) \\
 \frac{\partial F_{t_r}}{\partial \alpha_r} &= -V_r \frac{\sqrt{6}}{\pi} I_{dc} t_r \sin(\alpha_r) \\
