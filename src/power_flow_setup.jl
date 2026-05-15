@@ -1,4 +1,9 @@
-function improve_x0(pf::ACPowerFlow,
+_log_initial_residual(residual) =
+    @info "Initial residual size: " *
+          "$(norm(residual.Rv, 2)) L2, " *
+          "$(norm(residual.Rv, Inf)) L∞"
+
+function improve_x0(pf::ACPolarPowerFlow,
     data::ACPowerFlowData,
     residual::ACPowerFlowResidual,
     time_step::Int64,
@@ -142,7 +147,7 @@ function _dc_power_flow_fallback!(data::ACPowerFlowData, time_step::Int)
     data.bus_angles[valid_ix, time_step] .= p_inj
 end
 
-function initialize_power_flow_variables(pf::ACPowerFlow{T},
+function initialize_power_flow_variables(pf::ACPolarPowerFlow{T},
     data::ACPowerFlowData,
     time_step::Int64;
     x0::Union{Vector{Float64}, Nothing} = nothing,
@@ -159,9 +164,7 @@ function initialize_power_flow_variables(pf::ACPowerFlow{T},
         residual(x0_computed, time_step)
         print_signorms(residual.Rv; ps = [1, 2, Inf])
     end
-    @info "Initial residual size: " *
-          "$(norm(residual.Rv, 2)) L2, " *
-          "$(norm(residual.Rv, Inf)) L∞"
+    _log_initial_residual(residual)
 
     J = ACPowerFlowJacobian(residual, time_step)
     J(time_step)
@@ -173,5 +176,28 @@ function initialize_power_flow_variables(pf::ACPowerFlow{T},
         vm_validation_range,
         0,
     )
+    return residual, J, x0_computed
+end
+
+function initialize_power_flow_variables(pf::ACRectangularPowerFlow{T},
+    data::ACPowerFlowData,
+    time_step::Int64;
+    x0::Union{Vector{Float64}, Nothing} = nothing,
+    validate_voltage_magnitudes::Bool = DEFAULT_VALIDATE_VOLTAGES,
+    vm_validation_range::MinMax = DEFAULT_VALIDATION_RANGE,
+    _ignored...,
+) where {T <: ACPowerFlowSolverType}
+    residual = ACRectangularCIResidual(data, time_step)
+    x0_computed = Vector{Float64}(undef, length(residual.Rv))
+    rect_initial_state!(
+        x0_computed, data, residual.bus_state_offset,
+        residual.bus_block_size, time_step,
+    )
+    if OVERRIDE_x0 && !isnothing(x0)
+        copyto!(x0_computed, x0)
+    end
+    residual(x0_computed, time_step)
+    _log_initial_residual(residual)
+    J = ACRectangularCIJacobian(residual, time_step)
     return residual, J, x0_computed
 end

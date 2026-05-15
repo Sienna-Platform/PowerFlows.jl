@@ -137,10 +137,11 @@ struct PowerFlowData{
 end
 
 # aliases for specific type parameter combinations.
-"""A type alias for a `PowerFlowData` struct whose type parameters
-are configured for the `ACPowerFlow` method."""
+"""A type alias for a `PowerFlowData` struct whose type parameters are
+configured for an AC power flow method (`ACPolarPowerFlow` or
+`ACRectangularPowerFlow`, i.e. any `AbstractACPowerFlow`)."""
 const ACPowerFlowData = PowerFlowData{
-    <:ACPowerFlow,
+    <:AbstractACPowerFlow,
     PNM.AC_Ybus_Matrix,
     <:Union{
         PNM.DC_ABA_Matrix_Factorized,
@@ -270,10 +271,10 @@ get_arc_axis(pfd::ACPowerFlowData) =
 
 # so we can initialize things to the correct size inside the below constructor.
 # No `PowerFlowData` instance, so can't call get_arc_axis or similar to get the size.
-arc_count(::ACPowerFlow,
+arc_count(::AbstractACPowerFlow,
     power_network_matrix::PNM.PowerNetworkMatrix,
     ::Union{PNM.PowerNetworkMatrix, Nothing}) = length(PNM.get_arc_axis(power_network_matrix.arc_admittance_from_to))
-bus_count(::ACPowerFlow,
+bus_count(::AbstractACPowerFlow,
     power_network_matrix::PNM.PowerNetworkMatrix,
     ::Union{PNM.PowerNetworkMatrix, Nothing}) = length(PNM.get_bus_axis(power_network_matrix))
 
@@ -479,7 +480,7 @@ end
 
 """
     PowerFlowData(
-        pf::ACPowerFlow{<:ACPowerFlowSolverType},
+        pf::AbstractACPowerFlow{<:ACPowerFlowSolverType},
         sys::PSY.System
     ) -> ACPowerFlowData{<:ACPowerFlowSolverType}
 
@@ -503,7 +504,7 @@ AC power flows, and returns an [`ACPowerFlowData`](@ref) object.
 WARNING: functions for the evaluation of the multi-period AC PF still to be implemented.
 """
 function PowerFlowData(
-    pf::ACPowerFlow{<:ACPowerFlowSolverType},
+    pf::AbstractACPowerFlow{<:ACPowerFlowSolverType},
     sys::PSY.System,
 )
     network_reductions = get_network_reductions(pf)
@@ -735,7 +736,7 @@ Configuration options like `time_steps`, `time_step_names`, `network_reductions`
 function make_power_flow_container end
 
 make_power_flow_container(
-    pfem::ACPowerFlow{<:ACPowerFlowSolverType},
+    pfem::AbstractACPowerFlow{<:ACPowerFlowSolverType},
     sys::PSY.System,
 ) = PowerFlowData(pfem, sys)
 
