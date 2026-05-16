@@ -18,7 +18,7 @@ end
 end
 
 function _rect_lcc_verify(sys::System; label::String, perturbation::Float64 = 0.02)
-    pf_r = ACPowerFlow{RectangularCurrentInjectionACPowerFlow}(;
+    pf_r = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
         correct_bustypes = true, solver_settings = _rect_lcc_settings())
     data = PF.PowerFlowData(pf_r, sys)
     R = PF.ACRectangularCIResidual(data, 1)
