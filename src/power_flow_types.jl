@@ -6,8 +6,7 @@ abstract type PowerFlowEvaluationModel end
 
 """An abstract supertype for all AC power flow solver/step strategies.
 Subtypes: [`NewtonRaphsonACPowerFlow`](@ref), [`TrustRegionACPowerFlow`](@ref),
-[`LevenbergMarquardtACPowerFlow`](@ref), [`RobustHomotopyPowerFlow`](@ref), and
-[`GradientDescentACPowerFlow`](@ref).
+[`LevenbergMarquardtACPowerFlow`](@ref), and [`RobustHomotopyPowerFlow`](@ref).
 
 The solver is orthogonal to the formulation; see [`AbstractACPowerFlow`](@ref),
 [`ACPolarPowerFlow`](@ref), [`ACRectangularPowerFlow`](@ref).

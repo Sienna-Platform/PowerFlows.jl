@@ -37,6 +37,7 @@ makedocs(;
     sitename = "PowerFlows.jl",
     pages = Any[p for p in pages],
     plugins = [links],
+    warnonly = get(ENV, "POWERFLOWS_DOCS_WARNONLY", "false") == "true",
 )
 
 deploydocs(;
