@@ -38,6 +38,7 @@ docs/site/
 *.ipynb
 
 Manifest.toml
+scripts/benchmarks/*.csv
 .vscode
 *.h5
 data

@@ -18,17 +18,25 @@ function _newton_power_flow(pf::ACPolarPowerFlow{<:RobustHomotopyPowerFlow},
     symbolic_factor!(hSolver, homHess.Hv)
 
     success = true
+    total_iters = 0
     while true # go onto next t_k even if search doesn't terminate within max iterations.
-        converged_t_k, _ = _second_order_newton(homHess, t_k, time_step, x, hSolver)
+        converged_t_k, iters = _second_order_newton(homHess, t_k, time_step, x, hSolver)
+        total_iters += iters
         if t_k == 1.0
             success = converged_t_k
             break
         end
         t_k = min(t_k + Δt_k, 1.0)
     end
+    r_L2 = norm(homHess.pfResidual.Rv, 2)
+    r_Linf = norm(homHess.pfResidual.Rv, Inf)
+    @info("Final residual size: $(r_L2) L2, $(r_Linf) L∞.")
     if !success
-        @warn "RobustHomotopyPowerFlow failed to find a solution"
+        @error(
+            "The RobustHomotopyPowerFlow solver failed to converge after $total_iters iterations."
+        )
     else
+        @info("The RobustHomotopyPowerFlow solver converged after $total_iters iterations.")
         if get_calculate_loss_factors(data)
             _calculate_loss_factors(data, homHess.J.Jv, time_step)
         end
