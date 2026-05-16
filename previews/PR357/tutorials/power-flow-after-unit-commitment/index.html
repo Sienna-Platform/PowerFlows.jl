@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>Validating a UC Dispatch · PowerFlows.jl</title><meta name="title" content="Validating a UC Dispatch · PowerFlows.jl"/><meta property="og:title" content="Validating a UC Dispatch · PowerFlows.jl"/><meta property="twitter:title" content="Validating a UC Dispatch · PowerFlows.jl"/><meta name="description" content="Documentation for PowerFlows.jl."/><meta property="og:description" content="Documentation for PowerFlows.jl."/><meta property="twitter:description" content="Documentation for PowerFlows.jl."/><script data-outdated-warner src="../../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.050/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL="../.."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../../assets/documenter.js"></script><script src="../../search_index.js"></script><script src="../../siteinfo.js"></script><script src="../../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../../assets/themeswap.js"></script></head><body><div id="documenter"><nav class="docs-sidebar"><a class="docs-logo" href="../../"><img src="../../assets/logo.png" alt="PowerFlows.jl logo"/></a><div class="docs-package-name"><span class="docs-autofit"><a href="../../">PowerFlows.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../../">Welcome Page</a></li><li><a class="tocitem" href="../../how-tos/stub/">How-to-Guides</a></li><li><span class="tocitem">Tutorials</span><ul><li><a class="tocitem" href="../solving-a-power-flow/">Solving a Power Flow</a></li><li class="is-active"><a class="tocitem" href>Validating a UC Dispatch</a><ul class="internal"><li><a class="tocitem" href="#Setup"><span>Setup</span></a></li><li><a class="tocitem" href="#Building-a-Multi-Period-PowerFlowData-Object"><span>Building a Multi-Period PowerFlowData Object</span></a></li><li><a class="tocitem" href="#Loading-Dispatch-Data"><span>Loading Dispatch Data</span></a></li><li><a class="tocitem" href="#Solving-the-Multi-Period-Power-Flow"><span>Solving the Multi-Period Power Flow</span></a></li><li><a class="tocitem" href="#Inspecting-Results"><span>Inspecting Results</span></a></li><li><a class="tocitem" href="#Checking-for-Overloads"><span>Checking for Overloads</span></a></li></ul></li><li><a class="tocitem" href="../uc-power-flow-in-the-loop/">Power Flow In The Loop with UC</a></li></ul></li><li><a class="tocitem" href="../../explanation/stub/">Explanation</a></li><li><span class="tocitem">Reference</span><ul><li><a class="tocitem" href="../../reference/developers/developer/">Code Base Developer Guide</a></li><li><a class="tocitem" href="../../reference/developers/lcc_model/">LCC Model Implementation</a></li><li><a class="tocitem" href="../../reference/api/public/">Public API Reference</a></li><li><a class="tocitem" href="../../reference/api/internal/">Internal API Reference - Core</a></li><li><a class="tocitem" href="../../reference/api/internal_solvers/">Internal API Reference - Solvers &amp; Utilities</a></li></ul></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li><a class="is-disabled">Tutorials</a></li><li class="is-active"><a href>Validating a UC Dispatch</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>Validating a UC Dispatch</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/NREL-Sienna/PowerFlows.jl" title="View the repository on GitHub"><span class="docs-icon fa-brands"></span><span class="docs-label is-hidden-touch">GitHub</span></a><a class="docs-navbar-link" href="https://github.com/NREL-Sienna/PowerFlows.jl/blob/main/docs/src/tutorials/power-flow-after-unit-commitment.md" title="Edit source on GitHub"><span class="docs-icon fa-solid"></span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><h1 id="Validating-a-UC-Dispatch-with-Multi-Period-Power-Flow"><a class="docs-heading-anchor" href="#Validating-a-UC-Dispatch-with-Multi-Period-Power-Flow">Validating a UC Dispatch with Multi-Period Power Flow</a><a id="Validating-a-UC-Dispatch-with-Multi-Period-Power-Flow-1"></a><a class="docs-heading-anchor-permalink" href="#Validating-a-UC-Dispatch-with-Multi-Period-Power-Flow" title="Permalink"></a></h1><p>To get started, ensure you have followed the <a href="../../#Installation">installation instructions</a>. Start Julia from the command line if you haven&#39;t already.</p><p>In this tutorial, you&#39;ll run a 24-interval DC power flow over a set of dispatch results from a unit commitment (UC) problem, then scan every interval for overloaded branches.</p><p>Unit commitment determines which generators are online and at what output level for each hour of a planning horizon. UC models typically use a simplified network representation (e.g., Power Transfer Distribution Factor linearization). Running a power flow at every dispatch interval lets you check whether the committed schedule is network-feasible — no line overloads, angle differences within limits, etc.</p><p>If you want to run power flow automatically <em>during</em> a <a href="https://nrel-sienna.github.io/PowerSimulations.jl/stable/"><code>PowerSimulations.jl</code></a> UC simulation rather than after it, see the tutorial <a href="../uc-power-flow-in-the-loop/#Running-Power-Flow-In-The-Loop-with-Unit-Commitment">Running Power Flow In The Loop with Unit Commitment</a>.</p><h2 id="Setup"><a class="docs-heading-anchor" href="#Setup">Setup</a><a id="Setup-1"></a><a class="docs-heading-anchor-permalink" href="#Setup" title="Permalink"></a></h2><div class="admonition is-success" id="Activate-the-project-environment-first-fafb82332f405c55"><header class="admonition-header">Activate the project environment first<a class="admonition-anchor" href="#Activate-the-project-environment-first-fafb82332f405c55" title="Permalink"></a></header><div class="admonition-body"><p>If you are following this tutorial from within the cloned PowerFlows.jl repository, activate the local project environment before loading packages so that Julia uses the local version rather than any globally-installed version:</p><pre><code class="language-julia hljs">import Pkg
+Pkg.activate(&quot;.&quot;)
+Pkg.instantiate()  # first time only: downloads packages listed in Manifest.toml</code></pre><p><code>Pkg.instantiate()</code> is only needed the first time you activate the project (or after pulling changes that update <code>Manifest.toml</code>). It is safe to skip on subsequent sessions. If you installed PowerFlows.jl via <code>Pkg.add</code>, you can skip both steps.</p></div></div><p>Load the needed packages:</p><pre><code class="language-julia-repl hljs" style="display:block;">julia&gt; using PowerSystemCaseBuilder</code><br/><code class="language-julia-repl hljs" style="display:block;">julia&gt; using PowerFlows</code><br/><code class="language-julia-repl hljs" style="display:block;">julia&gt; using PowerSystems</code><br/><code class="language-julia-repl hljs" style="display:block;">julia&gt; using DataFrames</code><code class="nohighlight hljs ansi" style="display:block;">ERROR: ArgumentError: Package DataFrames not found in current path.
+- Run `import Pkg; Pkg.add(&quot;DataFrames&quot;)` to install the DataFrames package.</code><br/><code class="language-julia-repl hljs" style="display:block;">julia&gt; using Logging</code><br/><code class="language-julia-repl hljs" style="display:block;">julia&gt; disable_logging(Logging.Warn)</code><code class="nohighlight hljs ansi" style="display:block;">LogLevel(1001)</code></pre><p>Build a 14-bus test system:</p><pre><code class="language-julia-repl hljs" style="display:block;">julia&gt; sys = build_system(PSITestSystems, &quot;c_sys14&quot;)</code><code class="nohighlight hljs ansi" style="display:block;"><span class="sgr1">              System</span>
+┌───────────────────┬─────────────┐
+│<span class="sgr1"> Property          </span>│<span class="sgr1"> Value       </span>│
+├───────────────────┼─────────────┤
+│ Name              │             │
+│ Description       │             │
+│ System Units Base │ SYSTEM_BASE │
+│ Base Power        │ 100.0       │
+│ Base Frequency    │ 60.0        │
+│ Num Components    │ 70          │
+└───────────────────┴─────────────┘
+
+<span class="sgr1">     Static Components</span>
+┌─────────────────┬───────┐
+│<span class="sgr1"> Type            </span>│<span class="sgr1"> Count </span>│
+├─────────────────┼───────┤
+│ ACBus           │ 14    │
+│ Arc             │ 20    │
+│ Line            │ 16    │
+│ PowerLoad       │ 11    │
+│ TapTransformer  │ 3     │
+│ ThermalStandard │ 5     │
+│ Transformer2W   │ 1     │
+└─────────────────┴───────┘
+
+<span class="sgr1">                                Forecast Summary</span>
+┌────────────┬────────────────┬──────────────────┬──────────────────┬───────────
+│<span class="sgr1"> owner_type </span>│<span class="sgr1"> owner_category </span>│<span class="sgr1"> name             </span>│<span class="sgr1"> time_series_type </span>│<span class="sgr1"> initial_</span> ⋯
+│<span class="sgr90"> String     </span>│<span class="sgr90"> String         </span>│<span class="sgr90"> String           </span>│<span class="sgr90"> String           </span>│<span class="sgr90"> String  </span> ⋯
+├────────────┼────────────────┼──────────────────┼──────────────────┼───────────
+│ PowerLoad  │ Component      │ max_active_power │ Deterministic    │ 2024-01- ⋯
+└────────────┴────────────────┴──────────────────┴──────────────────┴───────────
+<span class="sgr36">                                                               6 columns omitted</span></code></pre><div class="admonition is-warning" id="Run-the-setup-blocks-first-953e1e8049c3e30a"><header class="admonition-header">Run the setup blocks first<a class="admonition-anchor" href="#Run-the-setup-blocks-first-953e1e8049c3e30a" title="Permalink"></a></header><div class="admonition-body"><p>Every code block in this tutorial shares the same REPL session (<code>uc_validation</code>). If you skip or re-order blocks, variables like <code>sys</code>, <code>pf</code>, and <code>data</code> will be undefined and you will see <code>UndefVarError</code>. Always run the setup blocks above before proceeding to each subsequent section.</p><p>If any <code>using</code> statement in the setup block failed because a package was not yet installed, install it with <code>Pkg.add(&quot;PackageName&quot;)</code> and then <strong>re-run the entire setup block</strong> — simply installing a package does not load it into the current session.</p></div></div><h2 id="Building-a-Multi-Period-PowerFlowData-Object"><a class="docs-heading-anchor" href="#Building-a-Multi-Period-PowerFlowData-Object">Building a Multi-Period PowerFlowData Object</a><a id="Building-a-Multi-Period-PowerFlowData-Object-1"></a><a class="docs-heading-anchor-permalink" href="#Building-a-Multi-Period-PowerFlowData-Object" title="Permalink"></a></h2><p>Multi-period power flow requires constructing a <a href="../../reference/api/internal/#PowerFlowData"><code>PowerFlowData</code></a> object first. This pre-allocates all matrices and working arrays for every time step at once, avoiding repeated setup overhead.</p><p>Create a <a href="../../reference/api/public/#PowerFlows.DCPowerFlow"><code>DCPowerFlow</code></a> configured for 24 time steps:</p><pre><code class="language-julia-repl hljs" style="display:block;">julia&gt; pf = DCPowerFlow(; time_steps = 24)</code><code class="nohighlight hljs ansi" style="display:block;">DCPowerFlow(nothing, PowerNetworkMatrices.NetworkReduction[], 24, String[], false, false)</code><br/><code class="language-julia-repl hljs" style="display:block;">julia&gt; data = PowerFlows.PowerFlowData(pf, sys)</code><code class="nohighlight hljs ansi" style="display:block;">PowerFlows.PowerFlowData{DCPowerFlow, PowerNetworkMatrices.DC_ABA_Matrix_Factorized, PowerNetworkMatrices.DC_BA_Matrix}(DCPowerFlow(nothing, PowerNetworkMatrices.NetworkReduction[], 24, String[], false, false), [2.0 0.0 … 0.0 0.0; 0.4 0.0 … 0.0 0.0; … ; 0.0 0.0 … 0.0 0.0; 0.0 0.0 … 0.0 0.0], [0.0 0.0 … 0.0 0.0; 0.0 0.0 … 0.0 0.0; … ; 0.0 0.0 … 0.0 0.0; 0.0 0.0 … 0.0 0.0], [0.0 0.0 … 0.0 0.0; 0.217 0.0 … 0.0 0.0; … ; 0.135 0.0 … 0.0 0.0; 0.149 0.0 … 0.0 0.0], [0.0 0.0 … 0.0 0.0; 0.0 0.0 … 0.0 0.0; … ; 0.0 0.0 … 0.0 0.0; 0.0 0.0 … 0.0 0.0], [0.0 0.0 … 0.0 0.0; 0.0 0.0 … 0.0 0.0; … ; 0.0 0.0 … 0.0 0.0; 0.0 0.0 … 0.0 0.0], [0.0 0.0 … 0.0 0.0; 0.0 0.0 … 0.0 0.0; … ; 0.0 0.0 … 0.0 0.0; 0.0 0.0 … 0.0 0.0], [0.0 0.0 … 0.0 0.0; 0.0 0.0 … 0.0 0.0; … ; 0.0 0.0 … 0.0 0.0; 0.0 0.0 … 0.0 0.0], [0.0 0.0 … 0.0 0.0; 0.0 0.0 … 0.0 0.0; … ; 0.0 0.0 … 0.0 0.0; 0.0 0.0 … 0.0 0.0], [(0.0, 0.1) (-Inf, Inf) … (-Inf, Inf) (-Inf, Inf); (-0.4, 0.5) (-Inf, Inf) … (-Inf, Inf) (-Inf, Inf); … ; (0.0, 0.0) (-Inf, Inf) … (-Inf, Inf) (-Inf, Inf); (0.0, 0.0) (-Inf, Inf) … (-Inf, Inf) (-Inf, Inf)], sparse([1, 1, 1, 1, 1, 1, 1, 1, 1, 1  …  1, 1, 1, 1, 1, 1, 1, 1, 1, 1], [1, 2, 3, 4, 5, 6, 7, 8, 9, 10  …  15, 16, 17, 18, 19, 20, 21, 22, 23, 24], [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0  …  1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0], 14, 24), [0.0 0.0 … 0.0 0.0; 0.0 0.0 … 0.0 0.0; … ; 0.0 0.0 … 0.0 0.0; 0.0 0.0 … 0.0 0.0], Dict{Tuple{DataType, String}, Float64}[], ACBusTypes[ACBusTypes.REF = 3 ACBusTypes.REF = 3 … ACBusTypes.REF = 3 ACBusTypes.REF = 3; ACBusTypes.PV = 2 ACBusTypes.PV = 2 … ACBusTypes.PV = 2 ACBusTypes.PV = 2; … ; ACBusTypes.PQ = 1 ACBusTypes.PQ = 1 … ACBusTypes.PQ = 1 ACBusTypes.PQ = 1; ACBusTypes.PQ = 1 ACBusTypes.PQ = 1 … ACBusTypes.PQ = 1 ACBusTypes.PQ = 1], [1.0 1.0 … 1.0 1.0; 1.0 1.0 … 1.0 1.0; … ; 1.0 1.0 … 1.0 1.0; 1.0 1.0 … 1.0 1.0], [0.0 0.0 … 0.0 0.0; -0.08691739674931762 -0.08691739674931762 … -0.08691739674931762 -0.08691739674931762; … ; -0.2645919146023404 -0.2645919146023404 … -0.2645919146023404 -0.2645919146023404; -0.27995081201989047 -0.27995081201989047 … -0.27995081201989047 -0.27995081201989047], [0.0 0.0 … 0.0 0.0; 0.0 0.0 … 0.0 0.0; … ; 0.0 0.0 … 0.0 0.0; 0.0 0.0 … 0.0 0.0], [0.0 0.0 … 0.0 0.0; 0.0 0.0 … 0.0 0.0; … ; 0.0 0.0 … 0.0 0.0; 0.0 0.0 … 0.0 0.0], [0.0 0.0 … 0.0 0.0; 0.0 0.0 … 0.0 0.0; … ; 0.0 0.0 … 0.0 0.0; 0.0 0.0 … 0.0 0.0], [0.0 0.0 … 0.0 0.0; 0.0 0.0 … 0.0 0.0; … ; 0.0 0.0 … 0.0 0.0; 0.0 0.0 … 0.0 0.0], [0.0 0.0 … 0.0 0.0; 0.0 0.0 … 0.0 0.0; … ; 0.0 0.0 … 0.0 0.0; 0.0 0.0 … 0.0 0.0], Dict{Tuple{Int64, Int64}, Tuple{Float64, Float64}}(), [0.0 0.0 … 0.0 0.0; 0.0 0.0 … 0.0 0.0; … ; 0.0 0.0 … 0.0 0.0; 0.0 0.0 … 0.0 0.0], Dict(5 =&gt; &quot;5&quot;, 16 =&gt; &quot;16&quot;, 20 =&gt; &quot;20&quot;, 12 =&gt; &quot;12&quot;, 24 =&gt; &quot;24&quot;, 8 =&gt; &quot;8&quot;, 17 =&gt; &quot;17&quot;, 1 =&gt; &quot;1&quot;, 19 =&gt; &quot;19&quot;, 22 =&gt; &quot;22&quot;…), PowerNetworkMatrices.DC_ABA_Matrix_Factorized
+    Dimension 1, [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+    Dimension 2, [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+And data with size (13, 13):
+ 33.37432527542114   -5.051270484924316  …    ⋅
+ -5.051270484924316  10.898198127746582       ⋅
+ -5.671506404876709  -5.846927642822266       ⋅
+ -5.751092910766602    ⋅                      ⋅
+   ⋅                   ⋅                      ⋅
+   ⋅                   ⋅                 …    ⋅
+   ⋅                   ⋅                      ⋅
+   ⋅                   ⋅                    -3.698498487472534
+   ⋅                   ⋅                      ⋅
+   ⋅                   ⋅                      ⋅
+   ⋅                   ⋅                 …    ⋅
+   ⋅                   ⋅                    -2.8733983039855957
+   ⋅                   ⋅                     6.57189679145813, PowerNetworkMatrices.DC_BA_Matrix
+    Dimension 1, [(4, 5), (1, 2), (2, 5), (12, 13), (9, 10), (10, 11), (6, 12), (6, 13), (7, 8), (9, 14), (4, 7), (3, 4), (5, 6), (1, 5), (6, 11), (2, 3), (7, 9), (13, 14), (2, 4), (4, 9)]
+    Dimension 2, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+Note!! The data shown below corresponds to the transposed matrix.
+And data with size (14, 20):
+    ⋅                 16.900455474853516  …    ⋅
+    ⋅                -16.900455474853516       ⋅
+    ⋅                   ⋅                      ⋅
+  23.74732780456543     ⋅                     1.8554993867874146
+ -23.74732780456543     ⋅                      ⋅
+    ⋅                   ⋅                 …    ⋅
+    ⋅                   ⋅                      ⋅
+    ⋅                   ⋅                      ⋅
+    ⋅                   ⋅                    -1.8554993867874146
+    ⋅                   ⋅                      ⋅
+    ⋅                   ⋅                 …    ⋅
+    ⋅                   ⋅                      ⋅
+    ⋅                   ⋅                      ⋅
+    ⋅                   ⋅                      ⋅ , Set{Int64}[], Bool[0, 0, 0, 0, 0, 0, 0, 0, 0, 0  …  0, 0, 0, 0, 0, 0, 0, 0, 0, 0], nothing, nothing, [0.0 0.0 … 0.0 0.0; 0.0 0.0 … 0.0 0.0; … ; 0.0 0.0 … 0.0 0.0; 0.0 0.0 … 0.0 0.0], PowerFlows.LCCParameters(Tuple{Int64, Int64}[], Tuple{Int64, Int64}[], Tuple{ComplexF64, ComplexF64}[], Matrix{Float64}(undef, 0, 24), Matrix{Float64}(undef, 0, 24), Matrix{Float64}(undef, 0, 24), Matrix{Float64}(undef, 0, 24), Bool[], Matrix{Float64}(undef, 0, 24), Matrix{Float64}(undef, 0, 24), Float64[], PowerFlows.LCCConverterParameters(Int64[], Matrix{Float64}(undef, 0, 24), Matrix{Float64}(undef, 0, 24), Matrix{Float64}(undef, 0, 24), Float64[], Float64[]), PowerFlows.LCCConverterParameters(Int64[], Matrix{Float64}(undef, 0, 24), Matrix{Float64}(undef, 0, 24), Matrix{Float64}(undef, 0, 24), Float64[], Float64[])), nothing, nothing)</code></pre><p><code>data</code> now holds pre-allocated injection and withdrawal arrays shaped <code>(n_buses, 24)</code>.</p><h2 id="Loading-Dispatch-Data"><a class="docs-heading-anchor" href="#Loading-Dispatch-Data">Loading Dispatch Data</a><a id="Loading-Dispatch-Data-1"></a><a class="docs-heading-anchor-permalink" href="#Loading-Dispatch-Data" title="Permalink"></a></h2><p>In a real workflow, per-interval bus injections and withdrawals come from your UC results (e.g., extracted from a <a href="https://nrel-sienna.github.io/PowerSimulations.jl/stable/"><code>PowerSimulations.jl</code></a> <code>SimulationResults</code> object). Here we use the default values already populated by <code>PowerFlowData</code> and apply a sinusoidal load scale to simulate varying demand across the day:</p><pre><code class="language-julia-repl hljs" style="display:block;">julia&gt; base_injections  = copy(data.bus_active_power_injections[:, 1])</code><code class="nohighlight hljs ansi" style="display:block;">14-element Vector{Float64}:
+ 2.0
+ 0.4
+ 0.0
+ 0.0
+ 0.0
+ 0.0
+ 0.0
+ 0.0
+ 0.0
+ 0.0
+ 0.0
+ 0.0
+ 0.0
+ 0.0</code><br/><code class="language-julia-repl hljs" style="display:block;">julia&gt; base_withdrawals = copy(data.bus_active_power_withdrawals[:, 1])</code><code class="nohighlight hljs ansi" style="display:block;">14-element Vector{Float64}:
+ 0.0
+ 0.217
+ 0.942
+ 0.478
+ 0.076
+ 0.112
+ 0.0
+ 0.0
+ 0.295
+ 0.09
+ 0.035
+ 0.061
+ 0.135
+ 0.149</code><br/><code class="language-julia-repl hljs" style="display:block;">julia&gt; for t in 1:24
+           load_scale = 0.8 + 0.2 * sin(2π * (t - 1) / 24)
+           data.bus_active_power_injections[:, t]  .= base_injections
+           data.bus_active_power_withdrawals[:, t] .= base_withdrawals .* load_scale
+       end</code></pre><h2 id="Solving-the-Multi-Period-Power-Flow"><a class="docs-heading-anchor" href="#Solving-the-Multi-Period-Power-Flow">Solving the Multi-Period Power Flow</a><a id="Solving-the-Multi-Period-Power-Flow-1"></a><a class="docs-heading-anchor-permalink" href="#Solving-the-Multi-Period-Power-Flow" title="Permalink"></a></h2><p>Solve all 24 time steps in a single call. Using <a href="../../reference/api/public/#PowerFlows.FlowReportingModule.FlowReporting"><code>FlowReporting</code></a>.BRANCH_FLOWS reports one row per physical branch by its <a href="https://nrel-sienna.github.io/PowerSystems.jl/stable/"><code>PowerSystems.jl</code></a> name, which lets us look up ratings directly from the <code>System</code>:</p><pre><code class="language-julia-repl hljs" style="display:block;">julia&gt; results = solve_power_flow(data, sys, FlowReporting.BRANCH_FLOWS)</code><code class="nohighlight hljs ansi" style="display:block;">Dict{String, Dict{String, DataFrames.DataFrame}} with 24 entries:
+  &quot;24&quot; =&gt; Dict(&quot;flow_results&quot;=&gt;<span class="sgr1">20×10 DataFrame</span>…
+  &quot;4&quot;  =&gt; Dict(&quot;flow_results&quot;=&gt;<span class="sgr1">20×10 DataFrame</span>…
+  &quot;1&quot;  =&gt; Dict(&quot;flow_results&quot;=&gt;<span class="sgr1">20×10 DataFrame</span>…
+  &quot;12&quot; =&gt; Dict(&quot;flow_results&quot;=&gt;<span class="sgr1">20×10 DataFrame</span>…
+  &quot;20&quot; =&gt; Dict(&quot;flow_results&quot;=&gt;<span class="sgr1">20×10 DataFrame</span>…
+  &quot;2&quot;  =&gt; Dict(&quot;flow_results&quot;=&gt;<span class="sgr1">20×10 DataFrame</span>…
+  &quot;6&quot;  =&gt; Dict(&quot;flow_results&quot;=&gt;<span class="sgr1">20×10 DataFrame</span>…
+  &quot;23&quot; =&gt; Dict(&quot;flow_results&quot;=&gt;<span class="sgr1">20×10 DataFrame</span>…
+  &quot;22&quot; =&gt; Dict(&quot;flow_results&quot;=&gt;<span class="sgr1">20×10 DataFrame</span>…
+  &quot;11&quot; =&gt; Dict(&quot;flow_results&quot;=&gt;<span class="sgr1">20×10 DataFrame</span>…
+  &quot;13&quot; =&gt; Dict(&quot;flow_results&quot;=&gt;<span class="sgr1">20×10 DataFrame</span>…
+  &quot;5&quot;  =&gt; Dict(&quot;flow_results&quot;=&gt;<span class="sgr1">20×10 DataFrame</span>…
+  &quot;15&quot; =&gt; Dict(&quot;flow_results&quot;=&gt;<span class="sgr1">20×10 DataFrame</span>…
+  &quot;16&quot; =&gt; Dict(&quot;flow_results&quot;=&gt;<span class="sgr1">20×10 DataFrame</span>…
+  &quot;14&quot; =&gt; Dict(&quot;flow_results&quot;=&gt;<span class="sgr1">20×10 DataFrame</span>…
+  &quot;21&quot; =&gt; Dict(&quot;flow_results&quot;=&gt;<span class="sgr1">20×10 DataFrame</span>…
+  &quot;7&quot;  =&gt; Dict(&quot;flow_results&quot;=&gt;<span class="sgr1">20×10 DataFrame</span>…
+  &quot;8&quot;  =&gt; Dict(&quot;flow_results&quot;=&gt;<span class="sgr1">20×10 DataFrame</span>…
+  &quot;17&quot; =&gt; Dict(&quot;flow_results&quot;=&gt;<span class="sgr1">20×10 DataFrame</span>…
+  ⋮    =&gt; ⋮</code></pre><p><code>results</code> is a <code>Dict{String, Dict{String, DataFrame}}</code>. The outer key is the time step name (<code>&quot;1&quot;</code> through <code>&quot;24&quot;</code>). The inner dictionary has keys <code>&quot;bus_results&quot;</code>, <code>&quot;flow_results&quot;</code>, and <code>&quot;lcc_results&quot;</code>.</p><h2 id="Inspecting-Results"><a class="docs-heading-anchor" href="#Inspecting-Results">Inspecting Results</a><a id="Inspecting-Results-1"></a><a class="docs-heading-anchor-permalink" href="#Inspecting-Results" title="Permalink"></a></h2><p>Look at bus results for hour 1:</p><pre><code class="language-julia-repl hljs" style="display:block;">julia&gt; results[&quot;1&quot;][&quot;bus_results&quot;]</code><code class="nohighlight hljs ansi" style="display:block;"><span class="sgr1">14×9 DataFrame</span>
+<span class="sgr1"> Row </span>│<span class="sgr1"> bus_number  Vm       θ          P_gen    P_load   P_net    Q_gen    Q_l</span> ⋯
+<span class="sgr1">     </span>│<span class="sgr90"> Int64       Float64  Float64    Float64  Float64  Float64  Float64  Flo</span> ⋯
+─────┼──────────────────────────────────────────────────────────────────────────
+   1 │          1      1.0   0.0         200.0     0.0    200.0       0.0      ⋯
+   2 │          2      1.0  -0.066014     40.0    17.36    22.64      0.0
+   3 │          3      1.0  -0.177334      0.0    75.36   -75.36      0.0
+   4 │          4      1.0  -0.144616      0.0    38.24   -38.24      0.0
+   5 │          5      1.0  -0.124084      0.0     6.08    -6.08      0.0      ⋯
+   6 │          6      1.0  -0.204396      0.0     8.96    -8.96      0.0
+   7 │          7      1.0  -0.191068      0.0     0.0      0.0       0.0
+   8 │          8      1.0  -0.191068      0.0     0.0      0.0       0.0
+   9 │          9      1.0  -0.216054      0.0    23.6    -23.6       0.0      ⋯
+  10 │         10      1.0  -0.219975      0.0     7.2     -7.2       0.0
+  11 │         11      1.0  -0.215057      0.0     2.8     -2.8       0.0
+  12 │         12      1.0  -0.219956      0.0     4.88    -4.88      0.0
+  13 │         13      1.0  -0.22236       0.0    10.8    -10.8       0.0      ⋯
+  14 │         14      1.0  -0.236949      0.0    11.92   -11.92      0.0
+<span class="sgr36">                                                               2 columns omitted</span></code></pre><p>Notice that <code>Vm</code> (voltage magnitude) is 1.0 for all buses and <code>Q_gen</code>, <code>Q_load</code> are 0. This is expected for DC power flow, which assumes flat voltage profiles and ignores reactive power entirely.</p><p>Look at line flows for hour 1:</p><pre><code class="language-julia-repl hljs" style="display:block;">julia&gt; results[&quot;1&quot;][&quot;flow_results&quot;]</code><code class="nohighlight hljs ansi" style="display:block;"><span class="sgr1">20×10 DataFrame</span>
+<span class="sgr1"> Row </span>│<span class="sgr1"> flow_name  bus_from  bus_to  P_from_to  Q_from_to  P_to_from   Q_to_fro</span> ⋯
+<span class="sgr1">     </span>│<span class="sgr90"> String     Int64     Int64   Float64    Float64    Float64     Float64 </span> ⋯
+─────┼──────────────────────────────────────────────────────────────────────────
+   1 │ Line1             1       2  111.567          0.0  -111.567          0. ⋯
+   2 │ Line2             1       5   55.6333         0.0   -55.6333         0.
+   3 │ Line3             2       3   56.2305         0.0   -56.2305         0.
+   4 │ Line4             2       4   44.5794         0.0   -44.5794         0.
+   5 │ Line5             2       5   33.3968         0.0   -33.3968         0. ⋯
+   6 │ Line6             3       4  -19.1295         0.0    19.1295         0.
+   7 │ Line7             4       5  -48.7579         0.0    48.7579         0.
+   8 │ Trans3            4       7   22.7125         0.0   -22.7125         0.
+  ⋮  │     ⋮         ⋮        ⋮         ⋮          ⋮          ⋮           ⋮    ⋱
+  14 │ Trans4            7       8    0.0            0.0    -0.0            0. ⋯
+  15 │ Line16            7       9   22.7125         0.0   -22.7125         0.
+  16 │ Line11            9      10    4.63984        0.0    -4.63984        0.
+  17 │ Line12            9      14    7.72794        0.0    -7.72794        0.
+  18 │ Line13           10      11   -2.56016        0.0     2.56016        0. ⋯
+  19 │ Line14           12      13    1.20258        0.0    -1.20258        0.
+  20 │ Line15           13      14    4.19206        0.0    -4.19206        0.
+<span class="sgr36">                                                    4 columns and 5 rows omitted</span></code></pre><p>Notice that <code>P_from_to</code> and <code>P_to_from</code> are <strong>not</strong> equal and opposite, and <code>P_losses</code> is non-zero for resistive branches. Although DC power flow ignores reactive power and assumes flat voltage magnitudes, PowerFlows.jl computes a first-order active power loss estimate as <span>$R \cdot P^2$</span>, where <span>$R$</span> is the branch resistance. Purely inductive branches (zero resistance) will still show zero losses.</p><h2 id="Checking-for-Overloads"><a class="docs-heading-anchor" href="#Checking-for-Overloads">Checking for Overloads</a><a id="Checking-for-Overloads-1"></a><a class="docs-heading-anchor-permalink" href="#Checking-for-Overloads" title="Permalink"></a></h2><p>Build a branch rating lookup from the <code>System</code> — <code>flow_name</code> in the results matches the <a href="https://nrel-sienna.github.io/PowerSystems.jl/stable/"><code>PowerSystems.jl</code></a> branch name when using <a href="../../reference/api/public/#PowerFlows.FlowReportingModule.FlowReporting"><code>FlowReporting</code></a>.BRANCH_FLOWS reporting:</p><pre><code class="language-julia-repl hljs" style="display:block;">julia&gt; ratings = Dict(
+           PowerSystems.get_name(b) =&gt; PowerSystems.get_rating(b) * PowerSystems.get_base_power(sys)
+           for b in PowerSystems.get_components(PowerSystems.ACBranch, sys)
+       )</code><code class="nohighlight hljs ansi" style="display:block;">Dict{String, Float64} with 20 entries:
+  &quot;Line12&quot; =&gt; 114.0
+  &quot;Line3&quot;  =&gt; 114.0
+  &quot;Line4&quot;  =&gt; 114.0
+  &quot;Trans2&quot; =&gt; 2000.0
+  &quot;Trans4&quot; =&gt; 2000.0
+  &quot;Line6&quot;  =&gt; 114.0
+  &quot;Line15&quot; =&gt; 114.0
+  &quot;Line9&quot;  =&gt; 114.0
+  &quot;Line10&quot; =&gt; 114.0
+  &quot;Line7&quot;  =&gt; 114.0
+  &quot;Trans3&quot; =&gt; 2000.0
+  &quot;Line1&quot;  =&gt; 114.0
+  &quot;Trans1&quot; =&gt; 2000.0
+  &quot;Line13&quot; =&gt; 114.0
+  &quot;Line8&quot;  =&gt; 114.0
+  &quot;Line14&quot; =&gt; 114.0
+  &quot;Line2&quot;  =&gt; 114.0
+  &quot;Line16&quot; =&gt; 114.0
+  &quot;Line5&quot;  =&gt; 114.0
+  &quot;Line11&quot; =&gt; 114.0</code></pre><p>Scan every interval for branches that exceed their rating:</p><pre><code class="language-julia-repl hljs" style="display:block;">julia&gt; overloads = DataFrame(
+           time_step  = String[],
+           flow_name  = String[],
+           P_from_to  = Float64[],
+           rating     = Float64[],
+       )</code><code class="nohighlight hljs ansi" style="display:block;">ERROR: UndefVarError: `DataFrame` not defined in `Main`
+Suggestion: check for spelling errors or missing imports.
+Hint: a global variable of this name also exists in DataFrames.
+    - Also exported by DataFramesMeta (loaded but not imported in Main).</code><br/><code class="language-julia-repl hljs" style="display:block;">julia&gt; for (t, step_results) in results
+           for row in eachrow(step_results[&quot;flow_results&quot;])
+               rating = get(ratings, row.flow_name, Inf)
+               if abs(row.P_from_to) &gt; rating
+                   push!(overloads, (t, row.flow_name, row.P_from_to, rating))
+               end
+           end
+       end</code><code class="nohighlight hljs ansi" style="display:block;">ERROR: UndefVarError: `overloads` not defined in `Main`
+Suggestion: add an appropriate import or assignment. This global was declared but not assigned.</code><br/><code class="language-julia-repl hljs" style="display:block;">julia&gt; overloads</code><code class="nohighlight hljs ansi" style="display:block;">ERROR: UndefVarError: `overloads` not defined in `Main`
+Suggestion: add an appropriate import or assignment. This global was declared but not assigned.</code></pre><p>An empty DataFrame means the committed dispatch is network-feasible at every interval — every branch stays within its thermal rating at every hour of the day.</p><p>If the DataFrame is non-empty, each row identifies a specific congestion event:</p><ul><li><strong><code>time_step</code></strong>: the interval (hour) in which the overload occurred.</li><li><strong><code>flow_name</code></strong>: the name of the overloaded branch, matching the PowerSystems.jl component name.</li><li><strong><code>P_from_to</code></strong>: the actual active power flow on that branch in MW (signed, from the &quot;from&quot; bus to the &quot;to&quot; bus).</li><li><strong><code>rating</code></strong>: the branch&#39;s thermal rating in MW. The severity of the overload is <code>abs(P_from_to) - rating</code>.</li></ul><p>In a real UC workflow, overloaded branches indicate that the UC model&#39;s network representation was too loose — it allowed a dispatch that the full DC network model rejects. Common responses include:</p><ul><li><strong>Add transmission constraints</strong> to the UC model for the congested branches.</li><li><strong>Re-run the UC</strong> with those constraints active and repeat the power flow check.</li><li><strong>Manually curtail</strong> generation near the overloaded branch and re-check.</li></ul><p>Iterating this process until the overloads DataFrame is empty gives you a network-feasible dispatch schedule.</p></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../solving-a-power-flow/">« Solving a Power Flow</a><a class="docs-footer-nextpage" href="../uc-power-flow-in-the-loop/">Power Flow In The Loop with UC »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.17.0 on <span class="colophon-date" title="Monday 20 April 2026 17:16">Monday 20 April 2026</span>. Using Julia version 1.12.6.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>

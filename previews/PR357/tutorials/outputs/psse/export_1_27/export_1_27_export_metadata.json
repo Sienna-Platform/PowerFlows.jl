@@ -1,0 +1,105 @@
+{
+    "case_name": "export_1_1",
+    "export_settings": {
+        "psse_version": "v33",
+        "export_dir": "outputs/psse",
+        "original_name": "export",
+        "write_comments": false,
+        "overwrite": true,
+        "step": "_1_1",
+        "sources_as_generators": true,
+        "storages_as_generators": true
+    },
+    "record_groups": {
+        "Case Identification Data": true,
+        "Bus Data": true,
+        "Load Data": true,
+        "Fixed Shunt Data": true,
+        "Generator Data": true,
+        "Non-Transformer Branch Data": true,
+        "Transformer Data": true,
+        "Area Interchange Data": false,
+        "Two-Terminal DC Transmission Line Data": true,
+        "Voltage Source Converter (VSC) DC Transmission Line Data": true,
+        "Transformer Impedance Correction Tables": true,
+        "Multi-Terminal DC Transmission Line Data": false,
+        "Multi-Section Line Grouping Data": false,
+        "Zone Data": true,
+        "Interarea Transfer Data": false,
+        "Owner Data": false,
+        "FACTS Device Data": true,
+        "Switched Shunt Data": true,
+        "GNE Device Data": false,
+        "Induction Machine Data": false,
+        "Q Record": true
+    },
+    "area_mapping": {
+        "1": 1
+    },
+    "zone_mapping": {
+        "1": 1
+    },
+    "bus_number_mapping": {
+        "1": 1,
+        "2": 2,
+        "3": 3,
+        "4": 4,
+        "10": 10
+    },
+    "bus_name_mapping": {
+        "bus1": "bus1",
+        "bus2": "bus2",
+        "bus3": "bus3",
+        "bus4": "bus4",
+        "bus5": "bus5"
+    },
+    "load_name_mapping": {
+        "2_bus2": "1",
+        "4_bus4": "1",
+        "3_bus3": "1"
+    },
+    "shunt_name_mapping": {
+    },
+    "generator_name_mapping": {
+        "4_Sundance": "1",
+        "3_SolarBusC": "1",
+        "1_Alta": "1",
+        "10_WindBusA": "2",
+        "1_Park City": "2",
+        "3_Solitude": "2",
+        "10_Brighton": "1"
+    },
+    "branch_name_mapping": {
+        "1-4_bus1-bus4-i_2": "_2",
+        "1-10_bus1-bus5-i_3": "_3",
+        "1-2_bus1-bus2-i_1": "_1",
+        "4-10_bus4-bus5-i_7": "_7",
+        "2-3_bus2-bus3-i_4": "_4"
+    },
+    "transformer_name_mapping": {
+        "bus3-bus4-i_6": "B3-4__6",
+        "bus3-bus4-i_5": "B3-4__5"
+    },
+    "transformer_control_objective_mapping": {
+        "bus3-bus4-i_6": -99,
+        "bus3-bus4-i_5": -99
+    },
+    "transformer_winding_group_category_mapping": {
+    },
+    "transformer_3w_name_mapping": {
+    },
+    "transformer_ckt_mapping": {
+        "3-4_bus3-bus4-i_6": "_6",
+        "3-4_bus3-bus4-i_5": "_5"
+    },
+    "transformer_3w_ckt_mapping": {
+    },
+    "dcline_name_mapping": {
+    },
+    "vsc_line_name_mapping": {
+    },
+    "facts_name_mapping": {
+    },
+    "switched_shunt_name_mapping": {
+    }
+}
