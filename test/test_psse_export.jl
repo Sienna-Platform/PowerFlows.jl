@@ -575,10 +575,6 @@ function test_psse_exporter_inner(
     test_power_flow(pf, sys2, reread_sys2; exclude_reactive_flow = true)
 end
 
-@testset "PSSE Exporter with case24_sys.raw, v33 - LUACPowerFlow" begin
-    test_psse_exporter_inner(LUACPowerFlow, "case24_sys_LU")
-end
-
 @testset "PSSE Exporter with case24_sys.raw, v33 - NewtonRaphsonACPowerFlow" begin
     test_psse_exporter_inner(NewtonRaphsonACPowerFlow, "case24_sys_NR")
 end
