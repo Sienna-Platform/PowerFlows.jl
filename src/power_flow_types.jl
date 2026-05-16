@@ -81,8 +81,11 @@ struct TrustRegionACPowerFlow <: ACPowerFlowSolverType end
 
 An [`ACPowerFlowSolverType`](@ref) corresponding to the [Levenberg-Marquardt](https://en.wikipedia.org/wiki/Levenberg–Marquardt_algorithm) iterative method.
 This is more robust than the basic Newton-Raphson method, but also more computationally
-intensive. Due to the difficulty of tuning meta parameters, this method may occasionally 
+intensive. Due to the difficulty of tuning meta parameters, this method may occasionally
 fail to converge where other methods would succeed.
+
+Works with both the polar ([`ACPolarPowerFlow`](@ref)) and rectangular
+current-injection ([`ACRectangularPowerFlow`](@ref)) formulations.
 
 See also: [`ACPowerFlow`](@ref).
 """
@@ -278,10 +281,10 @@ State per bus: PQ `(eᵢ, fᵢ)`, PV `(eᵢ, fᵢ, Qᵢ)`, REF `(P_genᵢ, Q_gen
 `ΔIᵢ = I_specᵢ − Y_bus·V`. Off-diagonal Jacobian blocks ≡ Y_bus 2×2 real blocks
 and are constant across iterations.
 
-`ACSolver` defaults to [`NewtonRaphsonACPowerFlow`](@ref); only
-[`NewtonRaphsonACPowerFlow`](@ref) and [`TrustRegionACPowerFlow`](@ref) are
-supported. Levenberg-Marquardt, Robust Homotopy, and Gradient Descent operate
-on the polar formulation only and are rejected at construction.
+`ACSolver` defaults to [`NewtonRaphsonACPowerFlow`](@ref). Supported solvers:
+[`NewtonRaphsonACPowerFlow`](@ref), [`TrustRegionACPowerFlow`](@ref), and
+[`LevenbergMarquardtACPowerFlow`](@ref). Robust Homotopy and Gradient Descent
+operate on the polar formulation only and are rejected at construction.
 
 Unlike [`ACPolarPowerFlow`](@ref), this model has no
 `calculate_voltage_stability_factors`, `calculate_loss_factors`, or
@@ -339,19 +342,16 @@ function ACRectangularPowerFlow{ACSolver}(;
     solver_settings::Dict{Symbol, Any} = Dict{Symbol, Any}(),
 ) where {ACSolver <: ACPowerFlowSolverType}
     if ACSolver <: Union{
-        LevenbergMarquardtACPowerFlow,
         RobustHomotopyPowerFlow,
         GradientDescentACPowerFlow,
     }
         throw(
             ArgumentError(
                 "$(ACSolver) is not supported by ACRectangularPowerFlow. " *
-                "Levenberg-Marquardt, Robust Homotopy, and Gradient Descent " *
-                "operate on the polar formulation only. Use " *
-                "ACRectangularPowerFlow{NewtonRaphsonACPowerFlow} or " *
-                "{TrustRegionACPowerFlow}, or run the solver on " *
-                "ACPolarPowerFlow. (Rectangular LM is tracked as a separate " *
-                "follow-up project.)",
+                "Robust Homotopy and Gradient Descent operate on the polar " *
+                "formulation only. Use ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}, " *
+                "{TrustRegionACPowerFlow}, or {LevenbergMarquardtACPowerFlow}, " *
+                "or run the solver on ACPolarPowerFlow.",
             ),
         )
     end

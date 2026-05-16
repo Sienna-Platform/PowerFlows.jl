@@ -15,6 +15,8 @@ mutable struct LMWorkspace
     #       square matrices--J^T J form is more unstable--we don't have a lot of options.
     # Cached QR factorization
     F::SparseArrays.SPQR.QRSparse{Float64, Int64}
+    # Preallocated augmented RHS [-Rv; 0] (length m + n); bottom n stay zero.
+    b::Vector{Float64}
 end
 
 """Build the augmented matrix `[J; I]` once, recording which `A.nzval` entries
@@ -50,9 +52,10 @@ function LMWorkspace(Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE})
     end
     @assert j_idx == length(Jv.nzval) "Expected $(length(Jv.nzval)) J entries, found $j_idx"
 
+    b = zeros(m + n)
     F = LinearAlgebra.qr(A)
 
-    return LMWorkspace(A, j_nzval_indices, λ_diag_indices, F)
+    return LMWorkspace(A, j_nzval_indices, λ_diag_indices, F, b)
 end
 
 """Copy current Jacobian values into the augmented matrix."""
@@ -78,7 +81,7 @@ end
 structures (e.g. residual), runs the power flow method via calling `_run_power_flow_method`
 on them, then handles post-processing (e.g. loss factors)."""
 function _newton_power_flow(
-    pf::ACPolarPowerFlow{LevenbergMarquardtACPowerFlow},
+    pf::AbstractACPowerFlow{LevenbergMarquardtACPowerFlow},
     data::ACPowerFlowData,
     time_step::Int64;
     tol::Float64 = DEFAULT_NR_TOL,
@@ -109,6 +112,9 @@ function _newton_power_flow(
             tol, maxIterations, λ_0,
         )
     end
+    # x0 was mutated in place to the converged state by _run_power_flow_method
+    # (or is the already-converged initial state if the loop was skipped).
+    _finalize_formulation!(pf, data, x0, residual, time_step)
     return _finalize_power_flow(
         converged, i, "LevenbergMarquardtACPowerFlow", residual, data, J.Jv, time_step)
 end
@@ -116,8 +122,8 @@ end
 function _run_power_flow_method(
     time_step::Int,
     x::Vector{Float64},
-    residual::ACPowerFlowResidual,
-    J::ACPowerFlowJacobian,
+    residual::Union{ACPowerFlowResidual, ACRectangularCIResidual},
+    J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian},
     ws::LMWorkspace;
     maxIterations::Int = DEFAULT_NR_MAX_ITER,
     tol::Float64 = DEFAULT_NR_TOL,
@@ -131,15 +137,19 @@ function _run_power_flow_method(
     resSize = dot(residual.Rv, residual.Rv)
     linf = norm(residual.Rv, Inf)
     @debug "initially: sum of squares $(siground(resSize)), L ∞ norm $(siground(linf)), λ = $λ"
-    while i < maxIterations && !converged && isfinite(λ)
+    while i < maxIterations && !converged && isfinite(λ) && μ < DEFAULT_μ_MAX
         λ, μ = update_damping_factor!(x, residual, J, μ, time_step, ws)
         converged = isfinite(λ) && norm(residual.Rv, Inf) < tol
         i += 1
     end
-    if !isfinite(λ)
-        @error "λ is not finite ($(λ))"
-    elseif i == maxIterations
-        @error "The LevenbergMarquardtACPowerFlow solver didn't coverge in $maxIterations iterations."
+    if !converged
+        if !isfinite(λ)
+            @error "λ is not finite ($(λ))"
+        elseif μ >= DEFAULT_μ_MAX
+            @error "The LevenbergMarquardtACPowerFlow damping factor μ hit the cap (DEFAULT_μ_MAX=$(DEFAULT_μ_MAX)) after $i iterations; aborting (likely divergence)."
+        elseif i == maxIterations
+            @error "The LevenbergMarquardtACPowerFlow solver didn't coverge in $maxIterations iterations."
+        end
     end
 
     return converged, i
@@ -152,8 +162,8 @@ end
 at `x` by the caller. Returns the gain ratio ρ."""
 function compute_error(
     x::Vector{Float64},
-    residual::ACPowerFlowResidual,
-    J::ACPowerFlowJacobian,
+    residual::Union{ACPowerFlowResidual, ACRectangularCIResidual},
+    J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian},
     λ::Float64,
     time_step::Int,
     residualSize::Float64,
@@ -163,9 +173,10 @@ function compute_error(
     copy_jacobian!(ws, J.Jv)
     update_lambda!(ws, λ)
 
-    n = size(J.Jv, 2)
-    b_x = vcat(-residual.Rv, zeros(n))
-    Δx = ws.F \ b_x
+    m = length(residual.Rv)
+    @assert m == length(ws.b) - size(J.Jv, 2) "residual/J size mismatch vs preallocated LM buffer (m=$m, buf=$(length(ws.b)), n=$(size(J.Jv, 2)))"
+    @views ws.b[1:m] .= .-residual.Rv   # bottom n entries stay zero from construction
+    Δx = ws.F \ ws.b
 
     temp_x = residual.Rv .+ J.Jv * Δx
 
@@ -196,8 +207,8 @@ end
 
 function update_damping_factor!(
     x::Vector{Float64},
-    residual::ACPowerFlowResidual,
-    J::ACPowerFlowJacobian,
+    residual::Union{ACPowerFlowResidual, ACRectangularCIResidual},
+    J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian},
     μ::Float64,
     time_step::Int,
     ws::LMWorkspace,
@@ -214,7 +225,7 @@ function update_damping_factor!(
     elseif ρ >= 0.25
         # intentional no-op
     else
-        μ *= coef
+        μ = min(μ * coef, DEFAULT_μ_MAX)
     end
 
     return (λ, μ)

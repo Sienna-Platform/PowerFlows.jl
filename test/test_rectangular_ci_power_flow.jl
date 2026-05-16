@@ -32,6 +32,20 @@ end
     )
 end
 
+@testset "Rectangular CI Power Flow (LM): non-convergence returns missing" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    # maxIterations = 1 from flat start cannot converge c_sys14; the solver must
+    # report non-convergence (results = missing) rather than error or hang.
+    pf = ACRectangularPowerFlow{LevenbergMarquardtACPowerFlow}(;
+        solver_settings = merge(_rect_pf_settings(),
+            Dict{Symbol, Any}(:maxIterations => 1)))
+    @test_logs(
+        (:error, r".*solver failed to converge"),
+        match_mode = :any,
+        @test ismissing(solve_power_flow(pf, sys))
+    )
+end
+
 @testset "Rectangular CI Power Flow: parity with polar NR" begin
     fixtures = [
         ("c_sys5", false),
@@ -75,9 +89,11 @@ end
     @test ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
         calculate_voltage_stability_factors = true) isa ACPolarPowerFlow
     # Polar-only solvers rejected at construction.
-    @test_throws ArgumentError ACRectangularPowerFlow{LevenbergMarquardtACPowerFlow}()
     @test_throws ArgumentError ACRectangularPowerFlow{RobustHomotopyPowerFlow}()
     @test_throws ArgumentError ACRectangularPowerFlow{GradientDescentACPowerFlow}()
+    # Levenberg-Marquardt is now supported on the rectangular formulation.
+    @test ACRectangularPowerFlow{LevenbergMarquardtACPowerFlow}() isa
+          ACRectangularPowerFlow
 end
 
 @testset "Rectangular CI Power Flow: step strategy variants" begin
@@ -93,6 +109,8 @@ end
         ("Trust Region", TrustRegionACPowerFlow, Dict{Symbol, Any}()),
         ("TR + Iwamoto FB", TrustRegionACPowerFlow,
             Dict{Symbol, Any}(:iwamoto_fallback => true)),
+        ("Levenberg-Marquardt", LevenbergMarquardtACPowerFlow,
+            Dict{Symbol, Any}()),
     ]
     for (name, with_forecasts) in fixtures
         @testset "$name" begin
@@ -121,6 +139,65 @@ end
             end
         end
     end
+end
+
+@testset "Rectangular CI: LM matches polar LM" begin
+    for name in ("c_sys5", "c_sys14")
+        @testset "$name" begin
+            sys = PSB.build_system(PSB.PSITestSystems, name; add_forecasts = false)
+            pf_polar = ACPolarPowerFlow{LevenbergMarquardtACPowerFlow}()
+            res_polar = solve_power_flow(pf_polar, deepcopy(sys))
+            pf_rect = ACRectangularPowerFlow{LevenbergMarquardtACPowerFlow}(;
+                solver_settings = _rect_pf_settings())
+            res_rect = solve_power_flow(pf_rect, deepcopy(sys))
+            @test res_rect !== missing
+            @test maximum(
+                abs.(res_polar["bus_results"].Vm - res_rect["bus_results"].Vm),
+            ) < 1e-7
+            @test maximum(
+                abs.(res_polar["bus_results"].θ - res_rect["bus_results"].θ),
+            ) < 1e-7
+        end
+    end
+end
+
+@testset "ACTIVSg2000 (LM): polar and rectangular match polar NR" begin
+    sys = PSB.build_system(PSB.MatpowerTestSystems, "matpower_ACTIVSg2000_sys")
+    PSY.set_units_base_system!(sys, "SYSTEM_BASE")
+
+    # Tight tolerance + generous iteration budget: LM refactorizes the sparse QR
+    # every iteration and needs more iterations than NR on a 2000-bus system.
+    lm_settings = Dict{Symbol, Any}(:tol => 1e-10, :maxIterations => 100)
+    ref_settings = Dict{Symbol, Any}(:tol => 1e-10)
+
+    # Reference: Newton-Raphson on the polar formulation (trusted for ACTIVSg2000
+    # elsewhere in the suite).
+    pf_ref = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
+        correct_bustypes = true, solver_settings = ref_settings)
+    res_ref = solve_power_flow(pf_ref, sys)
+
+    pf_lm_polar = ACPolarPowerFlow{LevenbergMarquardtACPowerFlow}(;
+        correct_bustypes = true, solver_settings = lm_settings)
+    res_lm_polar = solve_power_flow(pf_lm_polar, sys)
+
+    pf_lm_rect = ACRectangularPowerFlow{LevenbergMarquardtACPowerFlow}(;
+        correct_bustypes = true,
+        solver_settings = merge(_rect_pf_settings(), lm_settings))
+    res_lm_rect = solve_power_flow(pf_lm_rect, sys)
+
+    @test res_lm_polar !== missing
+    @test res_lm_rect !== missing
+
+    # Polar LM and rectangular LM both reproduce the NR reference solution.
+    @test norm(res_lm_polar["bus_results"].Vm .- res_ref["bus_results"].Vm, Inf) < 1e-5
+    @test norm(res_lm_polar["bus_results"].θ .- res_ref["bus_results"].θ, Inf) < 1e-5
+    @test norm(res_lm_rect["bus_results"].Vm .- res_ref["bus_results"].Vm, Inf) < 1e-5
+    @test norm(res_lm_rect["bus_results"].θ .- res_ref["bus_results"].θ, Inf) < 1e-5
+    # Polar LM and rectangular LM agree with each other.
+    @test norm(
+        res_lm_polar["bus_results"].Vm .- res_lm_rect["bus_results"].Vm, Inf) < 1e-5
+    @test norm(
+        res_lm_polar["bus_results"].θ .- res_lm_rect["bus_results"].θ, Inf) < 1e-5
 end
 
 @testset "Rectangular CI: multi-period previous-solution warm start" begin

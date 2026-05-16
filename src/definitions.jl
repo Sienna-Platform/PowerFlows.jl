@@ -39,8 +39,9 @@ const DEFAULT_IWAMOTO_FALLBACK = true # when a trust region step is rejected, tr
 const PF_MAX_LOG = 10
 # only used for Levenberg-Maquardt
 const DEFAULT_λ_0 = 1e-5
-# input is mix of powers (100 MW), voltages (0.8-1.2), and angles (-π/4 to π/4).
-const DEFAULT_MAX_TEST_λs = 50 # give up after increasing damping factor 50 times.
+# Upper bound on the LM damping factor μ. μ only grows on rejected steps, so
+# hitting this cap is a divergence signal — the solver aborts with an error.
+const DEFAULT_μ_MAX = 1e8
 
 const DEFAULT_Δt_k = 0.2
 

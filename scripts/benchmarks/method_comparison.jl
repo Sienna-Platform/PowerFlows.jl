@@ -100,7 +100,7 @@ const SOLVERS = [
     (PF.NewtonRaphsonACPowerFlow, "NR", Dict{Symbol, Any}()),
     (PF.NewtonRaphsonACPowerFlow, "NR+Iwamoto", Dict{Symbol, Any}(:iwamoto => true)),
     (PF.TrustRegionACPowerFlow, "TR+Iwamoto", Dict{Symbol, Any}(:iwamoto => true)),
-    (PF.LevenbergMarquardtACPowerFlow, "LM", Dict{Symbol, Any}(:max_test_λs => 10)),
+    (PF.LevenbergMarquardtACPowerFlow, "LM", Dict{Symbol, Any}()),
     (PF.RobustHomotopyPowerFlow, "Homotopy", Dict{Symbol, Any}()),
     (PF.GradientDescentACPowerFlow, "GradDescent", Dict{Symbol, Any}()),
 ]
