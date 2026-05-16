@@ -18,6 +18,17 @@ end
     end
 end
 
+@testset "Rectangular CI Power Flow: non-convergence returns missing" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    # maxIterations = 1 from flat start cannot converge c_sys14; the solver must
+    # report non-convergence (results = missing) rather than error or hang.
+    pf = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
+        solver_settings = merge(_rect_pf_settings(),
+            Dict{Symbol, Any}(:maxIterations => 1)))
+    res = solve_power_flow(pf, sys)
+    @test ismissing(res)
+end
+
 @testset "Rectangular CI Power Flow: parity with polar NR" begin
     fixtures = [
         ("c_sys5", false),

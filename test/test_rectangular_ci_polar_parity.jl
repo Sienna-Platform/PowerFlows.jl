@@ -35,6 +35,31 @@ function _rect_polar_parity(
     return
 end
 
+# Multi-period analogue of `_rect_polar_parity`: solve both formulations in
+# place and assert full state-array parity.
+function _rect_polar_parity_data(
+    pf_p::ACPowerFlow,
+    pf_r::ACRectangularPowerFlow,
+    sys_p::PSY.System,
+    sys_r::PSY.System,
+)
+    data_p = PowerFlowData(pf_p, sys_p)
+    data_r = PowerFlowData(pf_r, sys_r)
+    @test PowerFlows.solve_power_flow!(data_p)
+    @test PowerFlows.solve_power_flow!(data_r)
+    @test maximum(abs.(data_p.bus_magnitude - data_r.bus_magnitude)) < RECT_PARITY_ATOL
+    @test maximum(abs.(data_p.bus_angles - data_r.bus_angles)) < RECT_PARITY_ATOL
+    @test maximum(
+        abs.(data_p.bus_active_power_injections -
+             data_r.bus_active_power_injections),
+    ) < RECT_PARITY_ATOL
+    @test maximum(
+        abs.(data_p.bus_reactive_power_injections -
+             data_r.bus_reactive_power_injections),
+    ) < RECT_PARITY_ATOL
+    return
+end
+
 function _build_zip_2bus_system(;
     power_pq::Tuple{Float64, Float64} = (0.0, 0.0),
     current_pq::Tuple{Float64, Float64} = (0.0, 0.0),
@@ -120,7 +145,7 @@ end
     )
 end
 
-@testset "Rectangular CI polar parity: distributed slack (uniform participation)" begin
+@testset "Rectangular CI polar parity: headroom-proportional distributed slack" begin
     sys_p = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
     sys_r = deepcopy(sys_p)
     # With distribute_slack_proportional_to_headroom, PV/REF generators share
@@ -131,6 +156,20 @@ end
         sys_p,
         sys_r;
         pf_kwargs = (; distribute_slack_proportional_to_headroom = true),
+    )
+end
+
+@testset "Rectangular CI polar parity: explicit generator participation factors" begin
+    sys_p = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    sys_r = deepcopy(sys_p)
+    spf = Dict{Tuple{DataType, String}, Float64}(
+        (ThermalStandard, get_name(g)) => 1.0
+        for g in get_components(ThermalStandard, sys_p)
+    )
+    _rect_polar_parity(
+        sys_p,
+        sys_r;
+        pf_kwargs = (; generator_slack_participation_factors = spf),
     )
 end
 
@@ -154,6 +193,44 @@ end
     )
 end
 
+@testset "Rectangular CI polar parity: Q-limit enforcement (c_sys5)" begin
+    sys_p = PSB.build_system(PSB.PSITestSystems, "c_sys5")
+    sys_r = deepcopy(sys_p)
+    _rect_polar_parity(
+        sys_p,
+        sys_r;
+        pf_kwargs = (; check_reactive_power_limits = true),
+    )
+end
+
+@testset "Rectangular CI polar parity: radial network reduction" begin
+    sys_p = PSB.build_system(
+        PSB.PSSEParsingTestSystems, "psse_14_network_reduction_test_system")
+    sys_r = deepcopy(sys_p)
+    _rect_polar_parity(
+        sys_p,
+        sys_r;
+        pf_kwargs = (;
+            network_reductions = PNM.NetworkReduction[PNM.RadialReduction()]),
+    )
+end
+
+@testset "Rectangular CI polar parity: generator reactive redistribution" begin
+    sys_p = PSB.build_system(PSB.PSITestSystems, "c_sys5")
+    sys_r = deepcopy(sys_p)
+    @test PF.solve_and_store_power_flow!(
+        ACPowerFlow{NewtonRaphsonACPowerFlow}(), sys_p)
+    @test PF.solve_and_store_power_flow!(
+        ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
+            solver_settings = _rect_parity_settings()), sys_r)
+    for g_p in get_components(Generator, sys_p)
+        g_r = get_component(typeof(g_p), sys_r, get_name(g_p))
+        @test isapprox(
+            get_reactive_power(g_p), get_reactive_power(g_r);
+            atol = RECT_PARITY_ATOL)
+    end
+end
+
 @testset "Rectangular CI polar parity: multi-period (same network, no time-varying loads)" begin
     sys_p = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
     sys_r = deepcopy(sys_p)
@@ -161,18 +238,24 @@ end
     pf_r = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
         time_steps = 3,
         solver_settings = _rect_parity_settings())
-    data_p = PowerFlowData(pf_p, sys_p)
-    data_r = PowerFlowData(pf_r, sys_r)
-    @test PowerFlows.solve_power_flow!(data_p)
-    @test PowerFlows.solve_power_flow!(data_r)
-    @test maximum(abs.(data_p.bus_magnitude - data_r.bus_magnitude)) < RECT_PARITY_ATOL
-    @test maximum(abs.(data_p.bus_angles - data_r.bus_angles)) < RECT_PARITY_ATOL
-    @test maximum(
-        abs.(data_p.bus_active_power_injections -
-             data_r.bus_active_power_injections),
-    ) < RECT_PARITY_ATOL
-    @test maximum(
-        abs.(data_p.bus_reactive_power_injections -
-             data_r.bus_reactive_power_injections),
-    ) < RECT_PARITY_ATOL
+    _rect_polar_parity_data(pf_p, pf_r, sys_p, sys_r)
+end
+
+@testset "Rectangular CI polar parity: multi-period time-varying distributed slack" begin
+    sys_p = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    sys_r = deepcopy(sys_p)
+    gens = collect(get_components(ThermalStandard, sys_p))
+    # One participation dict per time step makes the slack split time-varying.
+    spf = [
+        Dict{Tuple{DataType, String}, Float64}(
+            (ThermalStandard, get_name(g)) => (g === gens[k] ? 2.0 : 1.0)
+            for g in gens)
+        for k in (1, length(gens))
+    ]
+    pf_p = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+        time_steps = 2, generator_slack_participation_factors = spf)
+    pf_r = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
+        time_steps = 2, generator_slack_participation_factors = spf,
+        solver_settings = _rect_parity_settings())
+    _rect_polar_parity_data(pf_p, pf_r, sys_p, sys_r)
 end
