@@ -191,3 +191,36 @@ end
     set_bustype!(pv_bus, PSY.ACBusTypes.PQ)
     @test PF.PowerFlowData(PF.ACPowerFlow{NewtonRaphsonACPowerFlow}(), sys) isa Any
 end
+
+@testset "ACPowerFlow alias resolves to ACPolarPowerFlow" begin
+    @test PF.ACPowerFlow === PF.ACPolarPowerFlow
+    @test PF.ACPolarPowerFlow <: PF.AbstractACPowerFlow
+    @test PF.AbstractACPowerFlow <: PF.PowerFlowEvaluationModel
+    pf = ACPowerFlow{NewtonRaphsonACPowerFlow}()
+    @test pf isa PF.ACPolarPowerFlow{NewtonRaphsonACPowerFlow}
+    @test ACPowerFlow() isa PF.ACPolarPowerFlow{NewtonRaphsonACPowerFlow}
+end
+
+@testset "ACRectangularPowerFlow type" begin
+    pf = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}()
+    @test pf isa PF.AbstractACPowerFlow
+    @test ACRectangularPowerFlow() isa
+          PF.ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}
+    @test ACRectangularPowerFlow{TrustRegionACPowerFlow}() isa
+          PF.ACRectangularPowerFlow
+    # Solver rejection and removed-field behavior are covered by
+    # "Rectangular CI Power Flow: unsupported config rejected".
+end
+
+@testset "Rectangular getters return safe defaults" begin
+    r = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}()
+    @test PF.get_calculate_loss_factors(r) === false
+    @test PF.get_calculate_voltage_stability_factors(r) === false
+    @test PF.get_robust_power_flow(r) === false
+    @test PF.get_slack_participation_factors(r) === nothing
+    @test PF.get_time_steps(r) == 1
+    @test PF.get_enhanced_flat_start(r) === true
+    p = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
+        calculate_loss_factors = true)
+    @test PF.get_calculate_loss_factors(p) === true
+end

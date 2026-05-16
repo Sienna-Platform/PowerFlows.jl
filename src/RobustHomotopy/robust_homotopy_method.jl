@@ -1,4 +1,4 @@
-function _newton_power_flow(pf::ACPowerFlow{<:RobustHomotopyPowerFlow},
+function _newton_power_flow(pf::ACPolarPowerFlow{<:RobustHomotopyPowerFlow},
     data::ACPowerFlowData,
     time_step::Int64;
     Δt_k::Float64 = DEFAULT_Δt_k,

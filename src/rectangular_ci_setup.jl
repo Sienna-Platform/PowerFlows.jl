@@ -54,42 +54,47 @@ function fold_zip_constant_z!(
 end
 
 """
-    rect_initial_state!(x, data, bus_state_offset, bus_block_size, time_step)
+    _rect_fill_state!(x, data, bus_state_offset, type_time_step, value_time_step)
 
-Initialize the state vector `x` from `data.bus_magnitude`, `data.bus_angles`,
-and the bus power-injection fields, plus the LCC tap/angle fields. Counterpart
-of [`rect_update_data!`](@ref). At REF buses, the first two slots hold
-`(P_gen, Q_gen)` (including any distributed-slack increment); elsewhere
-the first two slots hold `(e, f)`, and PV buses' third slot holds `Q_gen`.
+Fill the rectangular state vector `x`. The state-block *layout* (which buses
+are REF/PV/PQ and therefore the 2- vs 3-slot blocks) is taken from
+`data.bus_type[:, type_time_step]`; the *values* (voltages, injections, LCC
+taps/angles) are read from `*[:, value_time_step]`.
+
+With `type_time_step == value_time_step` this is the plain flat start. With
+`value_time_step` pointing at a previously converged step it produces the
+previous-solution warm-start candidate while keeping the offsets valid for the
+current step (the rectangular analog of polar `_previous_solution_start` /
+`update_state!`).
 """
-function rect_initial_state!(
+function _rect_fill_state!(
     x::Vector{Float64},
     data::ACPowerFlowData,
     bus_state_offset::Vector{REC_INDEX_TYPE},
-    bus_block_size::Vector{Int8},
-    time_step::Int64,
+    type_time_step::Int64,
+    value_time_step::Int64,
 )
-    bus_types = view(data.bus_type, :, time_step)
+    bus_types = view(data.bus_type, :, type_time_step)
     n_buses = length(bus_types)
     for i in 1:n_buses
         off = Int(bus_state_offset[i])
         bt = bus_types[i]
         if bt == PSY.ACBusTypes.REF
             x[off] =
-                data.bus_active_power_injections[i, time_step] -
-                data.bus_active_power_withdrawals[i, time_step]
+                data.bus_active_power_injections[i, value_time_step] -
+                data.bus_active_power_withdrawals[i, value_time_step]
             x[off + 1] =
-                data.bus_reactive_power_injections[i, time_step] -
-                data.bus_reactive_power_withdrawals[i, time_step]
+                data.bus_reactive_power_injections[i, value_time_step] -
+                data.bus_reactive_power_withdrawals[i, value_time_step]
         else
-            Vm = data.bus_magnitude[i, time_step]
-            θ = data.bus_angles[i, time_step]
+            Vm = data.bus_magnitude[i, value_time_step]
+            θ = data.bus_angles[i, value_time_step]
             x[off] = Vm * cos(θ)
             x[off + 1] = Vm * sin(θ)
             if bt == PSY.ACBusTypes.PV
                 x[off + 2] =
-                    data.bus_reactive_power_injections[i, time_step] -
-                    data.bus_reactive_power_withdrawals[i, time_step]
+                    data.bus_reactive_power_injections[i, value_time_step] -
+                    data.bus_reactive_power_withdrawals[i, value_time_step]
             end
         end
     end
@@ -107,11 +112,31 @@ function rect_initial_state!(
     total_bus_state = Int(bus_state_offset[n_buses + 1]) - 1
     for i in 1:n_lccs
         offset_lcc = total_bus_state + (i - 1) * 4
-        x[offset_lcc + 1] = data.lcc.rectifier.tap[i, time_step]
-        x[offset_lcc + 2] = data.lcc.inverter.tap[i, time_step]
-        x[offset_lcc + 3] = data.lcc.rectifier.thyristor_angle[i, time_step]
-        x[offset_lcc + 4] = data.lcc.inverter.thyristor_angle[i, time_step]
+        x[offset_lcc + 1] = data.lcc.rectifier.tap[i, value_time_step]
+        x[offset_lcc + 2] = data.lcc.inverter.tap[i, value_time_step]
+        x[offset_lcc + 3] = data.lcc.rectifier.thyristor_angle[i, value_time_step]
+        x[offset_lcc + 4] = data.lcc.inverter.thyristor_angle[i, value_time_step]
     end
+    return
+end
+
+"""
+    rect_initial_state!(x, data, bus_state_offset, bus_block_size, time_step)
+
+Initialize the state vector `x` from `data.bus_magnitude`, `data.bus_angles`,
+and the bus power-injection fields, plus the LCC tap/angle fields. Counterpart
+of [`rect_update_data!`](@ref). At REF buses, the first two slots hold
+`(P_gen, Q_gen)` (including any distributed-slack increment); elsewhere
+the first two slots hold `(e, f)`, and PV buses' third slot holds `Q_gen`.
+"""
+function rect_initial_state!(
+    x::Vector{Float64},
+    data::ACPowerFlowData,
+    bus_state_offset::Vector{REC_INDEX_TYPE},
+    bus_block_size::Vector{Int8},
+    time_step::Int64,
+)
+    _rect_fill_state!(x, data, bus_state_offset, time_step, time_step)
     return
 end
 
