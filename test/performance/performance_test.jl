@@ -77,19 +77,15 @@ for (group, name) in systems
     sys = build_system(group, name)
     for (solver_label, solver, extra_settings) in _RECT_CI_VARIANTS
         try
-            settings = merge(
-                extra_settings,
-                Dict{Symbol, Any}(:validate_voltage_magnitudes => false),
-            )
             pf = PF.ACRectangularPowerFlow{solver}(;
                 correct_bustypes = true,
-                solver_settings = settings)
+                solver_settings = extra_settings)
             pf_data = PF.PowerFlowData(pf, sys)
             _, time_solve_1, _, _ = @timed PF.solve_power_flow!(pf_data; pf = pf)
             record_time("$(name)-$(solver_label) First Solve", time_solve_1)
             pf = PF.ACRectangularPowerFlow{solver}(;
                 correct_bustypes = true,
-                solver_settings = settings)
+                solver_settings = extra_settings)
             pf_data = PF.PowerFlowData(pf, sys)
             _, time_solve_2, _, _ = @timed PF.solve_power_flow!(pf_data; pf = pf)
             record_time("$(name)-$(solver_label) Second Solve", time_solve_2)

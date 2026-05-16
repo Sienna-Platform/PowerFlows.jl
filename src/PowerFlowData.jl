@@ -486,15 +486,15 @@ end
 
 Creates the structure for an AC power flow calculation, given the
 [`System`](@extref PowerSystems.System) `sys`. Configuration options like `time_steps`,
-`timestep_names`, `network_reductions`, and `correct_bustypes` are taken from the
-[`ACPowerFlow`](@ref) object.
+`time_step_names`, `network_reductions`, and `correct_bustypes` are taken from the
+[`AbstractACPowerFlow`](@ref) object (either [`ACPolarPowerFlow`](@ref) or
+[`ACRectangularPowerFlow`](@ref)).
 
-Calling this function will not evaluate the power flows and angles.
-Note that first input is of type [`ACPowerFlow`](@ref): this version is used to solve
-AC power flows, and returns an [`ACPowerFlowData`](@ref) object.
+Calling this function will not evaluate the power flows and angles. This version is
+used to solve AC power flows and returns an [`ACPowerFlowData`](@ref) object.
 
 # Arguments:
-- [`pf::ACPowerFlow`](@ref ACPowerFlow):
+- `pf::AbstractACPowerFlow`:
         the settings for the AC power flow solver, including `time_steps`, `time_step_names`,
         `network_reductions`, and `correct_bustypes`.
 - `sys::PSY.System`:

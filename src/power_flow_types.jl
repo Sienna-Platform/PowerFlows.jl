@@ -239,9 +239,9 @@ end
 # Default constructor: ACPolarPowerFlow() defaults to NewtonRaphsonACPowerFlow solver
 ACPolarPowerFlow(; kwargs...) = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; kwargs...)
 
-"""`ACPowerFlow` is the deprecated former name of [`ACPolarPowerFlow`](@ref).
-It remains as an alias for backward compatibility (PowerSimulations.jl and
-external callers) and will be removed in a future breaking release."""
+"""`ACPowerFlow` is an alias for [`ACPolarPowerFlow`](@ref), kept for backward
+compatibility with PowerSimulations.jl and external callers. It is a plain type
+alias (no deprecation warning); polar remains the default AC formulation."""
 const ACPowerFlow = ACPolarPowerFlow
 
 get_enhanced_flat_start(pf::AbstractACPowerFlow) = pf.enhanced_flat_start

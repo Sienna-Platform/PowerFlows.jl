@@ -208,9 +208,13 @@ end
         @test all(isfinite, x0_off)
     end
 
-    @testset "solves to the same answer as before (regression)" begin
+    # Smoke check that improve_x0 in the solve path produces a converged,
+    # finite end-to-end result. Numerical parity with polar is covered by
+    # "Rectangular CI Power Flow: parity with polar NR".
+    @testset "improve_x0 in the solve path yields a converged result" begin
         pf = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}()
         res = solve_power_flow(pf, sys)
         @test res["bus_results"] !== nothing
+        @test all(isfinite, res["bus_results"].Vm)
     end
 end

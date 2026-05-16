@@ -521,6 +521,33 @@ function _iwamoto_step(time_step::Int,
     return true
 end
 
+# `validate_voltage_magnitudes` indexes the state as polar `[|V|, θ, …]`
+# (x[2i-1] = |V|). The rectangular CI state is `(e, f, …)` blocks, so the polar
+# check is meaningless there — dispatch a no-op for the rectangular residual
+# rather than gating with a runtime type check.
+function _validate_state_magnitudes(
+    ::ACPowerFlowResidual,
+    x::Vector{Float64},
+    bus_types::AbstractArray{PSY.ACBusTypes},
+    range::MinMax,
+    i::Int64,
+)
+    validate_voltage_magnitudes(x, bus_types, range, i)
+    return
+end
+
+function _validate_state_magnitudes(
+    ::ACRectangularCIResidual,
+    x::Vector{Float64},
+    bus_types::AbstractArray{PSY.ACBusTypes},
+    range::MinMax,
+    i::Int64,
+)
+    # TO BE IMPLEMENTED: add rectangular CI validation if needed. For now, just skip it since the rectangular CI solver doesn't use polar voltage magnitudes.
+    # We might need to do some 0 -1 validation for entries.
+    return
+end
+
 """Runs the full `NewtonRaphsonACPowerFlow`.
 # Keyword arguments:
 - `maxIterations::Int`: maximum iterations. Default: $DEFAULT_NR_MAX_ITER.
@@ -582,7 +609,8 @@ function _run_power_flow_method(time_step::Int,
                 refinement_eps,
             )
         end
-        validate_vms && PowerFlows.validate_voltage_magnitudes(
+        validate_vms && _validate_state_magnitudes(
+            residual,
             stateVector.x,
             bus_types,
             vm_validation_range,
@@ -660,7 +688,8 @@ function _run_power_flow_method(time_step::Int,
             autoscale,
             iwamoto_fallback,
         )
-        validate_vms && PowerFlows.validate_voltage_magnitudes(
+        validate_vms && _validate_state_magnitudes(
+            residual,
             stateVector.x,
             bus_types,
             vm_validation_range,

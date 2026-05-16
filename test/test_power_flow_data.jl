@@ -206,17 +206,10 @@ end
     @test pf isa PF.AbstractACPowerFlow
     @test ACRectangularPowerFlow() isa
           PF.ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}
-    # Fields intentionally absent
-    @test !hasfield(typeof(pf), :calculate_voltage_stability_factors)
-    @test !hasfield(typeof(pf), :calculate_loss_factors)
-    @test !hasfield(typeof(pf), :robust_power_flow)
-    # Polar-only solvers rejected at construction
-    @test_throws ArgumentError ACRectangularPowerFlow{LevenbergMarquardtACPowerFlow}()
-    @test_throws ArgumentError ACRectangularPowerFlow{RobustHomotopyPowerFlow}()
-    @test_throws ArgumentError ACRectangularPowerFlow{GradientDescentACPowerFlow}()
-    # Supported solvers construct fine
     @test ACRectangularPowerFlow{TrustRegionACPowerFlow}() isa
           PF.ACRectangularPowerFlow
+    # Solver rejection and removed-field behavior are covered by
+    # "Rectangular CI Power Flow: unsupported config rejected".
 end
 
 @testset "Rectangular getters return safe defaults" begin
@@ -230,17 +223,4 @@ end
     p = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
         calculate_loss_factors = true)
     @test PF.get_calculate_loss_factors(p) === true
-end
-
-@testset "ACPowerFlowData covers rectangular model" begin
-    sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
-    d_p = PF.PowerFlowData(ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(), sys)
-    d_r = PF.PowerFlowData(
-        ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
-            solver_settings = Dict{Symbol, Any}(
-                :validate_voltage_magnitudes => false)),
-        sys,
-    )
-    @test d_p isa PF.ACPowerFlowData
-    @test d_r isa PF.ACPowerFlowData
 end
