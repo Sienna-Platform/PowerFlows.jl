@@ -55,6 +55,7 @@ include("test_utils/psse_results_compare.jl")
 include("test_utils/penalty_factors_brute_force.jl")
 include("test_utils/legacy_pf.jl")
 include("test_utils/validate_reduced_power_flow.jl")
+include("test_utils/jacobian_verification.jl")
 
 const AC_SOLVERS_TO_TEST = (
     LUACPowerFlow,

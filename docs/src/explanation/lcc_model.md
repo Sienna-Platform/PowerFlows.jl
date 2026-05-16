@@ -1,4 +1,6 @@
-# Aspects of LCC implementation in PSSE
+# Line-Commutated Converter (LCC) Implementations
+
+## Implementations in PSSE
 
 In real-world operation, on-load tap changers (OLTCs) adjust transformer taps so that the converter reaches its minimum firing or extinction angle limits (α_min or γ_min). The objective is to reduce the firing/extinction angle to minimize reactive power (Q) demand.
 
@@ -16,7 +18,7 @@ In PSSE, the variable `VSched` (scheduled DC voltage) represents the DC voltage 
 
 Power flow calculation in PSSE often fails to converge with LCC. In this case, it can help to first run the Gauss-Seidel algorithm, then Newton will also converge in PSSE.
 
-# Implementation in Sienna
+## Implementation in Sienna
 
 We implement the control logic of LCC based on the principle of maintaining the thyristor angles at their respective minimum limits, and using transformer tap adjustments for active power control. This control principle is better suited for representing realistic steady-state grid conditions.
 
@@ -26,10 +28,11 @@ The complex apparent power for a rectifier or inverter is calculated as $S = V t
 
 To allow for the Jacobian implementation, a simplified calculation of the angle between the AC current and voltage at the LCC terminals was used. The equation below represents the calculation used for the angle:
 ```math
-\phi = \arccos\left(\cos(\alpha) \text{sign}(I_{dc}) - \frac{x I_{dc}}{\sqrt{2} t V}\right)
+\phi = \arccos\left(\operatorname{sign}(I_{dc})\left(\cos(\alpha) - \frac{x I_{dc}}{\sqrt{2} t V}\right)\right)
 ```
+where, by convention, we flip the sign of $I_{dc}$ on the inverter side. The net effect of the flip is an overall negation of the $\arccos$ argument at the inverter, which is what produces the negative signs on the $\partial P_i/\partial\cdot$ rows and on $\partial Q_i/\partial\alpha_i$ in the Jacobian below. The $\operatorname{sign}(I_{dc})$ factor appears the same way in the derivative rows.
 
-In the equation above, the variable ``\alpha`` represents the thyristor angle. The active and reactive powers for a converter station are 
+In the equation above, the variable $\alpha$ represents the thyristor angle. The active and reactive powers for a converter station are 
 
 ```math
 \begin{aligned}
@@ -43,11 +46,17 @@ The relevant non-zero entries in the Jacobian matrix for the rectifier (r) and i
 ```math
 \begin{aligned}
 \frac{\partial P_r}{\partial V_r} &= t_r \frac{\sqrt{6}}{\pi} I_{dc} \cos(\alpha_r) \\
-\frac{\partial Q_r}{\partial V_r} &= V_r t_r \frac{\sqrt{6}}{\pi} I_{dc} \left(\sin(\phi_r) - \cos(\phi_r) \frac{x_r I_{dc}}{\sqrt{2} V_r t_r \sin^2(\phi_r)}\right) \\
-\frac{\partial Q_r}{\partial t_r} &= V_r t_r \frac{\sqrt{6}}{\pi} I_{dc} \left(\frac{\sin(\phi_r)}{t_r} - \cos(\phi_r) \frac{x_r I_{dc}}{\sqrt{2} V_r t_r^2 \sin^2(\phi_r)}\right) \\
+\frac{\partial Q_r}{\partial V_r} &= t_r \frac{\sqrt{6}}{\pi} I_{dc} \sin(\phi_r) - \frac{\sqrt{6}}{\pi} \cos(\phi_r) \frac{\operatorname{sign}(I_{dc})\,x_r I_{dc}^2}{\sqrt{2} V_r \sin(\phi_r)} \\
+\frac{\partial Q_r}{\partial t_r} &= V_r \frac{\sqrt{6}}{\pi} I_{dc} \sin(\phi_r) - \frac{\sqrt{6}}{\pi} \cos(\phi_r) \frac{\operatorname{sign}(I_{dc})\,x_r I_{dc}^2}{\sqrt{2} t_r \sin(\phi_r)} \\
 \frac{\partial Q_r}{\partial \alpha_r} &= V_r t_r \frac{\sqrt{6}}{\pi} I_{dc} \frac{\cos(\phi_r) \sin(\alpha_r)}{\sin(\phi_r)} \\
 \frac{\partial P_r}{\partial t_r} &= V_r \frac{\sqrt{6}}{\pi} I_{dc} \cos(\alpha_r) \\
 \frac{\partial P_r}{\partial \alpha_r} &= -V_r \frac{\sqrt{6}}{\pi} I_{dc} t_r \sin(\alpha_r) \\
+\frac{\partial P_i}{\partial V_i} &= -t_i \frac{\sqrt{6}}{\pi} I_{dc} \cos(\alpha_i) \\
+\frac{\partial P_i}{\partial t_i} &= -V_i \frac{\sqrt{6}}{\pi} I_{dc} \cos(\alpha_i) \\
+\frac{\partial P_i}{\partial \alpha_i} &= V_i \frac{\sqrt{6}}{\pi} I_{dc} t_i \sin(\alpha_i) \\
+\frac{\partial Q_i}{\partial V_i} &= t_i \frac{\sqrt{6}}{\pi} I_{dc} \sin(\phi_i) - \frac{\sqrt{6}}{\pi} \cos(\phi_i) \frac{\operatorname{sign}(I_{dc})\,x_i I_{dc}^2}{\sqrt{2} V_i \sin(\phi_i)} \\
+\frac{\partial Q_i}{\partial t_i} &= V_i \frac{\sqrt{6}}{\pi} I_{dc} \sin(\phi_i) - \frac{\sqrt{6}}{\pi} \cos(\phi_i) \frac{\operatorname{sign}(I_{dc})\,x_i I_{dc}^2}{\sqrt{2} t_i \sin(\phi_i)} \\
+\frac{\partial Q_i}{\partial \alpha_i} &= -V_i t_i \frac{\sqrt{6}}{\pi} I_{dc} \frac{\cos(\phi_i) \sin(\alpha_i)}{\sin(\phi_i)} \\
 \frac{\partial F_{t_i}}{\partial V_i} &= t_i \frac{\sqrt{6}}{\pi} (-I_{dc}) \cos(\alpha_i) \\
 \frac{\partial F_{t_r}}{\partial t_r} &= V_r \frac{\sqrt{6}}{\pi} I_{dc} \cos(\alpha_r) \\
 \frac{\partial F_{t_r}}{\partial \alpha_r} &= -V_r \frac{\sqrt{6}}{\pi} I_{dc} t_r \sin(\alpha_r) \\

@@ -4,7 +4,7 @@
 
 ## Overview
 
-PowerFlows.jl is a Julia package designed for high-performance power flow analysis at scale. It provides an interface to multiple solution methods for the Power Flow problem, along with utilities commonly found in commercial software like Siemens PSS/e and GE PSLF. The package is architected to handle large-scale power systems (tens of thousands of buses) through extensive use of sparse matrix operations and specialized linear solvers. This package is part of the NREL-Sienna ecosystem focused on scalable power systems modeling and simulation.
+PowerFlows.jl is a Julia package designed for high-performance power flow analysis at scale. It provides an interface to multiple solution methods for the Power Flow problem, along with utilities commonly found in commercial software like Siemens PSS/e and GE PSLF. The package is architected to handle large-scale power systems (tens of thousands of buses) through extensive use of sparse matrix operations and specialized linear solvers. This package is part of the Sienna-Platform ecosystem focused on scalable power systems modeling and simulation.
 
 ## Main Objectives
 
@@ -233,9 +233,9 @@ Based on the current PR context (Refactor: Updates on PSS/e Exporter, testing DC
 
 ## Resources
 
-- **Documentation**: https://nrel-sienna.github.io/PowerFlows.jl/dev/
+- **Documentation**: https://sienna-platform.github.io/PowerFlows.jl/dev/
 - **Issues**: GitHub Issues for bug reports and feature requests
-- **Style Guide**: https://nrel-sienna.github.io/InfrastructureSystems.jl/stable/style/
+- **Style Guide**: https://sienna-platform.github.io/InfrastructureSystems.jl/stable/style/
 
 ## Version Information
 

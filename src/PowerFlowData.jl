@@ -137,10 +137,11 @@ struct PowerFlowData{
 end
 
 # aliases for specific type parameter combinations.
-"""A type alias for a `PowerFlowData` struct whose type parameters
-are configured for the `ACPowerFlow` method."""
+"""A type alias for a `PowerFlowData` struct whose type parameters are
+configured for an AC power flow method (`ACPolarPowerFlow` or
+`ACRectangularPowerFlow`, i.e. any `AbstractACPowerFlow`)."""
 const ACPowerFlowData = PowerFlowData{
-    <:ACPowerFlow,
+    <:AbstractACPowerFlow,
     PNM.AC_Ybus_Matrix,
     <:Union{
         PNM.DC_ABA_Matrix_Factorized,
@@ -270,10 +271,10 @@ get_arc_axis(pfd::ACPowerFlowData) =
 
 # so we can initialize things to the correct size inside the below constructor.
 # No `PowerFlowData` instance, so can't call get_arc_axis or similar to get the size.
-arc_count(::ACPowerFlow,
+arc_count(::AbstractACPowerFlow,
     power_network_matrix::PNM.PowerNetworkMatrix,
     ::Union{PNM.PowerNetworkMatrix, Nothing}) = length(PNM.get_arc_axis(power_network_matrix.arc_admittance_from_to))
-bus_count(::ACPowerFlow,
+bus_count(::AbstractACPowerFlow,
     power_network_matrix::PNM.PowerNetworkMatrix,
     ::Union{PNM.PowerNetworkMatrix, Nothing}) = length(PNM.get_bus_axis(power_network_matrix))
 
@@ -479,21 +480,21 @@ end
 
 """
     PowerFlowData(
-        pf::ACPowerFlow{<:ACPowerFlowSolverType},
+        pf::AbstractACPowerFlow{<:ACPowerFlowSolverType},
         sys::PSY.System
     ) -> ACPowerFlowData{<:ACPowerFlowSolverType}
 
 Creates the structure for an AC power flow calculation, given the
 [`System`](@extref PowerSystems.System) `sys`. Configuration options like `time_steps`,
-`timestep_names`, `network_reductions`, and `correct_bustypes` are taken from the
-[`ACPowerFlow`](@ref) object.
+`time_step_names`, `network_reductions`, and `correct_bustypes` are taken from the
+[`AbstractACPowerFlow`](@ref) object (either [`ACPolarPowerFlow`](@ref) or
+[`ACRectangularPowerFlow`](@ref)).
 
-Calling this function will not evaluate the power flows and angles.
-Note that first input is of type [`ACPowerFlow`](@ref): this version is used to solve
-AC power flows, and returns an [`ACPowerFlowData`](@ref) object.
+Calling this function will not evaluate the power flows and angles. This version is
+used to solve AC power flows and returns an [`ACPowerFlowData`](@ref) object.
 
 # Arguments:
-- [`pf::ACPowerFlow`](@ref ACPowerFlow):
+- `pf::AbstractACPowerFlow`:
         the settings for the AC power flow solver, including `time_steps`, `time_step_names`,
         `network_reductions`, and `correct_bustypes`.
 - `sys::PSY.System`:
@@ -503,7 +504,7 @@ AC power flows, and returns an [`ACPowerFlowData`](@ref) object.
 WARNING: functions for the evaluation of the multi-period AC PF still to be implemented.
 """
 function PowerFlowData(
-    pf::ACPowerFlow{<:ACPowerFlowSolverType},
+    pf::AbstractACPowerFlow{<:ACPowerFlowSolverType},
     sys::PSY.System,
 )
     network_reductions = get_network_reductions(pf)
@@ -735,7 +736,7 @@ Configuration options like `time_steps`, `time_step_names`, `network_reductions`
 function make_power_flow_container end
 
 make_power_flow_container(
-    pfem::ACPowerFlow{<:ACPowerFlowSolverType},
+    pfem::AbstractACPowerFlow{<:ACPowerFlowSolverType},
     sys::PSY.System,
 ) = PowerFlowData(pfem, sys)
 

@@ -1,0 +1,120 @@
+@testset "Rectangular CI Jacobian: asymptotic verification" begin
+    @testset "c_sys5 at polar-converged + perturbation" begin
+        sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
+        pf_polar = ACPowerFlow{NewtonRaphsonACPowerFlow}()
+        PF.solve_and_store_power_flow!(pf_polar, sys)
+        pf_rect = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}()
+        data = PF.PowerFlowData(pf_rect, sys)
+        R = PF.ACRectangularCIResidual(data, 1)
+        J = PF.ACRectangularCIJacobian(R, 1)
+        x = Vector{Float64}(undef, length(R.Rv))
+        PF.rect_initial_state!(x, data, R.bus_state_offset, R.bus_block_size, 1)
+        # Avoid verifying at the special converged state — see note in
+        # verify_jacobian (test_jacobian.jl) about hidden zeros.
+        Random.seed!(42)
+        x .+= 0.02 .* randn(length(x))
+        R(x, 1)
+        J(1)
+        verify_jacobian_asymptotic(R, copy(J.Jv), x, 1; label = "rect CI c_sys5")
+    end
+
+    @testset "c_sys14 at polar-converged + perturbation" begin
+        sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+        pf_polar = ACPowerFlow{NewtonRaphsonACPowerFlow}()
+        PF.solve_and_store_power_flow!(pf_polar, sys)
+        pf_rect = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}()
+        data = PF.PowerFlowData(pf_rect, sys)
+        R = PF.ACRectangularCIResidual(data, 1)
+        J = PF.ACRectangularCIJacobian(R, 1)
+        x = Vector{Float64}(undef, length(R.Rv))
+        PF.rect_initial_state!(x, data, R.bus_state_offset, R.bus_block_size, 1)
+        Random.seed!(42)
+        x .+= 0.02 .* randn(length(x))
+        R(x, 1)
+        J(1)
+        verify_jacobian_asymptotic(R, copy(J.Jv), x, 1; label = "rect CI c_sys14")
+    end
+
+    @testset "ZIP constant-current load at perturbed state" begin
+        sys = System(100.0)
+        b1 = _add_simple_bus!(sys, 1, PSY.ACBusTypes.REF, 230, 1.1, 0.0)
+        b2 = _add_simple_bus!(sys, 2, PSY.ACBusTypes.PQ, 230, 1.1, 0.0)
+        _add_simple_line!(sys, b1, b2, 5e-3, 5e-3, 1e-3)
+        _add_simple_source!(sys, b1, 0.0, 0.0)
+        _add_simple_zip_load!(
+            sys, b2;
+            constant_power_active_power = 0.5,
+            constant_power_reactive_power = 0.2,
+            constant_current_active_power = 2.0,
+            constant_current_reactive_power = 1.0,
+        )
+        pf_polar = ACPowerFlow{NewtonRaphsonACPowerFlow}()
+        PF.solve_and_store_power_flow!(pf_polar, sys)
+        pf_rect = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
+            correct_bustypes = true,
+            solver_settings = Dict{Symbol, Any}(:validate_voltage_magnitudes => false),
+        )
+        data = PF.PowerFlowData(pf_rect, sys)
+        R = PF.ACRectangularCIResidual(data, 1)
+        J = PF.ACRectangularCIJacobian(R, 1)
+        x = Vector{Float64}(undef, length(R.Rv))
+        PF.rect_initial_state!(x, data, R.bus_state_offset, R.bus_block_size, 1)
+        Random.seed!(7)
+        x .+= 0.02 .* randn(length(x))
+        R(x, 1)
+        J(1)
+        verify_jacobian_asymptotic(R, copy(J.Jv), x, 1; label = "rect CI ZIP perturbed")
+    end
+
+    @testset "c_sys5 at perturbed (non-converged) state" begin
+        sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
+        pf_polar = ACPowerFlow{NewtonRaphsonACPowerFlow}()
+        PF.solve_and_store_power_flow!(pf_polar, sys)
+        pf_rect = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}()
+        data = PF.PowerFlowData(pf_rect, sys)
+        R = PF.ACRectangularCIResidual(data, 1)
+        J = PF.ACRectangularCIJacobian(R, 1)
+        x = Vector{Float64}(undef, length(R.Rv))
+        PF.rect_initial_state!(x, data, R.bus_state_offset, R.bus_block_size, 1)
+        Random.seed!(42)
+        x .+= 0.05 .* randn(length(x))
+        R(x, 1)
+        J(1)
+        verify_jacobian_asymptotic(R, copy(J.Jv), x, 1; label = "rect CI c_sys5 perturbed")
+    end
+end
+
+@testset "Rectangular CI Jacobian: off-diagonal Y_bus blocks are constant" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
+    pf_polar = ACPowerFlow{NewtonRaphsonACPowerFlow}()
+    PF.solve_and_store_power_flow!(pf_polar, sys)
+    pf_rect = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}()
+    data = PF.PowerFlowData(pf_rect, sys)
+    R = PF.ACRectangularCIResidual(data, 1)
+    J = PF.ACRectangularCIJacobian(R, 1)
+    x = Vector{Float64}(undef, length(R.Rv))
+    PF.rect_initial_state!(x, data, R.bus_state_offset, R.bus_block_size, 1)
+    R(x, 1)
+    J(1)
+    J_first = copy(J.Jv)
+
+    Random.seed!(123)
+    x .+= 0.01 .* randn(length(x))
+    R(x, 1)
+    J(1)
+    J_second = copy(J.Jv)
+
+    # For non-REF, non-PV-Q columns at off-diagonal block positions, Y_bus entries
+    # should be identical across iterations.
+    bus_types = data.bus_type[:, 1]
+    for col in 1:length(bus_types), row in 1:length(bus_types)
+        row == col && continue
+        bus_types[col] == PSY.ACBusTypes.REF && continue
+        row_off = Int(R.bus_state_offset[row])
+        col_off = Int(R.bus_state_offset[col])
+        for dr in 0:1, dc in 0:1
+            @test J_first[row_off + dr, col_off + dc] ==
+                  J_second[row_off + dr, col_off + dc]
+        end
+    end
+end

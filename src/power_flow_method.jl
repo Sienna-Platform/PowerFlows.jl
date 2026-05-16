@@ -52,7 +52,7 @@ function _do_refinement!(stateVector::StateVectorCache,
 )
     # use stateVector.r_predict as temporary buffer.
     δ_temp = stateVector.r_predict
-    copyto!(δ_temp, A * stateVector.Δx_nr)
+    mul!(δ_temp, A, stateVector.Δx_nr)
     δ_temp .-= stateVector.r
     delta = norm(δ_temp, 1) / norm(stateVector.r, 1)
     if delta > refinement_threshold
@@ -67,7 +67,7 @@ end
 """Sets the Newton-Raphson step. Usually, this is just `J.Jv \\ stateVector.r`, but
 `J.Jv` might be singular."""
 function _set_Δx_nr!(stateVector::StateVectorCache,
-    J::ACPowerFlowJacobian,
+    J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian},
     linSolveCache::KLULinSolveCache{J_INDEX_TYPE},
     solver::ACPowerFlowSolverType,
     refinement_threshold::Float64,
@@ -168,7 +168,7 @@ The caller is responsible for recomputing the Jacobian via `J(time_step)` before
 calling this, so that `Jv` reflects the new state."""
 function _accept_trust_region_step!(
     stateVector::StateVectorCache,
-    residual::ACPowerFlowResidual,
+    residual::Union{ACPowerFlowResidual, ACRectangularCIResidual},
     Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
     autoscale::Bool,
 )
@@ -188,8 +188,8 @@ Returns `true` if the damped step was accepted, `false` if reverted."""
 function _iwamoto_fallback!(
     time_step::Int,
     stateVector::StateVectorCache,
-    residual::ACPowerFlowResidual,
-    J::ACPowerFlowJacobian,
+    residual::Union{ACPowerFlowResidual, ACRectangularCIResidual},
+    J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian},
     old_residual::Vector{Float64},
     old_residual_norm::Float64,
     new_residual_norm::Float64,
@@ -226,8 +226,8 @@ the value of the Jacobian at the new `x`, if needed. Unlike
 function _trust_region_step(time_step::Int,
     stateVector::StateVectorCache,
     linSolveCache::KLULinSolveCache{J_INDEX_TYPE},
-    residual::ACPowerFlowResidual,
-    J::ACPowerFlowJacobian,
+    residual::Union{ACPowerFlowResidual, ACRectangularCIResidual},
+    J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian},
     delta::Float64,
     delta_max::Float64,
     eta::Float64,
@@ -429,8 +429,8 @@ end
 function _simple_step(time_step::Int,
     stateVector::StateVectorCache,
     linSolveCache::KLULinSolveCache{J_INDEX_TYPE},
-    residual::ACPowerFlowResidual,
-    J::ACPowerFlowJacobian,
+    residual::Union{ACPowerFlowResidual, ACRectangularCIResidual},
+    J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian},
     refinement_threshold::Float64 = DEFAULT_REFINEMENT_THRESHOLD,
     refinement_eps::Float64 = DEFAULT_REFINEMENT_EPS,
 )
@@ -465,8 +465,8 @@ should terminate early."""
 function _iwamoto_step(time_step::Int,
     stateVector::StateVectorCache,
     linSolveCache::KLULinSolveCache{J_INDEX_TYPE},
-    residual::ACPowerFlowResidual,
-    J::ACPowerFlowJacobian,
+    residual::Union{ACPowerFlowResidual, ACRectangularCIResidual},
+    J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian},
     refinement_threshold::Float64 = DEFAULT_REFINEMENT_THRESHOLD,
     refinement_eps::Float64 = DEFAULT_REFINEMENT_EPS,
 )::Bool
@@ -521,6 +521,33 @@ function _iwamoto_step(time_step::Int,
     return true
 end
 
+# `validate_voltage_magnitudes` indexes the state as polar `[|V|, θ, …]`
+# (x[2i-1] = |V|). The rectangular CI state is `(e, f, …)` blocks, so the polar
+# check is meaningless there — dispatch a no-op for the rectangular residual
+# rather than gating with a runtime type check.
+function _validate_state_magnitudes(
+    ::ACPowerFlowResidual,
+    x::Vector{Float64},
+    bus_types::AbstractArray{PSY.ACBusTypes},
+    range::MinMax,
+    i::Int64,
+)
+    validate_voltage_magnitudes(x, bus_types, range, i)
+    return
+end
+
+function _validate_state_magnitudes(
+    ::ACRectangularCIResidual,
+    x::Vector{Float64},
+    bus_types::AbstractArray{PSY.ACBusTypes},
+    range::MinMax,
+    i::Int64,
+)
+    # TO BE IMPLEMENTED: add rectangular CI validation if needed. For now, just skip it since the rectangular CI solver doesn't use polar voltage magnitudes.
+    # We might need to do some 0 -1 validation for entries.
+    return
+end
+
 """Runs the full `NewtonRaphsonACPowerFlow`.
 # Keyword arguments:
 - `maxIterations::Int`: maximum iterations. Default: $DEFAULT_NR_MAX_ITER.
@@ -535,8 +562,8 @@ end
 function _run_power_flow_method(time_step::Int,
     stateVector::StateVectorCache,
     linSolveCache::KLULinSolveCache{J_INDEX_TYPE},
-    residual::ACPowerFlowResidual,
-    J::ACPowerFlowJacobian,
+    residual::Union{ACPowerFlowResidual, ACRectangularCIResidual},
+    J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian},
     ::Type{NewtonRaphsonACPowerFlow};
     maxIterations::Int = DEFAULT_NR_MAX_ITER,
     tol::Float64 = DEFAULT_NR_TOL,
@@ -582,7 +609,8 @@ function _run_power_flow_method(time_step::Int,
                 refinement_eps,
             )
         end
-        validate_vms && PowerFlows.validate_voltage_magnitudes(
+        validate_vms && _validate_state_magnitudes(
+            residual,
             stateVector.x,
             bus_types,
             vm_validation_range,
@@ -611,8 +639,8 @@ end
 function _run_power_flow_method(time_step::Int,
     stateVector::StateVectorCache,
     linSolveCache::KLULinSolveCache{J_INDEX_TYPE},
-    residual::ACPowerFlowResidual,
-    J::ACPowerFlowJacobian,
+    residual::Union{ACPowerFlowResidual, ACRectangularCIResidual},
+    J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian},
     ::Type{TrustRegionACPowerFlow};
     maxIterations::Int = DEFAULT_NR_MAX_ITER,
     tol::Float64 = DEFAULT_NR_TOL,
@@ -660,7 +688,8 @@ function _run_power_flow_method(time_step::Int,
             autoscale,
             iwamoto_fallback,
         )
-        validate_vms && PowerFlows.validate_voltage_magnitudes(
+        validate_vms && _validate_state_magnitudes(
+            residual,
             stateVector.x,
             bus_types,
             vm_validation_range,
@@ -680,7 +709,7 @@ function _finalize_power_flow(
     converged::Bool,
     i::Int,
     solver_name::String,
-    residual::ACPowerFlowResidual,
+    residual::Union{ACPowerFlowResidual, ACRectangularCIResidual},
     data::ACPowerFlowData,
     Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
     time_step::Int64,
@@ -696,12 +725,32 @@ function _finalize_power_flow(
         end
         return true
     end
-    @error("The $solver_name solver failed to converge.")
+    @error("The $solver_name solver failed to converge after $i iterations.")
     return false
 end
 
+"""Formulation-specific post-Newton step. Polar needs nothing; the rectangular
+CI formulation distributes the converged subnetwork slack into the bus
+injection arrays."""
+_finalize_formulation!(::ACPolarPowerFlow, data, x, residual, time_step) = nothing
+
+function _finalize_formulation!(
+    ::ACRectangularPowerFlow,
+    data::ACPowerFlowData,
+    x::Vector{Float64},
+    residual::ACRectangularCIResidual,
+    time_step::Int64,
+)
+    rect_finalize_bus_injections!(
+        data, x, residual.bus_state_offset, residual.P_net_set,
+        residual.bus_slack_participation_factors, residual.subnetworks,
+        time_step,
+    )
+    return
+end
+
 function _newton_power_flow(
-    pf::ACPowerFlow{T},
+    pf::AbstractACPowerFlow{T},
     data::ACPowerFlowData,
     time_step::Int64;
     # shared kwargs
@@ -734,6 +783,7 @@ function _newton_power_flow(
     converged = norm(residual.Rv, Inf) < tol
 
     i = 0
+    x_final = x0_init
     if !converged
         linSolveCache = KLULinSolveCache(J.Jv)
         symbolic_factor!(linSolveCache, J.Jv)
@@ -757,6 +807,8 @@ function _newton_power_flow(
             autoscale,
             iwamoto_fallback,
         )
+        x_final = stateVector.x
     end
+    _finalize_formulation!(pf, data, x_final, residual, time_step)
     return _finalize_power_flow(converged, i, string(T), residual, data, J.Jv, time_step)
 end

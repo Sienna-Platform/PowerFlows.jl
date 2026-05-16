@@ -1,5 +1,5 @@
 """
-    solve_and_store_power_flow!(pf::ACPowerFlow{<:ACPowerFlowSolverType}, system::PSY.System; kwargs...)
+    solve_and_store_power_flow!(pf::AbstractACPowerFlow{<:ACPowerFlowSolverType}, system::PSY.System; kwargs...)
 
 Solves the power flow in the system and writes the solution into the relevant structs.
 Updates active and reactive power setpoints for generators and active and reactive
@@ -11,7 +11,7 @@ Configuration options like `time_steps`, `time_step_names`, `network_reductions`
 The bus types can be changed from PV to PQ if the reactive power limits are violated.
 
 # Arguments
-- [`pf::ACPowerFlow{<:ACPowerFlowSolverType}`](@ref ACPowerFlow): the power flow struct,
+- [`pf::AbstractACPowerFlow{<:ACPowerFlowSolverType}`](@ref AbstractACPowerFlow): the power flow struct,
     which contains configuration options.
 - `system::PSY.System`: The power system model, a [`PowerSystems.System`](@extref) struct.
 - `kwargs...`: Additional keyword arguments passed to the solver.
@@ -38,7 +38,7 @@ solve_and_store_power_flow!(pf, sys; maxIterations=100)
 ```
 """
 function solve_and_store_power_flow!(
-    pf::ACPowerFlow{<:ACPowerFlowSolverType},
+    pf::AbstractACPowerFlow{<:ACPowerFlowSolverType},
     system::PSY.System;
     kwargs...,
 )
@@ -77,7 +77,7 @@ res = solve_power_flow(pf, sys, FlowReporting.BRANCH_FLOWS)
 ```
 """
 function solve_power_flow(
-    pf::ACPowerFlow{<:ACPowerFlowSolverType},
+    pf::AbstractACPowerFlow{<:ACPowerFlowSolverType},
     system::PSY.System;
     kwargs...,
 )
@@ -85,7 +85,7 @@ function solve_power_flow(
 end
 
 function solve_power_flow(
-    pf::ACPowerFlow{<:ACPowerFlowSolverType},
+    pf::AbstractACPowerFlow{<:ACPowerFlowSolverType},
     system::PSY.System,
     flow_reporting::FlowReporting;
     kwargs...,
@@ -240,7 +240,7 @@ end
 
 function _ac_power_flow(
     data::ACPowerFlowData,
-    pf::ACPowerFlow{<:ACPowerFlowSolverType},
+    pf::AbstractACPowerFlow{<:ACPowerFlowSolverType},
     time_step::Int64;
     kwargs...,
 )

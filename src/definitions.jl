@@ -8,6 +8,8 @@ const LARGE_RESIDUAL = 10 # threshold for "bad initial guess": default
 
 const ISAPPROX_ZERO_TOLERANCE = 1e-6
 
+const LCC_sinϕ_TOLERANCE = 1e-8 # if sin(ϕ) < this, treat dQ/dV as zero to avoid singularity in Jacobian
+
 const DEFAULT_NR_MAX_ITER = 50 # default maxIterations for the NR power flow
 const OVERRIDE_x0 = true
 const DEFAULT_NR_TOL = 1e-9 # default tolerance for the NR power flow
@@ -37,8 +39,9 @@ const DEFAULT_IWAMOTO_FALLBACK = true # when a trust region step is rejected, tr
 const PF_MAX_LOG = 10
 # only used for Levenberg-Maquardt
 const DEFAULT_λ_0 = 1e-5
-# input is mix of powers (100 MW), voltages (0.8-1.2), and angles (-π/4 to π/4).
-const DEFAULT_MAX_TEST_λs = 50 # give up after increasing damping factor 50 times.
+# Upper bound on the LM damping factor μ. μ only grows on rejected steps, so
+# hitting this cap is a divergence signal — the solver aborts with an error.
+const DEFAULT_μ_MAX = 1e8
 
 const DEFAULT_Δt_k = 0.2
 
@@ -49,6 +52,13 @@ const BUS_VOLTAGE_MAGNITUDE_CUTOFF_MAX = 1.2
 
 const TIs = Union{Int32, Int64}
 const J_INDEX_TYPE = Int32
+const REC_INDEX_TYPE = Int32
+
+# LCC line-commutated-converter scaling factor: the fundamental component of the
+# AC-side current per unit DC current is `(√6/π)·t·I_dc`. Used in `lcc_utils.jl`,
+# `ac_power_flow_residual.jl`, `ac_power_flow_jacobian.jl`, and the rectangular
+# CI counterparts.
+const SQRT6_DIV_PI = sqrt(6) / π
 
 # voltage validation
 const DEFAULT_VALIDATE_VOLTAGES = true

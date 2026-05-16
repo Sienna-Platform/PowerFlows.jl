@@ -866,3 +866,21 @@ end
 @testset "AC arc_angle_differences validation" begin
     foreach(test_ac_arc_angle_differences, AC_SOLVERS_TO_TEST)
 end
+
+@testset "ACPowerFlow solver_settings accepts narrowly-typed Dicts" begin
+    # Regression: previously the kwarg required Dict{Symbol, Any} exactly, so a
+    # plain `Dict(:k => 50)` (inferred as Dict{Symbol, Int64}) was rejected.
+    pf_int = ACPowerFlow(; solver_settings = Dict(:maxIterations => 50))
+    @test pf_int.solver_settings isa Dict{Symbol, Any}
+    @test pf_int.solver_settings[:maxIterations] === 50
+
+    pf_bool = ACPowerFlow(;
+        solver_settings = Dict(:validate_voltage_magnitudes => false),
+    )
+    @test pf_bool.solver_settings[:validate_voltage_magnitudes] === false
+
+    pf_any = ACPowerFlow(;
+        solver_settings = Dict{Symbol, Any}(:maxIterations => 50),
+    )
+    @test pf_any.solver_settings[:maxIterations] === 50
+end

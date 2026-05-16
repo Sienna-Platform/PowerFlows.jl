@@ -5,7 +5,7 @@ _get_bus_ix(
 ) =
     bus_lookup[get(reverse_bus_search_map, bus_number, bus_number)]
 
-considers_reactive_power(::ACPowerFlow{<:ACPowerFlowSolverType}) = true
+considers_reactive_power(::AbstractACPowerFlow{<:ACPowerFlowSolverType}) = true
 considers_reactive_power(::AbstractDCPowerFlow) = false
 
 function _get_injections!(
@@ -205,7 +205,7 @@ function _set_bus_angles_and_magnitudes!(
 end
 
 function _set_bus_angles_and_magnitudes!(
-    ::ACPowerFlow{<:ACPowerFlowSolverType},
+    ::AbstractACPowerFlow{<:ACPowerFlowSolverType},
     bus_type::Vector{PSY.ACBusTypes},
     bus_angles::Vector{Float64},
     bus_magnitude::Vector{Float64},
@@ -248,7 +248,7 @@ function _set_bus_angles_and_magnitudes!(
 end
 
 # ensures that we don't error/warn for PV vs PQ bus types in DC power flow.
-_considers_bustype(::ACPowerFlow{<:ACPowerFlowSolverType}, ::PSY.ACBusTypes) = true
+_considers_bustype(::AbstractACPowerFlow{<:ACPowerFlowSolverType}, ::PSY.ACBusTypes) = true
 _considers_bustype(::AbstractDCPowerFlow, bt::PSY.ACBusTypes) = (bt == PSY.ACBusTypes.REF)
 
 function _initialize_bus_data!(
@@ -350,7 +350,7 @@ end
 
 handle_zip_loads!(
     ::PowerFlowData,
-    ::ACPowerFlow{<:ACPowerFlowSolverType},
+    ::AbstractACPowerFlow{<:ACPowerFlowSolverType},
 ) = nothing
 
 handle_zip_loads!(
