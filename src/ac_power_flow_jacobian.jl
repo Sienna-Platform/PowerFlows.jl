@@ -21,6 +21,10 @@ struct ACPowerFlowJacobian
     diag_elements::MVector{4, Float64}  # Temporary storage for diagonal elements during Jacobian update
     bus_slack_participation_factors::SparseVector{Float64, Int}
     subnetworks::Dict{Int64, Vector{Int64}}
+    bus_active_constant_I::Vector{Float64}
+    bus_reactive_constant_I::Vector{Float64}
+    bus_active_constant_Z::Vector{Float64}
+    bus_reactive_constant_Z::Vector{Float64}
 end
 
 """
@@ -36,17 +40,15 @@ Defining this method allows an instance of `ACPowerFlowJacobian` to be called as
 # Example
 ```julia
 residual = ACPowerFlowResidual(data, time_step)
-J = ACPowerFlowJacobian(data,
-        residual.bus_slack_participation_factors,
-        residual.subnetworks,
-        time_step
-    )
+J = ACPowerFlowJacobian(residual, time_step)
 J(time_step)  # Updates the Jacobian matrix Jv
 ```
 """
 function (J::ACPowerFlowJacobian)(time_step::Int64)
     J.Jf!(J.Jv, J.data, time_step, J.diag_elements,
-        J.bus_slack_participation_factors, J.subnetworks)
+        J.bus_slack_participation_factors, J.subnetworks,
+        J.bus_active_constant_I, J.bus_reactive_constant_I,
+        J.bus_active_constant_Z, J.bus_reactive_constant_Z)
     return
 end
 
@@ -66,11 +68,7 @@ This method allows an instance of ACPowerFlowJacobian to be called as a function
 # Example
 ```julia
 residual = ACPowerFlowResidual(data, time_step)
-J = ACPowerFlowJacobian(data,
-    residual.bus_slack_participation_factors,
-    residual.subnetworks,
-    time_step
-)
+J = ACPowerFlowJacobian(residual, time_step)
 Jv = SparseArrays.sparse(Float64[], J_INDEX_TYPE[], J_INDEX_TYPE[])
 J(Jv, time_step)  # Updates the Jacobian matrix Jv and writes it to J
 ```
@@ -80,67 +78,56 @@ function (J::ACPowerFlowJacobian)(
     time_step::Int64,
 )
     J.Jf!(J.Jv, J.data, time_step, J.diag_elements,
-        J.bus_slack_participation_factors, J.subnetworks)
+        J.bus_slack_participation_factors, J.subnetworks,
+        J.bus_active_constant_I, J.bus_reactive_constant_I,
+        J.bus_active_constant_Z, J.bus_reactive_constant_Z)
     copyto!(Jv, J.Jv)
     return
 end
 
 """
-    ACPowerFlowJacobian(data::ACPowerFlowData,
-        bus_slack_participation_factors::SparseVector{Float64, Int},
-        subnetworks::Dict{Int64, Vector{Int64}}, time_step::Int64) -> ACPowerFlowJacobian
+    ACPowerFlowJacobian(residual::ACPowerFlowResidual, time_step::Int64) -> ACPowerFlowJacobian
 
-This is the constructor for ACPowerFlowJacobian.
-Create an `ACPowerFlowJacobian` instance. As soon as the instance is created, it already has
-the Jacobian matrix structure initialized and its values updated, stored internally as `Jv`.
-The data instance is stored internally and used to update the Jacobian matrix because the
-structure of the Jacobian matrix is tied to the data. Changing the data requires creating a
-new instance of `ACPowerFlowJacobian`.
-
-The `bus_slack_participation_factors` and `subnetworks` are needed for the distributed slack
-Jacobian entries: each participating bus k has ∂F_P_k/∂x[2*ref-1] = -c_k in the Jacobian.
+Constructor for `ACPowerFlowJacobian`. The returned instance has its sparsity
+pattern initialized and shares the residual's slack-participation, subnetwork,
+and ZIP-coefficient caches — the residual must be constructed first against the
+same `data` and `time_step`.
 
 # Arguments
-- `data::ACPowerFlowData`: The data used for power flow calculations.
-- `bus_slack_participation_factors::SparseVector{Float64, Int}`: Normalized per-bus slack participation factors (from the `ACPowerFlowResidual`).
-- `subnetworks::Dict{Int64, Vector{Int64}}`: Subnetwork mapping from REF bus to bus list (from the `ACPowerFlowResidual`).
+- `residual::ACPowerFlowResidual`: The companion residual; supplies `data`,
+  `bus_slack_participation_factors`, `subnetworks`, and the per-bus ZIP load
+  coefficient vectors.
 - `time_step::Int64`: The time step for the calculations.
-
-# Returns
-- `ACPowerFlowJacobian`: An instance of `ACPowerFlowJacobian`.
 
 # Example
 ```julia
 residual = ACPowerFlowResidual(data, time_step)
-J = ACPowerFlowJacobian(data,
-    residual.bus_slack_participation_factors, residual.subnetworks, time_step)
+J = ACPowerFlowJacobian(residual, time_step)
 J(time_step)  # Updates the Jacobian matrix stored internally in J.
 J.Jv  # Access the Jacobian matrix stored internally in J.
 ```
 """
 function ACPowerFlowJacobian(
-    data::ACPowerFlowData,
-    bus_slack_participation_factors::SparseVector{Float64, Int},
-    subnetworks::Dict{Int64, Vector{Int64}},
+    residual::ACPowerFlowResidual,
     time_step::Int64,
 )
-    # Create the initial Jacobian matrix structure - a sparse matrix with structural zeros
-    # that will be updated by the function Jf! It has the same structure as the expected
-    # Jacobian matrix.
     Jv0 = _create_jacobian_matrix_structure(
-        data,
-        bus_slack_participation_factors,
-        subnetworks,
+        residual.data,
+        residual.bus_slack_participation_factors,
+        residual.subnetworks,
         time_step,
     )
-    # We just initialize the structure here, evaluation must happen later
     return ACPowerFlowJacobian(
-        data,
+        residual.data,
         _update_jacobian_matrix_values!,
         Jv0,
         MVector{4, Float64}(undef),
-        bus_slack_participation_factors,
-        subnetworks,
+        residual.bus_slack_participation_factors,
+        residual.subnetworks,
+        residual.bus_active_constant_I,
+        residual.bus_reactive_constant_I,
+        residual.bus_active_constant_Z,
+        residual.bus_reactive_constant_Z,
     )
 end
 
@@ -306,6 +293,7 @@ function _create_jacobian_matrix_structure_lcc(
         idx_p_fb = 2 * fb - 1
         idx_q_fb = 2 * fb
         idx_p_tb = 2 * tb - 1
+        idx_q_tb = 2 * tb
         offset_lcc = num_buses * 2 + (i - 1) * 4
         idx_tap_from = offset_lcc + 1
         idx_tap_to = offset_lcc + 2
@@ -319,6 +307,12 @@ function _create_jacobian_matrix_structure_lcc(
             (idx_p_fb, idx_angle_from, 0.0),  # ∂Pᵢ/∂αᵢ
             (idx_q_fb, idx_tap_from, 0.0),  # ∂Qᵢ/∂tᵢ
             (idx_q_fb, idx_angle_from, 0.0),  # ∂Qᵢ/∂αᵢ
+            (idx_p_tb, idx_p_tb, 0.0),  # ∂Pⱼ/∂Vⱼ
+            (idx_q_tb, idx_p_tb, 0.0),  # ∂Qⱼ/∂Vⱼ
+            (idx_p_tb, idx_tap_to, 0.0),  # ∂Pⱼ/∂tⱼ
+            (idx_p_tb, idx_angle_to, 0.0),  # ∂Pⱼ/∂αⱼ
+            (idx_q_tb, idx_tap_to, 0.0),  # ∂Qⱼ/∂tⱼ
+            (idx_q_tb, idx_angle_to, 0.0),  # ∂Qⱼ/∂αⱼ
             (idx_tap_from, idx_p_fb, 0.0),  # ∂Fₜᵢ/∂Vᵢ
             (idx_tap_to, idx_p_fb, 0.0),  # ∂Fₜⱼ/∂Vᵢ
             (idx_tap_to, idx_p_tb, 0.0),  # ∂Fₜⱼ/∂Vⱼ
@@ -558,67 +552,75 @@ function _set_entries_for_lcc(data::ACPowerFlowData,
     Jv::SparseArrays.SparseMatrixCSC{Float64, J_INDEX_TYPE},
     num_buses::Int,
     time_step::Int)
-    sqrt6_div_pi = sqrt(6) / π
     for (i, (fb, tb)) in enumerate(data.lcc.bus_indices)
         idx_p_fb = 2 * fb - 1
         idx_q_fb = 2 * fb
         idx_p_tb = 2 * tb - 1
+        idx_q_tb = 2 * tb
         offset_lcc = num_buses * 2 + (i - 1) * 4
         idx_tap_from = offset_lcc + 1
         idx_tap_to = offset_lcc + 2
         idx_angle_from = offset_lcc + 3
         idx_angle_to = offset_lcc + 4
 
-        i_dc = max(data.lcc.i_dc[i, time_step], 1e-9)  # Avoid numerical issues
-        tap_r = data.lcc.rectifier.tap[i, time_step]
-        tap_i = data.lcc.inverter.tap[i, time_step]
         alpha_r = data.lcc.rectifier.thyristor_angle[i, time_step]
         alpha_i = data.lcc.inverter.thyristor_angle[i, time_step]
         phi_r = data.lcc.rectifier.phi[i, time_step]
+        phi_i = data.lcc.inverter.phi[i, time_step]
         xtr_r = data.lcc.rectifier.transformer_reactance[i]
+        xtr_i = data.lcc.inverter.transformer_reactance[i]
         Vm_fb = data.bus_magnitude[fb, time_step]
         Vm_tb = data.bus_magnitude[tb, time_step]
         bus_type_fb = data.bus_type[fb, time_step]
         bus_type_tb = data.bus_type[tb, time_step]
 
-        cos_alpha_r = cos(alpha_r)
-        sin_alpha_r = sin(alpha_r)
-        cos_alpha_i = cos(alpha_i)
-        sin_alpha_i = sin(alpha_i)
+        s = _lcc_jacobian_scalars(data, i, time_step, Vm_fb, Vm_tb)
 
-        common_term_fb = Vm_fb * sqrt6_div_pi * i_dc
-        common_term_tb = Vm_tb * sqrt6_div_pi * (-i_dc)
-        common_term_tap_r = tap_r * sqrt6_div_pi * i_dc * cos_alpha_r
-        common_term_alpha_r = -common_term_fb * tap_r * sin_alpha_r
+        dP_dV_fb = s.dP_dV_fb
+        dP_dV_tb = s.dP_dV_tb
+        dP_dt_fb = s.dP_dt_fb
+        dP_dt_tb = s.dP_dt_tb
+
+        # Bus-row × tail-column entries (∂{P,Q}/∂{tap, α}) are written
+        # unconditionally — the bus residual rows exist for all bus types,
+        # and tap/α are state variables regardless of which AC terminal is
+        # PQ/PV/REF. ∂{P,Q}/∂V is gated by PQ (V is a state only there);
+        # likewise the tail × bus-V chain rule.
+        Jv[idx_p_fb, idx_tap_from] = dP_dt_fb # ∂P_fb/∂t_fb
+        Jv[idx_p_fb, idx_angle_from] = s.dP_dα_fb # ∂P_fb/∂α_fb
+        Jv[idx_q_fb, idx_tap_from] =
+            _calculate_dQ_dt_lcc(s.tap_r, s.i_dc, xtr_r, Vm_fb, phi_r) # ∂Q_fb/∂t_fb
+        Jv[idx_q_fb, idx_angle_from] =
+            _calculate_dQ_dα_lcc(s.tap_r, s.i_dc, xtr_r, Vm_fb, phi_r, alpha_r) # ∂Q_fb/∂α_fb
+        Jv[idx_p_tb, idx_tap_to] = dP_dt_tb # ∂P_tb/∂t_tb
+        Jv[idx_p_tb, idx_angle_to] = s.dP_dα_tb # ∂P_tb/∂α_tb
+        Jv[idx_q_tb, idx_tap_to] =
+            _calculate_dQ_dt_lcc(s.tap_i, s.i_dc, xtr_i, Vm_tb, phi_i) # ∂Q_tb/∂t_tb
+        # φ_i convention flips sign of ∂φ_i/∂α_i vs the rectifier; negate helper output.
+        Jv[idx_q_tb, idx_angle_to] =
+            -_calculate_dQ_dα_lcc(s.tap_i, s.i_dc, xtr_i, Vm_tb, phi_i, alpha_i) # ∂Q_tb/∂α_tb
 
         if bus_type_fb == PSY.ACBusTypes.PQ
-            Jv[idx_p_fb, idx_p_fb] += common_term_tap_r # ∂P_fb/∂V_fb
-            Jv[idx_q_fb, idx_p_fb] += _calculate_dQ_dV_lcc(tap_r, i_dc, xtr_r, Vm_fb, phi_r) # ∂Q_fb/∂V_fb
-
-            Jv[idx_q_fb, idx_tap_from] =
-                _calculate_dQ_dt_lcc(tap_r, i_dc, xtr_r, Vm_fb, phi_r) # ∂Q_fb/∂t_fb
-            Jv[idx_q_fb, idx_angle_from] =
-                _calculate_dQ_dα_lcc(tap_r, i_dc, xtr_r, Vm_fb, phi_r, alpha_r) # ∂Q_fb/∂α_fb
-
-            Jv[idx_tap_from, idx_p_fb] = common_term_tap_r # ∂F_t_fb/∂V_fb
-            Jv[idx_tap_to, idx_p_fb] = common_term_tap_r # ∂F_t_tb/∂V_fb
-        end
-
-        if bus_type_fb == PSY.ACBusTypes.PQ || bus_type_fb == PSY.ACBusTypes.PV
-            Jv[idx_p_fb, idx_tap_from] = common_term_fb * cos_alpha_r # ∂P_fb/∂t_fb
-            Jv[idx_p_fb, idx_angle_from] = common_term_alpha_r # ∂P_fb/∂α_fb
+            Jv[idx_p_fb, idx_p_fb] += dP_dV_fb # ∂P_fb/∂V_fb
+            Jv[idx_q_fb, idx_p_fb] +=
+                _calculate_dQ_dV_lcc(s.tap_r, s.i_dc, xtr_r, Vm_fb, phi_r) # ∂Q_fb/∂V_fb
+            Jv[idx_tap_from, idx_p_fb] = dP_dV_fb # ∂F_t_fb/∂V_fb
+            Jv[idx_tap_to, idx_p_fb] = dP_dV_fb # ∂F_t_tb/∂V_fb
         end
 
         if bus_type_tb == PSY.ACBusTypes.PQ
-            Jv[idx_tap_to, idx_p_tb] = tap_i * sqrt6_div_pi * (-i_dc) * cos_alpha_i # ∂F_t_tb/∂V_tb
+            Jv[idx_p_tb, idx_p_tb] += dP_dV_tb # ∂P_tb/∂V_tb
+            Jv[idx_q_tb, idx_p_tb] +=
+                _calculate_dQ_dV_lcc(s.tap_i, s.i_dc, xtr_i, Vm_tb, phi_i) # ∂Q_tb/∂V_tb
+            Jv[idx_tap_to, idx_p_tb] = dP_dV_tb # ∂F_t_tb/∂V_tb
         end
 
-        Jv[idx_tap_from, idx_tap_from] = common_term_fb * cos_alpha_r # ∂F_t_fb/∂t_fb
-        Jv[idx_tap_from, idx_angle_from] = common_term_alpha_r # ∂F_t_fb/∂α_fb
-        Jv[idx_tap_to, idx_tap_from] = common_term_fb * cos_alpha_r # ∂F_t_tb/∂t_fb
-        Jv[idx_tap_to, idx_tap_to] = common_term_tb * cos_alpha_i # ∂F_t_tb/∂t_tb
-        Jv[idx_tap_to, idx_angle_from] = common_term_alpha_r # ∂F_t_tb/∂α_fb
-        Jv[idx_tap_to, idx_angle_to] = -common_term_tb * tap_i * sin_alpha_i # ∂F_t_tb/∂α_tb
+        Jv[idx_tap_from, idx_tap_from] = s.d_Ft_fb_d_tap_r
+        Jv[idx_tap_from, idx_angle_from] = s.d_Ft_fb_d_alpha_r
+        Jv[idx_tap_to, idx_tap_from] = s.d_Ft_tb_d_tap_r
+        Jv[idx_tap_to, idx_tap_to] = s.d_Ft_tb_d_tap_i
+        Jv[idx_tap_to, idx_angle_from] = s.d_Ft_tb_d_alpha_r
+        Jv[idx_tap_to, idx_angle_to] = s.d_Ft_tb_d_alpha_i
     end
     return
 end
@@ -631,6 +633,10 @@ function _update_jacobian_matrix_values!(
     diag_elements::MVector{4, Float64},
     bus_slack_participation_factors::SparseVector{Float64, Int},
     subnetworks::Dict{Int64, Vector{Int64}},
+    bus_active_constant_I::Vector{Float64},
+    bus_reactive_constant_I::Vector{Float64},
+    bus_active_constant_Z::Vector{Float64},
+    bus_reactive_constant_Z::Vector{Float64},
 )
     Yb = data.power_network_matrix.data
     Vm = view(data.bus_magnitude, :, time_step)
@@ -701,6 +707,14 @@ function _update_jacobian_matrix_values!(
             Jv[row_from_q, col_from_va] = diag_elements[2]  # ∂Q∂θ_from
             diag_elements[3] += 2 * real(Yb[bus_from, bus_from]) * Vm[bus_from]  # ∂P∂V_from
             diag_elements[4] -= 2 * imag(Yb[bus_from, bus_from]) * Vm[bus_from]  # ∂Q∂V_from
+            # ZIP chain rule: P_net(V) = P₀ − const_I_P·V − const_Z_P·V², so ∂F_P/∂V
+            # picks up −∂P_net/∂V = +const_I_P + 2·const_Z_P·V (same shape on Q).
+            diag_elements[3] +=
+                bus_active_constant_I[bus_from] +
+                2 * bus_active_constant_Z[bus_from] * Vm[bus_from]
+            diag_elements[4] +=
+                bus_reactive_constant_I[bus_from] +
+                2 * bus_reactive_constant_Z[bus_from] * Vm[bus_from]
             Jv[row_from_p, col_from_vm] = diag_elements[3]  # ∂P∂V_from
             Jv[row_from_q, col_from_vm] = diag_elements[4]  # ∂Q∂V_from
         elseif data.bus_type[bus_from, time_step] == PSY.ACBusTypes.PV

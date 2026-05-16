@@ -121,7 +121,7 @@ end
 runs the Adam-based power flow method with backtracking line search, then handles
 post-processing."""
 function _newton_power_flow(
-    pf::ACPowerFlow{GradientDescentACPowerFlow},
+    pf::ACPolarPowerFlow{GradientDescentACPowerFlow},
     data::ACPowerFlowData,
     time_step::Int64;
     kwargs...,

@@ -120,11 +120,15 @@ end
 """Return set of all bus numbers that can be PV: i.e. have an available generator,
 or certain voltage regulation devices."""
 function can_be_PV(sys::System)
-    source_buses = must_be_PV(sys)
+    pv_buses = must_be_PV(sys)
     for source in PSY.get_available_components(PSY.Source, sys)
-        push!(source_buses, PSY.get_number(PSY.get_bus(source)))
+        push!(pv_buses, PSY.get_number(PSY.get_bus(source)))
     end
-    return source_buses
+    # Storage can also be considered PV (and are not Generator)
+    for gen in PSY.get_available_components(PSY.Storage, sys)
+        push!(pv_buses, PSY.get_number(PSY.get_bus(gen)))
+    end
+    return pv_buses
 end
 
 error_if_reversed(::PSY.TwoTerminalHVDC, ::Float64) = nothing

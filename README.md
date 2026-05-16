@@ -1,9 +1,9 @@
 # PowerFlows.jl
 
-[![Main - CI](https://github.com/NREL-Sienna/PowerFlows.jl/actions/workflows/main-tests.yml/badge.svg)](https://github.com/NREL-Sienna/PowerFlows.jl/actions/workflows/main-tests.yml)
-[![codecov](https://codecov.io/gh/NREL-Sienna/PowerFlows.jl/branch/main/graph/badge.svg?token=W2GIoyXQcF)](https://codecov.io/gh/NREL-Sienna/PowerFlows.jl)
-[![Documentation](https://github.com/NREL-Sienna/PowerFlows.jl/actions/workflows/docs.yml/badge.svg)](https://nrel-sienna.github.io/PowerFlows.jl/dev/)
-[<img src="https://img.shields.io/badge/slack-@Sienna/PF-sienna.svg?logo=slack">](https://join.slack.com/t/nrel-sienna/shared_invite/zt-glam9vdu-o8A9TwZTZqqNTKHa7q3BpQ)
+[![Main - CI](https://github.com/Sienna-Platform/PowerFlows.jl/actions/workflows/main-tests.yml/badge.svg)](https://github.com/Sienna-Platform/PowerFlows.jl/actions/workflows/main-tests.yml)
+[![codecov](https://codecov.io/gh/Sienna-Platform/PowerFlows.jl/branch/main/graph/badge.svg?token=W2GIoyXQcF)](https://codecov.io/gh/Sienna-Platform/PowerFlows.jl)
+[![Documentation](https://github.com/Sienna-Platform/PowerFlows.jl/actions/workflows/docs.yml/badge.svg)](https://sienna-platform.github.io/PowerFlows.jl/dev/)
+[<img src="https://img.shields.io/badge/slack-@Sienna/PF-sienna.svg?logo=slack">](https://join.slack.com/t/core-sienna/shared_invite/zt-glam9vdu-o8A9TwZTZqqNTKHa7q3BpQ)
 [![PowerFlows Downloads](https://img.shields.io/badge/dynamic/json?url=http%3A%2F%2Fjuliapkgstats.com%2Fapi%2Fv1%2Ftotal_downloads%2FPowerFlows&query=total_requests&label=Downloads)](http://juliapkgstats.com/pkg/PowerFlows)
 
 This package is under development at the moment. The current version is a port of the existing Power Flow solve in `PowerSystems.jl`.
@@ -14,7 +14,7 @@ During development the API will change
 
 ## Development
 
-Contributions to the development and enahancement of PowerFlows is welcome. Please see [CONTRIBUTING.md](https://github.com/NREL-Sienna/PowerFlows.jl/blob/master/CONTRIBUTING.md) for code contribution guidelines.
+Contributions to the development and enhancement of PowerFlows is welcome. Please see [CONTRIBUTING.md](https://github.com/Sienna-Platform/PowerFlows.jl/blob/master/CONTRIBUTING.md) for code contribution guidelines.
 
 ## License
 

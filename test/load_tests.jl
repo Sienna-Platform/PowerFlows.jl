@@ -15,7 +15,7 @@ run_tests()
 ```
 
 See the InfrastructureSystems.jl documentation page
-["Running Tests"](https://nrel-sienna.github.io/InfrastructureSystems.jl/stable/dev_guide/tests/)
+["Running Tests"](https://sienna-platform.github.io/InfrastructureSystems.jl/stable/dev_guide/tests/)
 for more details.
 
 Copied from https://juliatesting.github.io/ReTest.jl/stable/#Working-with-Revise
