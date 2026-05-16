@@ -7,7 +7,8 @@ export NewtonRaphsonACPowerFlow
 export TrustRegionACPowerFlow
 export LevenbergMarquardtACPowerFlow
 export RobustHomotopyPowerFlow
-export RectangularCurrentInjectionACPowerFlow
+export ACPolarPowerFlow
+export ACRectangularPowerFlow
 export ACPowerFlow
 export GradientDescentACPowerFlow
 export ACPowerFlowSolverType

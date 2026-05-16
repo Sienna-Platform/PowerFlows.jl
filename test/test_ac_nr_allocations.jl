@@ -31,7 +31,7 @@ end
     # were authored with preallocated scratch arrays (P_eff_cache, e_state,
     # etc.) so the per-call cost is already ~0; these tests lock that in.
     sys = PSB.build_system(PSB.MatpowerTestSystems, "matpower_ACTIVSg2000_sys")
-    pf = ACPowerFlow{PF.RectangularCurrentInjectionACPowerFlow}(;
+    pf = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
         correct_bustypes = true,
         solver_settings = Dict{Symbol, Any}(:validate_voltage_magnitudes => false),
     )
