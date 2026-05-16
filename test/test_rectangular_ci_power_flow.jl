@@ -25,8 +25,11 @@ end
     pf = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
         solver_settings = merge(_rect_pf_settings(),
             Dict{Symbol, Any}(:maxIterations => 1)))
-    res = solve_power_flow(pf, sys)
-    @test ismissing(res)
+    @test_logs(
+        (:error, r".*solver failed to converge"),
+        match_mode = :any,
+        @test ismissing(solve_power_flow(pf, sys))
+    )
 end
 
 @testset "Rectangular CI Power Flow: parity with polar NR" begin
