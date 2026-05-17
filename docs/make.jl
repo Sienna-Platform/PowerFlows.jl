@@ -17,6 +17,8 @@ pages = OrderedDict(
         "Solving a Power Flow" => "tutorials/generated_solving_a_power_flow.md",
     ],
     "Explanation" => Any[
+        "Mixed Current-Power Balance Formulation" => "explanation/mixed_cpb_formulation.md",
+        "Levenberg-Marquardt vs Gauss-Seidel" => "explanation/lm_vs_gauss_seidel.md",
         "LCC Model Implementation" => "explanation/lcc_model.md",
     ],
     "Reference" => Any[
