@@ -206,6 +206,13 @@ function solve_power_flow(
     end
 end
 
+function solve_power_flow(
+    pf::T,
+    sys::PSY.System,
+) where {T <: AbstractDCPowerFlow}
+    return solve_power_flow(pf, sys, FlowReporting.ARC_FLOWS)
+end
+
 # MULTI PERIOD ###############################################################
 
 """

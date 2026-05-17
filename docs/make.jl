@@ -12,11 +12,18 @@ make_tutorials()
 
 pages = OrderedDict(
     "Welcome Page" => "index.md",
-    "How-to-Guides" => "how-tos/stub.md",
     "Tutorials" => Any[
-        "Solving a Power Flow" => "tutorials/generated_solving_a_power_flow.md",
+        "Solving a Power Flow" => "tutorials/solving-a-power-flow.md",
+        # NOTE: The two PowerSimulations-based tutorials below are temporarily
+        # excluded from the docs build because PowerSimulations.jl currently
+        # caps PowerFlows at ^0.16 and this package is on 0.17. Re-enable once
+        # PowerSimulations.jl is bumped to accept PowerFlows 0.17.
+        # "Validating a UC Dispatch" => "tutorials/power-flow-after-unit-commitment.md",
+        # "Power Flow In The Loop with UC" => "tutorials/uc-power-flow-in-the-loop.md",
     ],
+    "How-to-Guides" => "how-tos/stub.md",
     "Explanation" => Any[
+        "Evaluation Models vs. Solver Algorithms" => "explanation/models-and-solvers.md",
         "LCC Model Implementation" => "explanation/lcc_model.md",
     ],
     "Reference" => Any[
@@ -36,6 +43,10 @@ makedocs(;
     sitename = "PowerFlows.jl",
     pages = Any[p for p in pages],
     plugins = [links],
+    # Only process .md files referenced in `pages` so that excluded tutorials
+    # (see note above) are not executed during the docs build.
+    pagesonly = true,
+    warnonly = get(ENV, "POWERFLOWS_DOCS_WARNONLY", "false") == "true",
 )
 
 deploydocs(;
