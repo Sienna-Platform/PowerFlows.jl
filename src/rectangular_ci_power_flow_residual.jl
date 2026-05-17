@@ -203,8 +203,8 @@ function _update_rect_ci_residual_values!(
     # ZIP constant-Z is folded into `Y_bus_eff` at setup (see `fold_zip_constant_z!`
     # in `rectangular_ci_setup.jl`), so only constant-P and constant-I appear here.
     @inbounds for i in 1:n_buses
-        # ZIP const-I uses |V_state| (state magnitude), not V_set.
-        Vm = sqrt(e_state[i]^2 + f_state[i]^2)
+        # ZIP const-I uses |V_state|, not V_set; V_FLOOR2 floor (see D below).
+        Vm = sqrt(max(e_state[i]^2 + f_state[i]^2, V_FLOOR2))
         P_eff_cache[i] = P_net_const[i] - const_I_P[i] * Vm
         Q_eff_cache[i] = Q_net_const[i] - const_I_Q[i] * Vm
     end
@@ -248,6 +248,9 @@ function _update_rect_ci_residual_values!(
         e_i = e_state[i]
         f_i = f_state[i]
         V_sq = e_i^2 + f_i^2
+        # V_FLOOR2 floor: a degenerate (e,f) (warm/flat start) must not blow up
+        # 1/|V|². PV's |V|² row below keeps raw V_sq (−2e/−2f Jacobian is exact).
+        D = max(V_sq, V_FLOOR2)
         if bt == PSY.ACBusTypes.REF
             c_ref = bus_slack_participation_factors[i]
             P_slack_total = x[off] - P_net_set[i]
@@ -256,11 +259,11 @@ function _update_rect_ci_residual_values!(
             # |V| at REF is fixed at V_set; subtract the ZIP constant-current draw
             # so the recovered injection matches polar's `bus_active_power_injections`
             # (which includes `const_I * V_set` via `get_bus_active_power_total_withdrawals`).
-            Vm = sqrt(V_sq)
+            Vm = sqrt(D)
             P_eff = P_gen - const_I_P[i] * Vm
             Q_eff = Q_gen - const_I_Q[i] * Vm
-            F[off] += (P_eff * e_i + Q_eff * f_i) / V_sq
-            F[off + 1] += (P_eff * f_i - Q_eff * e_i) / V_sq
+            F[off] += (P_eff * e_i + Q_eff * f_i) / D
+            F[off + 1] += (P_eff * f_i - Q_eff * e_i) / D
         else
             P_i = P_eff_cache[i]
             # PV: Q_state is the net injection unknown — at convergence it equals
@@ -268,8 +271,8 @@ function _update_rect_ci_residual_values!(
             # `−const_I_Q·|V|` correction here would double-count. For PQ, Q is a
             # known input, so Q_eff_cache pre-subtracts the constant-current draw.
             Q_i = bt == PSY.ACBusTypes.PV ? Q_state[i] : Q_eff_cache[i]
-            F[off] += (P_i * e_i + Q_i * f_i) / V_sq
-            F[off + 1] += (P_i * f_i - Q_i * e_i) / V_sq
+            F[off] += (P_i * e_i + Q_i * f_i) / D
+            F[off + 1] += (P_i * f_i - Q_i * e_i) / D
             if bt == PSY.ACBusTypes.PV
                 # V_set² stored in data.bus_magnitude (preserved by rect_update_data!).
                 V_set_sq = data.bus_magnitude[i, time_step]^2
