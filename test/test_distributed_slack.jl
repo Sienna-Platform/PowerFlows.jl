@@ -299,7 +299,7 @@ end
 
 @testset "AC PF with headroom-proportional distributed slack" begin
     for ACSolver in
-        filter(x -> !(x in (RobustHomotopyPowerFlow, LUACPowerFlow)), AC_SOLVERS_TO_TEST)
+        filter(x -> !(x in (RobustHomotopyPowerFlow,)), AC_SOLVERS_TO_TEST)
         @testset "$(ACSolver)" begin
             ACSolver == RobustHomotopyPowerFlow && continue
             sys = PSB.build_system(PSB.PSITestSystems, "c_sys14")
@@ -345,7 +345,7 @@ end
 
 @testset "Headroom-proportional slack: DataFrame and generator-level redistribution" begin
     for ACSolver in
-        filter(x -> !(x in (RobustHomotopyPowerFlow, LUACPowerFlow)), AC_SOLVERS_TO_TEST)
+        filter(x -> !(x in (RobustHomotopyPowerFlow,)), AC_SOLVERS_TO_TEST)
         @testset "$(ACSolver)" begin
             sys = PSB.build_system(PSB.PSITestSystems, "c_sys14")
 
