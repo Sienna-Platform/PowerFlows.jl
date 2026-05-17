@@ -592,6 +592,37 @@ function validate_voltage_magnitudes(x::Vector{Float64},
     return
 end
 
+"""Validate squared voltage magnitudes for per-bus-block (rectangular CI /
+mixed CPB) state layouts. Unlike the polar check (PQ only), PV is included:
+`(e, f)` are genuine state variables for PV here, so |V|² can drift out of
+range before the `|V|²−V_set²` row pins it — a flagged PV iterate is a real
+diagnostic. REF is fixed and skipped."""
+function _validate_squared_voltage_magnitudes(
+    x::Vector{Float64},
+    bus_types::AbstractArray{PSY.ACBusTypes},
+    bus_state_offset::AbstractVector{<:Integer},
+    range::NamedTuple{(:min, :max), Tuple{Float64, Float64}} = VM_VALIDATION_RANGE,
+    iter::Int64 = 1,
+)
+    lo = range.min^2
+    hi = range.max^2
+    num_outside_range = 0
+    for (i, bt) in enumerate(bus_types)
+        if bt == PSY.ACBusTypes.PQ || bt == PSY.ACBusTypes.PV
+            off = Int(bus_state_offset[i])
+            v2 = x[off]^2 + x[off + 1]^2
+            if v2 < lo || v2 > hi
+                num_outside_range += 1
+            end
+        end
+    end
+    if num_outside_range > 0
+        @warn "Iteration $iter: voltage magnitudes outside of range $range at " *
+              "$num_outside_range PQ/PV buses." maxlog = PF_MAX_LOG
+    end
+    return
+end
+
 """Weighted dot product of two vectors."""
 wdot(wx::Vector{Float64}, x::Vector{Float64}, wy::Vector{Float64}, y::Vector{Float64}) =
     LinearAlgebra.dot(wx .* x, wy .* y)
