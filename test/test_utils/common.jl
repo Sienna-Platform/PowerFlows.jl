@@ -584,3 +584,36 @@ function power_flow_with_units(
         return (first_line_flow[:flow_name], first_line_flow[:P_from_to])
     end
 end
+
+# Reconstruct the polar state vector from solved `data` (REF→(P,Q),
+# PV→(Q,θ), PQ→(Vm,θ)). Restored from the removed `legacy_pf.jl`: PR #370
+# deleted that file (the duplicate matrix-based NR implementation) but this is
+# a pure data→state-format helper, unrelated to the legacy solver, and #370
+# left its callers in `test_solve_power_flow.jl`.
+function _calc_x(
+    data::PowerFlows.ACPowerFlowData,
+    time_step::Int64,
+)
+    n_buses = first(size(data.bus_type))
+    x = zeros(Float64, 2 * n_buses)
+    bus_types = view(data.bus_type, :, time_step)
+    for (ix, bt) in enumerate(bus_types)
+        if bt == PSY.ACBusTypes.REF
+            x[2 * ix - 1] =
+                data.bus_active_power_injections[ix, time_step] -
+                data.bus_active_power_withdrawals[ix, time_step]
+            x[2 * ix] =
+                data.bus_reactive_power_injections[ix, time_step] -
+                data.bus_reactive_power_withdrawals[ix, time_step]
+        elseif bt == PSY.ACBusTypes.PV
+            x[2 * ix - 1] =
+                data.bus_reactive_power_injections[ix, time_step] -
+                data.bus_reactive_power_withdrawals[ix, time_step]
+            x[2 * ix] = data.bus_angles[ix, time_step]
+        elseif bt == PSY.ACBusTypes.PQ
+            x[2 * ix - 1] = data.bus_magnitude[ix, time_step]
+            x[2 * ix] = data.bus_angles[ix, time_step]
+        end
+    end
+    return x
+end
