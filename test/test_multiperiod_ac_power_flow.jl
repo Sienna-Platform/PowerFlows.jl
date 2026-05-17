@@ -29,3 +29,48 @@
         end
     end
 end
+
+@testset "MULTI-PERIOD power flows evaluation: compare results for different solvers" begin
+    # get system
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+
+    # create structure for multi-period case
+    time_steps = 24
+    pf_tr = ACPowerFlow{TrustRegionACPowerFlow}(; time_steps = time_steps)
+    pf_nr = ACPowerFlow{NewtonRaphsonACPowerFlow}(; time_steps = time_steps)
+
+    data_tr = PowerFlowData(pf_tr, sys)
+    data_nr = PowerFlowData(pf_nr, sys)
+
+    # allocate timeseries data from csv
+    prepare_ts_data!(data_tr, time_steps)
+    prepare_ts_data!(data_nr, time_steps)
+
+    # solve with both methods
+    solve_power_flow!(data_tr)
+    solve_power_flow!(data_nr)
+
+    # check results
+    @test isapprox(data_tr.bus_magnitude, data_nr.bus_magnitude, atol = 1e-9)
+    @test isapprox(data_tr.bus_angles, data_nr.bus_angles, atol = 1e-9)
+    @test isapprox(
+        data_tr.arc_active_power_flow_from_to,
+        data_nr.arc_active_power_flow_from_to,
+        atol = 1e-9,
+    )
+    @test isapprox(
+        data_tr.arc_active_power_flow_to_from,
+        data_nr.arc_active_power_flow_to_from,
+        atol = 1e-9,
+    )
+    @test isapprox(
+        data_tr.arc_reactive_power_flow_from_to,
+        data_nr.arc_reactive_power_flow_from_to,
+        atol = 1e-9,
+    )
+    @test isapprox(
+        data_tr.arc_reactive_power_flow_to_from,
+        data_nr.arc_reactive_power_flow_to_from,
+        atol = 1e-9,
+    )
+end

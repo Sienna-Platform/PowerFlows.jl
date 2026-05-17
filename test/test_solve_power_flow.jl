@@ -285,16 +285,18 @@ end
 end
 
 # in this test, the following aspects are checked:
-# The results of the power flow are consistent for the default (KLU) and NewtonRaphson solvers
-@testset "Compare larger grid results KLU vs NewtonRaphson" begin
+# The results of the power flow are consistent for the default (KLU), NewtonRaphson and TrustRegion solvers
+@testset "Compare larger grid results KLU vs NewtonRaphson vs TrustRegion" begin
     sys = build_system(MatpowerTestSystems, "matpower_ACTIVSg2000_sys")
 
     PSY.set_units_base_system!(sys, "SYSTEM_BASE")
     pf_default = ACPowerFlow(; correct_bustypes = true)
     pf_newton = ACPowerFlow{NewtonRaphsonACPowerFlow}(; correct_bustypes = true)
+    pf_tr = ACPowerFlow{TrustRegionACPowerFlow}(; correct_bustypes = true)
 
     res_default = solve_power_flow(pf_default, sys)  # must be the same as KLU
     res_newton = solve_power_flow(pf_newton, sys)
+    res_tr = solve_power_flow(pf_tr, sys)
 
     @test all(
         isapprox.(
@@ -312,6 +314,22 @@ end
             atol = 1e-12,
         ),
     )
+    @test all(
+        isapprox.(
+            res_tr["bus_results"][!, :Vm],
+            res_default["bus_results"][!, :Vm],
+            rtol = 0,
+            atol = 1e-8,
+        ),
+    )
+    @test all(
+        isapprox.(
+            res_tr["bus_results"][!, :θ],
+            res_default["bus_results"][!, :θ],
+            rtol = 0,
+            atol = 1e-8,
+        ),
+    )
 end
 
 @testset "voltage_stability_factors" begin
@@ -320,9 +338,23 @@ end
         calculate_voltage_stability_factors = true,
         correct_bustypes = true,
     )
+    pf_tr = ACPowerFlow{TrustRegionACPowerFlow}(;
+        calculate_voltage_stability_factors = true,
+        correct_bustypes = true,
+    )
     data_newton = PowerFlowData(pf_newton, sys)
+    data_tr = PowerFlowData(pf_tr, sys)
     time_step = 1
     solve_power_flow!(data_newton)
+    solve_power_flow!(data_tr)
+    @test all(
+        isapprox.(
+            data_tr.voltage_stability_factors,
+            data_newton.voltage_stability_factors,
+            rtol = 0,
+            atol = 1e-6,
+        ),
+    )
 
     ref, pv, pq = PowerFlows.bus_type_idx(data_newton, time_step)
     pvpq = [pv; pq]
