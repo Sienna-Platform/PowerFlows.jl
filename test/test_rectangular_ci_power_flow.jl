@@ -224,3 +224,119 @@ end
     @test PF.solve_power_flow!(data_e)
     @test all(data_e.converged)
 end
+
+@testset "LM Marquardt diagonal scaling option" begin
+    # Formulation-dispatched default: rectangular on, polar off.
+    @test PF._default_marquardt_scaling(
+        ACPolarPowerFlow{LevenbergMarquardtACPowerFlow}()) == false
+    @test PF._default_marquardt_scaling(
+        ACRectangularPowerFlow{LevenbergMarquardtACPowerFlow}()) == true
+
+    # Known J with distinct column 2-norms: col1 = 5, col2 = 12.
+    J = SparseArrays.sparse(
+        Int32[1, 2, 3], Int32[1, 1, 2], [3.0, 4.0, 12.0], 3, 2)
+
+    ws_on = PF.LMWorkspace(J; marquardt_scaling = true)
+    @test ws_on.marquardt_scaling == true
+    @test ws_on.D ≈ [5.0, 12.0]
+
+    ws_off = PF.LMWorkspace(J; marquardt_scaling = false)
+    @test ws_off.marquardt_scaling == false
+    @test ws_off.D == ones(2)               # identity damping ⇒ polar unaffected
+    @test PF.LMWorkspace(J).marquardt_scaling == false  # defaults to off
+
+    # update_lambda! writes √λ·D into the damping diagonal.
+    λ = 4.0
+    PF.update_lambda!(ws_on, λ)
+    PF.update_lambda!(ws_off, λ)
+    @test ws_on.A.nzval[ws_on.λ_diag_indices[1]] ≈ sqrt(λ) * 5.0
+    @test ws_on.A.nzval[ws_on.λ_diag_indices[2]] ≈ sqrt(λ) * 12.0
+    @test ws_off.A.nzval[ws_off.λ_diag_indices[1]] ≈ sqrt(λ)  # == identity
+    @test ws_off.A.nzval[ws_off.λ_diag_indices[2]] ≈ sqrt(λ)
+
+    # Integration: rectangular LM converges with the default (scaling on) and
+    # with the explicit override (scaling off); both match the polar NR
+    # reference, and polar LM is unaffected by either setting.
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    res_ref = solve_power_flow(
+        ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(), deepcopy(sys))
+
+    res_rect_default = solve_power_flow(
+        ACRectangularPowerFlow{LevenbergMarquardtACPowerFlow}(;
+            solver_settings = _rect_pf_settings()), deepcopy(sys))
+    res_rect_off = solve_power_flow(
+        ACRectangularPowerFlow{LevenbergMarquardtACPowerFlow}(;
+            solver_settings = merge(_rect_pf_settings(),
+                Dict{Symbol, Any}(:marquardt_scaling => false))),
+        deepcopy(sys))
+
+    for res in (res_rect_default, res_rect_off)
+        @test res !== missing
+        @test maximum(
+            abs.(res_ref["bus_results"].Vm - res["bus_results"].Vm)) < 1e-7
+        @test maximum(
+            abs.(res_ref["bus_results"].θ - res["bus_results"].θ)) < 1e-7
+    end
+end
+
+@testset "Rectangular/Mixed squared voltage-magnitude validation" begin
+    range = (min = 0.5, max = 1.5)   # min² = 0.25, max² = 2.25
+
+    @testset "_validate_squared_voltage_magnitudes helper" begin
+        bus_types = [PSY.ACBusTypes.PQ, PSY.ACBusTypes.PV, PSY.ACBusTypes.REF]
+        offsets = [1, 3, 5]   # 2-slot blocks: (e,f) at off, off+1
+
+        # PQ in range (|V|²=1), PV out of range (|V|²=4 > 2.25), REF ignored.
+        x_bad = [1.0, 0.0, 2.0, 0.0, 9.9, 9.9]
+        @test_logs (:warn, r"voltage magnitudes outside of range") match_mode = :any PF._validate_squared_voltage_magnitudes(
+            x_bad, bus_types, offsets, range, 1)
+
+        # All free buses in range ⇒ silent (REF still ignored even if wild).
+        x_ok = [1.0, 0.0, 1.0, 0.2, 9.9, 9.9]
+        @test_logs min_level = Logging.Warn PF._validate_squared_voltage_magnitudes(
+            x_ok, bus_types, offsets, range, 1)
+    end
+
+    @testset "rectangular CI residual dispatch" begin
+        sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
+        pf = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
+            solver_settings = _rect_pf_settings())
+        data = PF.PowerFlowData(pf, sys)
+        residual, _, x = PF.initialize_power_flow_variables(pf, data, 1)
+        bus_types = PF.get_bus_type(data)
+
+        # Flat/initial state is ~1 p.u. ⇒ in range ⇒ silent.
+        @test_logs min_level = Logging.Warn PF._validate_state_magnitudes(
+            residual, x, bus_types, range, 1)
+
+        # Drive the first PQ or PV bus's |V|² out of range via its (e,f) slots.
+        b = findfirst(bt -> bt != PSY.ACBusTypes.REF, bus_types)
+        off = Int(residual.bus_state_offset[b])
+        x[off] = 3.0
+        x[off + 1] = 0.0
+        @test_logs (:warn, r"voltage magnitudes outside of range") match_mode = :any PF._validate_state_magnitudes(
+            residual, x, bus_types, range, 1)
+    end
+end
+
+@testset "Rectangular CI: V_FLOOR2 guards degenerate (e,f)" begin
+    # Mirrors the mixed CPB V_FLOOR2 hardening: collapsing a PQ bus voltage to
+    # zero must not produce Inf/NaN in the rectangular residual or Jacobian
+    # (the 1/|V|² current-balance terms are otherwise unguarded).
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
+    pf = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
+        solver_settings = _rect_pf_settings())
+    data = PF.PowerFlowData(pf, sys)
+    residual, J, x = PF.initialize_power_flow_variables(pf, data, 1)
+    bus_types = PF.get_bus_type(data)
+
+    b = findfirst(bt -> bt == PSY.ACBusTypes.PQ, bus_types)
+    off = Int(residual.bus_state_offset[b])
+    x[off] = 0.0
+    x[off + 1] = 0.0
+
+    residual(x, 1)
+    J(1)
+    @test all(isfinite, residual.Rv)
+    @test all(isfinite, J.Jv.nzval)
+end

@@ -285,10 +285,10 @@ end
 end
 
 # in this test, the following aspects are checked:
-# 1. The results of the power flow are consistent for the KLU and Hybrid solvers
+# 1. The results of the power flow are consistent for the KLU and Mixed solvers
 # 2. The results of the power flow are consistent for the KLU solver and the legacy implementation
 # 3. The Jacobian matrix is the same for the KLU solver and the legacy implementation
-@testset "Compare larger grid results KLU vs Hybrid" begin
+@testset "Compare larger grid results KLU vs Mixed" begin
     sys = build_system(MatpowerTestSystems, "matpower_ACTIVSg2000_sys")
 
     PSY.set_units_base_system!(sys, "SYSTEM_BASE")
