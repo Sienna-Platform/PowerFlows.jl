@@ -1,15 +1,12 @@
-@testset "Mixed CPB Jacobian: structure + constant PQ off-diagonal blocks" begin
-    function _check_mixed_cpb_jacobian(sys, label)
-        @testset "$label structure invariants" begin
+@testset "Mixed CPB Jacobian: structural invariants + constant PQ off-diagonal blocks" begin
+    function _check_structure(sys, label)
+        @testset "$label" begin
             pf_rect = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}()
             data = PF.PowerFlowData(pf_rect, sys)
             R = PF.ACMixedCPBResidual(data, 1)
             x = Vector{Float64}(undef, length(R.Rv))
             PF.mixed_initial_state!(x, data, R.bus_state_offset,
                 R.bus_block_size, 1)
-            # Evaluate the residual once so e_state / Ir_acc are populated
-            # before constructing the Jacobian (the constructor's self-call
-            # reads them to fill the state-dependent entries).
             R(x, 1)
             J = PF.ACMixedCPBJacobian(R, 1)
 
@@ -17,153 +14,69 @@
             n_lcc = size(data.lcc.p_set, 1)
             total = R.total_bus_state + 4 * n_lcc
 
+            # Formulation property (not an implementation detail): MCPB uses a
+            # uniform 2-slot block per bus — no PV→3 expansion — so the bus
+            # state is exactly 2·n_buses, plus the 4-per-LCC tail. The Jacobian
+            # is square over the full state.
             @test size(J.Jv) == (total, total)
             @test J.total_bus_state == R.total_bus_state
-
-            # Every bus block is 2×2 in MCPB (no PV 3-slot expansion).
             @test all(==(2), R.bus_block_size)
             @test R.total_bus_state == 2 * n_buses
 
             bus_types = data.bus_type[:, 1]
-            Y = R.Y_bus_eff
+            J_first = copy(J.Jv)
 
-            # Constant PQ off-diagonal blocks: written by
-            # _populate_mixed_constant_yb_blocks! in IMAG-FIRST ordering.
-            #   Jv[off,   k_off]   = -B_ik   Jv[off,   k_off+1] = -G_ik
-            #   Jv[off+1, k_off]   = -G_ik   Jv[off+1, k_off+1] = +B_ik
-            Yr = SparseArrays.rowvals(Y)
-            Yv = SparseArrays.nonzeros(Y)
+            # Re-evaluate at a perturbed state. The PQ divided-current-balance
+            # rows are linear in the network voltages, so their off-diagonal
+            # Y_bus blocks are CONSTANT across iterations. PV power-balance
+            # off-diagonals are nonlinear and are intentionally NOT asserted
+            # here — their correctness is covered by the asymptotic
+            # finite-difference testset below.
+            Random.seed!(123)
+            x .+= 0.01 .* randn(length(x))
+            R(x, 1)
+            J(1)
+            J_second = copy(J.Jv)
+
+            # Sparsity structure is fixed across iterations.
+            @test J_second.colptr == J_first.colptr
+            @test J_second.rowval == J_first.rowval
+
             n_checked = 0
             for col in 1:n_buses
                 bus_types[col] == PSY.ACBusTypes.REF && continue
                 col_off = Int(R.bus_state_offset[col])
-                for j in Y.colptr[col]:(Y.colptr[col + 1] - 1)
-                    row = Yr[j]
-                    row == col && continue
-                    bus_types[row] != PSY.ACBusTypes.PQ && continue
-                    row_off = Int(R.bus_state_offset[row])
-                    g = real(Yv[j])
-                    b = imag(Yv[j])
-                    @test J.Jv[row_off, col_off] == -b
-                    @test J.Jv[row_off, col_off + 1] == -g
-                    @test J.Jv[row_off + 1, col_off] == -g
-                    @test J.Jv[row_off + 1, col_off + 1] == b
-                    n_checked += 1
-                end
-            end
-            @test n_checked > 0  # system actually exercises PQ off-diagonals
-
-            # offdiag_pv_nz cache: 2-row layout (PV power-balance row only;
-            # the PV voltage-constraint row has no off-diagonals).
-            nnz_total = length(SparseArrays.nonzeros(J.Jv))
-            @test size(J.offdiag_pv_nz, 1) == 2
-            @test length(J.offdiag_pv_i) == size(J.offdiag_pv_nz, 2)
-            @test length(J.offdiag_pv_k) == size(J.offdiag_pv_nz, 2)
-
-            Jvnz = SparseArrays.nonzeros(J.Jv)
-            n_sentinel_checked = 0
-            for p in axes(J.offdiag_pv_nz, 2)
-                i = J.offdiag_pv_i[p]
-                k = J.offdiag_pv_k[p]
-                @test bus_types[i] == PSY.ACBusTypes.PV
-                @test bus_types[k] != PSY.ACBusTypes.REF
-                @test i != k
-                i_off = Int(R.bus_state_offset[i])
-                k_off = Int(R.bus_state_offset[k])
-                for r in 1:2
-                    idx = J.offdiag_pv_nz[r, p]
-                    @test 1 <= idx <= nnz_total
-                    # Sentinel round-trip: write a unique value into the cached
-                    # nzval slot and confirm sparse getindex reads it back at
-                    # exactly (PV power-balance row i_off, neighbor e/f column).
-                    orig = Jvnz[idx]
-                    sentinel = -987654.321 - p - r
-                    Jvnz[idx] = sentinel
-                    target_col = r == 1 ? k_off : k_off + 1
-                    @test J.Jv[i_off, target_col] == sentinel
-                    Jvnz[idx] = orig
-                    n_sentinel_checked += 1
-                end
-            end
-            # The strengthened sentinel block must actually run (n_pv_pairs>0).
-            @test n_sentinel_checked > 0
-
-            # diag_base_nz covers a 2×2 block per bus.
-            @test size(J.diag_base_nz) == (4, n_buses)
-            for i in 1:n_buses
-                for r in 1:4
-                    @test 1 <= J.diag_base_nz[r, i] <= nnz_total
-                end
-            end
-
-            # Structure (colptr/rowval) is fixed; constant PQ off-diagonals
-            # stay put after perturbing + re-evaluating the residual only
-            # (J is intentionally NOT re-called here, so only the
-            # construction-time constant blocks are asserted; per-iteration
-            # value correctness is covered by the finite-difference testset).
-            colptr0 = copy(J.Jv.colptr)
-            rowval0 = copy(J.Jv.rowval)
-            pq_snapshot = Dict{Tuple{Int, Int}, Float64}()
-            for col in 1:n_buses
-                bus_types[col] == PSY.ACBusTypes.REF && continue
-                col_off = Int(R.bus_state_offset[col])
-                for j in Y.colptr[col]:(Y.colptr[col + 1] - 1)
-                    row = Yr[j]
+                for row in 1:n_buses
                     row == col && continue
                     bus_types[row] != PSY.ACBusTypes.PQ && continue
                     row_off = Int(R.bus_state_offset[row])
                     for dr in 0:1, dc in 0:1
-                        pq_snapshot[(row_off + dr, col_off + dc)] =
-                            J.Jv[row_off + dr, col_off + dc]
+                        @test J_first[row_off + dr, col_off + dc] ==
+                              J_second[row_off + dr, col_off + dc]
+                        n_checked += 1
                     end
                 end
             end
-
-            Random.seed!(2024)
-            x .+= 0.01 .* randn(length(x))
-            R(x, 1)  # only the residual re-evaluates; J is not re-called here
-            @test J.Jv.colptr == colptr0
-            @test J.Jv.rowval == rowval0
-            for ((rr, cc), v) in pq_snapshot
-                @test J.Jv[rr, cc] == v
-            end
+            @test n_checked > 0  # system actually exercises PQ off-diagonals
         end
     end
 
-    _check_mixed_cpb_jacobian(
+    _check_structure(
         PSB.build_system(PSB.PSITestSystems, "c_sys5"), "c_sys5")
-    # c_sys14 has PV–PQ neighbor pairs (n_pv_pairs>0), exercising the
-    # offdiag_pv_nz sentinel round-trip with more PV off-diagonals.
-    _check_mixed_cpb_jacobian(
+    # c_sys14 has PV–PQ neighbor pairs, exercising more off-diagonal blocks.
+    _check_structure(
         PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false),
         "c_sys14")
 end
 
-@testset "Mixed CPB Jacobian vs finite difference" begin
-    function _fd_check(R, x0)
-        n = length(x0)
-        Rv = Vector{Float64}(undef, n)
-        R(Rv, x0, 1)
-        # The constructor's self-call already populates J; no extra J(1) needed.
+@testset "Mixed CPB Jacobian: asymptotic verification" begin
+    # Verify the analytic Jacobian by its asymptotic agreement with the
+    # residual (O(Δx²) Taylor remainder), not a single fixed-tolerance
+    # finite-difference snapshot. Mirrors test_rectangular_ci_jacobian.jl.
+    function _verify_mixed_jacobian(R, x, label)
+        R(x, 1)
         J = PF.ACMixedCPBJacobian(R, 1)
-        Jdense = Matrix(J.Jv)
-        J_fd = Matrix{Float64}(undef, n, n)
-        eps = 1e-7
-        Rp = Vector{Float64}(undef, n)
-        Rm = Vector{Float64}(undef, n)
-        x = copy(x0)
-        for k in 1:n
-            xk = x[k]
-            x[k] = xk + eps
-            R(Rp, x, 1)
-            x[k] = xk - eps
-            R(Rm, x, 1)
-            x[k] = xk
-            @views J_fd[:, k] .= (Rp .- Rm) ./ (2 * eps)
-        end
-        # Restore residual state caches to x0 (FD perturbed them).
-        R(Rv, x0, 1)
-        return maximum(abs.(Jdense .- J_fd))
+        verify_jacobian_asymptotic(R, copy(J.Jv), x, 1; label = label)
     end
 
     function _build_mixed_x(sys)
@@ -182,8 +95,7 @@ end
         R, x = _build_mixed_x(sys)
         Random.seed!(2024)
         x .+= 1e-3 .* randn(length(x))
-        err = _fd_check(R, x)
-        @test err < 1e-6
+        _verify_mixed_jacobian(R, x, "mixed CPB c_sys5")
     end
 
     @testset "c_sys14" begin
@@ -191,8 +103,7 @@ end
         R, x = _build_mixed_x(sys)
         Random.seed!(2024)
         x .+= 1e-3 .* randn(length(x))
-        err = _fd_check(R, x)
-        @test err < 1e-6
+        _verify_mixed_jacobian(R, x, "mixed CPB c_sys14")
     end
 
     @testset "ZIP load (P+I+Z combination)" begin
@@ -211,8 +122,7 @@ end
         PF.mixed_initial_state!(x, data, R.bus_state_offset, R.bus_block_size, 1)
         Random.seed!(2024)
         x .+= 1e-3 .* randn(length(x))
-        err = _fd_check(R, x)
-        @test err < 1e-6
+        _verify_mixed_jacobian(R, x, "mixed CPB ZIP")
     end
 
     function _build_mixed_lcc_x(sys; correct_bustypes = false)
@@ -234,8 +144,7 @@ end
         R, x = _build_mixed_lcc_x(sys)
         Random.seed!(2024)
         x .+= 1e-3 .* randn(length(x))
-        err = _fd_check(R, x)
-        @test err < 1e-6
+        _verify_mixed_jacobian(R, x, "mixed CPB LCC PQ")
     end
 
     @testset "LCC PV terminal" begin
@@ -247,8 +156,7 @@ end
         R, x = _build_mixed_lcc_x(sys)
         Random.seed!(2024)
         x .+= 1e-3 .* randn(length(x))
-        err = _fd_check(R, x)
-        @test err < 1e-6
+        _verify_mixed_jacobian(R, x, "mixed CPB LCC PV")
     end
 end
 
