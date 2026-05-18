@@ -2,27 +2,15 @@
     struct ACMixedCPBResidual
 
 Residual functor for the mixed current/power-balance (MCPB) AC power flow.
-Mirrors [`ACRectangularCIResidual`](@ref) 1:1 (mirror-for-validation
-convention) but uses the MCPB per-bus state layout where every bus — PQ, PV,
-and REF — occupies exactly 2 state entries (no PV→3 expansion).
+Mirrors [`ACRectangularCIResidual`](@ref) 1:1, but every bus uses a 2-slot
+block (no PV→3 expansion).
 
-# Fields
-- `data::ACPowerFlowData`
-- `Rf!::Function` — inplace residual update
-- `Rv::Vector{Float64}` — current residual values, length `total_bus_state + 4·n_LCC`
-- `Y_bus_eff::SparseMatrixCSC{ComplexF64, Int}` — Y_bus with ZIP constant-Z folded in
-- `P_net_const::Vector{Float64}` — constant-power net injection (no |V| dependence)
-- `Q_net_const::Vector{Float64}` — constant-power net reactive injection
-- `const_I_P::Vector{Float64}` — constant-current P-withdrawal coefficient per bus
-- `const_I_Q::Vector{Float64}` — constant-current Q-withdrawal coefficient per bus
-- `P_net_set::Vector{Float64}` — initial P_net for distributed-slack delta computation
-- `bus_slack_participation_factors::SparseVector{Float64, Int}`
-- `subnetworks::Dict{Int64, Vector{Int64}}`
-- `bus_state_offset::Vector{REC_INDEX_TYPE}`
-- `bus_block_size::Vector{Int8}`
-- `total_bus_state::Int`
-- `validate_offsets::Vector{Int}` — precomputed `x`-offsets of PQ/PV buses for
-  the per-iteration voltage-magnitude diagnostic
+Non-obvious fields: `Y_bus_eff` folds in ZIP constant-Z; `P_net_const`/
+`Q_net_const` are the |V|-independent net injections; `const_I_P`/`const_I_Q`
+are the constant-current withdrawal coefficients; `P_net_set` is the initial
+P_net for the distributed-slack delta; `validate_offsets` are the precomputed
+PQ/PV `x`-offsets for the voltage-magnitude diagnostic. Remaining fields are
+named after their roles.
 """
 struct ACMixedCPBResidual
     data::ACPowerFlowData
@@ -150,22 +138,13 @@ function (R::ACMixedCPBResidual)(x::Vector{Float64}, time_step::Int64)
 end
 
 """
-Update residual values `F` for the mixed current/power-balance (MCPB)
-formulation (Mixed Current-Power Balance, rectangular — paper §IV).
-
-Mirrors [`_update_rect_ci_residual_values!`](@ref) step-for-step so the MCPB
-Jacobian can reuse rect's machinery mechanically. Differences from rect:
-
-- The network current `Y_bus_eff·V` (+ LCC) is accumulated into the per-bus
-  `Ir_acc`/`Ii_acc` (positive current), NOT subtracted into `F`. The sign
-  convention `residual = I_spec_term − I_network_accumulated` matches rect's
-  sign so the Jacobian mirrors rect.
-- Per-bus blocks are uniformly 2 slots (no PV→3 expansion):
-  - **PQ**: divided-current balance with the two slots SWAPPED to IMAG-FIRST
-    ordering (paper §IV) so nonzero `B_ii` lands on the block diagonal.
-  - **PV**: real-power balance (eq.7) in slot 0, `|V|² − V_set²` (eq.8) in slot 1.
-  - **REF**: copied verbatim from rect's REF branch (NOT imag-first) so rect's
-    `_update_ref_diag_block!` is reusable.
+Update MCPB residual `F` (paper §IV). Mirrors
+[`_update_rect_ci_residual_values!`](@ref) step-for-step. Network current
+`Y_bus_eff·V` (+ LCC) is accumulated into per-bus `Ir_acc`/`Ii_acc` (not
+subtracted into `F`), keeping rect's `residual = I_spec − I_network` sign so
+the Jacobian mirrors rect. Per-bus blocks are 2 slots: PQ = divided-current
+balance, imag-first (so nonzero `B_ii` lands on the block diagonal); PV = eq.7
+power balance then eq.8 `|V|² − V_set²`; REF = rect's REF branch verbatim.
 """
 function _update_mixed_cpb_residual_values!(
     F::Vector{Float64},

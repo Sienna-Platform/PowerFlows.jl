@@ -1,16 +1,10 @@
 """
     compute_mixed_bus_state_offsets(bus_type)
 
-Compute per-bus state-vector offsets and block sizes for the mixed
-current/power-balance (MCPB) formulation. Every bus — PQ, PV, and REF —
-occupies exactly 2 state entries (no PV→3 expansion as in the rectangular CI
-formulation).
-
-Returns `(offsets, block_sizes, total_bus_state)` where
-- `offsets[i]` is the 1-based start index of bus `i`'s block in the state vector
-- `offsets[end]` is the start of the LCC tail (`== total_bus_state + 1`)
-- `block_sizes[i] == 2`
-- `total_bus_state` is the total count of bus-state slots (excluding LCC tail)
+Per-bus state-vector offsets and block sizes for MCPB. Every bus occupies 2
+slots (no PV→3 expansion). Returns `(offsets, block_sizes, total_bus_state)`:
+`offsets[i]` is bus `i`'s 1-based block start, `offsets[end]` the LCC-tail
+start (`== total_bus_state + 1`), `block_sizes[i] == 2`.
 """
 function compute_mixed_bus_state_offsets(
     bus_type::AbstractVector{PSY.ACBusTypes},
@@ -37,14 +31,10 @@ end
 """
     _mixed_fill_state!(x, data, bus_state_offset, type_time_step, value_time_step)
 
-Fill the MCPB state vector `x`. The state-block *layout* (REF/PV/PQ → 2-slot
-blocks) is taken from `data.bus_type[:, type_time_step]`; the *values*
-(voltages, injections, LCC taps/angles) are read from `*[:, value_time_step]`.
-
-With `type_time_step == value_time_step` this is the plain flat start. With
-`value_time_step` pointing at a previously converged step it produces the
-previous-solution warm-start candidate while keeping the offsets valid for the
-current step.
+Fill the MCPB state vector `x`: block layout from
+`data.bus_type[:, type_time_step]`, values from `*[:, value_time_step]`. Equal
+time steps give the flat start; a converged `value_time_step` gives the
+previous-solution warm start while keeping the current step's offsets valid.
 """
 function _mixed_fill_state!(
     x::Vector{Float64},
@@ -74,16 +64,10 @@ function _mixed_fill_state!(
         end
     end
     n_lccs = size(data.lcc.p_set, 1)
-    # State-vector layout. The full state is `[bus_block_1 ; … ; bus_block_N ; LCC_tail]`.
-    # The bus blocks occupy slots `1 .. total_bus_state`; the LCC tail starts at
-    # `total_bus_state + 1`. Each line-commutated converter (LCC) — a two-terminal HVDC
-    # link with a rectifier (AC→DC) on one end and an inverter (DC→AC) on the other —
-    # contributes 4 state variables: rectifier transformer tap ratio, inverter
-    # transformer tap ratio, rectifier thyristor (firing) angle α_r, and inverter
-    # thyristor angle α_i. The i-th LCC therefore occupies slots
-    # `offset_lcc + 1 .. offset_lcc + 4` with `offset_lcc = total_bus_state + (i-1)*4`.
-    # The same layout is used in `mixed_update_data!`, the residual's LCC tail,
-    # and the Jacobian's LCC structure/value updaters.
+    # LCC tail: each LCC contributes 4 slots (rectifier tap, inverter tap,
+    # rectifier angle α_r, inverter angle α_i) at
+    # `offset_lcc = total_bus_state + (i-1)*4`. Same layout in
+    # `mixed_update_data!`, the residual tail, and the Jacobian.
     total_bus_state = Int(bus_state_offset[n_buses + 1]) - 1
     for i in 1:n_lccs
         offset_lcc = total_bus_state + (i - 1) * 4
@@ -98,11 +82,9 @@ end
 """
     mixed_initial_state!(x, data, bus_state_offset, bus_block_size, time_step)
 
-Initialize the MCPB state vector `x` from `data.bus_magnitude`,
-`data.bus_angles`, and the bus power-injection fields, plus the LCC tap/angle
-fields. Counterpart of [`mixed_update_data!`](@ref). At REF buses, the two
-slots hold `(P_gen, Q_gen)` (including any distributed-slack increment);
-elsewhere the two slots hold `(e, f)`.
+Initialize the MCPB state vector `x` (flat start) from `data`. REF slots hold
+`(P_gen, Q_gen)`; all other buses hold `(e, f)`. Counterpart of
+[`mixed_update_data!`](@ref).
 """
 function mixed_initial_state!(
     x::Vector{Float64},
@@ -118,17 +100,11 @@ end
 """
     mixed_update_data!(data, x, bus_state_offset, bus_block_size, time_step)
 
-Write the state-derived voltage fields (`bus_magnitude`, `bus_angles`) and
-LCC taps/angles from `x` back into `data`. Per-iteration helper invoked by
-the MCPB residual.
-
-Does NOT write `bus_active_power_injections` / `bus_reactive_power_injections`:
-those are finalized once after convergence with the correct distributed-slack
-share by [`mixed_finalize_bus_injections!`](@ref). At REF buses `x[off]`
-carries the entire subnetwork slack and would over-attribute it; at PV buses
-the gen Q is recovered from the network only after convergence.
-
-Counterpart of [`mixed_initial_state!`](@ref).
+Write state-derived voltages and LCC taps/angles from `x` back into `data`
+(per-iteration). Does NOT write power injections: at REF `x[off]` carries the
+whole subnetwork slack and at PV the gen Q is only known post-convergence, so
+both are finalized by [`mixed_finalize_bus_injections!`](@ref). Counterpart of
+[`mixed_initial_state!`](@ref).
 """
 function mixed_update_data!(
     data::ACPowerFlowData,
@@ -169,22 +145,13 @@ function mixed_update_data!(
 end
 
 """
-Distribute the converged subnetwork slack across participating buses and write
-`bus_active_power_injections`/`bus_reactive_power_injections`. Mirrors
-[`rect_finalize_bus_injections!`](@ref) and polar `_setpq`: the reported
-injection is `net_injection + get_bus_*_power_total_withdrawals` (`- hvdc` for
-P) at every participating REF/PV bus; PQ buses need no slack attribution.
-
-The one real difference from rect: MCPB has no Q state slot, so the polar net
-injection `S_net,i = V_i·conj((Y_raw·V)_i)` is recovered from a RAW-Y matvec
-(raw Y-bus excludes all load components — const-P/I/Z — so this avoids the
-mixed-vs-polar const-Z/const-I double-count). `Q_net = imag(S_net)` directly;
-`P_net` redistributes the subnetwork slack via a two-pass loop: pass 1 sums the
-total physical slack (Σ converged net-P − Σ initial polar net-P set-point),
-pass 2 writes each bus `P_net = P_net_set_polar[i] + c_i·P_slack_total`.
-
-Called once per time step after the NR loop converges (the slack distribution
-is only meaningful at the converged x).
+Distribute the converged subnetwork slack and write the bus power injections.
+Mirrors [`rect_finalize_bus_injections!`](@ref) / polar `_setpq`. Difference
+from rect: MCPB has no Q slot, so `S_net,i = V_i·conj((Y_raw·V)_i)` is
+recovered from a raw-Y matvec (raw Y excludes const-P/I/Z loads, avoiding the
+const-Z/const-I double-count). `Q_net = imag(S_net)`; `P_net` is redistributed
+two-pass (sum total physical slack, then `P_net = P_net_set_polar[i] +
+c_i·P_slack_total`). Called once per step after convergence.
 """
 function mixed_finalize_bus_injections!(
     data::ACPowerFlowData,

@@ -2,38 +2,13 @@
     struct ACMixedCPBJacobian
 
 Jacobian functor for the mixed current/power-balance (MCPB) AC power flow.
-Mirrors [`ACRectangularCIJacobian`](@ref) 1:1 (mirror-for-validation
-convention) but uses the MCPB per-bus state layout where every bus — PQ, PV,
-and REF — occupies exactly 2 state entries (no PV→3 expansion, so there is no
-PV Q-column and the rect `pv_extra_nz` cache is dropped).
-
-Per-iteration updates write directly into `nonzeros(Jv)` via nzval-index
-caches built once at construction time, so the hot-path cost is
-`O(N + n_LCC)` rather than `O((N + n_LCC) · log(nnz_per_col))`.
-
-Real deltas vs. rect: (1) `pv_extra_nz` is DROPPED — no PV Q column anywhere;
-(2) `offdiag_pv_nz` is ADDED for the PV power-balance row's off-diagonal
-`(e_k, f_k)` entries, which are NONLINEAR in MCPB (the row `e_i·Ir_i + f_i·Ii_i
-− P_i` depends on neighbor voltages through `Ir_i`/`Ii_i`) and written each
-iteration; the PV voltage-constraint row has no off-diagonals. PQ off-diagonals
-stay constant `±Y` (written once by `_populate_mixed_constant_yb_blocks!`).
-(3) `Ir_acc`/`Ii_acc` are aliased from the residual. The PQ imag-first
-derivation lives in `_populate_mixed_constant_yb_blocks!`; the `offdiag_pv_nz`
-layout in `_build_offdiag_pv_nz_cache`.
-
-# Fields
-- `data::ACPowerFlowData`
-- `Jf!::Function` — inplace Jacobian update (`_update_mixed_cpb_jacobian_values!`)
-- `Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE}` — Jacobian values
-- `Y_bus_eff::SparseMatrixCSC{ComplexF64, Int}` — Y_bus with ZIP-Z folded in
-- `Y_diag::Vector{ComplexF64}` — cached Y_bus_eff diagonal
-- state aliases `e_state`/`f_state`/`P_eff_cache`/`Q_eff_cache`/
-  `const_I_P`/`const_I_Q`/`Ir_acc`/`Ii_acc` shared with the residual
-- Bus-diagonal nzval cache `diag_base_nz` (4×n_buses)
-- PV off-diagonal nzval cache `offdiag_pv_nz` (2×n_pv_pairs) + `offdiag_pv_i`/
-  `offdiag_pv_k`
-- Slack cross-term caches `slack_nz_idx_e`/`slack_nz_idx_f` + `slack_c_k`
-- LCC tail nzval cache `lcc_nz` (20×n_lccs)
+Mirrors [`ACRectangularCIJacobian`](@ref) 1:1, but every bus uses a 2-slot
+block (no PV→3 expansion): rect's `pv_extra_nz` is dropped, and `offdiag_pv_nz`
+is added for the PV power-balance row's off-diagonals, which are nonlinear in
+MCPB and rewritten each iteration. PQ off-diagonals are constant `±Y`
+(`_populate_mixed_constant_yb_blocks!`). Per-iteration updates write into
+`nonzeros(Jv)` through nzval-index caches built once at construction, so the
+hot path is `O(N + n_LCC)`. Field roles are in the inline comments below.
 """
 struct ACMixedCPBJacobian
     data::ACPowerFlowData
@@ -174,16 +149,11 @@ function (J::ACMixedCPBJacobian)(
 end
 
 """
-Build the sparsity pattern for the MCPB Jacobian. Every per-bus block is 2×2
-(`compute_mixed_bus_state_offsets`; no PV 3-slot block, no PV Q column).
-Off-diagonal blocks have entries for the `(e, f)` columns of every neighbor for
-BOTH PQ and PV rows: PQ off-diagonals are constant `±Y` (filled by
-`_populate_mixed_constant_yb_blocks!`), PV off-diagonals are NONLINEAR (the PV
-real-power-balance row depends on neighbor voltages through the accumulated
-network current) and reserved here as structural zeros, written per-iteration
-by `_update_mixed_cpb_jacobian_values!`. Slack cross-terms and LCC tail
-entries are added with structural zeros. REF
-row/column handling and LCC tail structure mirror rect verbatim.
+Build the MCPB Jacobian sparsity pattern (all blocks 2×2). Off-diagonal blocks
+reserve both `(e, f)` neighbor columns for PQ and PV rows; PQ entries are later
+filled constant by `_populate_mixed_constant_yb_blocks!`, PV entries are
+structural zeros written per-iteration. Slack cross-terms, LCC tail, and REF
+handling mirror rect verbatim.
 """
 function _create_mixed_cpb_jacobian_structure(
     data::ACPowerFlowData,
@@ -269,13 +239,9 @@ end
 """
     _build_mixed_diag_nz_cache(Jv, bus_state_offset)
 
-Return `diag_base_nz::Matrix{Int}` (`4 × n_buses`) containing the nzval
-indices for the per-bus 2×2 diagonal block entries. Unlike rect there is no
-`pv_extra_nz` (MCPB PV blocks are 2×2, no Q column).
-
-Row layout (all bus types, blocks uniformly 2×2):
-  1: Jv[off, off],     2: Jv[off, off+1],
-  3: Jv[off+1, off],   4: Jv[off+1, off+1]
+`diag_base_nz::Matrix{Int}` (`4 × n_buses`): nzval indices of each per-bus 2×2
+diagonal block, rows ordered `(off,off), (off,off+1), (off+1,off),
+(off+1,off+1)`. No `pv_extra_nz` (MCPB PV blocks are 2×2, no Q column).
 """
 function _build_mixed_diag_nz_cache(
     Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
@@ -296,17 +262,10 @@ end
 """
     _build_offdiag_pv_nz_cache(Jv, Y_bus_eff, bus_state_offset, bus_types)
 
-Return `(offdiag_pv_nz, offdiag_pv_i, offdiag_pv_k)` caching the nzval indices
-for the PV POWER-balance row's off-diagonal `(e_k, f_k)` neighbor columns.
-Each column of the `2 × n_pv_pairs` matrix is one ordered
-`(PV bus i, neighbor k != i)` pair (neighbor = Y_bus_eff column `k`,
-structural row `i`, excluding REF neighbor columns whose state is
-(P_gen, Q_gen)). The PV voltage-constraint row (slot `i_off+1`) has no
-off-diagonals (it depends only on bus `i`'s own state), so only the
-power-balance row at slot `i_off` is cached. Row layout per pair:
-  1: Jv[i_off, k_off],   2: Jv[i_off, k_off+1]
-`_update_mixed_cpb_jacobian_values!` iterates pairs and writes these from
-`G_ik`, `B_ik`, the PV bus state and `Ir_acc[i]`/`Ii_acc[i]`.
+Cache nzval indices for the PV power-balance row's off-diagonal `(e_k, f_k)`
+columns. Each `2 × n_pv_pairs` column is one ordered `(PV bus i, neighbor
+k≠i)` pair (REF neighbors excluded), rows `Jv[i_off, k_off]` and
+`Jv[i_off, k_off+1]`. The PV voltage-constraint row has no off-diagonals.
 """
 function _build_offdiag_pv_nz_cache(
     Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
@@ -361,37 +320,20 @@ end
 # _create_rect_ci_lcc_structure! are shared.
 
 """
-Populate the constant Y_bus off-diagonal blocks for PQ rows ONLY. PV
-off-diagonal blocks are NONLINEAR (the PV real-power-balance row
-`e_i·Ir_i + f_i·Ii_i − P_i` depends on neighbor voltages through the
-accumulated network current) and are left at 0.0 here; they are written
-per-iteration via `offdiag_pv_nz` by `_update_mixed_cpb_jacobian_values!`.
-REF rows have no (e, f) off-diagonal entries.
+Fill the constant Y_bus off-diagonal blocks for PQ rows only. PV off-diagonals
+are nonlinear (left 0.0 here, written per-iteration via `offdiag_pv_nz`); REF
+rows have no `(e, f)` off-diagonals.
 
-# PQ imag-first off-diagonal derivation
-The MCPB PQ residual (imag-first; residual `_update_mixed_cpb_residual_values!`
-step 5) for bus `i` is, with `D = |V_i|²`:
+Only `−I_acc` carries the off-diagonal dependence (the I_spec terms depend on
+bus `i` alone), and `∂Ir_acc/∂(e_k,f_k) = (G_ik, −B_ik)`,
+`∂Ii_acc/∂(e_k,f_k) = (B_ik, G_ik)`. With the MCPB imag-first slot order this
+gives the 2×2 block
 
-    F[off]   = (P_i·f_i − Q_i·e_i)/D − Ii_acc[i]   (imag balance → slot off)
-    F[off+1] = (P_i·e_i + Q_i·f_i)/D − Ir_acc[i]   (real balance → slot off+1)
+    Jv[off,   k_off] = −B_ik   Jv[off,   k_off+1] = −G_ik
+    Jv[off+1, k_off] = −G_ik   Jv[off+1, k_off+1] = +B_ik
 
-where (residual step 3) for neighbor `k`:
-    Re(Y_ik·V_k) contribution to Ir_acc[i] = G_ik·e_k − B_ik·f_k
-    Im(Y_ik·V_k) contribution to Ii_acc[i] = G_ik·f_k + B_ik·e_k
-so
-    ∂Ir_acc[i]/∂e_k =  G_ik,  ∂Ir_acc[i]/∂f_k = −B_ik
-    ∂Ii_acc[i]/∂e_k =  B_ik,  ∂Ii_acc[i]/∂f_k =  G_ik
-The I_spec terms (P_i·f_i − Q_i·e_i)/D etc. depend only on bus `i`'s own
-state, so the off-diagonal partials come purely from `−I_acc`:
-
-    ∂F[off]/∂e_k   = −∂Ii_acc[i]/∂e_k = −B_ik   → Jv[off,   k_off]   = −B_ik
-    ∂F[off]/∂f_k   = −∂Ii_acc[i]/∂f_k = −G_ik   → Jv[off,   k_off+1] = −G_ik
-    ∂F[off+1]/∂e_k = −∂Ir_acc[i]/∂e_k = −G_ik   → Jv[off+1, k_off]   = −G_ik
-    ∂F[off+1]/∂f_k = −∂Ir_acc[i]/∂f_k = +B_ik   → Jv[off+1, k_off+1] = +B_ik
-
-This is exactly rect's off-diagonal block `[[−G, B], [−B, −G]]` with the two
-ROWS swapped (rect is real-first; MCPB PQ is imag-first), consistent with the
-residual's PQ slot swap.
+i.e. rect's off-diagonal block with its two rows swapped (rect is real-first;
+MCPB PQ is imag-first), matching the residual's PQ slot swap.
 """
 function _populate_mixed_constant_yb_blocks!(
     Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
@@ -438,13 +380,10 @@ function _populate_mixed_constant_yb_blocks!(
     return
 end
 
-"""Update state-dependent MCPB Jacobian entries: per-bus diagonal 2×2 blocks
-(imag-first PQ, eq.7/eq.8 PV, rect-verbatim REF), PV power-balance-row
-off-diagonals (`offdiag_pv_nz`), slack cross-terms, and the LCC tail. Reads
-state from the residual's shared caches (`e_state`/`f_state`/
-`P_eff_cache`/`Q_eff_cache`/`Ir_acc`/`Ii_acc`) — these must be up to date
-(call the residual on `x` first). All writes go through pre-computed
-nzval-index caches into `nonzeros(Jv)`."""
+"""Update state-dependent MCPB Jacobian entries (per-bus diagonal blocks, PV
+off-diagonals, slack cross-terms, LCC tail) through the nzval-index caches.
+Reads the residual's shared state caches, so the residual must have been
+evaluated on the current `x` first."""
 function _update_mixed_cpb_jacobian_values!(
     Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
     data::ACPowerFlowData,
@@ -530,17 +469,11 @@ function _update_mixed_cpb_jacobian_values!(
 end
 
 """
-MCPB PQ diagonal 2×2 (IMAG-FIRST: slot off = imag balance row, slot off+1 =
-real balance row). The four entries equal rect's `_update_pq_diag_block!`
-divided-current + const-I diagonal expressions with the two ROWS swapped
-(rect is real-first; MCPB PQ is imag-first), consistent with the residual's
-PQ slot swap. The S_A/S_B/V² sub-expression algebra is reused verbatim from
-rect to avoid algebra slips.
-
-Rect (real-first) writes:
-  ∂real/∂e, ∂real/∂f, ∂imag/∂e, ∂imag/∂f → diag rows 1,2,3,4.
-MCPB (imag-first) wants diag rows 1,2,3,4 = ∂imag/∂e, ∂imag/∂f, ∂real/∂e,
-∂real/∂f, i.e. rect rows (3,4,1,2)."""
+MCPB PQ diagonal 2×2 (imag-first: slot `off` = imag balance, `off+1` = real
+balance). Same divided-current + const-I expressions as rect's
+`_update_pq_diag_block!` with the two rows swapped — diag rows `1,2,3,4` are
+rect's rows `3,4,1,2` — matching the residual's PQ slot swap.
+"""
 @inline function _update_mixed_pq_diag_block!(
     Jvnz::Vector{Float64},
     diag_base_nz::Matrix{Int},
@@ -580,12 +513,10 @@ MCPB (imag-first) wants diag rows 1,2,3,4 = ∂imag/∂e, ∂imag/∂f, ∂real/
 end
 
 """
-MCPB PV diagonal 2×2 (slot off = eq.7 power-balance row
-`e·Ir + f·Ii − P`, slot off+1 = eq.8 `|V|² − V_set²`). Ir/Ii are the
-accumulated network current at bus `i` (include the Y_ii diagonal term, so
-∂Ir/∂e_i = G_ii, ∂Ir/∂f_i = −B_ii, ∂Ii/∂e_i = B_ii, ∂Ii/∂f_i = G_ii). P may
-carry a const-I term P_eff = P_net_const − cIP·Vm, contributing
-∂P/∂e = −cIP·e/Vm, ∂P/∂f = −cIP·f/Vm."""
+MCPB PV diagonal 2×2 (slot `off` = eq.7 power balance `e·Ir + f·Ii − P`,
+`off+1` = eq.8 `|V|² − V_set²`). Ir/Ii include the `Y_ii` diagonal term; a
+const-I `P_eff = P_net_const − cIP·Vm` adds `∂P/∂(e,f) = −cIP·(e,f)/Vm`.
+"""
 @inline function _update_mixed_pv_diag_block!(
     Jvnz::Vector{Float64},
     diag_base_nz::Matrix{Int},
@@ -614,15 +545,12 @@ carry a const-I term P_eff = P_net_const − cIP·Vm, contributing
 end
 
 """
-MCPB LCC tail. PQ/REF terminal buses are identical to rect's
-`_set_entries_for_lcc_rect!` (current-mismatch rows), with PQ using the
-IMAG-FIRST diagonal slot order (the MCPB PQ block is imag-first, so the
-current-mismatch overlay must target the swapped rows). PV terminal buses
-route the LCC bus-row contribution into the eq.7 power-balance row
-(`e_i·Ir + f_i·Ii − P`): since the LCC current enters Ir_acc/Ii_acc, the
-contribution to F[off] is `e_i·∂ΔIr_lcc + f_i·∂ΔIi_lcc`. The eq.8 |V|² row
-gets NO LCC contribution. Tail-row and tail×tail entries are identical to
-rect (the LCC tail residuals are the rect helper, unchanged)."""
+MCPB LCC tail. PQ/REF terminals match rect's `_set_entries_for_lcc_rect!`,
+with PQ using the imag-first slot order. At a PV terminal the LCC current
+enters via Ir_acc/Ii_acc, so its contribution lands in the eq.7 power-balance
+row (`F[off] += e_i·∂ΔIr_lcc + f_i·∂ΔIi_lcc`); the eq.8 |V|² row gets none.
+Tail-row and tail×tail entries are identical to rect.
+"""
 function _set_entries_for_lcc_mixed!(
     data::ACPowerFlowData,
     Jvnz::Vector{Float64},
