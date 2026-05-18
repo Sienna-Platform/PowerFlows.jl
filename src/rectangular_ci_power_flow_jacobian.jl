@@ -554,7 +554,8 @@ function _update_rect_ci_jacobian_values!(
         c_k = slack_c_k[k]
         e_k = e_state[bus_k]
         f_k = f_state[bus_k]
-        inv_V_sq = 1.0 / (e_k^2 + f_k^2)
+        # V_FLOOR2 floor (see rectangular_ci_power_flow_residual.jl).
+        inv_V_sq = 1.0 / max(e_k^2 + f_k^2, V_FLOOR2)
         Jvnz[slack_nz_idx_e[k]] = c_k * e_k * inv_V_sq
         Jvnz[slack_nz_idx_f[k]] = c_k * f_k * inv_V_sq
     end
@@ -586,7 +587,8 @@ end
     const_I_P::Float64,
     const_I_Q::Float64,
 )
-    V_sq = e^2 + f^2
+    # V_FLOOR2 floor (see rectangular_ci_power_flow_residual.jl).
+    V_sq = max(e^2 + f^2, V_FLOOR2)
     inv_V_sq = 1.0 / V_sq
     inv_Vm = 1.0 / sqrt(V_sq)
     g_ii = real(y_ii)
@@ -618,7 +620,9 @@ end
     P_eff::Float64,
     const_I_P::Float64,
 )
-    V_sq = e^2 + f^2
+    # V_FLOOR2 floor (see rectangular_ci_power_flow_residual.jl); the |V|² row's
+    # (−2e, −2f) entries below stay raw (exact constraint derivative).
+    V_sq = max(e^2 + f^2, V_FLOOR2)
     inv_V_sq = 1.0 / V_sq
     inv_Vm = 1.0 / sqrt(V_sq)
     g_ii = real(y_ii)
@@ -652,7 +656,9 @@ end
     # Residual at REF uses P_gen = P_net_set[ref] + c_ref · (x[off] - P_net_set[ref]).
     # ∂P_gen/∂x[off] = c_ref. So ∂I_spec_r/∂x[off] = c_ref · e_r/V², etc.
     # For default (c_ref = 1.0), this collapses to the original e_r/V² etc.
-    V_sq = e_r^2 + f_r^2
+    # V_FLOOR2 floor (see rectangular_ci_power_flow_residual.jl); REF |V| is
+    # fixed near V_set so this never triggers in practice.
+    V_sq = max(e_r^2 + f_r^2, V_FLOOR2)
     inv_V_sq = 1.0 / V_sq
     @inbounds Jvnz[diag_base_nz[1, i]] = c_ref * e_r * inv_V_sq
     @inbounds Jvnz[diag_base_nz[2, i]] = f_r * inv_V_sq

@@ -128,3 +128,38 @@ Pages = [
     "rectangular_ci_power_flow_jacobian.jl",
 ]
 ```
+
+# Mixed Current-Power Balance AC Power Flow
+
+## Setup
+
+```@autodocs
+Modules = [PowerFlows]
+Public = false
+Private = true
+Pages = [
+    "mixed_cpb_setup.jl",
+]
+```
+
+## Residuals
+
+```@autodocs
+Modules = [PowerFlows]
+Public = false
+Private = true
+Pages = [
+    "mixed_cpb_power_flow_residual.jl",
+]
+```
+
+## Jacobian
+
+```@autodocs
+Modules = [PowerFlows]
+Public = false
+Private = true
+Pages = [
+    "mixed_cpb_power_flow_jacobian.jl",
+]
+```

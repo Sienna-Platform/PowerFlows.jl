@@ -81,10 +81,52 @@ function improve_x0(pf::ACRectangularPowerFlow,
     return x0
 end
 
+"""MCPB analog of the rectangular [`improve_x0`](@ref): base flat start (via
+[`mixed_initial_state!`](@ref)) → previous-converged-timestep warm start (via
+[`_mixed_fill_state!`](@ref)) → enhanced flat start (gated on
+`get_enhanced_flat_start(pf)`) → large-residual warning. Mirrors the
+rectangular path verbatim, swapping `rect_initial_state!`→`mixed_initial_state!`,
+`_rect_fill_state!`→`_mixed_fill_state!`, and the rectangular
+`_enhanced_flat_start`→the MCPB `ACMixedCPBResidual` overload. No DC robust
+fallback: `ACMixedPowerFlow` has no `robust_power_flow` field
+(`get_robust_power_flow(::AbstractACPowerFlow) == false`)."""
+function improve_x0(pf::ACMixedPowerFlow,
+    data::ACPowerFlowData,
+    residual::ACMixedCPBResidual,
+    time_step::Int64,
+)
+    x0 = Vector{Float64}(undef, length(residual.Rv))
+    mixed_initial_state!(
+        x0, data, residual.bus_state_offset, residual.bus_block_size, time_step,
+    )
+    residual(x0, time_step)
+    prev = findlast(@view(data.converged[1:(time_step - 1)]))
+    if !isnothing(prev)
+        newx0 = copy(x0)
+        _mixed_fill_state!(newx0, data, residual.bus_state_offset, time_step, prev)
+        _pick_better_x0(x0, newx0, time_step, residual, "previous converged solution")
+    end
+    if norm(residual.Rv, 1) > LARGE_RESIDUAL * length(residual.Rv) &&
+       get_enhanced_flat_start(pf)
+        newx0 = _enhanced_flat_start(x0, data, residual, time_step)
+        _pick_better_x0(x0, newx0, time_step, residual, "enhanced flat start")
+    else
+        @debug "skipping enhanced flat start"
+    end
+    residual(x0, time_step)  # re-calculate residual for chosen x0
+    if sum(abs, residual.Rv) > LARGE_RESIDUAL * length(residual.Rv)
+        lg_res, ix = findmax(abs.(residual.Rv))
+        lg_res_rounded = round(lg_res; sigdigits = 3)
+        @warn "Initial guess provided results in a large initial residual of " *
+              "$lg_res_rounded (mixed current/power-balance residual index $ix)."
+    end
+    return x0
+end
+
 function _smaller_residual(x0::Vector{Float64},
     newx0::Vector{Float64},
     time_step::Int64,
-    residual::Union{ACPowerFlowResidual, ACRectangularCIResidual},
+    residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
 )
     residual(x0, time_step)
     residualSize = norm(residual.Rv, 1)
@@ -96,7 +138,7 @@ end
 function _pick_better_x0(x0::Vector{Float64},
     newx0::Vector{Float64},
     time_step::Int64,
-    residual::Union{ACPowerFlowResidual, ACRectangularCIResidual},
+    residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
     improvement_method::String,
 )
     if _smaller_residual(x0, newx0, time_step, residual)
@@ -167,16 +209,18 @@ function _enhanced_flat_start(
     return newx0
 end
 
-"""Rectangular analog of [`_enhanced_flat_start`](@ref): per subnetwork, set
-PV/PQ bus angles to the mean REF-bus angle and PQ magnitudes to the mean PV
+"""Rectangular/MCPB analog of [`_enhanced_flat_start`](@ref): per subnetwork,
+set PV/PQ bus angles to the mean REF-bus angle and PQ magnitudes to the mean PV
 setpoint magnitude, written back as `(e, f) = (Vm·cosθ, Vm·sinθ)`. PV buses
 keep their setpoint magnitude (only the angle changes); REF blocks and the
 PV `Q` / REF `(P,Q)` slots are left as in `x0`. Uses `residual.subnetworks`
-(ref-bus index → member bus indices) for the partition."""
+(ref-bus index → member bus indices) for the partition. Identical for the
+rectangular and MCPB layouts (both use 2-slot `(e, f)` PV/PQ blocks and never
+touch a PV `Q` slot)."""
 function _enhanced_flat_start(
     x0::Vector{Float64},
     data::ACPowerFlowData,
-    residual::ACRectangularCIResidual,
+    residual::Union{ACRectangularCIResidual, ACMixedCPBResidual},
     time_step::Int64,
 )
     newx0 = copy(x0)
@@ -257,10 +301,9 @@ function initialize_power_flow_variables(pf::ACPolarPowerFlow{T},
     J = ACPowerFlowJacobian(residual, time_step)
     J(time_step)
 
-    bus_types = @view get_bus_type(J.data)[:, time_step]
     validate_voltage_magnitudes && PowerFlows.validate_voltage_magnitudes(
         x0_computed,
-        bus_types,
+        residual.validate_indices,
         vm_validation_range,
         0,
     )
@@ -284,5 +327,25 @@ function initialize_power_flow_variables(pf::ACRectangularPowerFlow{T},
     end
     _log_initial_residual(residual)
     J = ACRectangularCIJacobian(residual, time_step)
+    return residual, J, x0_computed
+end
+
+function initialize_power_flow_variables(pf::ACMixedPowerFlow{T},
+    data::ACPowerFlowData,
+    time_step::Int64;
+    x0::Union{Vector{Float64}, Nothing} = nothing,
+    validate_voltage_magnitudes::Bool = DEFAULT_VALIDATE_VOLTAGES,
+    vm_validation_range::MinMax = DEFAULT_VALIDATION_RANGE,
+    _ignored...,
+) where {T <: ACPowerFlowSolverType}
+    residual = ACMixedCPBResidual(data, time_step)
+    x0_computed = improve_x0(pf, data, residual, time_step)
+    if OVERRIDE_x0 && !isnothing(x0)
+        copyto!(x0_computed, x0)
+        @warn "Overriding initial guess x0."
+        residual(x0_computed, time_step)
+    end
+    _log_initial_residual(residual)
+    J = ACMixedCPBJacobian(residual, time_step)
     return residual, J, x0_computed
 end
