@@ -181,7 +181,7 @@ function _create_rect_ci_jacobian_structure(
         col_off = Int(bus_state_offset[col])
         col_bs = bus_block_size[col]
         is_ref_col = bus_types_at_t[col] == PSY.ACBusTypes.REF
-        for j in Y_bus_eff.colptr[col]:(Y_bus_eff.colptr[col + 1] - 1)
+        for j in SparseArrays.nzrange(Y_bus_eff, col)
             row = Yrows[j]
             # REF columns hold (P_gen, Q_gen); neighbors' rows don't depend on them.
             if is_ref_col && row != col
@@ -303,7 +303,7 @@ for the hot-path update functions.
     col::Int,
 )
     rowvals = SparseArrays.rowvals(Jv)
-    rng = Jv.colptr[col]:(Jv.colptr[col + 1] - 1)
+    rng = SparseArrays.nzrange(Jv, col)
     for k in rng
         rowvals[k] == row && return Int(k)
     end
@@ -476,7 +476,7 @@ function _populate_constant_yb_blocks!(
         # add any state-dependent entries to the Jacobian's REF column.
         bus_types[col] == PSY.ACBusTypes.REF && continue
         col_off = Int(bus_state_offset[col])
-        for j in Y_bus_eff.colptr[col]:(Y_bus_eff.colptr[col + 1] - 1)
+        for j in SparseArrays.nzrange(Y_bus_eff, col)
             row = Yrows[j]
             row == col && continue  # diagonal block handled per iteration
             row_off = Int(bus_state_offset[row])

@@ -212,7 +212,7 @@ function _create_mixed_cpb_jacobian_structure(
         col_off = Int(bus_state_offset[col])
         col_bs = bus_block_size[col]
         is_ref_col = bus_types_at_t[col] == PSY.ACBusTypes.REF
-        for j in Y_bus_eff.colptr[col]:(Y_bus_eff.colptr[col + 1] - 1)
+        for j in SparseArrays.nzrange(Y_bus_eff, col)
             row = Yrows[j]
             # REF columns hold (P_gen, Q_gen); neighbors' rows don't depend on them.
             if is_ref_col && row != col
@@ -325,7 +325,7 @@ function _build_offdiag_pv_nz_cache(
         # REF columns hold (P_gen, Q_gen): no (e, f) off-diagonal entries exist.
         bus_types[col] == PSY.ACBusTypes.REF && continue
         col_off = Int(bus_state_offset[col])
-        for j in Y_bus_eff.colptr[col]:(Y_bus_eff.colptr[col + 1] - 1)
+        for j in SparseArrays.nzrange(Y_bus_eff, col)
             row = Yrows[j]
             row == col && continue                       # diagonal block
             bus_types[row] != PSY.ACBusTypes.PV && continue  # only PV rows
@@ -406,7 +406,7 @@ function _populate_mixed_constant_yb_blocks!(
         # Skip REF columns: REF state vars are (P_gen, Q_gen), not (e, f).
         bus_types[col] == PSY.ACBusTypes.REF && continue
         col_off = Int(bus_state_offset[col])
-        for j in Y_bus_eff.colptr[col]:(Y_bus_eff.colptr[col + 1] - 1)
+        for j in SparseArrays.nzrange(Y_bus_eff, col)
             row = Yrows[j]
             row == col && continue  # diagonal block handled per iteration
             row_off = Int(bus_state_offset[row])

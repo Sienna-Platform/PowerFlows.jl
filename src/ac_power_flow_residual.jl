@@ -350,7 +350,7 @@ function _update_residual_values!(
     Yb_vals = SparseArrays.nonzeros(Yb)
     Yb_rowvals = SparseArrays.rowvals(Yb)
     for bus_to in axes(Yb, 1)
-        for j in Yb.colptr[bus_to]:(Yb.colptr[bus_to + 1] - 1)
+        for j in SparseArrays.nzrange(Yb, bus_to)
             yb = Yb_vals[j]
             bus_from = Yb_rowvals[j]
             gb = real(yb)

@@ -18,7 +18,12 @@ function compute_mixed_bus_state_offsets(
     n_buses = length(bus_type)
     offsets = Vector{REC_INDEX_TYPE}(undef, n_buses + 1)
     block_sizes = Vector{Int8}(undef, n_buses)
-    # uniformly 2; vector kept for signature parity with the rectangular formulation
+    # MCPB has no PV→3 expansion, so block size is provably 2 for every bus
+    # (PQ, PV, REF), `offsets[i] == 2i-1`, and `total_bus_state == 2*n_buses`.
+    # These arrays are therefore redundant for MCPB itself; they are kept only
+    # for signature parity with the variable-block rectangular-CI formulation
+    # this code mirrors 1:1, so shared helpers and cross-formulation test
+    # parity stay mechanical. Do not "optimize" them away in isolation.
     fill!(block_sizes, Int8(2))
     pos = REC_INDEX_TYPE(1)
     for i in 1:n_buses
@@ -206,7 +211,7 @@ function mixed_finalize_bus_injections!(
     @inbounds for col in 1:n_buses
         e_col = e_state[col]
         f_col = f_state[col]
-        for j in Y_raw.colptr[col]:(Y_raw.colptr[col + 1] - 1)
+        for j in SparseArrays.nzrange(Y_raw, col)
             row = Yrows[j]
             y = Yvals[j]
             g = real(y)

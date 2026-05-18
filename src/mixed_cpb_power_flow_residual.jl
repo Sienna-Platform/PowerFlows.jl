@@ -243,7 +243,7 @@ function _update_mixed_cpb_residual_values!(
     @inbounds for col in 1:n_buses
         e_col = e_state[col]
         f_col = f_state[col]
-        for j in Y_bus_eff.colptr[col]:(Y_bus_eff.colptr[col + 1] - 1)
+        for j in SparseArrays.nzrange(Y_bus_eff, col)
             row = Yrows[j]
             y = Yvals[j]
             g = real(y)

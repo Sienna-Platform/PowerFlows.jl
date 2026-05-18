@@ -47,7 +47,7 @@ function LMWorkspace(
 
     j_idx = 0
     for col in 1:n
-        for a_idx in A.colptr[col]:(A.colptr[col + 1] - 1)
+        for a_idx in SparseArrays.nzrange(A, col)
             row = A.rowval[a_idx]
             if row <= m
                 j_idx += 1
@@ -80,8 +80,11 @@ function copy_jacobian!(ws::LMWorkspace, Jv::SparseMatrixCSC{Float64, J_INDEX_TY
     return
 end
 
-"""Running max of the J column 2-norms (MINPACK lmder, mode 1). A zero column
-keeps `D ≥ 1` so the damped block stays nonsingular."""
+"""Update `ws.D`, the per-column damping scale: each entry is the running
+maximum (across iterations) of the corresponding Jacobian column's 2-norm. It
+is used as the Levenberg-Marquardt diagonal damping `√λ·D` in
+[`update_lambda!`](@ref). A column whose running max is still zero is floored
+to `1.0`, keeping `D > 0` so the damped block stays nonsingular."""
 function update_column_scale!(
     ws::LMWorkspace,
     Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
@@ -89,7 +92,7 @@ function update_column_scale!(
     nzv = Jv.nzval
     @inbounds for col in 1:size(Jv, 2)
         s = 0.0
-        for k in Jv.colptr[col]:(Jv.colptr[col + 1] - 1)
+        for k in SparseArrays.nzrange(Jv, col)
             v = nzv[k]
             s += v * v
         end
