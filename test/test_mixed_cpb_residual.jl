@@ -68,7 +68,7 @@ end
 
     # Initial mixed state is ~1 p.u. ⇒ in range ⇒ silent.
     @test_logs min_level = Logging.Warn PF._validate_state_magnitudes(
-        R, x, bus_types, range, 1)
+        R, x, range, 1)
 
     # PQ buses in mixed use (e,f) slots like rectangular ⇒ out-of-range warns.
     b = findfirst(bt -> bt == PSY.ACBusTypes.PQ, bus_types)
@@ -76,5 +76,5 @@ end
     x[off] = 3.0
     x[off + 1] = 0.0
     @test_logs (:warn, r"voltage magnitudes outside of range") match_mode = :any PF._validate_state_magnitudes(
-        R, x, bus_types, range, 1)
+        R, x, range, 1)
 end

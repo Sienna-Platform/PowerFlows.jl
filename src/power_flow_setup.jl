@@ -301,10 +301,9 @@ function initialize_power_flow_variables(pf::ACPolarPowerFlow{T},
     J = ACPowerFlowJacobian(residual, time_step)
     J(time_step)
 
-    bus_types = @view get_bus_type(J.data)[:, time_step]
     validate_voltage_magnitudes && PowerFlows.validate_voltage_magnitudes(
         x0_computed,
-        bus_types,
+        residual.validate_indices,
         vm_validation_range,
         0,
     )

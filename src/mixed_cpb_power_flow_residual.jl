@@ -21,6 +21,8 @@ and REF — occupies exactly 2 state entries (no PV→3 expansion).
 - `bus_state_offset::Vector{REC_INDEX_TYPE}`
 - `bus_block_size::Vector{Int8}`
 - `total_bus_state::Int`
+- `validate_offsets::Vector{Int}` — precomputed `x`-offsets of PQ/PV buses for
+  the per-iteration voltage-magnitude diagnostic
 """
 struct ACMixedCPBResidual
     data::ACPowerFlowData
@@ -37,6 +39,7 @@ struct ACMixedCPBResidual
     bus_state_offset::Vector{REC_INDEX_TYPE}
     bus_block_size::Vector{Int8}
     total_bus_state::Int
+    validate_offsets::Vector{Int}
     # State caches mirrored from x at each residual evaluation. The Jacobian
     # reads these so it sees the SAME (e, f) values that the residual used.
     # This is necessary because data.bus_magnitude holds V_set for PV buses
@@ -57,6 +60,7 @@ function ACMixedCPBResidual(data::ACPowerFlowData, time_step::Int64)
     bus_type = view(data.bus_type, :, time_step)
 
     offsets, block_sizes, total_bus_state = compute_mixed_bus_state_offsets(bus_type)
+    validate_offsets = _pqpv_validate_offsets(bus_type, offsets)
     total_state = total_bus_state + 4 * n_lccs
 
     P_net_const = Vector{Float64}(undef, n_buses)
@@ -110,6 +114,7 @@ function ACMixedCPBResidual(data::ACPowerFlowData, time_step::Int64)
         offsets,
         block_sizes,
         total_bus_state,
+        validate_offsets,
         Vector{Float64}(undef, n_buses),
         Vector{Float64}(undef, n_buses),
         Vector{Float64}(undef, n_buses),

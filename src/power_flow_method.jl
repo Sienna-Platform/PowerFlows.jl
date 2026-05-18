@@ -521,39 +521,38 @@ function _iwamoto_step(time_step::Int,
     return true
 end
 
-# Formulation-dispatched voltage-magnitude validation. Polar indexes the state
-# as `[|V|, θ, …]` (x[2i-1] = |V|); rectangular CI and mixed CPB states are
-# `(e, f, …)` per-bus blocks and validate `e²+f² ∈ [min², max²]` instead.
+# Formulation-dispatched voltage-magnitude validation, driven entirely by the
+# per-formulation index list precomputed once on the residual. Polar indexes
+# the state as `[|V|, θ, …]` (`x[2i-1]` = |V|, PQ only); rectangular CI and
+# mixed CPB states are `(e, f, …)` per-bus blocks validating `e²+f² ∈
+# [min², max²]` over PQ/PV.
 function _validate_state_magnitudes(
-    ::ACPowerFlowResidual,
+    r::ACPowerFlowResidual,
     x::Vector{Float64},
-    bus_types::AbstractArray{PSY.ACBusTypes},
     range::MinMax,
     i::Int64,
 )
-    validate_voltage_magnitudes(x, bus_types, range, i)
+    validate_voltage_magnitudes(x, r.validate_indices, range, i)
     return
 end
 
 function _validate_state_magnitudes(
     r::ACRectangularCIResidual,
     x::Vector{Float64},
-    bus_types::AbstractArray{PSY.ACBusTypes},
     range::MinMax,
     i::Int64,
 )
-    _validate_squared_voltage_magnitudes(x, bus_types, r.bus_state_offset, range, i)
+    _validate_squared_voltage_magnitudes(x, r.validate_offsets, range, i)
     return
 end
 
 function _validate_state_magnitudes(
     r::ACMixedCPBResidual,
     x::Vector{Float64},
-    bus_types::AbstractArray{PSY.ACBusTypes},
     range::MinMax,
     i::Int64,
 )
-    _validate_squared_voltage_magnitudes(x, bus_types, r.bus_state_offset, range, i)
+    _validate_squared_voltage_magnitudes(x, r.validate_offsets, range, i)
     return
 end
 
@@ -586,7 +585,6 @@ function _run_power_flow_method(time_step::Int,
     validate_vms = validate_voltage_magnitudes
     i, converged = 1, false
     consecutive_reverts = 0
-    bus_types = @view get_bus_type(J.data)[:, time_step]
     while i < maxIterations && !converged
         if iwamoto
             made_progress = _iwamoto_step(
@@ -621,7 +619,6 @@ function _run_power_flow_method(time_step::Int,
         validate_vms && _validate_state_magnitudes(
             residual,
             stateVector.x,
-            bus_types,
             vm_validation_range,
             i,
         )
@@ -683,7 +680,6 @@ function _run_power_flow_method(time_step::Int,
     linf = norm(residual.Rv, Inf)
     @debug "initially: sum of squares $(siground(residualSize)), L ∞ norm $(siground(linf)), Δ $(siground(delta))"
 
-    bus_types = @view get_bus_type(J.data)[:, time_step]
     while i < maxIterations && !converged
         delta = _trust_region_step(
             time_step,
@@ -700,7 +696,6 @@ function _run_power_flow_method(time_step::Int,
         validate_vms && _validate_state_magnitudes(
             residual,
             stateVector.x,
-            bus_types,
             vm_validation_range,
             i,
         )

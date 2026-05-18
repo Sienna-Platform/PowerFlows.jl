@@ -286,15 +286,19 @@ end
         bus_types = [PSY.ACBusTypes.PQ, PSY.ACBusTypes.PV, PSY.ACBusTypes.REF]
         offsets = [1, 3, 5]   # 2-slot blocks: (e,f) at off, off+1
 
+        # Precompute step keeps only PQ/PV offsets, drops REF.
+        validate_offsets = PF._pqpv_validate_offsets(bus_types, offsets)
+        @test validate_offsets == [1, 3]
+
         # PQ in range (|V|²=1), PV out of range (|V|²=4 > 2.25), REF ignored.
         x_bad = [1.0, 0.0, 2.0, 0.0, 9.9, 9.9]
         @test_logs (:warn, r"voltage magnitudes outside of range") match_mode = :any PF._validate_squared_voltage_magnitudes(
-            x_bad, bus_types, offsets, range, 1)
+            x_bad, validate_offsets, range, 1)
 
         # All free buses in range ⇒ silent (REF still ignored even if wild).
         x_ok = [1.0, 0.0, 1.0, 0.2, 9.9, 9.9]
         @test_logs min_level = Logging.Warn PF._validate_squared_voltage_magnitudes(
-            x_ok, bus_types, offsets, range, 1)
+            x_ok, validate_offsets, range, 1)
     end
 
     @testset "rectangular CI residual dispatch" begin
@@ -307,7 +311,7 @@ end
 
         # Flat/initial state is ~1 p.u. ⇒ in range ⇒ silent.
         @test_logs min_level = Logging.Warn PF._validate_state_magnitudes(
-            residual, x, bus_types, range, 1)
+            residual, x, range, 1)
 
         # Drive the first PQ or PV bus's |V|² out of range via its (e,f) slots.
         b = findfirst(bt -> bt != PSY.ACBusTypes.REF, bus_types)
@@ -315,7 +319,7 @@ end
         x[off] = 3.0
         x[off + 1] = 0.0
         @test_logs (:warn, r"voltage magnitudes outside of range") match_mode = :any PF._validate_state_magnitudes(
-            residual, x, bus_types, range, 1)
+            residual, x, range, 1)
     end
 end
 
