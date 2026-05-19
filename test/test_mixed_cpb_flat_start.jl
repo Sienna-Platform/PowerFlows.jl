@@ -1,6 +1,5 @@
-# Stage 4 (Task 4.1): MCPB modified flat start + initial-condition guards +
-# multi-period warm start. Mirrors the rectangular CI flat-start suite, swapping
-# the residual/state helpers for the mixed (e, f) 2-slot layout.
+# MCPB modified flat start, initial-condition guards, and multi-period warm
+# start, validated on the mixed (e, f) 2-slot layout.
 
 const MIXED_FS_PARITY_ATOL = 1e-7
 _mixed_fs_settings() = Dict{Symbol, Any}(:validate_voltage_magnitudes => false)

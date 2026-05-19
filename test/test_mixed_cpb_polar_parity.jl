@@ -67,7 +67,7 @@ end
 # Multi-period analogue of `_mixed_polar_parity`: solve both formulations in
 # place and assert full per-time-step state-array parity. Exercises the minimal
 # per-step `improve_x0` / per-ts offsets & caches (`time_step` threaded
-# correctly); full warm-start efficiency is Stage 4, here only correctness.
+# correctly). This checks per-step correctness, not warm-start efficiency.
 function _mixed_polar_parity_data(
     pf_p::ACPowerFlow,
     pf_h::PF.ACMixedPowerFlow,
@@ -105,9 +105,8 @@ function _mixed_polar_parity_data(
     return
 end
 
-# Solvers validated against the MCPB Jacobian. Newton-Raphson (Task 3.x) plus
-# Trust-Region (Task 2.3 Union-widened the shared `_trust_region_step` so the
-# dogleg runs on the mixed sparse J unchanged).
+# Solvers validated against the MCPB Jacobian: Newton-Raphson and Trust-Region
+# (the shared `_trust_region_step` dogleg runs on the mixed sparse J unchanged).
 const MIXED_PARITY_SOLVERS =
     (NewtonRaphsonACPowerFlow, TrustRegionACPowerFlow)
 

@@ -208,7 +208,7 @@ function _update_rect_ci_residual_values!(
     # ZIP constant-Z is folded into `Y_bus_eff` at setup (see `fold_zip_constant_z!`
     # in `rectangular_ci_setup.jl`), so only constant-P and constant-I appear here.
     @inbounds for i in 1:n_buses
-        # ZIP const-I uses |V_state|, not V_set; V_FLOOR2 floor (see D below).
+        # ZIP const-I uses |V_state|, not V_set; V_FLOOR2 (1e-16) guards 1/|V|².
         Vm = sqrt(max(e_state[i]^2 + f_state[i]^2, V_FLOOR2))
         P_eff_cache[i] = P_net_const[i] - const_I_P[i] * Vm
         Q_eff_cache[i] = Q_net_const[i] - const_I_Q[i] * Vm

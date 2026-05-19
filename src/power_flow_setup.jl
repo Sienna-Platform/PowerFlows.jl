@@ -288,13 +288,12 @@ function initialize_power_flow_variables(pf::ACPolarPowerFlow{T},
     _ignored...,
 ) where {T <: ACPowerFlowSolverType}
     residual = ACPowerFlowResidual(data, time_step)
-    x0_computed = improve_x0(pf, data, residual, time_step)
-    if OVERRIDE_x0 && !isnothing(x0)
-        print_signorms(residual.Rv; intro = "corrected ", ps = [1, 2, Inf])
-        x0_computed .= x0
-        @warn "Overriding initial guess x0."
+    if isnothing(x0)
+        x0_computed = improve_x0(pf, data, residual, time_step)
+    else
+        x0_computed = copy(x0)
+        @warn "Using caller-provided x0; skipping improve_x0."
         residual(x0_computed, time_step)
-        print_signorms(residual.Rv; ps = [1, 2, Inf])
     end
     _log_initial_residual(residual)
 
@@ -319,10 +318,11 @@ function initialize_power_flow_variables(pf::ACRectangularPowerFlow{T},
     _ignored...,
 ) where {T <: ACPowerFlowSolverType}
     residual = ACRectangularCIResidual(data, time_step)
-    x0_computed = improve_x0(pf, data, residual, time_step)
-    if OVERRIDE_x0 && !isnothing(x0)
-        copyto!(x0_computed, x0)
-        @warn "Overriding initial guess x0."
+    if isnothing(x0)
+        x0_computed = improve_x0(pf, data, residual, time_step)
+    else
+        x0_computed = copy(x0)
+        @warn "Using caller-provided x0; skipping improve_x0."
         residual(x0_computed, time_step)
     end
     _log_initial_residual(residual)
@@ -339,10 +339,11 @@ function initialize_power_flow_variables(pf::ACMixedPowerFlow{T},
     _ignored...,
 ) where {T <: ACPowerFlowSolverType}
     residual = ACMixedCPBResidual(data, time_step)
-    x0_computed = improve_x0(pf, data, residual, time_step)
-    if OVERRIDE_x0 && !isnothing(x0)
-        copyto!(x0_computed, x0)
-        @warn "Overriding initial guess x0."
+    if isnothing(x0)
+        x0_computed = improve_x0(pf, data, residual, time_step)
+    else
+        x0_computed = copy(x0)
+        @warn "Using caller-provided x0; skipping improve_x0."
         residual(x0_computed, time_step)
     end
     _log_initial_residual(residual)

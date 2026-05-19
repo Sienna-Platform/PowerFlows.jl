@@ -220,7 +220,7 @@ end
     @test all(isfinite, x0)
 
     # Smoke check: the shared step functions accept the mixed R/J without a
-    # MethodError (full parity is Stage 3 Task 3.1).
+    # MethodError.
     linSolveCache = PF.KLULinSolveCache(J.Jv)
     PF.symbolic_factor!(linSolveCache, J.Jv)
     stateVector = PF.StateVectorCache(x0, R.Rv)

@@ -31,7 +31,7 @@ struct ACMixedCPBJacobian
     total_bus_state::Int
     # nzval-index caches (populated once at construction)
     diag_base_nz::Matrix{Int}        # 4 × n_buses; rows: (off,off), (off,off+1), (off+1,off), (off+1,off+1)
-    offdiag_pv_nz::Matrix{Int}       # 2 × n_pv_pairs; PV power-balance row only (voltage-constraint row has no off-diagonals); see "offdiag_pv_nz layout"
+    offdiag_pv_nz::Matrix{Int}       # 2 × n_pv_pairs; PV power-balance row only (voltage-constraint row has no off-diagonals)
     offdiag_pv_i::Vector{Int}        # PV bus for each offdiag_pv_nz column
     offdiag_pv_k::Vector{Int}        # neighbor bus for each offdiag_pv_nz column
     offdiag_pv_y::Vector{ComplexF64} # Y_bus_eff[i, k] for each pair (constant; G_ik+jB_ik)
@@ -357,7 +357,7 @@ function _populate_mixed_constant_yb_blocks!(
             b = imag(y)
             row_bt = bus_types[row]
             if row_bt == PSY.ACBusTypes.PQ
-                # imag-first PQ block (see derivation above):
+                # imag-first PQ block:
                 Jv[row_off, col_off] = -b          # ∂F[off]/∂e_k   (imag)
                 Jv[row_off, col_off + 1] = -g      # ∂F[off]/∂f_k   (imag)
                 Jv[row_off + 1, col_off] = -g      # ∂F[off+1]/∂e_k (real)

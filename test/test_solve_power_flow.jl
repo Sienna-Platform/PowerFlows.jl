@@ -447,22 +447,20 @@ end
     @test norm(sienna_df[!, "generator_q"] .- matpower_df[!, "generator_q"], Inf) < 1e-3
 end
 
-if PF.OVERRIDE_x0
-    @testset "voltage validation" begin
-        sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
-        pf = ACPowerFlow{TrustRegionACPowerFlow}(; correct_bustypes = true)
-        data = PowerFlowData(pf, sys)
-        x0 = PF.calculate_x0(data, 1)
-        for (i, bt) in enumerate(PF.get_bus_type(data))
-            if bt == PSY.ACBusTypes.PQ
-                x0[2 * i - 1] = 2.0 # set voltage magnitude of PQ bus to 2.0 p.u.
-            end
+@testset "voltage validation" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
+    pf = ACPowerFlow{TrustRegionACPowerFlow}(; correct_bustypes = true)
+    data = PowerFlowData(pf, sys)
+    x0 = PF.calculate_x0(data, 1)
+    for (i, bt) in enumerate(PF.get_bus_type(data))
+        if bt == PSY.ACBusTypes.PQ
+            x0[2 * i - 1] = 2.0 # set voltage magnitude of PQ bus to 2.0 p.u.
         end
-        @test_logs (:warn, r".*voltage magnitudes outside of range.*") match_mode = :any solve_power_flow!(
-            data;
-            x0 = x0,
-        )
     end
+    @test_logs (:warn, r".*voltage magnitudes outside of range.*") match_mode = :any solve_power_flow!(
+        data;
+        x0 = x0,
+    )
 end
 
 @testset "enhanced flat start" begin

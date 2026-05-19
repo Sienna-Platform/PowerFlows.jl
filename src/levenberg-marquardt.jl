@@ -5,15 +5,13 @@ to update its entries in-place, and a cached QR factorization. `D` is the
 Marquardt column scaling (identity when disabled)."""
 mutable struct LMWorkspace
     A::SparseMatrixCSC{Float64, Int64}
-    # PERF: if we're doing dense access, I'd expect a bitmask to be faster.
-    #       Or only store λ_diag_indices (sparse) and infer J entries as the complement.
     # Indices into A.nzval for the J block entries (same order as J.Jv.nzval)
     j_nzval_indices::Vector{Int}
     # Indices into A.nzval for the √λ diagonal entries (length n)
     λ_diag_indices::Vector{Int}
-    # PERF: have not investigated other factorization methods. SPQR does not allow
-    #       for in-place updates or re-use of symbolic factorization, but with non
-    #       square matrices--J^T J form is more unstable--we don't have a lot of options.
+    # SPQR: enables a cached symbolic factorization with in-place numeric
+    # updates on the augmented [J; √λ·I]; the J^TJ normal-equations form is
+    # less stable for the rectangular system.
     # Cached QR factorization
     F::SparseArrays.SPQR.QRSparse{Float64, Int64}
     # Preallocated augmented RHS [-Rv; 0] (length m + n); bottom n stay zero.
