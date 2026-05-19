@@ -24,6 +24,8 @@ pages = OrderedDict(
     "How-to-Guides" => "how-tos/stub.md",
     "Explanation" => Any[
         "Evaluation Models vs. Solver Algorithms" => "explanation/models-and-solvers.md",
+        "Mixed Current-Power Balance Formulation" => "explanation/mixed_cpb_formulation.md",
+        "Levenberg-Marquardt vs Gauss-Seidel" => "explanation/lm_vs_gauss_seidel.md",
         "LCC Model Implementation" => "explanation/lcc_model.md",
     ],
     "Reference" => Any[

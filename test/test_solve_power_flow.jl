@@ -285,27 +285,22 @@ end
 end
 
 # in this test, the following aspects are checked:
-# 1. The results of the power flow are consistent for the KLU and Hybrid solvers
-# 2. The results of the power flow are consistent for the KLU solver and the legacy implementation
-# 3. The Jacobian matrix is the same for the KLU solver and the legacy implementation
-@testset "Compare larger grid results KLU vs Hybrid" begin
+# The results of the power flow are consistent for the default (KLU), NewtonRaphson and TrustRegion solvers
+@testset "Compare larger grid results KLU vs NewtonRaphson vs TrustRegion" begin
     sys = build_system(MatpowerTestSystems, "matpower_ACTIVSg2000_sys")
 
     PSY.set_units_base_system!(sys, "SYSTEM_BASE")
     pf_default = ACPowerFlow(; correct_bustypes = true)
-    pf_lu = ACPowerFlow{LUACPowerFlow}(; correct_bustypes = true)
     pf_newton = ACPowerFlow{NewtonRaphsonACPowerFlow}(; correct_bustypes = true)
-    data = PowerFlowData(pf_default, sys)
-
-    time_step = 1
+    pf_tr = ACPowerFlow{TrustRegionACPowerFlow}(; correct_bustypes = true)
 
     res_default = solve_power_flow(pf_default, sys)  # must be the same as KLU
-    res_lu = solve_power_flow(pf_lu, sys)
     res_newton = solve_power_flow(pf_newton, sys)
+    res_tr = solve_power_flow(pf_tr, sys)
 
     @test all(
         isapprox.(
-            res_lu["bus_results"][!, :Vm],
+            res_newton["bus_results"][!, :Vm],
             res_default["bus_results"][!, :Vm],
             rtol = 0,
             atol = 1e-12,
@@ -313,66 +308,75 @@ end
     )
     @test all(
         isapprox.(
-            res_lu["bus_results"][!, :θ],
+            res_newton["bus_results"][!, :θ],
             res_default["bus_results"][!, :θ],
             rtol = 0,
             atol = 1e-12,
         ),
     )
-
     @test all(
         isapprox.(
-            res_lu["bus_results"][!, :Vm],
-            res_newton["bus_results"][!, :Vm],
+            res_tr["bus_results"][!, :Vm],
+            res_default["bus_results"][!, :Vm],
             rtol = 0,
-            atol = 1e-12,
+            atol = 1e-8,
         ),
     )
     @test all(
         isapprox.(
-            res_lu["bus_results"][!, :θ],
-            res_newton["bus_results"][!, :θ],
+            res_tr["bus_results"][!, :θ],
+            res_default["bus_results"][!, :θ],
             rtol = 0,
-            atol = 1e-12,
+            atol = 1e-8,
         ),
     )
 end
 
 @testset "voltage_stability_factors" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
-    pf_lu = ACPowerFlow{LUACPowerFlow}(;
-        calculate_voltage_stability_factors = true,
-        correct_bustypes = true,
-    )
     pf_newton = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
         calculate_voltage_stability_factors = true,
         correct_bustypes = true,
     )
-    data_lu = PowerFlowData(pf_lu, sys)
+    pf_tr = ACPowerFlow{TrustRegionACPowerFlow}(;
+        calculate_voltage_stability_factors = true,
+        correct_bustypes = true,
+    )
     data_newton = PowerFlowData(pf_newton, sys)
+    data_tr = PowerFlowData(pf_tr, sys)
     time_step = 1
-    solve_power_flow!(data_lu)
     solve_power_flow!(data_newton)
+    solve_power_flow!(data_tr)
     @test all(
         isapprox.(
-            data_lu.voltage_stability_factors,
+            data_tr.voltage_stability_factors,
             data_newton.voltage_stability_factors,
             rtol = 0,
             atol = 1e-6,
         ),
     )
-    ref, pv, pq = PowerFlows.bus_type_idx(data_lu, time_step)
+
+    ref, pv, pq = PowerFlows.bus_type_idx(data_newton, time_step)
     pvpq = [pv; pq]
     npvpq = length(pvpq)
-    V = data_lu.bus_magnitude[:, time_step] .* exp.(1im * data_lu.bus_angles[:, time_step])
-    dSbus_dVa, dSbus_dVm = _legacy_dSbus_dV(V, data_lu.power_network_matrix.data)
-    J = _legacy_J(dSbus_dVa, dSbus_dVm, pvpq, pq)
+
+    # Build the Jacobian using the production code path, then re-block it the same
+    # way `_calculate_voltage_stability_factors` does internally.
+    residual = PF.ACPowerFlowResidual(data_newton, time_step)
+    x_solved = PF.calculate_x0(data_newton, time_step)
+    residual(x_solved, time_step)
+    J = PF.ACPowerFlowJacobian(residual, time_step)
+    J(time_step)
+    rows, cols = PowerFlows._block_J_indices(pvpq, pq)
+    J_block = J.Jv[rows, cols]
+
     Gs =
-        J[(npvpq + 1):end, (npvpq + 1):end] -
-        J[(npvpq + 1):end, 1:npvpq] * inv(collect(J[1:npvpq, 1:npvpq])) *
-        J[1:npvpq, (npvpq + 1):end]
+        J_block[(npvpq + 1):end, (npvpq + 1):end] -
+        J_block[(npvpq + 1):end, 1:npvpq] *
+        inv(collect(J_block[1:npvpq, 1:npvpq])) *
+        J_block[1:npvpq, (npvpq + 1):end]
     u_1, (σ_1,), v_1, _ = PROPACK.tsvd_irl(Gs; smallest = true, k = 1)
-    σ, u, v = PowerFlows._singular_value_decomposition(J, npvpq)
+    σ, u, v = PowerFlows._singular_value_decomposition(J_block, npvpq)
 
     @assert isapprox(σ_1, σ, atol = 1e-6)
     # the sign does not matter
@@ -443,22 +447,20 @@ end
     @test norm(sienna_df[!, "generator_q"] .- matpower_df[!, "generator_q"], Inf) < 1e-3
 end
 
-if PF.OVERRIDE_x0
-    @testset "voltage validation" begin
-        sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
-        pf = ACPowerFlow{TrustRegionACPowerFlow}(; correct_bustypes = true)
-        data = PowerFlowData(pf, sys)
-        x0 = PF.calculate_x0(data, 1)
-        for (i, bt) in enumerate(PF.get_bus_type(data))
-            if bt == PSY.ACBusTypes.PQ
-                x0[2 * i - 1] = 2.0 # set voltage magnitude of PQ bus to 2.0 p.u.
-            end
+@testset "voltage validation" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
+    pf = ACPowerFlow{TrustRegionACPowerFlow}(; correct_bustypes = true)
+    data = PowerFlowData(pf, sys)
+    x0 = PF.calculate_x0(data, 1)
+    for (i, bt) in enumerate(PF.get_bus_type(data))
+        if bt == PSY.ACBusTypes.PQ
+            x0[2 * i - 1] = 2.0 # set voltage magnitude of PQ bus to 2.0 p.u.
         end
-        @test_logs (:warn, r".*voltage magnitudes outside of range.*") match_mode = :any solve_power_flow!(
-            data;
-            x0 = x0,
-        )
     end
+    @test_logs (:warn, r".*voltage magnitudes outside of range.*") match_mode = :any solve_power_flow!(
+        data;
+        x0 = x0,
+    )
 end
 
 @testset "enhanced flat start" begin
@@ -728,7 +730,7 @@ end
 
 function test_lcc_ac_solver(ACSolver)
     # Skip the solvers that do not support LCCs
-    ACSolver ∈ (LUACPowerFlow, RobustHomotopyPowerFlow) && return
+    ACSolver ∈ (RobustHomotopyPowerFlow,) && return
     sys, lcc = simple_lcc_system()
     pf = ACPowerFlow{ACSolver}(; correct_bustypes = true)
     data = PowerFlowData(pf, sys)

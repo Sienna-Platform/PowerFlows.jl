@@ -560,35 +560,88 @@ function make_bus_slack_participation_factors!(
     return
 end
 
-function validate_voltage_magnitudes(x::Vector{Float64},
-    bus_types::AbstractArray{PSY.ACBusTypes},
-    range::NamedTuple{(:min, :max), Tuple{Float64, Float64}} = VM_VALIDATION_RANGE,
-    i::Int64 = 1,
+"""Emit the out-of-range voltage-magnitude warning, shared by every validator."""
+# @noinline: keep the rare `@warn`/logging codegen out of the per-iteration
+# validators so it is compiled once, not duplicated into each hot scan.
+@noinline function _warn_vm_out_of_range(
+    num_outside_range::Int,
+    range::MinMax,
+    iter::Integer,
+    bus_label::String,
 )
-    # outside_range = sizehint!(Vector{Int64}(), MAX_INDS_TO_PRINT)
-    num_outside_range = 0
-    for (i, bt) in enumerate(bus_types)
-        if bt == PSY.ACBusTypes.PQ
-            if (x[2 * i - 1] < range.min || x[2 * i - 1] > range.max) #&&
-                # size(outside_range, 1) <= MAX_INDS_TO_PRINT
-                #push!(outside_range, i)
-                num_outside_range += 1
-            end
+    @warn "Iteration $iter: voltage magnitudes outside of range $range at " *
+          "$num_outside_range $bus_label buses." maxlog = PF_MAX_LOG
+    return
+end
+
+"""Precompute, once per solve, the `x`-offsets of PQ/PV buses for the per-bus
+block (rectangular CI / mixed CPB) state layout. Bus types and the state
+layout are invariant across NR/TR iterations, so this filtering is hoisted out
+of the per-iteration validator. `offsets[i]` is the start of bus `i`'s block;
+`(e, f) = (x[off], x[off + 1])`. REF is fixed and excluded here."""
+function _pqpv_validate_offsets(
+    bus_type::AbstractVector{PSY.ACBusTypes},
+    offsets::AbstractVector{<:Integer},
+)
+    validate_offsets = Int[]
+    for (i, bt) in enumerate(bus_type)
+        if bt == PSY.ACBusTypes.PQ || bt == PSY.ACBusTypes.PV
+            push!(validate_offsets, Int(offsets[i]))
         end
     end
-    if num_outside_range > 0
-        @warn "Iteration $i: voltage magnitudes outside of range $range at " *
-              "$num_outside_range PQ buses." maxlog = PF_MAX_LOG
+    return validate_offsets
+end
+
+"""Precompute, once per solve, the `x`-indices holding |V| for PQ buses in the
+polar state layout (`x[2i-1]` = |V| of bus `i`). Bus types are invariant
+across NR/TR iterations, so this filtering is hoisted out of the per-iteration
+validator. Only PQ is checked (PV/REF have |V| pinned to a set-point)."""
+function _pq_validate_indices(bus_type::AbstractVector{PSY.ACBusTypes})
+    validate_indices = Int[]
+    for (i, bt) in enumerate(bus_type)
+        bt == PSY.ACBusTypes.PQ && push!(validate_indices, 2 * i - 1)
     end
-    #=
-    if size(outside_range, 1) > MAX_INDS_TO_PRINT
-        @warn "Iteration $i: voltage magnitudes outside of range $range at over $MAX_INDS_TO_PRINT buses." maxlog =
-            PF_MAX_LOG
-    elseif size(outside_range, 1) > 0
-        @warn "Iteration $i: voltage magnitudes outside of range $range at $(size(outside_range, 1)) buses: $(outside_range)" maxlog =
-            PF_MAX_LOG
+    return validate_indices
+end
+
+function validate_voltage_magnitudes(
+    x::Vector{Float64},
+    validate_indices::Vector{Int},
+    range::MinMax,
+    iter::Int64 = 1,
+)
+    num_outside_range = 0
+    @inbounds for k in validate_indices
+        vm = x[k]
+        num_outside_range += (vm < range.min) | (vm > range.max)
     end
-    =#
+    num_outside_range > 0 &&
+        _warn_vm_out_of_range(num_outside_range, range, iter, "PQ")
+    return
+end
+
+"""Validate squared voltage magnitudes for the per-bus-block (rectangular CI /
+mixed CPB) state layout, scanning the precomputed PQ/PV offset list
+([`_pqpv_validate_offsets`](@ref)) instead of re-filtering all buses every
+iteration. Unlike the polar check (PQ only), PV is included: `(e, f)` are
+genuine state variables for PV here, so |V|² can drift out of range before the
+`|V|²−V_set²` row pins it — a flagged PV iterate is a real diagnostic. REF is
+fixed and was excluded at offset-precompute time."""
+function _validate_squared_voltage_magnitudes(
+    x::Vector{Float64},
+    validate_offsets::Vector{Int},
+    range::MinMax,
+    iter::Int64,
+)
+    lo = range.min^2
+    hi = range.max^2
+    num_outside_range = 0
+    @inbounds for o in validate_offsets
+        v2 = x[o] * x[o] + x[o + 1] * x[o + 1]
+        num_outside_range += (v2 < lo) | (v2 > hi)
+    end
+    num_outside_range > 0 &&
+        _warn_vm_out_of_range(num_outside_range, range, iter, "PQ/PV")
     return
 end
 

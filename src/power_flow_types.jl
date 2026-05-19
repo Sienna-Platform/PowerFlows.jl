@@ -87,6 +87,13 @@ fail to converge where other methods would succeed.
 Works with both the polar ([`ACPolarPowerFlow`](@ref)) and rectangular
 current-injection ([`ACRectangularPowerFlow`](@ref)) formulations.
 
+Marquardt diagonal column scaling (`√λ·D` damping instead of `√λ·I`) can be
+toggled via `solver_settings = Dict(:marquardt_scaling => true|false)`. When
+unset it defaults **on** for [`ACRectangularPowerFlow`](@ref) — whose state
+columns `(e, f, Q, P_gen)` are differently scaled, so identity damping is
+ill-conditioned — and **off** for [`ACPolarPowerFlow`](@ref), leaving the polar
+solver numerically unchanged.
+
 See also: [`ACPowerFlow`](@ref).
 """
 struct LevenbergMarquardtACPowerFlow <: ACPowerFlowSolverType end
@@ -377,6 +384,116 @@ end
 
 ACRectangularPowerFlow(; kwargs...) =
     ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(; kwargs...)
+
+"""
+    ACMixedPowerFlow{ACSolver}(; kwargs...) where {ACSolver <: ACPowerFlowSolverType}
+    ACMixedPowerFlow(; kwargs...)
+
+An evaluation model for the AC power flow solved with the Mixed
+Current-Power Balance (MCPB) formulation in rectangular coordinates.
+
+State per bus: PQ `(eᵢ, fᵢ)` with the divided complex current balance
+`(I_specᵢ − Y_bus·V)ᵢ / V̄ᵢ`, PV `(eᵢ, fᵢ)` with the real power balance plus
+the `|Vᵢ|²` magnitude constraint, REF `(P_genᵢ, Q_genᵢ)` with `(eᵢ, fᵢ)` fixed.
+There are 2 variables per bus, so the system size is `2n`.
+
+`ACSolver` defaults to [`NewtonRaphsonACPowerFlow`](@ref). Supported solvers:
+[`NewtonRaphsonACPowerFlow`](@ref), [`TrustRegionACPowerFlow`](@ref), and
+[`LevenbergMarquardtACPowerFlow`](@ref). Robust Homotopy and Gradient Descent
+are rejected at construction — they operate on the polar formulation only.
+
+Unlike [`ACPolarPowerFlow`](@ref), this model has no
+`calculate_voltage_stability_factors`, `calculate_loss_factors`, or
+`robust_power_flow` options — those post-processing/fallback paths assume the
+polar state layout and have no mixed current-power equivalent.
+
+# Arguments
+- `check_reactive_power_limits::Bool`: Default `false`.
+- `exporter::Union{Nothing, PowerFlowEvaluationModel}`: Default `nothing`.
+- `generator_slack_participation_factors`: Same semantics as
+    [`ACPolarPowerFlow`](@ref). Default `nothing`.
+- `enhanced_flat_start::Bool`: Default `true`.
+- `skip_redistribution::Bool`: Default `false`.
+- `distribute_slack_proportional_to_headroom::Bool`: Default `false`.
+- `network_reductions::Vector{PNM.NetworkReduction}`: Default empty.
+- `time_steps::Int`: Default `1`.
+- `time_step_names::Vector{String}`: Default empty.
+- `correct_bustypes::Bool`: Default `false`.
+- `solver_settings::Dict{Symbol, Any}`: Default empty.
+"""
+struct ACMixedPowerFlow{ACSolver <: ACPowerFlowSolverType} <:
+       AbstractACPowerFlow{ACSolver}
+    check_reactive_power_limits::Bool
+    exporter::Union{Nothing, PowerFlowEvaluationModel}
+    generator_slack_participation_factors::Union{
+        Nothing,
+        Dict{Tuple{DataType, String}, Float64},
+        Vector{Dict{Tuple{DataType, String}, Float64}},
+    }
+    enhanced_flat_start::Bool
+    skip_redistribution::Bool
+    distribute_slack_proportional_to_headroom::Bool
+    network_reductions::Vector{PNM.NetworkReduction}
+    time_steps::Int
+    time_step_names::Vector{String}
+    correct_bustypes::Bool
+    solver_settings::Dict{Symbol, Any}
+end
+
+function ACMixedPowerFlow{ACSolver}(;
+    check_reactive_power_limits::Bool = false,
+    exporter::Union{Nothing, PowerFlowEvaluationModel} = nothing,
+    generator_slack_participation_factors::Union{
+        Nothing,
+        Dict{Tuple{DataType, String}, Float64},
+        Vector{Dict{Tuple{DataType, String}, Float64}},
+    } = nothing,
+    enhanced_flat_start::Bool = true,
+    skip_redistribution::Bool = false,
+    distribute_slack_proportional_to_headroom::Bool = false,
+    network_reductions::Vector{PNM.NetworkReduction} = PNM.NetworkReduction[],
+    time_steps::Int = 1,
+    time_step_names::Vector{String} = String[],
+    correct_bustypes::Bool = false,
+    solver_settings::Dict{Symbol, Any} = Dict{Symbol, Any}(),
+) where {ACSolver <: ACPowerFlowSolverType}
+    if ACSolver <: Union{
+        RobustHomotopyPowerFlow,
+        GradientDescentACPowerFlow,
+    }
+        throw(
+            ArgumentError(
+                "$(ACSolver) is not supported by ACMixedPowerFlow. " *
+                "Robust Homotopy and Gradient Descent do not operate on the " *
+                "mixed current-power formulation. Use " *
+                "ACMixedPowerFlow{NewtonRaphsonACPowerFlow}, " *
+                "{TrustRegionACPowerFlow}, or {LevenbergMarquardtACPowerFlow}, " *
+                "or run the solver on ACPolarPowerFlow.",
+            ),
+        )
+    end
+    _validate_slack_distribution_settings(
+        distribute_slack_proportional_to_headroom,
+        generator_slack_participation_factors,
+        time_steps,
+    )
+    return ACMixedPowerFlow{ACSolver}(
+        check_reactive_power_limits,
+        exporter,
+        generator_slack_participation_factors,
+        enhanced_flat_start,
+        skip_redistribution,
+        distribute_slack_proportional_to_headroom,
+        network_reductions,
+        time_steps,
+        time_step_names,
+        correct_bustypes,
+        solver_settings,
+    )
+end
+
+ACMixedPowerFlow(; kwargs...) =
+    ACMixedPowerFlow{NewtonRaphsonACPowerFlow}(; kwargs...)
 
 """An abstract supertype for all DC power flow evaluation models.
 Subtypes: [`DCPowerFlow`](@ref), [`PTDFDCPowerFlow`](@ref), and [`vPTDFDCPowerFlow`](@ref)."""

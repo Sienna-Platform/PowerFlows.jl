@@ -36,41 +36,41 @@ end
 
     # create structure for multi-period case
     time_steps = 24
-    pf_lu = ACPowerFlow{LUACPowerFlow}(; time_steps = time_steps)
-    pf_test = ACPowerFlow{NewtonRaphsonACPowerFlow}(; time_steps = time_steps)
+    pf_tr = ACPowerFlow{TrustRegionACPowerFlow}(; time_steps = time_steps)
+    pf_nr = ACPowerFlow{NewtonRaphsonACPowerFlow}(; time_steps = time_steps)
 
-    data_lu = PowerFlowData(pf_lu, sys)
-    data_test = PowerFlowData(pf_test, sys)
+    data_tr = PowerFlowData(pf_tr, sys)
+    data_nr = PowerFlowData(pf_nr, sys)
 
     # allocate timeseries data from csv
-    prepare_ts_data!(data_lu, time_steps)
-    prepare_ts_data!(data_test, time_steps)
+    prepare_ts_data!(data_tr, time_steps)
+    prepare_ts_data!(data_nr, time_steps)
 
-    # get power flows with NR KLU method and write results
-    solve_power_flow!(data_lu)
-    solve_power_flow!(data_test)
+    # solve with both methods
+    solve_power_flow!(data_tr)
+    solve_power_flow!(data_nr)
 
     # check results
-    @test isapprox(data_lu.bus_magnitude, data_test.bus_magnitude, atol = 1e-9)
-    @test isapprox(data_lu.bus_angles, data_test.bus_angles, atol = 1e-9)
+    @test isapprox(data_tr.bus_magnitude, data_nr.bus_magnitude, atol = 1e-9)
+    @test isapprox(data_tr.bus_angles, data_nr.bus_angles, atol = 1e-9)
     @test isapprox(
-        data_lu.arc_active_power_flow_from_to,
-        data_test.arc_active_power_flow_from_to,
+        data_tr.arc_active_power_flow_from_to,
+        data_nr.arc_active_power_flow_from_to,
         atol = 1e-9,
     )
     @test isapprox(
-        data_lu.arc_active_power_flow_to_from,
-        data_test.arc_active_power_flow_to_from,
+        data_tr.arc_active_power_flow_to_from,
+        data_nr.arc_active_power_flow_to_from,
         atol = 1e-9,
     )
     @test isapprox(
-        data_lu.arc_reactive_power_flow_from_to,
-        data_test.arc_reactive_power_flow_from_to,
+        data_tr.arc_reactive_power_flow_from_to,
+        data_nr.arc_reactive_power_flow_from_to,
         atol = 1e-9,
     )
     @test isapprox(
-        data_lu.arc_reactive_power_flow_to_from,
-        data_test.arc_reactive_power_flow_to_from,
+        data_tr.arc_reactive_power_flow_to_from,
+        data_nr.arc_reactive_power_flow_to_from,
         atol = 1e-9,
     )
 end
