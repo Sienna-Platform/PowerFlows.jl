@@ -38,6 +38,21 @@ function compute_delta(main_val::AbstractString, branch_val::AbstractString)::St
     return "$(sign)$(pct)%"
 end
 
+# Group by formulation family. Mirrors the _category/order logic in
+# performance_test.jl so the posted table matches the local printout.
+function category(label::AbstractString)::String
+    occursin("ACRectangular", label) && return "Rectangular CI"
+    occursin("ACMixed", label) && return "Mixed CPB"
+    (occursin("DCPowerFlow", label) || occursin("PTDF", label)) && return "DC"
+    return "Polar AC"
+end
+
+const CATEGORY_ORDER = ["Polar AC", "Rectangular CI", "Mixed CPB", "DC"]
+
+# Drop the redundant "<system>-" prefix shared by every label.
+strip_system_prefix(name::AbstractString)::String =
+    occursin("-", name) ? String(split(name, "-"; limit = 2)[2]) : String(name)
+
 function main()
     main_csv = ARGS[1]
     branch_csv = ARGS[2]
@@ -74,18 +89,28 @@ function main()
             "| $(format_time(main_precompile_time)) | $(format_time(branch_precompile_time)) | $(precompile_delta) |\n",
         )
 
-        # Solve time table
+        # Solve time tables, split by formulation family.
         write(io, "\n### Solve Time\n\n")
-        write(io, "| Test | Main | This Branch | Delta |\n")
-        write(io, "| :--- | :---: | :---: | :---: |\n")
+        buckets = Dict(c => String[] for c in CATEGORY_ORDER)
         for test in all_tests
-            main_val = get(main_dict, test, "N/A")
-            branch_val = get(branch_dict, test, "N/A")
-            delta = compute_delta(main_val, branch_val)
-            write(
-                io,
-                "| $(test) | $(format_time(main_val)) | $(format_time(branch_val)) | $(delta) |\n",
-            )
+            push!(buckets[category(test)], test)
+        end
+        for cat in CATEGORY_ORDER
+            tests = buckets[cat]
+            isempty(tests) && continue
+            write(io, "#### $(cat)\n\n")
+            write(io, "| Test | Main | This Branch | Delta |\n")
+            write(io, "| :--- | :---: | :---: | :---: |\n")
+            for test in tests
+                main_val = get(main_dict, test, "N/A")
+                branch_val = get(branch_dict, test, "N/A")
+                delta = compute_delta(main_val, branch_val)
+                write(
+                    io,
+                    "| $(strip_system_prefix(test)) | $(format_time(main_val)) | $(format_time(branch_val)) | $(delta) |\n",
+                )
+            end
+            write(io, "\n")
         end
     end
 end

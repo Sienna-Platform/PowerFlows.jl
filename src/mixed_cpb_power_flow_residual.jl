@@ -1,30 +1,18 @@
 """
-    struct ACRectangularCIResidual
+    struct ACMixedCPBResidual
 
-Residual functor for the augmented current-injection (rectangular) AC power flow.
-Mirrors [`ACPowerFlowResidual`](@ref) but operates on the per-bus variable-block
-state representation: PQ/REF blocks are 2 entries `(e,f)` or `(P_gen, Q_gen)`;
-PV blocks are 3 entries `(e, f, Q)`.
+Residual functor for the mixed current/power-balance (MCPB) AC power flow.
+Mirrors [`ACRectangularCIResidual`](@ref) 1:1, but every bus uses a 2-slot
+block (no PV→3 expansion).
 
-# Fields
-- `data::ACPowerFlowData`
-- `Rf!::Function` — inplace residual update
-- `Rv::Vector{Float64}` — current residual values, length `total_bus_state + 4·n_LCC`
-- `Y_bus_eff::SparseMatrixCSC{ComplexF64, Int}` — Y_bus with ZIP constant-Z folded in
-- `P_net_const::Vector{Float64}` — constant-power net injection (no |V| dependence)
-- `Q_net_const::Vector{Float64}` — constant-power net reactive injection
-- `const_I_P::Vector{Float64}` — constant-current P-withdrawal coefficient per bus
-- `const_I_Q::Vector{Float64}` — constant-current Q-withdrawal coefficient per bus
-- `P_net_set::Vector{Float64}` — initial P_net for distributed-slack delta computation
-- `bus_slack_participation_factors::SparseVector{Float64, Int}`
-- `subnetworks::Dict{Int64, Vector{Int64}}`
-- `bus_state_offset::Vector{REC_INDEX_TYPE}`
-- `bus_block_size::Vector{Int8}`
-- `total_bus_state::Int`
-- `validate_offsets::Vector{Int}` — precomputed `x`-offsets of PQ/PV buses for
-  the per-iteration voltage-magnitude diagnostic
+Non-obvious fields: `Y_bus_eff` folds in ZIP constant-Z; `P_net_const`/
+`Q_net_const` are the |V|-independent net injections; `const_I_P`/`const_I_Q`
+are the constant-current withdrawal coefficients; `P_net_set` is the initial
+P_net for the distributed-slack delta; `validate_offsets` are the precomputed
+PQ/PV `x`-offsets for the voltage-magnitude diagnostic. Remaining fields are
+named after their roles.
 """
-struct ACRectangularCIResidual
+struct ACMixedCPBResidual
     data::ACPowerFlowData
     Rf!::Function
     Rv::Vector{Float64}
@@ -41,22 +29,25 @@ struct ACRectangularCIResidual
     total_bus_state::Int
     validate_offsets::Vector{Int}
     # State caches mirrored from x at each residual evaluation. The Jacobian
-    # reads these so it sees the SAME (e, f, Q, P_gen, Q_gen, V_set²) values
-    # that the residual used. This is necessary because data.bus_magnitude
-    # holds V_set for PV buses (not |V_state|), and we need both available.
+    # reads these so it sees the SAME (e, f) values that the residual used.
+    # This is necessary because data.bus_magnitude holds V_set for PV buses
+    # (not |V_state|), and we need both available.
     e_state::Vector{Float64}            # length n_buses; current real(V)
     f_state::Vector{Float64}            # length n_buses; current imag(V)
-    Q_state::Vector{Float64}            # length n_buses; PV's Q state (else NaN)
     P_eff_cache::Vector{Float64}        # length n_buses; effective P at current iter
     Q_eff_cache::Vector{Float64}        # length n_buses; effective Q at current iter
+    # Accumulated network current Re/Im per bus, written by the residual and
+    # aliased by the MCPB Jacobian (the PV power row needs e·Ir + f·Ii).
+    Ir_acc::Vector{Float64}             # length n_buses; accumulated Re(I)
+    Ii_acc::Vector{Float64}             # length n_buses; accumulated Im(I)
 end
 
-function ACRectangularCIResidual(data::ACPowerFlowData, time_step::Int64)
+function ACMixedCPBResidual(data::ACPowerFlowData, time_step::Int64)
     n_buses = first(size(data.bus_type))
     n_lccs = size(data.lcc.p_set, 1)
     bus_type = view(data.bus_type, :, time_step)
 
-    offsets, block_sizes, total_bus_state = compute_bus_state_offsets(bus_type)
+    offsets, block_sizes, total_bus_state = compute_mixed_bus_state_offsets(bus_type)
     validate_offsets = _pqpv_validate_offsets(bus_type, offsets)
     total_state = total_bus_state + 4 * n_lccs
 
@@ -96,9 +87,9 @@ function ACRectangularCIResidual(data::ACPowerFlowData, time_step::Int64)
     Y_bus_eff = SparseArrays.sparse(ComplexF64.(Y))
     fold_zip_constant_z!(Y_bus_eff, data, time_step)
 
-    return ACRectangularCIResidual(
+    return ACMixedCPBResidual(
         data,
-        _update_rect_ci_residual_values!,
+        _update_mixed_cpb_residual_values!,
         Vector{Float64}(undef, total_state),
         Y_bus_eff,
         P_net_const,
@@ -117,10 +108,11 @@ function ACRectangularCIResidual(data::ACPowerFlowData, time_step::Int64)
         Vector{Float64}(undef, n_buses),
         Vector{Float64}(undef, n_buses),
         Vector{Float64}(undef, n_buses),
+        Vector{Float64}(undef, n_buses),
     )
 end
 
-function (R::ACRectangularCIResidual)(
+function (R::ACMixedCPBResidual)(
     Rv::Vector{Float64},
     x::Vector{Float64},
     time_step::Int64,
@@ -129,32 +121,32 @@ function (R::ACRectangularCIResidual)(
         R.const_I_P, R.const_I_Q, R.P_net_set,
         R.bus_slack_participation_factors, R.subnetworks,
         R.bus_state_offset, R.bus_block_size, R.total_bus_state,
-        R.e_state, R.f_state, R.Q_state, R.P_eff_cache, R.Q_eff_cache,
-        R.data, time_step)
+        R.e_state, R.f_state, R.P_eff_cache, R.Q_eff_cache,
+        R.data, time_step, R.Ir_acc, R.Ii_acc)
     copyto!(Rv, R.Rv)
     return
 end
 
-function (R::ACRectangularCIResidual)(x::Vector{Float64}, time_step::Int64)
+function (R::ACMixedCPBResidual)(x::Vector{Float64}, time_step::Int64)
     R.Rf!(R.Rv, x, R.Y_bus_eff, R.P_net_const, R.Q_net_const,
         R.const_I_P, R.const_I_Q, R.P_net_set,
         R.bus_slack_participation_factors, R.subnetworks,
         R.bus_state_offset, R.bus_block_size, R.total_bus_state,
-        R.e_state, R.f_state, R.Q_state, R.P_eff_cache, R.Q_eff_cache,
-        R.data, time_step)
+        R.e_state, R.f_state, R.P_eff_cache, R.Q_eff_cache,
+        R.data, time_step, R.Ir_acc, R.Ii_acc)
     return
 end
 
 """
-Update residual values F for the augmented current-injection formulation.
-
-Strategy: walk Y_bus_eff once to accumulate `Y·V` into the F slots, then add the
-specified-current contribution per bus type. PV buses add the ΔV² row. The 4
-LCC tail residuals are appended. ZIP constant-Z is already folded into Y_bus_eff
-at setup, so it contributes via Y·V. ZIP constant-current is subtracted from the
-effective P/Q before computing I_spec.
+Update MCPB residual `F` (paper §IV). Mirrors
+[`_update_rect_ci_residual_values!`](@ref) step-for-step. Network current
+`Y_bus_eff·V` (+ LCC) is accumulated into per-bus `Ir_acc`/`Ii_acc` (not
+subtracted into `F`), keeping rect's `residual = I_spec − I_network` sign so
+the Jacobian mirrors rect. Per-bus blocks are 2 slots: PQ = divided-current
+balance, imag-first (so nonzero `B_ii` lands on the block diagonal); PV = eq.7
+power balance then eq.8 `|V|² − V_set²`; REF = rect's REF branch verbatim.
 """
-function _update_rect_ci_residual_values!(
+function _update_mixed_cpb_residual_values!(
     F::Vector{Float64},
     x::Vector{Float64},
     Y_bus_eff::SparseMatrixCSC{ComplexF64, Int},
@@ -170,19 +162,20 @@ function _update_rect_ci_residual_values!(
     total_bus_state::Int,
     e_state::Vector{Float64},
     f_state::Vector{Float64},
-    Q_state::Vector{Float64},
     P_eff_cache::Vector{Float64},
     Q_eff_cache::Vector{Float64},
     data::ACPowerFlowData,
     time_step::Int64,
+    Ir_acc::Vector{Float64},
+    Ii_acc::Vector{Float64},
 )
     n_buses = first(size(data.bus_type))
     n_lccs = size(data.lcc.p_set, 1)
     bus_types = view(data.bus_type, :, time_step)
 
-    # 1) Push state into data (only PQ updates bus_magnitude; PV preserves V_set).
-    rect_update_data!(data, x, bus_state_offset, bus_block_size, time_step)
-    # Populate state caches before LCC admittance refresh (LCC needs |V_state|).
+    # 1) Push state into data (MCPB: PQ updates bus_magnitude; PV/REF preserve
+    #    V_set). Populate state caches before LCC admittance refresh.
+    mixed_update_data!(data, x, bus_state_offset, bus_block_size, time_step)
     @inbounds for i in 1:n_buses
         off = Int(bus_state_offset[i])
         bt = bus_types[i]
@@ -191,25 +184,20 @@ function _update_rect_ci_residual_values!(
             θ = data.bus_angles[i, time_step]
             e_state[i] = Vm * cos(θ)
             f_state[i] = Vm * sin(θ)
-            Q_state[i] = NaN
         else
             e_state[i] = x[off]
             f_state[i] = x[off + 1]
-            Q_state[i] = bt == PSY.ACBusTypes.PV ? x[off + 2] : NaN
         end
     end
     if n_lccs > 0
-        # PV buses store V_set in data.bus_magnitude; use the rect form so LCC math
-        # sees |V_state| = sqrt(e² + f²), matching the rectangular Jacobian.
         _update_ybus_lcc!(data, time_step, e_state, f_state)
     end
 
-    # 2) Compute P_eff / Q_eff (slack distribution + ZIP constant-current correction).
-    # ZIP constant-Z is folded into `Y_bus_eff` at setup (see `fold_zip_constant_z!`
-    # in `rectangular_ci_setup.jl`), so only constant-P and constant-I appear here.
+    # 2) Compute P_eff / Q_eff (slack distribution + ZIP constant-current
+    #    correction). ZIP constant-Z is folded into `Y_bus_eff` at setup.
     @inbounds for i in 1:n_buses
-        # ZIP const-I uses |V_state|, not V_set; V_FLOOR2 (1e-16) guards 1/|V|².
-        Vm = sqrt(max(e_state[i]^2 + f_state[i]^2, V_FLOOR2))
+        Vm_sq = max(e_state[i]^2 + f_state[i]^2, V_FLOOR2)
+        Vm = sqrt(Vm_sq)
         P_eff_cache[i] = P_net_const[i] - const_I_P[i] * Vm
         Q_eff_cache[i] = Q_net_const[i] - const_I_Q[i] * Vm
     end
@@ -224,8 +212,11 @@ function _update_rect_ci_residual_values!(
         end
     end
 
-    # 3) Initialize F and accumulate -I_inj from Y_bus_eff*V.
-    fill!(F, 0.0)
+    # 3) Accumulate +I_network = Y_bus_eff·V into Ir_acc/Ii_acc (NOT into F).
+    #    rect subtracts -Re/Im(Y·V) into F; MCPB accumulates the POSITIVE
+    #    current here, and the residual is I_spec − I_network below.
+    fill!(Ir_acc, 0.0)
+    fill!(Ii_acc, 0.0)
     Yvals = SparseArrays.nonzeros(Y_bus_eff)
     Yrows = SparseArrays.rowvals(Y_bus_eff)
     @inbounds for col in 1:n_buses
@@ -236,59 +227,13 @@ function _update_rect_ci_residual_values!(
             y = Yvals[j]
             g = real(y)
             b = imag(y)
-            row_off = Int(bus_state_offset[row])
-            F[row_off] -= (g * e_col - b * f_col)   # -Re(Y·V)
-            F[row_off + 1] -= (g * f_col + b * e_col)   # -Im(Y·V)
+            Ir_acc[row] += g * e_col - b * f_col   # Re(Y·V)
+            Ii_acc[row] += g * f_col + b * e_col   # Im(Y·V)
         end
     end
 
-    # 4) Add per-bus I_spec contributions and PV's ΔV² row.
-    # NOTE on REF distributed slack: x[off] holds `P_net_set[ref] + total_slack`
-    # (polar convention — the state variable carries the WHOLE subnetwork slack,
-    # not just REF's share). REF's actual P_gen is `P_net_set + c_ref · total_slack`.
-    # For the default case c_ref = 1, this collapses to x[off].
-    @inbounds for i in 1:n_buses
-        off = Int(bus_state_offset[i])
-        bt = bus_types[i]
-        e_i = e_state[i]
-        f_i = f_state[i]
-        V_sq = e_i^2 + f_i^2
-        # V_FLOOR2 floor: a degenerate (e,f) (warm/flat start) must not blow up
-        # 1/|V|². PV's |V|² row below keeps raw V_sq (−2e/−2f Jacobian is exact).
-        D = max(V_sq, V_FLOOR2)
-        if bt == PSY.ACBusTypes.REF
-            c_ref = bus_slack_participation_factors[i]
-            P_slack_total = x[off] - P_net_set[i]
-            P_gen = P_net_set[i] + c_ref * P_slack_total
-            Q_gen = x[off + 1]
-            # |V| at REF is fixed at V_set; subtract the ZIP constant-current draw
-            # so the recovered injection matches polar's `bus_active_power_injections`
-            # (which includes `const_I * V_set` via `get_bus_active_power_total_withdrawals`).
-            Vm = sqrt(D)
-            P_eff = P_gen - const_I_P[i] * Vm
-            Q_eff = Q_gen - const_I_Q[i] * Vm
-            F[off] += (P_eff * e_i + Q_eff * f_i) / D
-            F[off + 1] += (P_eff * f_i - Q_eff * e_i) / D
-        else
-            P_i = P_eff_cache[i]
-            # PV: Q_state is the net injection unknown — at convergence it equals
-            # Q_gen − Q_load_total(|V_set|), so the ZIP-I term is implicit and a
-            # `−const_I_Q·|V|` correction here would double-count. For PQ, Q is a
-            # known input, so Q_eff_cache pre-subtracts the constant-current draw.
-            Q_i = bt == PSY.ACBusTypes.PV ? Q_state[i] : Q_eff_cache[i]
-            F[off] += (P_i * e_i + Q_i * f_i) / D
-            F[off + 1] += (P_i * f_i - Q_i * e_i) / D
-            if bt == PSY.ACBusTypes.PV
-                # V_set² stored in data.bus_magnitude (preserved by rect_update_data!).
-                V_set_sq = data.bus_magnitude[i, time_step]^2
-                F[off + 2] = V_set_sq - V_sq
-            end
-        end
-    end
-
-    # 5) LCC current contribution at AC-side buses (mirrors polar's
-    #    F[ΔP] += |V|²·G_lcc, F[ΔQ] += -|V|²·B_lcc translated to current mismatch:
-    #    F[ΔI_r] -= Re(Y_lcc·V_fb), F[ΔI_i] -= Im(Y_lcc·V_fb)).
+    # 4) LCC current at AC-side buses, accumulated into Ir_acc/Ii_acc so the
+    #    PQ/REF current balance AND the PV power row (e·Ir + f·Ii) all see it.
     if n_lccs > 0
         for (bus_indices, self_admittances) in
             zip(data.lcc.bus_indices, data.lcc.branch_admittances)
@@ -297,15 +242,50 @@ function _update_rect_ci_residual_values!(
                 f_i = f_state[bus_ix]
                 g = real(y_val)
                 b = imag(y_val)
-                off_i = Int(bus_state_offset[bus_ix])
-                F[off_i] -= g * e_i - b * f_i        # -Re(Y_lcc · V)
-                F[off_i + 1] -= g * f_i + b * e_i    # -Im(Y_lcc · V)
+                Ir_acc[bus_ix] += g * e_i - b * f_i   # Re(Y_lcc·V)
+                Ii_acc[bus_ix] += g * f_i + b * e_i   # Im(Y_lcc·V)
             end
         end
     end
 
-    # 6) LCC tail residuals — shared helper, with |V_state| instead of polar's
-    #    bus_magnitude (V_set at PV).
+    # 5) Per-bus residual blocks. residual = I_spec_term − I_network_accumulated.
+    fill!(F, 0.0)  # zeroed here (not at step 3) — accumulation is in Ir_acc/Ii_acc
+    @inbounds for i in 1:n_buses
+        off = Int(bus_state_offset[i])
+        bt = bus_types[i]
+        e_i = e_state[i]
+        f_i = f_state[i]
+        D = max(e_i^2 + f_i^2, V_FLOOR2)
+        if bt == PSY.ACBusTypes.REF
+            # REF: copied VERBATIM from rect's REF branch (slots NOT swapped)
+            # so rect's `_update_ref_diag_block!` is reusable.
+            c_ref = bus_slack_participation_factors[i]
+            P_slack_total = x[off] - P_net_set[i]
+            P_gen = P_net_set[i] + c_ref * P_slack_total
+            Q_gen = x[off + 1]
+            Vm = sqrt(D)
+            P_eff = P_gen - const_I_P[i] * Vm
+            Q_eff = Q_gen - const_I_Q[i] * Vm
+            F[off] = (P_eff * e_i + Q_eff * f_i) / D - Ir_acc[i]
+            F[off + 1] = (P_eff * f_i - Q_eff * e_i) / D - Ii_acc[i]
+        elseif bt == PSY.ACBusTypes.PV
+            # PV: real-power balance (eq.7) + |V|² constraint (eq.8).
+            P_i = P_eff_cache[i]
+            F[off] = e_i * Ir_acc[i] + f_i * Ii_acc[i] - P_i
+            V_set_sq = data.bus_magnitude[i, time_step]^2
+            F[off + 1] = (e_i^2 + f_i^2) - V_set_sq
+        else  # PQ
+            # PQ: divided-current balance, IMAG-FIRST ordering (paper §IV) —
+            # rect's two PQ rows with the two slots SWAPPED so nonzero B_ii
+            # lands on the block diagonal.
+            P_i = P_eff_cache[i]
+            Q_i = Q_eff_cache[i]
+            F[off] = (P_i * f_i - Q_i * e_i) / D - Ii_acc[i]   # imag → slot 0
+            F[off + 1] = (P_i * e_i + Q_i * f_i) / D - Ir_acc[i]  # real → slot 1
+        end
+    end
+
+    # 6) LCC tail residuals — shared rect helper, unchanged.
     if n_lccs > 0
         _set_lcc_tail_residuals!(
             F, data, total_bus_state, time_step, e_state, f_state,

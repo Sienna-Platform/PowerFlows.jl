@@ -13,6 +13,7 @@ A struct to keep track of the residuals in the Newton-Raphson AC power flow calc
 - `bus_slack_participation_factors::SparseVector{Float64, Int}`: A sparse vector of the slack participation factors aggregated at the bus level.
 - `subnetworks::Dict{Int64, Vector{Int64}}`: The dictionary that identifies subnetworks (connected components), with the key defining the REF bus, values defining the corresponding buses in the subnetwork.
 - `P_slack_buf::Vector{Float64}`: Scratch buffer of length `n_buses` used by `_update_residual_values!` to write the per-subnetwork slack distribution in place, avoiding a per-iteration allocation when indexing `bus_slack_participation_factors` by `subnetwork_buses`.
+- `validate_indices::Vector{Int}`: precomputed `x`-indices of PQ-bus |V| entries for the per-iteration voltage-magnitude diagnostic.
 """
 struct ACPowerFlowResidual
     data::ACPowerFlowData
@@ -28,6 +29,7 @@ struct ACPowerFlowResidual
     bus_active_constant_Z::Vector{Float64}
     bus_reactive_constant_Z::Vector{Float64}
     P_slack_buf::Vector{Float64}
+    validate_indices::Vector{Int}
 end
 
 """
@@ -67,6 +69,8 @@ function ACPowerFlowResidual(data::ACPowerFlowData, time_step::Int64)
         P_net_set[ix] = P_net[ix]
     end
 
+    validate_indices = _pq_validate_indices(bus_type)
+
     bus_slack_participation_factors =
         _build_bus_slack_participation_factors(data, bus_type, subnetworks, time_step)
 
@@ -93,6 +97,7 @@ function ACPowerFlowResidual(data::ACPowerFlowData, time_step::Int64)
         bus_active_constant_Z,
         bus_reactive_constant_Z,
         Vector{Float64}(undef, n_buses),
+        validate_indices,
     )
 end
 
@@ -345,7 +350,7 @@ function _update_residual_values!(
     Yb_vals = SparseArrays.nonzeros(Yb)
     Yb_rowvals = SparseArrays.rowvals(Yb)
     for bus_to in axes(Yb, 1)
-        for j in Yb.colptr[bus_to]:(Yb.colptr[bus_to + 1] - 1)
+        for j in SparseArrays.nzrange(Yb, bus_to)
             yb = Yb_vals[j]
             bus_from = Yb_rowvals[j]
             gb = real(yb)

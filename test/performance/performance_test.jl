@@ -96,6 +96,45 @@ for (group, name) in systems
     end
 end
 
+# Mixed Current-Power Balance (MCPB) formulation — current-balance equations
+# at PQ buses, power-balance at PV/REF, augmented generator P/Q states. Mirrors
+# the rectangular CI variant matrix (plain NR, NR+Iwamoto, Trust Region,
+# Trust Region + Iwamoto fallback) plus a single Levenberg-Marquardt run.
+const _MIXED_CPB_VARIANTS = [
+    ("ACMixedPowerFlow{NR}", PF.NewtonRaphsonACPowerFlow,
+        Dict{Symbol, Any}()),
+    ("ACMixedPowerFlow{NR}(iwamoto)", PF.NewtonRaphsonACPowerFlow,
+        Dict{Symbol, Any}(:iwamoto => true)),
+    ("ACMixedPowerFlow{TR}", PF.TrustRegionACPowerFlow,
+        Dict{Symbol, Any}()),
+    ("ACMixedPowerFlow{TR}(iwamoto_fallback)", PF.TrustRegionACPowerFlow,
+        Dict{Symbol, Any}(:iwamoto_fallback => true)),
+    ("ACMixedPowerFlow{LM}", PF.LevenbergMarquardtACPowerFlow,
+        Dict{Symbol, Any}()),
+]
+for (group, name) in systems
+    sys = build_system(group, name)
+    for (solver_label, solver, extra_settings) in _MIXED_CPB_VARIANTS
+        try
+            pf = PF.ACMixedPowerFlow{solver}(;
+                correct_bustypes = true,
+                solver_settings = extra_settings)
+            pf_data = PF.PowerFlowData(pf, sys)
+            _, time_solve_1, _, _ = @timed PF.solve_power_flow!(pf_data; pf = pf)
+            record_time("$(name)-$(solver_label) First Solve", time_solve_1)
+            pf = PF.ACMixedPowerFlow{solver}(;
+                correct_bustypes = true,
+                solver_settings = extra_settings)
+            pf_data = PF.PowerFlowData(pf, sys)
+            _, time_solve_2, _, _ = @timed PF.solve_power_flow!(pf_data; pf = pf)
+            record_time("$(name)-$(solver_label) Second Solve", time_solve_2)
+        catch e
+            @error exception = (e, catch_backtrace())
+            record_failure("$(name)-$(solver_label) Solve")
+        end
+    end
+end
+
 # Iwamoto step control (NR variant with damping)
 for (group, name) in systems
     sys = build_system(group, name)
@@ -169,9 +208,28 @@ if !is_running_on_ci()
     println("Precompile time: $(precompile.time) s")
     csv_file = "solve_time_$(ARGS[1]).csv"
     if isfile(csv_file)
-        println("\nSolve times:")
+        function _category(label)
+            occursin("ACRectangular", label) && return "Rectangular CI"
+            occursin("ACMixed", label) && return "Mixed CPB"
+            (occursin("DCPowerFlow", label) || occursin("PTDF", label)) &&
+                return "DC"
+            return "Polar AC"
+        end
+        order = ["Polar AC", "Rectangular CI", "Mixed CPB", "DC"]
+        buckets = Dict(c => String[] for c in order)
         for line in eachline(csv_file)
-            println("\t", line)
+            label = first(split(line, ","))
+            # Drop the redundant "<system>-" prefix; group by formulation family.
+            row = replace(line, "$(systems[1][2])-" => "")
+            push!(buckets[_category(label)], row)
+        end
+        println("\nSolve times:")
+        for cat in order
+            isempty(buckets[cat]) && continue
+            println("\n  [", cat, "]")
+            for row in buckets[cat]
+                println("\t", row)
+            end
         end
     end
     pushed_to_args && pop!(ARGS)

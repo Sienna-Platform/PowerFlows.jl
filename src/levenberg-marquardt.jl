@@ -1,27 +1,32 @@
 """Pre-allocated workspace for the Levenberg-Marquardt solver.
 
-Holds the augmented matrix `[J; √λ·I]` with a fixed sparsity pattern,
-a mapping to update its entries in-place, and a cached QR factorization."""
+Holds the augmented matrix `[J; √λ·D]` with a fixed sparsity pattern, a mapping
+to update its entries in-place, and a cached QR factorization. `D` is the
+Marquardt column scaling (identity when disabled)."""
 mutable struct LMWorkspace
     A::SparseMatrixCSC{Float64, Int64}
-    # PERF: if we're doing dense access, I'd expect a bitmask to be faster.
-    #       Or only store λ_diag_indices (sparse) and infer J entries as the complement.
     # Indices into A.nzval for the J block entries (same order as J.Jv.nzval)
     j_nzval_indices::Vector{Int}
     # Indices into A.nzval for the √λ diagonal entries (length n)
     λ_diag_indices::Vector{Int}
-    # PERF: have not investigated other factorization methods. SPQR does not allow 
-    #       for in-place updates or re-use of symbolic factorization, but with non
-    #       square matrices--J^T J form is more unstable--we don't have a lot of options.
+    # SPQR: enables a cached symbolic factorization with in-place numeric
+    # updates on the augmented [J; √λ·I]; the J^TJ normal-equations form is
+    # less stable for the rectangular system.
     # Cached QR factorization
     F::SparseArrays.SPQR.QRSparse{Float64, Int64}
     # Preallocated augmented RHS [-Rv; 0] (length m + n); bottom n stay zero.
     b::Vector{Float64}
+    # Marquardt diagonal scaling (length n). All-ones ⇒ √λ·I.
+    D::Vector{Float64}
+    marquardt_scaling::Bool
 end
 
-"""Build the augmented matrix `[J; I]` once, recording which `A.nzval` entries
-correspond to J values vs the λ diagonal."""
-function LMWorkspace(Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE})
+"""Build the augmented matrix `[J; D]` once, recording which `A.nzval` entries
+correspond to J values vs the damping diagonal."""
+function LMWorkspace(
+    Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE};
+    marquardt_scaling::Bool = false,
+)
     m, n = size(Jv)
 
     # Convert J to Int64 indices for SPQR compatibility, then vcat with identity.
@@ -40,7 +45,7 @@ function LMWorkspace(Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE})
 
     j_idx = 0
     for col in 1:n
-        for a_idx in A.colptr[col]:(A.colptr[col + 1] - 1)
+        for a_idx in SparseArrays.nzrange(A, col)
             row = A.rowval[a_idx]
             if row <= m
                 j_idx += 1
@@ -54,8 +59,14 @@ function LMWorkspace(Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE})
 
     b = zeros(m + n)
     F = LinearAlgebra.qr(A)
+    D = marquardt_scaling ? zeros(n) : ones(n)
 
-    return LMWorkspace(A, j_nzval_indices, λ_diag_indices, F, b)
+    ws = LMWorkspace(
+        A, j_nzval_indices, λ_diag_indices, F, b, D, marquardt_scaling)
+    if marquardt_scaling
+        update_column_scale!(ws, Jv)
+    end
+    return ws
 end
 
 """Copy current Jacobian values into the augmented matrix."""
@@ -67,15 +78,46 @@ function copy_jacobian!(ws::LMWorkspace, Jv::SparseMatrixCSC{Float64, J_INDEX_TY
     return
 end
 
-"""Update the √λ diagonal and re-factorize."""
+"""Update `ws.D`, the per-column damping scale: each entry is the running
+maximum (across iterations) of the corresponding Jacobian column's 2-norm. It
+is used as the Levenberg-Marquardt diagonal damping `√λ·D` in
+[`update_lambda!`](@ref). A column whose running max is still zero is floored
+to `1.0`, keeping `D > 0` so the damped block stays nonsingular."""
+function update_column_scale!(
+    ws::LMWorkspace,
+    Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
+)
+    nzv = Jv.nzval
+    @inbounds for col in 1:size(Jv, 2)
+        s = 0.0
+        for k in SparseArrays.nzrange(Jv, col)
+            v = nzv[k]
+            s += v * v
+        end
+        cnorm = sqrt(s)
+        d = ws.D[col]
+        d = ifelse(cnorm > d, cnorm, d)
+        ws.D[col] = d == 0.0 ? 1.0 : d
+    end
+    return
+end
+
+"""Update the √λ·D damping diagonal and re-factorize."""
 function update_lambda!(ws::LMWorkspace, λ::Float64)
     sqrtλ = sqrt(λ)
-    for a_idx in ws.λ_diag_indices
-        ws.A.nzval[a_idx] = sqrtλ
+    @inbounds for col in eachindex(ws.λ_diag_indices)
+        ws.A.nzval[ws.λ_diag_indices[col]] = sqrtλ * ws.D[col]
     end
     ws.F = LinearAlgebra.qr(ws.A)
     return
 end
+
+"""Marquardt column scaling default per formulation: the rectangular CI state
+columns `(e, f, Q, P_gen)` differ in natural scale, so identity damping is
+ill-conditioned there — default it on. The polar state is well-scaled; keep it
+off so the polar solver is bit-identical to before."""
+_default_marquardt_scaling(::AbstractACPowerFlow) = false
+_default_marquardt_scaling(::ACRectangularPowerFlow) = true
 
 """Driver for the LevenbergMarquardtACPowerFlow method: sets up the data
 structures (e.g. residual), runs the power flow method via calling `_run_power_flow_method`
@@ -89,6 +131,7 @@ function _newton_power_flow(
     validate_voltage_magnitudes::Bool = DEFAULT_VALIDATE_VOLTAGES,
     vm_validation_range::MinMax = DEFAULT_VALIDATION_RANGE,
     λ_0::Float64 = DEFAULT_λ_0,
+    marquardt_scaling::Union{Bool, Nothing} = nothing,
     x0::Union{Vector{Float64}, Nothing} = nothing,
     _ignored...,
 )
@@ -102,7 +145,8 @@ function _newton_power_flow(
     converged = norm(residual.Rv, Inf) < tol
     i = 0
     if !converged
-        ws = LMWorkspace(J.Jv)
+        use_scaling = something(marquardt_scaling, _default_marquardt_scaling(pf))
+        ws = LMWorkspace(J.Jv; marquardt_scaling = use_scaling)
         converged, i = _run_power_flow_method(
             time_step,
             x0,
@@ -122,8 +166,9 @@ end
 function _run_power_flow_method(
     time_step::Int,
     x::Vector{Float64},
-    residual::Union{ACPowerFlowResidual, ACRectangularCIResidual},
-    J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian},
+    residual::Union{ACPowerFlowResidual, ACRectangularCIResidual,
+        ACMixedCPBResidual},
+    J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
     ws::LMWorkspace;
     maxIterations::Int = DEFAULT_NR_MAX_ITER,
     tol::Float64 = DEFAULT_NR_TOL,
@@ -162,15 +207,16 @@ end
 at `x` by the caller. Returns the gain ratio ρ."""
 function compute_error(
     x::Vector{Float64},
-    residual::Union{ACPowerFlowResidual, ACRectangularCIResidual},
-    J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian},
+    residual::Union{ACPowerFlowResidual, ACRectangularCIResidual,
+        ACMixedCPBResidual},
+    J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
     λ::Float64,
     time_step::Int,
     residualSize::Float64,
     ws::LMWorkspace,
 )
-    # Update augmented matrix with current J values and λ, then factorize once.
     copy_jacobian!(ws, J.Jv)
+    ws.marquardt_scaling && update_column_scale!(ws, J.Jv)
     update_lambda!(ws, λ)
 
     m = length(residual.Rv)
@@ -207,8 +253,9 @@ end
 
 function update_damping_factor!(
     x::Vector{Float64},
-    residual::Union{ACPowerFlowResidual, ACRectangularCIResidual},
-    J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian},
+    residual::Union{ACPowerFlowResidual, ACRectangularCIResidual,
+        ACMixedCPBResidual},
+    J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
     μ::Float64,
     time_step::Int,
     ws::LMWorkspace,
