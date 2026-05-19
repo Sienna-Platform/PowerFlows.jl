@@ -201,12 +201,7 @@ function compute_fixed_point_spectral_radius(
     end
 
     residual = ACPowerFlowResidual(data, time_step)
-    jac = ACPowerFlowJacobian(
-        data,
-        residual.bus_slack_participation_factors,
-        residual.subnetworks,
-        time_step,
-    )
+    jac = ACPowerFlowJacobian(residual, time_step)
     x = isnothing(x0) ? calculate_x0(data, time_step) : copy(x0)
     residual(x, time_step)
     jac(time_step)

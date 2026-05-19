@@ -63,12 +63,7 @@ end
     time_step = 1
 
     residual = PF.ACPowerFlowResidual(data, time_step)
-    jac = PF.ACPowerFlowJacobian(
-        data,
-        residual.bus_slack_participation_factors,
-        residual.subnetworks,
-        time_step,
-    )
+    jac = PF.ACPowerFlowJacobian(residual, time_step)
     x0 = PF.calculate_x0(data, time_step)
     n = length(x0)
 
