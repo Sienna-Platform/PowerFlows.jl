@@ -67,8 +67,8 @@ end
 function homotopy_x0(data::ACPowerFlowData, time_step::Int;
     x0::Union{Vector{Float64}, Nothing} = nothing,
 )
-    x = if OVERRIDE_x0 && !isnothing(x0)
-        @warn "Overriding initial guess x0."
+    x = if !isnothing(x0)
+        @warn "Using caller-provided x0; skipping improve_x0."
         copy(x0)
     else
         calculate_x0(data, time_step)
