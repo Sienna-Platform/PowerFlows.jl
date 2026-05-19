@@ -37,6 +37,7 @@ Pages = [
     "rectangular_ci_power_flow_residual.jl",
     "rectangular_ci_power_flow_jacobian.jl",
     "power_flow_method.jl",
+    "gradient_descent_ac_power_flow.jl",
     "post_processing.jl"
 ]
 ```
