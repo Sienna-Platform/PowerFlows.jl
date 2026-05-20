@@ -238,9 +238,9 @@ function solve_power_flow!(
     return all(data.converged)
 end
 
-function _ac_power_flow(
-    data::ACPowerFlowData,
+function _solve_with_q_limits!(
     pf::AbstractACPowerFlow{<:ACPowerFlowSolverType},
+    data::ACPowerFlowData,
     time_step::Int64;
     kwargs...,
 )
@@ -257,6 +257,19 @@ function _ac_power_flow(
 
     @error("could not enforce reactive power limits after $MAX_REACTIVE_POWER_ITERATIONS")
     return converged
+end
+
+function _ac_power_flow(
+    data::ACPowerFlowData,
+    pf::AbstractACPowerFlow{<:ACPowerFlowSolverType},
+    time_step::Int64;
+    kwargs...,
+)
+    cd = data.controlled_devices
+    if cd === nothing || isempty(cd)
+        return _solve_with_q_limits!(pf, data, time_step; kwargs...)
+    end
+    return _control_continuation!(pf, data, time_step; kwargs...)
 end
 
 function _check_q_limit_bounds!(
