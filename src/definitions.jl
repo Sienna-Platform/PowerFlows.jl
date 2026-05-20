@@ -2,6 +2,22 @@ const MAX_INIT_RESIDUAL = 10.0
 const BOUNDS_TOLERANCE = 1e-6
 const INFINITE_BOUND = 1e6 # used as default when a branch has rating 0.0, as implied by the PSSE Manual
 const MAX_REACTIVE_POWER_ITERATIONS = 10
+
+# Discrete control device λ-continuation outer loop
+const MAX_CONTROL_OUTER_ITERATIONS = 20
+const CONTROL_PARAM_TOL = 1e-5
+const INITIAL_LAMBDA_STEP = 1.0
+const MIN_LAMBDA_STEP = 1e-3
+const MAX_LAMBDA_STEP = 1.0
+const CONTROL_STEP_GROWTH = 1.5
+const INITIAL_CONTROL_STEEPNESS = 1.0e2   # paper eq.10: start (S−λ_S)≈100
+const MAX_CONTROL_STEEPNESS = 5.0e3       # paper: full S≈5000
+const CONTROL_STEEPNESS_GROWTH = 2.0
+const CONTROL_OSCILLATION_LIMIT = 3
+const DEFAULT_TAP_RATIO_MIN = 0.9
+const DEFAULT_TAP_RATIO_MAX = 1.1
+const DEFAULT_TAP_POSITIONS = 33
+const DEFAULT_TAP_VSET = 1.0
 const DEFAULT_MAX_REDISTRIBUTION_ITERATIONS = 10
 const LARGE_RESIDUAL = 10 # threshold for "bad initial guess": default
 # norm(residual, 1)/length(residual) > 10.

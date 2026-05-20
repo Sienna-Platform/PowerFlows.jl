@@ -32,6 +32,7 @@ export update_exporter!
 export write_export
 export get_psse_export_paths
 export FlowReporting
+export ControlledDeviceSet
 # "protected" (semi-stable because used in PSI) but not exported:
 # PowerFlowData and related type aliases, solve_power_flow!, write_results
 
@@ -64,6 +65,9 @@ include("powersystems_utils.jl")
 include("power_flow_types.jl")
 include("lcc_parameters.jl")
 include("vsc_parameters.jl")
+include("discrete_control/controlled_devices.jl")
+include("discrete_control/control_metadata.jl")
+include("discrete_control/control_continuation.jl")
 include("PowerFlowData.jl")
 include("lcc_utils.jl")
 include("vsc_utils.jl")
