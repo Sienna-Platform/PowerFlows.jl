@@ -1,6 +1,21 @@
 """Format a per-iteration diagnostic line: ρ, ‖F‖_∞ and the bus/equation where
 that infinity-norm is attained, and a κ̂(J) condition estimate. All numerics
 rounded to 4 significant figures."""
+function _log_diagnostics(
+    label::String,
+    ρ::Float64,
+    Rv::AbstractVector{Float64},
+    condest::Float64,
+)
+    abs_max, ix = findmax(abs, Rv)
+    pow_type = ix % 2 == 1 ? "P" : "Q"
+    bus_ix = div(ix + 1, 2)
+    sf(x) = round(x; sigdigits = 4)
+    @info "$label: ρ = $(sf(ρ)), ‖F‖_∞ = $(sf(abs_max)) at bus $bus_ix ($pow_type), " *
+          "κ̂(J) = $(sf(condest))"
+    return
+end
+
 """Update a rolling 3-iter window of `‖F‖_∞` and decide whether the residual
 has hit the backward-stability floor `κ̂·ε·F_scale`. Returns `true` only when
 the current residual is within `10×` of the estimated floor AND the last 3
@@ -22,21 +37,6 @@ function _check_numerical_floor!(
         end
     end
     return false, floor_est
-end
-
-function _log_diagnostics(
-    label::String,
-    ρ::Float64,
-    Rv::AbstractVector{Float64},
-    condest::Float64,
-)
-    abs_max, ix = findmax(abs, Rv)
-    pow_type = ix % 2 == 1 ? "P" : "Q"
-    bus_ix = div(ix + 1, 2)
-    sf(x) = round(x; sigdigits = 4)
-    @info "$label: ρ = $(sf(ρ)), ‖F‖_∞ = $(sf(abs_max)) at bus $bus_ix ($pow_type), " *
-          "κ̂(J) = $(sf(condest))"
-    return
 end
 
 """Cache for non-linear methods.
@@ -920,6 +920,7 @@ function _newton_power_flow(
                 monitor_ρ = true,
                 F_norm_init,
                 bail_at_floor = true,
+                iter_offset = i + 1,
                 extra_kwargs...,
             )
             converged = lm_converged

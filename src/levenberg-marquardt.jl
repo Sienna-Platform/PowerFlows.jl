@@ -178,6 +178,7 @@ function _run_power_flow_method(
     monitor_ρ::Bool = get_compute_fixed_point_spectral_radius(J.data),
     F_norm_init::Union{Float64, Nothing} = nothing,
     bail_at_floor::Bool = false,
+    iter_offset::Int = 0,
     _ignored...,
 )
     μ::Float64 = λ_0
@@ -199,7 +200,7 @@ function _run_power_flow_method(
         F_inf = norm(residual.Rv, Inf)
         if monitor_ρ
             ρ, _, condest = _fixed_point_spectral_radius!(J.data, residual, J, time_step)
-            _log_diagnostics("LM iter $i", ρ, residual.Rv, condest)
+            _log_diagnostics("LM iter $(i + iter_offset)", ρ, residual.Rv, condest)
             hit_now, floor_est = _check_numerical_floor!(
                 F_window, F_inf, condest, F_scale)
             if hit_now && !floor_reached
