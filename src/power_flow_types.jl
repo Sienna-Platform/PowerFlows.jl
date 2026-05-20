@@ -111,6 +111,21 @@ See also: [`ACPowerFlow`](@ref).
 struct RobustHomotopyPowerFlow <: ACPowerFlowSolverType end
 
 """
+    AdaptiveACPowerFlow <: ACPowerFlowSolverType
+
+An [`ACPowerFlowSolverType`](@ref) that switches strategies during the solve
+based on online diagnostics: fixed-point spectral radius `ρ`, condition
+estimate `κ̂(J)`, and residual `‖F‖`. Starts with a fast inner solver
+(Newton-Raphson / Trust Region) and escalates to a more robust method
+(Robust Homotopy) when the diagnostics indicate the inner solver is
+diverging or stuck in a singular neighborhood.
+
+Polar formulation only. See also: [`ACPowerFlow`](@ref),
+[`RobustHomotopyPowerFlow`](@ref).
+"""
+struct AdaptiveACPowerFlow <: ACPowerFlowSolverType end
+
+"""
     ACPowerFlow{ACSolver}(; kwargs...) where {ACSolver <: ACPowerFlowSolverType}
     ACPowerFlow(; kwargs...)
 
@@ -357,12 +372,13 @@ function ACRectangularPowerFlow{ACSolver}(;
     if ACSolver <: Union{
         RobustHomotopyPowerFlow,
         GradientDescentACPowerFlow,
+        AdaptiveACPowerFlow,
     }
         throw(
             ArgumentError(
                 "$(ACSolver) is not supported by ACRectangularPowerFlow. " *
-                "Robust Homotopy and Gradient Descent operate on the polar " *
-                "formulation only. Use ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}, " *
+                "Robust Homotopy, Gradient Descent, and Adaptive operate on the " *
+                "polar formulation only. Use ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}, " *
                 "{TrustRegionACPowerFlow}, or {LevenbergMarquardtACPowerFlow}, " *
                 "or run the solver on ACPolarPowerFlow.",
             ),
@@ -466,11 +482,12 @@ function ACMixedPowerFlow{ACSolver}(;
     if ACSolver <: Union{
         RobustHomotopyPowerFlow,
         GradientDescentACPowerFlow,
+        AdaptiveACPowerFlow,
     }
         throw(
             ArgumentError(
                 "$(ACSolver) is not supported by ACMixedPowerFlow. " *
-                "Robust Homotopy and Gradient Descent do not operate on the " *
+                "Robust Homotopy, Gradient Descent, and Adaptive do not operate on the " *
                 "mixed current-power formulation. Use " *
                 "ACMixedPowerFlow{NewtonRaphsonACPowerFlow}, " *
                 "{TrustRegionACPowerFlow}, or {LevenbergMarquardtACPowerFlow}, " *

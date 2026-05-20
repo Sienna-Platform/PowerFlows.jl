@@ -7,6 +7,7 @@ export NewtonRaphsonACPowerFlow
 export TrustRegionACPowerFlow
 export LevenbergMarquardtACPowerFlow
 export RobustHomotopyPowerFlow
+export AdaptiveACPowerFlow
 export ACPolarPowerFlow
 export ACRectangularPowerFlow
 export ACMixedPowerFlow

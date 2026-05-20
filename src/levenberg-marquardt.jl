@@ -144,10 +144,11 @@ function _newton_power_flow(
         pf, data, time_step; init_kwargs...)
     converged = norm(residual.Rv, Inf) < tol
     i = 0
+    floor_reached = false
     if !converged
         use_scaling = something(marquardt_scaling, _default_marquardt_scaling(pf))
         ws = LMWorkspace(J.Jv; marquardt_scaling = use_scaling)
-        converged, i = _run_power_flow_method(
+        converged, i, floor_reached = _run_power_flow_method(
             time_step,
             x0,
             residual,
@@ -160,7 +161,8 @@ function _newton_power_flow(
     # (or is the already-converged initial state if the loop was skipped).
     _finalize_formulation!(pf, data, x0, residual, time_step)
     return _finalize_power_flow(
-        converged, i, "LevenbergMarquardtACPowerFlow", residual, data, J.Jv, time_step)
+        converged, i, "LevenbergMarquardtACPowerFlow", residual, data, J.Jv, time_step;
+        floor_reached)
 end
 
 function _run_power_flow_method(
@@ -173,6 +175,9 @@ function _run_power_flow_method(
     maxIterations::Int = DEFAULT_NR_MAX_ITER,
     tol::Float64 = DEFAULT_NR_TOL,
     λ_0::Float64 = DEFAULT_λ_0,
+    monitor_ρ::Bool = get_compute_fixed_point_spectral_radius(J.data),
+    F_norm_init::Union{Float64, Nothing} = nothing,
+    bail_at_floor::Bool = false,
     _ignored...,
 )
     μ::Float64 = λ_0
@@ -182,12 +187,35 @@ function _run_power_flow_method(
     resSize = dot(residual.Rv, residual.Rv)
     linf = norm(residual.Rv, Inf)
     @debug "initially: sum of squares $(siground(resSize)), L ∞ norm $(siground(linf)), λ = $λ"
+    # Problem-scale reference for the backward-stability floor estimate.
+    # First Newton step has backward error ≈ u·κ·‖F_init‖, and that floor persists
+    # Clamped at 1.0 pu so warm-starts (tiny ‖F_init‖) don't collapse the estimate.
+    # The adaptive driver passes its own pre-TR ‖F‖_init for a more conservative reference.
+    F_scale = max(1.0, something(F_norm_init, linf))
+    floor_reached = false
+    F_window = Float64[]
     while i < maxIterations && !converged && isfinite(λ) && μ < DEFAULT_μ_MAX
         λ, μ = update_damping_factor!(x, residual, J, μ, time_step, ws)
-        converged = isfinite(λ) && norm(residual.Rv, Inf) < tol
+        F_inf = norm(residual.Rv, Inf)
+        if monitor_ρ
+            ρ, _, condest = _fixed_point_spectral_radius!(J.data, residual, J, time_step)
+            _log_diagnostics("LM iter $i", ρ, residual.Rv, condest)
+            hit_now, floor_est = _check_numerical_floor!(
+                F_window, F_inf, condest, F_scale)
+            if hit_now && !floor_reached
+                @info "LM hit numerical floor: ‖F‖_∞ = $(siground(F_inf)), " *
+                      "est. floor κ̂·ε·max(1,‖F‖_init) ≈ $(siground(floor_est))"
+                floor_reached = true
+            end
+            if floor_reached && bail_at_floor
+                i += 1
+                break
+            end
+        end
+        converged = isfinite(λ) && F_inf < tol
         i += 1
     end
-    if !converged
+    if !converged && !floor_reached
         if !isfinite(λ)
             @error "λ is not finite ($(λ))"
         elseif μ >= DEFAULT_μ_MAX
@@ -197,7 +225,7 @@ function _run_power_flow_method(
         end
     end
 
-    return converged, i
+    return converged, i, floor_reached
 end
 
 # LM implementation based on standard Levenberg-Marquardt method.
