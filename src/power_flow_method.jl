@@ -1046,10 +1046,18 @@ function _finalize_power_flow(
     else
         "failed to converge"
     end
-    @warn(
-        "The $solver_name solver $msg after $i iterations [status: $status]. " *
-        "Reporting non-convergence."
-    )
+    # Stagnation-classified statuses get @warn (we know what happened, just
+    # couldn't reach tol); plain FAILED / DIVERGED keep @error to match
+    # historical behavior — divergence already logged its own @error inside LM,
+    # but the duplicate at finalize is harmless.
+    full_msg = "The $solver_name solver $msg after $i iterations " *
+               "[status: $status]. Reporting non-convergence."
+    if status === ACPowerFlowSolveStatus.FAILED ||
+       status === ACPowerFlowSolveStatus.DIVERGED
+        @error(full_msg)
+    else
+        @warn(full_msg)
+    end
     return false
 end
 
