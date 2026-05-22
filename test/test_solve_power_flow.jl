@@ -729,8 +729,6 @@ end
 end
 
 function test_lcc_ac_solver(ACSolver)
-    # Skip the solvers that do not support LCCs
-    ACSolver ∈ (RobustHomotopyPowerFlow,) && return
     sys, lcc = simple_lcc_system()
     pf = ACPowerFlow{ACSolver}(; correct_bustypes = true)
     data = PowerFlowData(pf, sys)
