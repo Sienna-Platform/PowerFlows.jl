@@ -144,11 +144,12 @@ function _newton_power_flow(
         pf, data, time_step; init_kwargs...)
     converged = norm(residual.Rv, Inf) < tol
     i = 0
-    floor_reached = false
+    status::ACPowerFlowSolveStatus =
+        converged ? ACPowerFlowSolveStatus.CONVERGED : ACPowerFlowSolveStatus.RUNNING
     if !converged
         use_scaling = something(marquardt_scaling, _default_marquardt_scaling(pf))
         ws = LMWorkspace(J.Jv; marquardt_scaling = use_scaling)
-        converged, i, floor_reached = _run_power_flow_method(
+        converged, i, status = _run_power_flow_method(
             time_step,
             x0,
             residual,
@@ -162,7 +163,7 @@ function _newton_power_flow(
     _finalize_formulation!(pf, data, x0, residual, time_step)
     return _finalize_power_flow(
         converged, i, "LevenbergMarquardtACPowerFlow", residual, data, J.Jv, time_step;
-        floor_reached)
+        status)
 end
 
 function _run_power_flow_method(
@@ -176,8 +177,8 @@ function _run_power_flow_method(
     tol::Float64 = DEFAULT_NR_TOL,
     λ_0::Float64 = DEFAULT_λ_0,
     monitor_ρ::Bool = get_compute_fixed_point_spectral_radius(J.data),
-    F_norm_init::Union{Float64, Nothing} = nothing,
-    bail_at_floor::Bool = false,
+    bail_on_stagnation::Bool = false,
+    detect_stagnation::Bool = true,
     iter_offset::Int = 0,
     _ignored...,
 )
@@ -188,45 +189,60 @@ function _run_power_flow_method(
     resSize = dot(residual.Rv, residual.Rv)
     linf = norm(residual.Rv, Inf)
     @debug "initially: sum of squares $(siground(resSize)), L ∞ norm $(siground(linf)), λ = $λ"
-    # Problem-scale reference for the backward-stability floor estimate.
-    # First Newton step has backward error ≈ u·κ·‖F_init‖, and that floor persists
-    # Clamped at 1.0 pu so warm-starts (tiny ‖F_init‖) don't collapse the estimate.
-    # The adaptive driver passes its own pre-TR ‖F‖_init for a more conservative reference.
-    F_scale = max(1.0, something(F_norm_init, linf))
-    floor_reached = false
+    status::ACPowerFlowSolveStatus = ACPowerFlowSolveStatus.RUNNING
     F_window = Float64[]
+    ρ_window = Float64[]
+    κ_window = Float64[]
     while i < maxIterations && !converged && isfinite(λ) && μ < DEFAULT_μ_MAX
         λ, μ = update_damping_factor!(x, residual, J, μ, time_step, ws)
         F_inf = norm(residual.Rv, Inf)
+        ρ_now::Union{Float64, Nothing} = nothing
+        condest_now::Union{Float64, Nothing} = nothing
         if monitor_ρ
-            ρ, _, condest = _fixed_point_spectral_radius!(J.data, residual, J, time_step)
-            _log_diagnostics("LM iter $(i + iter_offset)", ρ, residual.Rv, condest)
-            hit_now, floor_est = _check_numerical_floor!(
-                F_window, F_inf, condest, F_scale)
-            if hit_now && !floor_reached
-                @info "LM hit numerical floor: ‖F‖_∞ = $(siground(F_inf)), " *
-                      "est. floor κ̂·ε·max(1,‖F‖_init) ≈ $(siground(floor_est))"
-                floor_reached = true
+            ρ_now, _, condest_now =
+                _fixed_point_spectral_radius!(J.data, residual, J, time_step)
+            _log_diagnostics("LM iter $(i + iter_offset)", ρ_now, residual.Rv, condest_now)
+        end
+        if detect_stagnation && status === ACPowerFlowSolveStatus.RUNNING
+            kind = _check_stagnation!(
+                F_window, ρ_window, κ_window, F_inf, ρ_now, condest_now)
+            if kind === :fixed_point
+                msg, status = _stagnation_diagnostic(
+                    J.data, time_step, residual.Rv, J.Jv; condest = condest_now)
+                @info "LM stagnated at fixed point: ‖F‖_∞ = " *
+                      "$(siground(F_inf)), stable across " *
+                      "$(STAGNATION_WINDOW) iterations" * msg
+            elseif kind === :limit_cycle
+                msg, status = _limit_cycle_diagnostic(
+                    residual.Rv, ρ_window, κ_window)
+                @info "LM in limit cycle: ‖F‖_∞ = " *
+                      "$(siground(F_inf)) across " *
+                      "$(STAGNATION_WINDOW) iterations" * msg
             end
-            if floor_reached && bail_at_floor
-                i += 1
-                break
-            end
+        end
+        if status !== ACPowerFlowSolveStatus.RUNNING && bail_on_stagnation
+            i += 1
+            break
         end
         converged = isfinite(λ) && F_inf < tol
         i += 1
     end
-    if !converged && !floor_reached
+    if converged
+        status = ACPowerFlowSolveStatus.CONVERGED
+    elseif status === ACPowerFlowSolveStatus.RUNNING
         if !isfinite(λ)
             @error "λ is not finite ($(λ))"
+            status = ACPowerFlowSolveStatus.DIVERGED
         elseif μ >= DEFAULT_μ_MAX
             @error "The LevenbergMarquardtACPowerFlow damping factor μ hit the cap (DEFAULT_μ_MAX=$(DEFAULT_μ_MAX)) after $i iterations; aborting (likely divergence)."
+            status = ACPowerFlowSolveStatus.DIVERGED
         elseif i == maxIterations
             @error "The LevenbergMarquardtACPowerFlow solver didn't coverge in $maxIterations iterations."
+            status = ACPowerFlowSolveStatus.FAILED
         end
     end
 
-    return converged, i, floor_reached
+    return converged, i, status
 end
 
 # LM implementation based on standard Levenberg-Marquardt method.

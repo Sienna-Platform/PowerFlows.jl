@@ -67,6 +67,37 @@ const MinMax = NamedTuple{(:min, :max), Tuple{Float64, Float64}}
 const DEFAULT_VALIDATION_RANGE = (min = 0.5, max = 1.5)
 # const MAX_INDS_TO_PRINT = 10
 
+IS.@scoped_enum(
+    ACPowerFlowSolveStatus,
+    RUNNING = 0,
+    CONVERGED = 1,
+    NON_ROOT_LOCAL_MIN = 2,
+    NON_ROOT_SADDLE = 3,
+    NON_ROOT_STATIONARY = 4,
+    SINGULAR_SUBSPACE = 5,
+    FOLD = 6,
+    LIMIT_CYCLE = 7,
+    STAGNATED_OTHER = 8,
+    DIVERGED = 9,
+    FAILED = 10,
+)
+@doc """
+Concluding state of an AC power flow solve. Used to classify the reason any solver stopped.
+
+# Values
+- CONVERGED: ‖F‖_∞ < tol.
+- NON_ROOT_LOCAL_MIN: gradient ≈ 0, positive directional curvature
+- NON_ROOT_SADDLE: gradient ≈ 0, negative directional curvature
+- NON_ROOT_STATIONARY: gradient ≈ 0, curvature inconclusive
+- SINGULAR_SUBSPACE: fixed point trapped on a near-singular subspace of J
+- FOLD: ‖½H[Δx,Δx]‖/‖F‖ >> 1, quadratic curvature dominates the Newton step
+- LIMIT_CYCLE: settled into a cycle of period ≥ 2.
+- STAGNATED_OTHER: ‖F‖_∞ flat but no specific diagnostic threshold
+- DIVERGED: LM-specific: μ hit cap or λ went non-finite.
+- FAILED: hit maxIterations with no stagnation or divergence.
+- RUNNING: internal sentinel; never returned to callers.
+ """ ACPowerFlowSolveStatus
+
 const FACTS_MODE_MAP = Dict(
     PSY.FACTSOperationModes.OOS => 0,
     PSY.FACTSOperationModes.NML => 1,

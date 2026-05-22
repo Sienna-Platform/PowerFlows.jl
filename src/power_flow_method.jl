@@ -16,29 +16,6 @@ function _log_diagnostics(
     return
 end
 
-"""Update a rolling 3-iter window of `‖F‖_∞` and decide whether the residual
-has hit the backward-stability floor `κ̂·ε·F_scale`. Returns `true` only when
-the current residual is within `10×` of the estimated floor AND the last 3
-iterates are within 10% of each other (genuine stagnation, not transient).
-Mutates `F_window` in place. The caller is responsible for logging."""
-function _check_numerical_floor!(
-    F_window::Vector{Float64},
-    F_inf::Float64,
-    condest::Float64,
-    F_scale::Float64,
-)
-    push!(F_window, F_inf)
-    length(F_window) > 3 && popfirst!(F_window)
-    floor_est = condest * eps() * F_scale
-    if F_inf <= 10 * floor_est && length(F_window) == 3
-        F_lo, F_hi = extrema(F_window)
-        if F_hi - F_lo < 0.1 * F_hi
-            return true, floor_est
-        end
-    end
-    return false, floor_est
-end
-
 """Cache for non-linear methods.
 
 # Fields
@@ -314,6 +291,7 @@ function _trust_region_step(time_step::Int,
     @debug "Trust region step: ρ = $(siground(rho)), η = $(siground(eta)), ||Δx|| = $(siground(norm(stateVector.Δx_proposed)))"
 
     step_accepted = false
+    iwamoto_accepted = false
     if rho > eta
         # Successful iteration
         @debug "Step accepted: sum of squares $(siground(dot(residual.Rv, residual.Rv))), L ∞ norm $(siground(norm(residual.Rv, Inf))), Δ = $(siground(delta)), ||Δx|| = $(siground(norm(stateVector.Δx_proposed)))"
@@ -332,7 +310,7 @@ function _trust_region_step(time_step::Int,
                 # expansion logic because rho corresponds to the rejected full step.
                 delta = min(delta / 2, delta_max)
                 @debug "Trust region decreased (Iwamoto fallback accepted): δ $(siground(old_delta)) → $(siground(delta))"
-                return delta
+                return delta, true
             end
         else
             stateVector.x .-= stateVector.Δx_proposed
@@ -356,7 +334,7 @@ function _trust_region_step(time_step::Int,
         @debug "Trust region unchanged: δ = $(siground(delta))"
     end
     delta = min(delta, delta_max)
-    return delta
+    return delta, (step_accepted || iwamoto_accepted)
 end
 
 """Evaluate the Iwamoto objective g(μ) = ‖(1-μ)f₀ + μ²f₁‖² expanded as
@@ -621,17 +599,18 @@ function _run_power_flow_method(time_step::Int,
     validate_voltage_magnitudes::Bool = DEFAULT_VALIDATE_VOLTAGES,
     vm_validation_range::MinMax = DEFAULT_VALIDATION_RANGE,
     iwamoto::Bool = false,
-    F_norm_init::Union{Float64, Nothing} = nothing,
-    bail_at_floor::Bool = false,
+    bail_on_stagnation::Bool = false,
+    detect_stagnation::Bool = true,
     _ignored...,  # absorb unknown keys from caller without error
 )
     validate_vms = validate_voltage_magnitudes
     i, converged = 1, false
     consecutive_reverts = 0
     monitor_ρ = get_compute_fixed_point_spectral_radius(J.data)
-    F_scale = max(1.0, something(F_norm_init, norm(residual.Rv, Inf)))
-    floor_reached = false
+    status::ACPowerFlowSolveStatus = ACPowerFlowSolveStatus.RUNNING
     F_window = Float64[]
+    ρ_window = Float64[]
+    κ_window = Float64[]
     while i < maxIterations && !converged
         if iwamoto
             made_progress = _iwamoto_step(
@@ -669,27 +648,45 @@ function _run_power_flow_method(time_step::Int,
             vm_validation_range,
             i,
         )
+        ρ_now::Union{Float64, Nothing} = nothing
+        condest_now::Union{Float64, Nothing} = nothing
         if monitor_ρ
-            ρ, _, condest = _fixed_point_spectral_radius!(J.data, residual, J, time_step)
-            _log_diagnostics("NR iter $i", ρ, residual.Rv, condest)
-            hit_now, floor_est = _check_numerical_floor!(
-                F_window, norm(residual.Rv, Inf), condest, F_scale)
-            if hit_now && !floor_reached
-                @info "NR hit numerical floor: ‖F‖_∞ = " *
-                      "$(siground(norm(residual.Rv, Inf))), " *
-                      "est. floor κ̂·ε·max(1,‖F‖_init) ≈ $(siground(floor_est))"
-                floor_reached = true
-            end
-            if floor_reached && bail_at_floor
-                break
+            ρ_now, _, condest_now =
+                _fixed_point_spectral_radius!(J.data, residual, J, time_step)
+            _log_diagnostics("NR iter $i", ρ_now, residual.Rv, condest_now)
+        end
+        F_inf_now = norm(residual.Rv, Inf)
+        if detect_stagnation && status === ACPowerFlowSolveStatus.RUNNING
+            kind = _check_stagnation!(
+                F_window, ρ_window, κ_window, F_inf_now, ρ_now, condest_now)
+            if kind === :fixed_point
+                msg, status = _stagnation_diagnostic(
+                    J.data, time_step, residual.Rv, J.Jv; condest = condest_now)
+                @info "NR stagnated at fixed point: ‖F‖_∞ = " *
+                      "$(siground(F_inf_now)), stable across " *
+                      "$(STAGNATION_WINDOW) iterations" * msg
+            elseif kind === :limit_cycle
+                msg, status = _limit_cycle_diagnostic(
+                    residual.Rv, ρ_window, κ_window)
+                @info "NR in limit cycle: ‖F‖_∞ = " *
+                      "$(siground(F_inf_now)) across " *
+                      "$(STAGNATION_WINDOW) iterations" * msg
             end
         end
-        converged = norm(residual.Rv, Inf) < tol
+        if status !== ACPowerFlowSolveStatus.RUNNING && bail_on_stagnation
+            break
+        end
+        converged = F_inf_now < tol
         if !converged
             i += 1
         end
     end
-    return converged, i, floor_reached
+    if converged
+        status = ACPowerFlowSolveStatus.CONVERGED
+    elseif status === ACPowerFlowSolveStatus.RUNNING
+        status = ACPowerFlowSolveStatus.FAILED
+    end
+    return converged, i, status
 end
 
 """Runs the full `TrustRegionNRMethod`.
@@ -718,8 +715,8 @@ function _run_power_flow_method(time_step::Int,
     iwamoto_fallback::Bool = DEFAULT_IWAMOTO_FALLBACK,
     validate_voltage_magnitudes::Bool = DEFAULT_VALIDATE_VOLTAGES,
     vm_validation_range::MinMax = DEFAULT_VALIDATION_RANGE,
-    F_norm_init::Union{Float64, Nothing} = nothing,
-    bail_at_floor::Bool = false,
+    bail_on_stagnation::Bool = false,
+    detect_stagnation::Bool = true,
     _ignored...,  # absorb unknown keys from caller without error
 )
     validate_vms = validate_voltage_magnitudes
@@ -745,11 +742,17 @@ function _run_power_flow_method(time_step::Int,
     @debug "initially: sum of squares $(siground(residualSize)), L ∞ norm $(siground(linf)), Δ $(siground(delta))"
 
     monitor_ρ = get_compute_fixed_point_spectral_radius(J.data)
-    F_scale = max(1.0, something(F_norm_init, linf))
-    floor_reached = false
+    status::ACPowerFlowSolveStatus = ACPowerFlowSolveStatus.RUNNING
     F_window = Float64[]
+    ρ_window = Float64[]
+    κ_window = Float64[]
+    # Cache ρ/κ̂ across iterations so we don't recompute when TR rejects a step
+    # (x and J unchanged on rejection ⇒ ρ and κ̂ unchanged). The cached values
+    # still feed the stagnation windows so a stretch of rejections registers.
+    ρ_cached::Union{Float64, Nothing} = nothing
+    condest_cached::Union{Float64, Nothing} = nothing
     while i < maxIterations && !converged
-        delta = _trust_region_step(
+        delta, accepted = _trust_region_step(
             time_step,
             stateVector,
             linSolveCache,
@@ -768,26 +771,46 @@ function _run_power_flow_method(time_step::Int,
             i,
         )
         if monitor_ρ
-            ρ, _, condest = _fixed_point_spectral_radius!(J.data, residual, J, time_step)
-            _log_diagnostics("TR iter $i", ρ, residual.Rv, condest)
-            hit_now, floor_est = _check_numerical_floor!(
-                F_window, norm(residual.Rv, Inf), condest, F_scale)
-            if hit_now && !floor_reached
-                @info "TR hit numerical floor: ‖F‖_∞ = " *
-                      "$(siground(norm(residual.Rv, Inf))), " *
-                      "est. floor κ̂·ε·max(1,‖F‖_init) ≈ $(siground(floor_est))"
-                floor_reached = true
-            end
-            if floor_reached && bail_at_floor
-                break
+            if accepted
+                ρ_cached, _, condest_cached =
+                    _fixed_point_spectral_radius!(J.data, residual, J, time_step)
+                _log_diagnostics("TR iter $i", ρ_cached, residual.Rv, condest_cached)
+            else
+                @info "TR iter $i: step rejected (state unchanged; ρ/κ̂ skipped)"
             end
         end
-        converged = norm(residual.Rv, Inf) < tol
+        F_inf_now = norm(residual.Rv, Inf)
+        if detect_stagnation && status === ACPowerFlowSolveStatus.RUNNING
+            kind = _check_stagnation!(
+                F_window, ρ_window, κ_window, F_inf_now, ρ_cached, condest_cached)
+            if kind === :fixed_point
+                msg, status = _stagnation_diagnostic(
+                    J.data, time_step, residual.Rv, J.Jv; condest = condest_cached)
+                @info "TR stagnated at fixed point: ‖F‖_∞ = " *
+                      "$(siground(F_inf_now)), stable across " *
+                      "$(STAGNATION_WINDOW) iterations" * msg
+            elseif kind === :limit_cycle
+                msg, status = _limit_cycle_diagnostic(
+                    residual.Rv, ρ_window, κ_window)
+                @info "TR in limit cycle: ‖F‖_∞ = " *
+                      "$(siground(F_inf_now)) across " *
+                      "$(STAGNATION_WINDOW) iterations" * msg
+            end
+        end
+        if status !== ACPowerFlowSolveStatus.RUNNING && bail_on_stagnation
+            break
+        end
+        converged = F_inf_now < tol
         if !converged
             i += 1
         end
     end
-    return converged, i, floor_reached
+    if converged
+        status = ACPowerFlowSolveStatus.CONVERGED
+    elseif status === ACPowerFlowSolveStatus.RUNNING
+        status = ACPowerFlowSolveStatus.FAILED
+    end
+    return converged, i, status
 end
 
 # Hardcoded escalation thresholds for AdaptiveACPowerFlow. Calibrated against
@@ -816,6 +839,7 @@ function _newton_power_flow(
     λ_0::Float64 = DEFAULT_λ_0,
     marquardt_scaling::Union{Bool, Nothing} = nothing,
     x0::Union{Vector{Float64}, Nothing} = nothing,
+    detect_stagnation::Bool = true,
     extra_kwargs...,
 )
     init_kwargs = if isnothing(x0)
@@ -826,7 +850,6 @@ function _newton_power_flow(
     residual, J, x0_init = initialize_power_flow_variables(
         pf, data, time_step; init_kwargs...)
     converged = norm(residual.Rv, Inf) < tol
-    F_norm_init = norm(residual.Rv, Inf)
 
     ρ_x0, _, condest_x0 = _fixed_point_spectral_radius!(data, residual, J, time_step)
     _log_diagnostics("x0 (time_step $time_step)", ρ_x0, residual.Rv, condest_x0)
@@ -834,7 +857,7 @@ function _newton_power_flow(
     i = 0
     x_final = x0_init
     escalated = false
-    floor_reached = false
+    status::ACPowerFlowSolveStatus = ACPowerFlowSolveStatus.RUNNING
     if !converged
         linSolveCache = KLULinSolveCache(J.Jv)
         symbolic_factor!(linSolveCache, J.Jv)
@@ -852,12 +875,15 @@ function _newton_power_flow(
         delta = norm(stateVector.x) > 0 ? factor * norm(stateVector.x) : factor
         delta_max = DEFAULT_TRUST_REGION_DELTA_MAX_FACTOR * delta
         consec_bad_ρ = 0
-        F_scale_tr = max(1.0, F_norm_init)
         F_window_tr = Float64[]
+        ρ_window_tr = Float64[]
+        κ_window_tr = Float64[]
+        ρ = NaN
+        condest = NaN
 
         # ---- Phase 1: Trust Region with spectral-radius watchdog ----
         while i < maxIterations && !converged && !escalated
-            delta = _trust_region_step(
+            delta, accepted = _trust_region_step(
                 time_step,
                 stateVector,
                 linSolveCache,
@@ -875,17 +901,37 @@ function _newton_power_flow(
                 vm_validation_range,
                 i,
             )
-            ρ, _, condest = _fixed_point_spectral_radius!(data, residual, J, time_step)
-            _log_diagnostics("Adaptive TR iter $i", ρ, residual.Rv, condest)
+            if accepted
+                ρ, _, condest = _fixed_point_spectral_radius!(data, residual, J, time_step)
+                _log_diagnostics("Adaptive TR iter $i", ρ, residual.Rv, condest)
+            else
+                @info "Adaptive TR iter $i: step rejected (state unchanged; ρ/κ̂ skipped)"
+            end
 
-            floor_reached, floor_est = _check_numerical_floor!(
-                F_window_tr, norm(residual.Rv, Inf), condest, F_scale_tr)
-            if floor_reached
-                @info "Adaptive TR hit numerical floor: ‖F‖_∞ = " *
-                      "$(siground(norm(residual.Rv, Inf))), est. floor " *
-                      "κ̂·ε·max(1,‖F‖_init) ≈ $(siground(floor_est)); stopping " *
-                      "before escalation"
-                break
+            F_inf_now = norm(residual.Rv, Inf)
+            ρ_for_window = isfinite(ρ) ? ρ : nothing
+            κ_for_window = isfinite(condest) ? condest : nothing
+            if detect_stagnation
+                kind = _check_stagnation!(
+                    F_window_tr, ρ_window_tr, κ_window_tr,
+                    F_inf_now, ρ_for_window, κ_for_window)
+                if kind === :fixed_point
+                    msg, status = _stagnation_diagnostic(
+                        J.data, time_step, residual.Rv, J.Jv; condest = condest)
+                    @info "Adaptive TR stagnated at fixed point: ‖F‖_∞ = " *
+                          "$(siground(F_inf_now)), stable across " *
+                          "$(STAGNATION_WINDOW) iterations; stopping before " *
+                          "escalation" * msg
+                    break
+                elseif kind === :limit_cycle
+                    msg, status = _limit_cycle_diagnostic(
+                        residual.Rv, ρ_window_tr, κ_window_tr)
+                    @info "Adaptive TR in limit cycle: ‖F‖_∞ = " *
+                          "$(siground(F_inf_now)) across " *
+                          "$(STAGNATION_WINDOW) iterations; stopping before " *
+                          "escalation" * msg
+                    break
+                end
             end
 
             consec_bad_ρ = ρ >= ADAPTIVE_ρ_THRESHOLD ? consec_bad_ρ + 1 : 0
@@ -908,7 +954,7 @@ function _newton_power_flow(
             use_scaling = something(marquardt_scaling, _default_marquardt_scaling(pf))
             ws = LMWorkspace(J.Jv; marquardt_scaling = use_scaling)
             lm_max = max(0, maxIterations - i)
-            lm_converged, lm_iters, lm_floor = _run_power_flow_method(
+            lm_converged, lm_iters, lm_status = _run_power_flow_method(
                 time_step,
                 x_final,
                 residual,
@@ -918,28 +964,34 @@ function _newton_power_flow(
                 maxIterations = lm_max,
                 λ_0,
                 monitor_ρ = true,
-                F_norm_init,
-                bail_at_floor = true,
+                bail_on_stagnation = true,
+                detect_stagnation,
                 iter_offset = i + 1,
                 extra_kwargs...,
             )
             converged = lm_converged
-            floor_reached = lm_floor
+            status = lm_status
             i += lm_iters
         end
+    end
+    if converged
+        status = ACPowerFlowSolveStatus.CONVERGED
+    elseif status === ACPowerFlowSolveStatus.RUNNING
+        status = ACPowerFlowSolveStatus.FAILED
     end
     _finalize_formulation!(pf, data, x_final, residual, time_step)
     return _finalize_power_flow(
         converged, i, "AdaptiveACPowerFlow", residual, data, J.Jv, time_step;
-        floor_reached)
+        status)
 end
 
 """Log final residual, report convergence, compute optional post-processing factors,
-and return `true`/`false`. Shared by all AC power flow drivers. When
-`floor_reached = true`, emits a distinct message indicating the solver stopped
-because the residual hit the κ̂·ε·max(1,‖F‖_init) backward-stability floor (not
-convergence to `tol`); the return value is still `false` since the requested
-tolerance was not met."""
+and return `true`/`false`. Shared by all AC power flow drivers. `status` is a
+fine-grained classification of the concluding state — one of `ACPowerFlowSolveStatus.CONVERGED`,
+`ACPowerFlowSolveStatus.NON_ROOT_STATIONARY` (infeasibility), `ACPowerFlowSolveStatus.SINGULAR_SUBSPACE` (trapped on
+near-singularity), `ACPowerFlowSolveStatus.FOLD` (curvature dominates), `ACPowerFlowSolveStatus.STAGNATED_OTHER`, or
+`ACPowerFlowSolveStatus.FAILED` (iteration limit, no stagnation detected). The function returns
+`true` iff `status == ACPowerFlowSolveStatus.CONVERGED`."""
 function _finalize_power_flow(
     converged::Bool,
     i::Int,
@@ -948,11 +1000,11 @@ function _finalize_power_flow(
     data::ACPowerFlowData,
     Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
     time_step::Int64;
-    floor_reached::Bool = false,
+    status::ACPowerFlowSolveStatus = ACPowerFlowSolveStatus.FAILED,
 )
     @info("Final residual size: $(norm(residual.Rv, 2)) L2, $(norm(residual.Rv, Inf)) L∞.")
     if converged
-        @info("The $solver_name solver converged after $i iterations.")
+        @info("The $solver_name solver converged after $i iterations [status: $status].")
         if get_calculate_loss_factors(data)
             _calculate_loss_factors(data, Jv, time_step)
         end
@@ -961,16 +1013,43 @@ function _finalize_power_flow(
         end
         return true
     end
-    if floor_reached
-        @warn(
-            "The $solver_name solver stopped at the numerical floor after $i " *
-            "iterations: the residual is limited by κ̂·ε·max(1,‖F‖_init) " *
-            "backward stability, not the requested tolerance. " *
-            "Reporting non-convergence."
-        )
+    msg = if status === ACPowerFlowSolveStatus.NON_ROOT_LOCAL_MIN
+        "stopped at a non-root local minimum of ½‖F‖² (positive directional " *
+        "curvature). The power flow equations are infeasible at this " *
+        "operating point — consider PV→PQ reactive-limit switching, switched-" *
+        "shunt regulation, dispatch changes, or topology checks"
+    elseif status === ACPowerFlowSolveStatus.NON_ROOT_SADDLE
+        "stopped at a non-root saddle of ½‖F‖² (negative directional " *
+        "curvature). A different initial guess may find a root; consider " *
+        "homotopy, a DC-power-flow seed, or a perturbed warm start"
+    elseif status === ACPowerFlowSolveStatus.NON_ROOT_STATIONARY
+        "stopped at a non-root stationary point of ½‖F‖² (curvature " *
+        "inconclusive). The power flow equations are likely infeasible at " *
+        "this operating point — consider PV→PQ reactive-limit switching, " *
+        "switched-shunt regulation, dispatch changes, or topology checks"
+    elseif status === ACPowerFlowSolveStatus.SINGULAR_SUBSPACE
+        "stopped trapped on a near-singular subspace of J. The system is at " *
+        "or past a fold/loadability boundary — homotopy/continuation may be " *
+        "needed to track the solution branch"
+    elseif status === ACPowerFlowSolveStatus.FOLD
+        "stopped at a fold of the residual manifold: quadratic curvature " *
+        "dominates the Newton step, so further linear iteration cannot " *
+        "reduce ‖F‖. Try homotopy or a more robust formulation"
+    elseif status === ACPowerFlowSolveStatus.LIMIT_CYCLE
+        "settled into a period-≥2 limit cycle: the iteration map has no " *
+        "fixed point in this neighborhood (typically a fold/saddle-node " *
+        "bifurcation). Point-wise classifiers (local-min/saddle/fold) don't " *
+        "apply. Try homotopy/continuation or relax the operating point"
+    elseif status === ACPowerFlowSolveStatus.STAGNATED_OTHER
+        "stagnated for unclear reasons (‖F‖_∞ flat across 3+ iterates but no " *
+        "specific diagnostic threshold tripped); inspect the solver log"
     else
-        @error("The $solver_name solver failed to converge after $i iterations.")
+        "failed to converge"
     end
+    @warn(
+        "The $solver_name solver $msg after $i iterations [status: $status]. " *
+        "Reporting non-convergence."
+    )
     return false
 end
 
@@ -1055,12 +1134,13 @@ function _newton_power_flow(
 
     i = 0
     x_final = x0_init
-    floor_reached = false
+    status::ACPowerFlowSolveStatus =
+        converged ? ACPowerFlowSolveStatus.CONVERGED : ACPowerFlowSolveStatus.RUNNING
     if !converged
         linSolveCache = KLULinSolveCache(J.Jv)
         symbolic_factor!(linSolveCache, J.Jv)
         stateVector = StateVectorCache(x0_init, residual.Rv)
-        converged, i, floor_reached = _run_power_flow_method(
+        converged, i, status = _run_power_flow_method(
             time_step,
             stateVector,
             linSolveCache,
@@ -1084,5 +1164,5 @@ function _newton_power_flow(
     _finalize_formulation!(pf, data, x_final, residual, time_step)
     return _finalize_power_flow(
         converged, i, string(T), residual, data, J.Jv, time_step;
-        floor_reached)
+        status)
 end
