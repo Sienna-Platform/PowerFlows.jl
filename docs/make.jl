@@ -21,7 +21,9 @@ pages = OrderedDict(
         # "Validating a UC Dispatch" => "tutorials/power-flow-after-unit-commitment.md",
         # "Power Flow In The Loop with UC" => "tutorials/uc-power-flow-in-the-loop.md",
     ],
-    "How-to-Guides" => "how-tos/stub.md",
+    "How-to-Guides" => Any[
+        "How to choose an AC formulation and solver" => "how-tos/choose_ac_formulation_and_solver.md",
+    ],
     "Explanation" => Any[
         "Evaluation Models vs. Solver Algorithms" => "explanation/models-and-solvers.md",
         "Mixed Current-Power Balance Formulation" => "explanation/mixed_cpb_formulation.md",
