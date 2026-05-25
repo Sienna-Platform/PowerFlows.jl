@@ -45,6 +45,7 @@ Pages = [
 # Linear Algebra Backends
 
 ## Robust Homotopy
+
 ```@autodocs
 Modules = [PowerFlows]
 Public = true
@@ -58,6 +59,7 @@ Pages = [
 ```
 
 ## Newton-Raphson
+
 ```@autodocs
 Modules = [PowerFlows]
 Public = true

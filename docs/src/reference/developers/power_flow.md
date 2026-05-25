@@ -23,20 +23,20 @@ system_data = build_system(PSITestSystems, "c_sys14")
 
 `PowerFlows.jl` has two modes of using the power flow solver.
 
-1. Solving the power flow for the current operating point in the system.
-   Takes the data in the buses, the `active_power` and `reactive_power` fields
-   in the static injection devices. Returns a dictionary with results in a DataFrame that
-   can be exported or manipulated as needed.
+ 1. Solving the power flow for the current operating point in the system.
+    Takes the data in the buses, the `active_power` and `reactive_power` fields
+    in the static injection devices. Returns a dictionary with results in a DataFrame that
+    can be exported or manipulated as needed.
 
-2. Solves the power flow and updated the devices in the system to the operating condition.
-   This model will update the values of magnitudes and angles in the system's buses. It
-   also updates the active and reactive power flows in the branches and devices connected
-   to PV buses. It also updates the active and reactive power of the injection devices
-   connected to the Slack bus, and updates only the reactive power of the injection devices
-   connected to PV buses. If multiple devices are connected to the same bus, the power is
-   divided proportional to the base power.
-   This utility is useful to initialize systems before serializing or checking the
-   addition of new devices is still AC feasible.
+ 2. Solves the power flow and updated the devices in the system to the operating condition.
+    This model will update the values of magnitudes and angles in the system's buses. It
+    also updates the active and reactive power flows in the branches and devices connected
+    to PV buses. It also updates the active and reactive power of the injection devices
+    connected to the Slack bus, and updates only the reactive power of the injection devices
+    connected to PV buses. If multiple devices are connected to the same bus, the power is
+    divided proportional to the base power.
+    This utility is useful to initialize systems before serializing or checking the
+    addition of new devices is still AC feasible.
 
 Solving the power flow with mode 1:
 

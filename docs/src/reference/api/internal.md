@@ -69,7 +69,6 @@ Pages = [
 ]
 ```
 
-
 # AC Power Flow
 
 ## Residuals

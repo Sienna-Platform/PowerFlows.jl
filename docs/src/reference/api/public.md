@@ -1,6 +1,5 @@
 # Public API
 
-
 ```@meta
 CurrentModule = PowerFlows
 DocTestSetup  = quote
@@ -23,6 +22,7 @@ Pages = [
 ```
 
 ## Solving Power Flows
+
 ```@autodocs
 Modules = [PowerFlows]
 Public = true
@@ -43,6 +43,7 @@ Pages = [
 ```
 
 ## PSSE Export
+
 ```@autodocs
 Modules = [PowerFlows]
 Public = true

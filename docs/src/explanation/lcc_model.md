@@ -6,7 +6,7 @@ In real-world operation, on-load tap changers (OLTCs) adjust transformer taps so
 
 As OLTCs operate typically over several seconds, the thyristor angles act as fast control. First, the thyristor angles respond to fast power flow changes. Afterwards, the OLTCs are adjusted to keep maintaining the power set point while also minimizing the thyristor angles.
 
-In PSSE, the control using OLTCs is ignored in power flow calculations. Instead, PSSE adjusts the thyristor angles to represent the fast control. 
+In PSSE, the control using OLTCs is ignored in power flow calculations. Instead, PSSE adjusts the thyristor angles to represent the fast control.
 PSSE solves for the rectifier firing angle (α) such that `Idc = Iset`, and for the inverter extinction angle (γ) such that `Udc = Uset`.
 The solver adjusts α and γ automatically to satisfy these setpoints and only switches control mode if a limit is violated.
 
@@ -27,12 +27,14 @@ The AC power flow calculation in Sienna is modified to directly solve for tap st
 The complex apparent power for a rectifier or inverter is calculated as $S = V t \frac{\sqrt{6}}{\pi} I_{dc} e^{j \phi}$, where $V$ is the magnitude of AC voltage at the terminal, $I_{dc}$ is the DC current in the LCC system (positive for flow direction rectifier to inverter, and vice versa), and $\phi$ is the angle between AC voltage and current.
 
 To allow for the Jacobian implementation, a simplified calculation of the angle between the AC current and voltage at the LCC terminals was used. The equation below represents the calculation used for the angle:
+
 ```math
 \phi = \arccos\left(\operatorname{sign}(I_{dc})\left(\cos(\alpha) - \frac{x I_{dc}}{\sqrt{2} t V}\right)\right)
 ```
+
 where, by convention, we flip the sign of $I_{dc}$ on the inverter side. The net effect of the flip is an overall negation of the $\arccos$ argument at the inverter, which is what produces the negative signs on the $\partial P_i/\partial\cdot$ rows and on $\partial Q_i/\partial\alpha_i$ in the Jacobian below. The $\operatorname{sign}(I_{dc})$ factor appears the same way in the derivative rows.
 
-In the equation above, the variable $\alpha$ represents the thyristor angle. The active and reactive powers for a converter station are 
+In the equation above, the variable $\alpha$ represents the thyristor angle. The active and reactive powers for a converter station are
 
 ```math
 \begin{aligned}
