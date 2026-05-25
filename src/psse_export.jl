@@ -174,7 +174,7 @@ end
 Structure to perform an export from a Sienna System, plus optional updates from
 `PowerFlowData`, to the PSS/E format.
 
-Construct this object from a [`System`](@extref PowerSystems.System) and a PSS/E version,
+Construct this object from a [`PowerSystems.System`](@extref) and a PSS/E version,
 update using `update_exporter` with any new data as relevant, and perform the export with
 `write_export`. Writes a `<name>.raw` file and a `<name>_export_metadata.json` file with
 transformations that had to be made to conform to PSS/E naming rules, which can be parsed by
@@ -279,7 +279,7 @@ Update the `PSSEExporter` with new `data`.
 # Arguments:
   - `exporter::PSSEExporter`: the exporter to update
   - `data::PSY.PowerFlowData`: the new data. Must correspond to the
-    [`System`](@extref PowerSystems.System) with which the exporter was constructed.
+    [`PowerSystems.System`](@extref) with which the exporter was constructed.
 """
 function update_exporter!(exporter::PSSEExporter, data::PowerFlowData)
     # NOTE this relies on exporter.system being a deepcopy of the original system so we're not changing that one here
@@ -300,7 +300,7 @@ Update the `PSSEExporter` with new `data`.
 # Arguments:
   - `exporter::PSSEExporter`: the exporter to update
   - `data::PSY.System`: system containing the new data. Must be fundamentally the same \
-  [`System`](@extref PowerSystems.System) as the one with which the exporter was
+  [`PowerSystems.System`](@extref) as the one with which the exporter was
     constructed, just with different values — this is the user's responsibility, we do not
     exhaustively verify it.
 """

@@ -21,8 +21,9 @@ end
 
 """
     solve_power_flow!(data::PTDFPowerFlowData)
+
 Evaluates the PTDF power flow and writes the result to the fields of the
-[`PTDFPowerFlowData`](@ref) structure.
+[`PTDFPowerFlowData`](@ref) structure (a type alias of [`PowerFlowData`](@ref)).
 
 This function modifies the following fields of `data`, setting them to the computed values:
 - `data.bus_angles`: the bus angles for each bus in the system.
@@ -239,7 +240,7 @@ or for branches (`FlowReporting.BRANCH_FLOWS`).
 - `flow_reporting::FlowReporting`:
         Format for reporting flows
 
-Note that `data` must have been created from the [System](@extref PowerSystems.System)
+Note that `data` must have been created from the [`PowerSystems.System`](@extref)
 `sys` using one of the [`PowerFlowData`](@ref) constructors.
 
 # Example

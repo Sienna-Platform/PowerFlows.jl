@@ -28,11 +28,11 @@ the network reduction.\" Similarly, we use \"arcs\" instead of \"branches\" to d
 between network elements (post-reduction) and system objects (pre-reduction).
 
 Generally, do not construct this directly. Instead, use one of the later constructors to 
-pass in a `PowerFlowEvaluationModel` and a `PowerSystems.System`. 
+pass in a [`PowerFlowEvaluationModel`](@ref) and a [`PowerSystems.System`](@extref). 
 `aux\\_network\\_matrix` and `power\\_network\\_matrix` will then be set to the appropriate 
-matrices that are needed for computing that type of power flow. See also `ACPowerFlowData`,
-`ABAPowerFlowData`, `PTDFPowerFlowData`, and `vPTDFPowerFlowData`: 
-these are all aliases for `PowerFlowData{N, M}` with specific `N`,`M`, that are used for 
+matrices that are needed for computing that type of power flow. See also [`ACPowerFlowData`](@ref),
+[`ABAPowerFlowData`](@ref), [`PTDFPowerFlowData`](@ref), and [`vPTDFPowerFlowData`](@ref): 
+these are all aliases for [`PowerFlowData`](@ref)`{N, M}` with specific `N`,`M`, that are used for 
 the respective type of power flow evaluations.
 
 # Fields:
@@ -225,6 +225,11 @@ get_calculate_loss_factors(pfd::PowerFlowData) = get_calculate_loss_factors(pfd.
 get_calculate_voltage_stability_factors(pfd::PowerFlowData) =
     get_calculate_voltage_stability_factors(pfd.pf)
 get_network_reductions(pfd::PowerFlowData) = get_network_reductions(pfd.pf)
+"""
+    get_time_steps(pfd::PowerFlowData)
+
+Number of time steps configured on the embedded [`PowerFlowEvaluationModel`](@ref).
+"""
 get_time_steps(pfd::PowerFlowData) = get_time_steps(pfd.pf)
 get_time_step_names(pfd::PowerFlowData) = get_time_step_names(pfd.pf)
 get_correct_bustypes(pfd::PowerFlowData) = get_correct_bustypes(pfd.pf)
@@ -255,6 +260,14 @@ get_lcc_count(data::PowerFlowData) = length(data.lcc.rectifier.bus)
 
 # auxiliary getters for the fields of PowerNetworkMatrices we're storing:
 # most things we patch through to calls on the metadata matrix:
+"""
+    get_bus_lookup(pfd::PowerFlowData)
+
+Bus number → row index lookup for matrices stored in `pfd` (via the metadata
+[`PowerNetworkMatrices`](https://sienna-platform.github.io/PowerNetworkMatrices.jl/stable/)
+matrix). Use this when mapping device buses from a [`PowerSystems.System`](@extref)
+onto [`PowerFlowData`](@ref) injection and withdrawal arrays.
+"""
 get_bus_lookup(pfd::PowerFlowData) = PNM.get_bus_lookup(get_metadata_matrix(pfd))
 get_bus_axis(pfd::PowerFlowData) = PNM.get_bus_axis(get_metadata_matrix(pfd))
 get_arc_lookup(pfd::PowerFlowData) = PNM.get_arc_lookup(get_metadata_matrix(pfd))
@@ -485,7 +498,7 @@ end
     ) -> ACPowerFlowData{<:ACPowerFlowSolverType}
 
 Creates the structure for an AC power flow calculation, given the
-[`System`](@extref PowerSystems.System) `sys`. Configuration options like `time_steps`,
+[`PowerSystems.System`](@extref) `sys`. Configuration options like `time_steps`,
 `time_step_names`, `network_reductions`, and `correct_bustypes` are taken from the
 [`AbstractACPowerFlow`](@ref) object (either [`ACPolarPowerFlow`](@ref) or
 [`ACRectangularPowerFlow`](@ref)).
@@ -498,7 +511,7 @@ used to solve AC power flows and returns an [`ACPowerFlowData`](@ref) object.
         the settings for the AC power flow solver, including `time_steps`, `time_step_names`,
         `network_reductions`, and `correct_bustypes`.
 - `sys::PSY.System`:
-        A [`System`](@extref PowerSystems.System) object that represents the power
+        A [`PowerSystems.System`](@extref) object that represents the power
         grid under consideration.
 
 WARNING: functions for the evaluation of the multi-period AC PF still to be implemented.
@@ -541,7 +554,7 @@ end
     ) -> ABAPowerFlowData
 
 Creates a `PowerFlowData` structure configured for a standard DC power flow calculation,
-given the [`System`](@extref PowerSystems.System) `sys`. Configuration options like
+given the [`PowerSystems.System`](@extref) `sys`. Configuration options like
 `time_steps`, `time_step_names`, `network_reductions`, and `correct_bustypes` are taken
 from the [`DCPowerFlow`](@ref) object.
 
@@ -554,7 +567,7 @@ used to solve DC power flows, and returns an [`ABAPowerFlowData`](@ref) object.
         Run a DC power flow: internally, store the ABA matrix as `power_network_matrix` and
         the BA matrix as `aux_network_matrix`. Configuration options are taken from this object.
 - `sys::PSY.System`:
-        A [`System`](@extref PowerSystems.System) object that represents the power
+        A [`PowerSystems.System`](@extref) object that represents the power
         grid under consideration.
 """
 function PowerFlowData(
@@ -603,7 +616,7 @@ end
 
 Creates a `PowerFlowData` structure configured for a Partial Transfer
 Distribution Factor Matrix DC power flow calculation, given the
-[`System`](@extref PowerSystems.System) `sys`. Configuration options like
+[`PowerSystems.System`](@extref) `sys`. Configuration options like
 `time_steps`, `time_step_names`, `network_reductions`, and `correct_bustypes` are taken
 from the [`PTDFDCPowerFlow`](@ref) object.
 
@@ -618,7 +631,7 @@ returns a [`PTDFPowerFlowData`](@ref) object.
         as `power_network_matrix` and the ABA matrix as `aux_network_matrix`.
         Configuration options are taken from this object.
 - `sys::PSY.System`:
-        A [`System`](@extref PowerSystems.System) object that represents the power
+        A [`PowerSystems.System`](@extref) object that represents the power
         grid under consideration.
 """
 function PowerFlowData(
@@ -648,7 +661,7 @@ end
 
 Creates a `PowerFlowData` structure configured for a virtual Partial Transfer
 Distribution Factor Matrix DC power flow calculation, given the
-[`System`](@extref PowerSystems.System) `sys`. Configuration options like
+[`PowerSystems.System`](@extref) `sys`. Configuration options like
 `time_steps`, `time_step_names`, `network_reductions`, and `correct_bustypes` are taken
 from the [`vPTDFDCPowerFlow`](@ref) object.
 
@@ -663,7 +676,7 @@ function returns a [`vPTDFPowerFlowData`](@ref) object.
         `power_network_matrix` and the ABA matrix as `aux_network_matrix`.
         Configuration options are taken from this object.
 - `sys::PSY.System`:
-        A [`System`](@extref PowerSystems.System) object that represents the power
+        A [`PowerSystems.System`](@extref) object that represents the power
         grid under consideration.
 """
 function PowerFlowData(
@@ -730,7 +743,7 @@ Configuration options like `time_steps`, `time_step_names`, `network_reductions`
 
 # Arguments:
 - `pfem::PowerFlowEvaluationModel`: power flow model to construct a container for (e.g., `DCPowerFlow()`)
-- `sys::PSY.System`: the [System](@extref PowerSystems.System) from which to initialize the
+- `sys::PSY.System`: the [PowerSystems.System](@extref) from which to initialize the
     power flow container
 """
 function make_power_flow_container end
