@@ -5,6 +5,9 @@ links = InterLinks(
     "DocumenterInterLinks" => "http://juliadocs.org/DocumenterInterLinks.jl/stable/",
     "PowerSystems" => "https://sienna-platform.github.io/PowerSystems.jl/stable/",
     "PowerNetworkMatrices" => "https://sienna-platform.github.io/PowerNetworkMatrices.jl/stable/",
+    "PowerSimulations" => "https://sienna-platform.github.io/PowerSimulations.jl/stable/",
+    "PowerSystemCaseBuilder" => "https://sienna-platform.github.io/PowerSystemCaseBuilder.jl/stable/",
+    "Julia" => "https://docs.julialang.org/en/v1/",
 )
 
 include(joinpath(@__DIR__, "make_tutorials.jl"))
@@ -13,13 +16,7 @@ make_tutorials()
 pages = OrderedDict(
     "Welcome Page" => "index.md",
     "Tutorials" => Any[
-        "Solving a Power Flow" => "tutorials/solving-a-power-flow.md",
-        # NOTE: The two PowerSimulations-based tutorials below are temporarily
-        # excluded from the docs build because PowerSimulations.jl currently
-        # caps PowerFlows at ^0.16 and this package is on 0.17. Re-enable once
-        # PowerSimulations.jl is bumped to accept PowerFlows 0.17.
-        # "Validating a UC Dispatch" => "tutorials/power-flow-after-unit-commitment.md",
-        # "Power Flow In The Loop with UC" => "tutorials/uc-power-flow-in-the-loop.md",
+        "Solving a Power Flow" => "tutorials/generated_solving_a_power_flow.md",
     ],
     "How-to-Guides" => Any[
         "How to choose an AC formulation and solver" => "how-tos/choose_ac_formulation_and_solver.md",
