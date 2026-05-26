@@ -1,4 +1,4 @@
-# # [Solving a Power Flow](@id solving-a-power-flow)
+# # Solving a Power Flow
 # In this tutorial, you'll solve power flows on a 5-bus test system using three different
 # solvers and compare their results.
 
