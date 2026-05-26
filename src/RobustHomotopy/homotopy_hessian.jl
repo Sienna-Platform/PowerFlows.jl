@@ -64,6 +64,14 @@ function gradient_value!(grad::Vector{Float64},
     return grad
 end
 
+function _bus_V(data::ACPowerFlowData, bus_ix::Int, time_step::Int)
+    if data.bus_type[bus_ix, time_step] == PSY.ACBusTypes.PQ
+        return 1.0
+    else
+        return data.bus_magnitude[bus_ix, time_step]
+    end
+end
+
 function homotopy_x0(data::ACPowerFlowData, time_step::Int)
     x = calculate_x0(data, time_step)
     for (bus_ix, bt) in enumerate(get_bus_type(data)[:, time_step]) # PERF: allocating
@@ -83,19 +91,13 @@ function homotopy_x0(data::ACPowerFlowData, time_step::Int)
     n_lcc = size(data.lcc.p_set, 1)
     if n_lcc > 0
         num_buses = first(size(data.bus_type))
-        # `x[2·bus−1]` is the voltage magnitude only at PQ buses (where we
-        # just forced it to 1.0). At PV/REF buses the same slot holds
-        # Q_gen / P_gen, so reading V from x would feed garbage into the
-        # β/(V·t) threshold computation. Use the actual terminal voltage:
-        # 1.0 for PQ (post-forcing), and the setpoint magnitude (held
-        # constant during the solve) for PV/REF.
-        bus_V = (b) ->
-            data.bus_type[b, time_step] == PSY.ACBusTypes.PQ ?
-            1.0 : data.bus_magnitude[b, time_step]
         for i in 1:n_lcc
             offset_lcc = num_buses * 2 + (i - 1) * 4
             fb, tb = data.lcc.bus_indices[i]
-            V_fb, V_tb = bus_V(fb), bus_V(tb)
+            # need V for β/(V·t) threshold computation.
+            # at PQ buses, `x[2·bus−1]` is the voltage magnitude (which we just set to 1.0)
+            # but at PV/REF, have to go check data.voltage_magnitude for the setpoint.
+            V_fb, V_tb = _bus_V(data, fb, time_step), _bus_V(data, tb, time_step)
             t_r, t_i = x[offset_lcc + 1], x[offset_lcc + 2]
             I_dc = data.lcc.i_dc[i, time_step]
             β_r = data.lcc.rectifier.transformer_reactance[i] * I_dc / sqrt(2)
