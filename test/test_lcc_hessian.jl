@@ -18,7 +18,9 @@
         return acos(σ * cos(α) - β / (V * t))
     end
 
-    # Central FD 2nd derivative (5-point for diagonal, 4-point for cross).
+    # Central FD 2nd derivative: 3-point stencil for diagonal entries
+    # `(f(x+h) − 2f(x) + f(x−h))/h²`; 4-point cross for off-diagonals
+    # `(f(+h,+h) − f(−h,+h) − f(+h,−h) + f(−h,−h))/(4h²)`.
     function fd_d2(f, V, t, α, ix, iy; h = 1e-4)
         coords = [V, t, α]
         function eval_at(δx, δy)

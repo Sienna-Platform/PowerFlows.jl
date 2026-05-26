@@ -83,10 +83,19 @@ function homotopy_x0(data::ACPowerFlowData, time_step::Int)
     n_lcc = size(data.lcc.p_set, 1)
     if n_lcc > 0
         num_buses = first(size(data.bus_type))
+        # `x[2·bus−1]` is the voltage magnitude only at PQ buses (where we
+        # just forced it to 1.0). At PV/REF buses the same slot holds
+        # Q_gen / P_gen, so reading V from x would feed garbage into the
+        # β/(V·t) threshold computation. Use the actual terminal voltage:
+        # 1.0 for PQ (post-forcing), and the setpoint magnitude (held
+        # constant during the solve) for PV/REF.
+        bus_V = (b) ->
+            data.bus_type[b, time_step] == PSY.ACBusTypes.PQ ?
+            1.0 : data.bus_magnitude[b, time_step]
         for i in 1:n_lcc
             offset_lcc = num_buses * 2 + (i - 1) * 4
             fb, tb = data.lcc.bus_indices[i]
-            V_fb, V_tb = x[2 * fb - 1], x[2 * tb - 1]
+            V_fb, V_tb = bus_V(fb), bus_V(tb)
             t_r, t_i = x[offset_lcc + 1], x[offset_lcc + 2]
             I_dc = data.lcc.i_dc[i, time_step]
             β_r = data.lcc.rectifier.transformer_reactance[i] * I_dc / sqrt(2)
@@ -409,9 +418,22 @@ function _update_hessian_lcc_contributions!(
         F_t_r = F[idx_t_r]
         F_t_i = F[idx_t_i]
 
-        # Match the Jacobian: F_{t_r} row uses the rectifier P-derivative
-        # (the residual's setpoint_at_rectifier=false branch is not
-        # reflected in the analytic Jacobian, so we mirror that here).
+        # Pre-existing inconsistency (not introduced here): the residual
+        # in _write_lcc_tail! sets F_{t_r} = -P_lcc_to - p_set when
+        # `setpoint_at_rectifier[i]` is false, but the Jacobian assembly
+        # in _lcc_jacobian_scalars unconditionally fills the F_{t_r} row
+        # with rectifier-side derivatives (∂P_lcc_from/∂·). This
+        # Hessian must mirror the Jacobian — anything else would give a
+        # Hessian-of-residual term that doesn't match J^T J's quadratic.
+        # Consequence: in reverse-flow cases (setpoint_at_rectifier =
+        # false), the LCC contribution to ∑ F_k ∇²F_k along the F_{t_r}
+        # row uses the wrong side. NR/TR/LM are affected too but
+        # generally still descend through it; RH is more sensitive to
+        # the mismatch, so test_lcc_ac_solver currently skips reverse
+        # flow for RH (see the comment in test/test_solve_power_flow.jl).
+        # The proper fix is to make `_lcc_jacobian_scalars` branch on
+        # `setpoint_at_rectifier` and have both J and H pick the right
+        # side; that's a separate, larger change.
         coef_Pr = F_P_fb + F_t_r + F_t_i
         coef_Qr = F_Q_fb
         coef_Pi = F_P_tb + F_t_i

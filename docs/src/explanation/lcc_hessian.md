@@ -292,23 +292,33 @@ appropriate row/column indices:
 - **Inverter block:** rows/cols `\{V_{t_b}, t_i, \alpha_i\}` →
   `\partial^2 (\text{linear comb of } P_i, Q_i)`.
 
-`V_{f_b}` and `V_{t_b}` are *also* state variables for the network
-Jacobian and already have entries in the sparsity pattern. The new
-structural entries are: `(V_{f_b}, t_r)`, `(V_{f_b}, \alpha_r)`,
-`(t_r, t_r)`, `(t_r, \alpha_r)`, `(\alpha_r, \alpha_r)` (and symmetric);
-analogously for the inverter side. None of these exist in the current
-homotopy Hessian sparsity pattern — `HomotopyHessian` is built from
-`J.Jv' * J.Jv` and the network rows of `J` have no `t`, `\alpha` columns.
+The new structural entries needed for the LCC Hessian are
+`(V_{f_b}, t_r)`, `(V_{f_b}, \alpha_r)`, `(t_r, t_r)`, `(t_r, \alpha_r)`,
+`(\alpha_r, \alpha_r)` (and symmetric), plus the analogous inverter
+block on `(V_{t_b}, t_i, \alpha_i)`. None of these come from
+*network-only* rows of `J` (which have no `t` or `\alpha` columns at all).
+But the Jacobian has two other categories of rows that do:
 
-Implementation note: because the LCC tail rows of `J` *do* have
-`(t, \alpha)` columns, `J^\top J` will already pick up structural entries
-at the LCC-state diagonals. But the *cross* entries (`(V_{f_b}, t_r)`
-etc.) on the bus side come only from products of the LCC bus-row Jacobian
-entries with themselves — also already in `J^\top J`. So the
-**sparsity pattern of `J^\top J` covers the LCC Hessian block** without
-needing additional structural fill, provided the structural-zero
-preservation in `A_plus_eq_BT_B!` continues to hold. The numeric updates
-go into existing slots.
+1. **LCC bus rows** (`P_{f_b}`, `Q_{f_b}`, `P_{t_b}`, `Q_{t_b}`): these
+   carry the LCC self-admittance contributions and thus have nonzero
+   entries in all of `V`, `t`, and `\alpha` for the relevant side.
+2. **LCC tail rows** (`F_{t_r}`, `F_{t_i}`, `F_{\alpha_r}`,
+   `F_{\alpha_i}`): the `F_t` rows depend on `V` (via the chain rule
+   through `P_{lcc,from/to}`) and on `t`, `\alpha`; the `F_\alpha` rows
+   contain only the unit entry `\partial F_{\alpha_s}/\partial \alpha_s
+   = 1`.
+
+So when `J^\top J` is formed, the columns `V_{f_b}`, `t_r`, `\alpha_r`
+all share the LCC bus rows and the `F_{t_r}` / `F_{t_i}` tail rows as
+common nonzero positions, which gives `J^\top J` structural entries at
+every pairwise combination of those three columns — exactly the
+slots the LCC Hessian needs. Same on the inverter side. The
+**sparsity pattern of `J^\top J` therefore already covers the LCC
+Hessian block** without needing additional structural fill, provided
+`A_plus_eq_BT_B!`'s structural-zero preservation continues to hold (it
+asserts `colptr` and `rowval` equality on each call). The numeric
+updates from `_update_hessian_lcc_contributions!` go into existing
+slots.
 
 ## Clamp regime
 

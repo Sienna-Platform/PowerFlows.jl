@@ -20,6 +20,7 @@ pages = OrderedDict(
         "Mixed Current-Power Balance Formulation" => "explanation/mixed_cpb_formulation.md",
         "Levenberg-Marquardt vs Gauss-Seidel" => "explanation/lm_vs_gauss_seidel.md",
         "LCC Model Implementation" => "explanation/lcc_model.md",
+        "LCC Second Derivatives (Hessian Blocks)" => "explanation/lcc_hessian.md",
     ],
     "Reference" => Any[
         "Public API Reference" => "reference/api/public.md",
