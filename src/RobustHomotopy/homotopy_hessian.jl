@@ -71,6 +71,44 @@ function homotopy_x0(data::ACPowerFlowData, time_step::Int)
             x[2 * bus_ix - 1] = 1.0
         end
     end
+    # Force every LCC's ϕ_s to start strictly interior. The homotopy
+    # pulls V_PQ to 1.0; if α_s starts at α_s_min and the LCC's β_s/(V·t)
+    # is comparable to ~1, the arccos argument can fall onto the clamp
+    # boundary (-1 or +1), where Q_s's second derivatives are singular
+    # and the Hessian assembly produces an ill-scaled search direction.
+    # Bumping α_s just enough to keep ϕ_s interior (plus a small margin)
+    # avoids the degenerate starting state. The residual F_{α_s} = α_s -
+    # α_{s,min} then drives α_s back toward its min as the homotopy
+    # progresses.
+    n_lcc = size(data.lcc.p_set, 1)
+    if n_lcc > 0
+        num_buses = first(size(data.bus_type))
+        for i in 1:n_lcc
+            offset_lcc = num_buses * 2 + (i - 1) * 4
+            fb, tb = data.lcc.bus_indices[i]
+            V_fb, V_tb = x[2 * fb - 1], x[2 * tb - 1]
+            t_r, t_i = x[offset_lcc + 1], x[offset_lcc + 2]
+            I_dc = data.lcc.i_dc[i, time_step]
+            β_r = data.lcc.rectifier.transformer_reactance[i] * I_dc / sqrt(2)
+            β_i = data.lcc.inverter.transformer_reactance[i] * I_dc / sqrt(2)
+            α_r_min = data.lcc.rectifier.min_thyristor_angle[i]
+            α_i_min = data.lcc.inverter.min_thyristor_angle[i]
+            margin = 0.05
+            # u_r = cos α_r - β_r/(V·t) ∈ (-1, 1) requires α_r off the
+            # rectifier-clamp threshold; u_i = -cos α_i - β_i/(V·t) ∈
+            # (-1, 1) requires α_i > acos(1 - β_i/(V·t)).
+            min_α_r_interior =
+                if β_r ≥ V_fb * t_r
+                    acos(clamp(β_r / (V_fb * t_r) - 1.0, -1.0, 1.0)) + margin
+                else
+                    margin
+                end
+            min_α_i_interior =
+                acos(clamp(1.0 - β_i / (V_tb * t_i), -1.0, 1.0)) + margin
+            x[offset_lcc + 3] = max(α_r_min, min_α_r_interior)
+            x[offset_lcc + 4] = max(α_i_min, min_α_i_interior)
+        end
+    end
     return x
 end
 

@@ -11,6 +11,7 @@ const ISAPPROX_ZERO_TOLERANCE = 1e-6
 const V_FLOOR2 = 1e-16 # lower bound on |V|² (e²+f²) to guard 1/D in rectangular/MCPB current balance
 
 const LCC_sinϕ_TOLERANCE = 1e-8 # if sin(ϕ) < this, treat dQ/dV as zero to avoid singularity in Jacobian
+const LCC_SMALL_ANGLE_THRESHOLD = deg2rad(5) # if |ϕ| < this in LCC solution, print warning.
 
 const DEFAULT_NR_MAX_ITER = 50 # default maxIterations for the NR power flow
 const DEFAULT_NR_TOL = 1e-9 # default tolerance for the NR power flow

@@ -81,7 +81,7 @@ end
     # to avoid hand-tuning offsets that accidentally cancel inside F_t_r
     # or F_t_i.
     x0 = copy(PF.calculate_x0(data, time_step))
-    Random.seed!(1)
+    Random.seed!(2)
     x0[1:8] .+= 0.3 .* (rand(8) .- 0.5)
     x0[end - 1] += 0.6   # α_r
     x0[end] += 0.6       # α_i
