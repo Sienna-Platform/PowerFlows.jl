@@ -18,7 +18,7 @@ Pages = [
 ]
 ```
 
-# PowerFlowData
+# Power Flow Data
 
 ## Struct and Type Definitions
 
