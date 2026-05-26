@@ -119,7 +119,8 @@ end
     sys, lcc = simple_lcc_system()
     PSY.set_r!(lcc, 0.0)
 
-    # With zero resistance, R * I_dc^2 + I_dc - P_set = 0 reduces to I_dc = P_set.
+    # In the normalized initialization equation R * I_dc^2 + I_dc - P_set = 0,
+    # zero resistance reduces to I_dc = P_set.
     PSY.set_transfer_setpoint!(lcc, 25.0)
     for T in (DCPowerFlow, PTDFDCPowerFlow, vPTDFDCPowerFlow)
         data = PowerFlowData(T(; correct_bustypes = true), sys)
