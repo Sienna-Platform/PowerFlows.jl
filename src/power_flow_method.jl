@@ -4,14 +4,16 @@ rounded to 4 significant figures."""
 function _log_diagnostics(
     label::String,
     ρ::Float64,
-    Rv::AbstractVector{Float64},
+    residual,
+    data::ACPowerFlowData,
+    time_step::Int,
     condest::Float64,
 )
+    Rv = residual.Rv
     abs_max, ix = findmax(abs, Rv)
-    pow_type = ix % 2 == 1 ? "P" : "Q"
-    bus_ix = div(ix + 1, 2)
     sf(x) = round(x; sigdigits = 4)
-    @info "$label: ρ = $(sf(ρ)), ‖F‖_∞ = $(sf(abs_max)) at bus $bus_ix ($pow_type), " *
+    @info "$label: ρ = $(sf(ρ)), ‖F‖_∞ = $(sf(abs_max)) at " *
+          "$(_describe_residual_entry(residual, data, time_step, ix)), " *
           "κ̂(J) = $(sf(condest))"
     return
 end
@@ -653,7 +655,7 @@ function _run_power_flow_method(time_step::Int,
         if monitor_ρ
             ρ_now, _, condest_now =
                 _fixed_point_spectral_radius!(J.data, residual, J, time_step)
-            _log_diagnostics("NR iter $i", ρ_now, residual.Rv, condest_now)
+            _log_diagnostics("NR iter $i", ρ_now, residual, J.data, time_step, condest_now)
         end
         F_inf_now = norm(residual.Rv, Inf)
         if detect_stagnation && status === ACPowerFlowSolveStatus.RUNNING
@@ -661,13 +663,13 @@ function _run_power_flow_method(time_step::Int,
                 F_window, ρ_window, κ_window, F_inf_now, ρ_now, condest_now)
             if kind === :fixed_point
                 msg, status = _stagnation_diagnostic(
-                    J.data, time_step, residual.Rv, J.Jv; condest = condest_now)
+                    residual, J.data, time_step, J.Jv; condest = condest_now)
                 @info "NR stagnated at fixed point: ‖F‖_∞ = " *
                       "$(siground(F_inf_now)), stable across " *
                       "$(STAGNATION_WINDOW) iterations" * msg
             elseif kind === :limit_cycle
                 msg, status = _limit_cycle_diagnostic(
-                    residual.Rv, ρ_window, κ_window)
+                    residual, J.data, time_step, ρ_window, κ_window)
                 @info "NR in limit cycle: ‖F‖_∞ = " *
                       "$(siground(F_inf_now)) across " *
                       "$(STAGNATION_WINDOW) iterations" * msg
@@ -774,7 +776,8 @@ function _run_power_flow_method(time_step::Int,
             if accepted
                 ρ_cached, _, condest_cached =
                     _fixed_point_spectral_radius!(J.data, residual, J, time_step)
-                _log_diagnostics("TR iter $i", ρ_cached, residual.Rv, condest_cached)
+                _log_diagnostics(
+                    "TR iter $i", ρ_cached, residual, J.data, time_step, condest_cached)
             else
                 @info "TR iter $i: step rejected (state unchanged; ρ/κ̂ skipped)"
             end
@@ -785,13 +788,13 @@ function _run_power_flow_method(time_step::Int,
                 F_window, ρ_window, κ_window, F_inf_now, ρ_cached, condest_cached)
             if kind === :fixed_point
                 msg, status = _stagnation_diagnostic(
-                    J.data, time_step, residual.Rv, J.Jv; condest = condest_cached)
+                    residual, J.data, time_step, J.Jv; condest = condest_cached)
                 @info "TR stagnated at fixed point: ‖F‖_∞ = " *
                       "$(siground(F_inf_now)), stable across " *
                       "$(STAGNATION_WINDOW) iterations" * msg
             elseif kind === :limit_cycle
                 msg, status = _limit_cycle_diagnostic(
-                    residual.Rv, ρ_window, κ_window)
+                    residual, J.data, time_step, ρ_window, κ_window)
                 @info "TR in limit cycle: ‖F‖_∞ = " *
                       "$(siground(F_inf_now)) across " *
                       "$(STAGNATION_WINDOW) iterations" * msg
@@ -852,7 +855,8 @@ function _newton_power_flow(
     converged = norm(residual.Rv, Inf) < tol
 
     ρ_x0, _, condest_x0 = _fixed_point_spectral_radius!(data, residual, J, time_step)
-    _log_diagnostics("x0 (time_step $time_step)", ρ_x0, residual.Rv, condest_x0)
+    _log_diagnostics(
+        "x0 (time_step $time_step)", ρ_x0, residual, data, time_step, condest_x0)
 
     i = 0
     x_final = x0_init
@@ -903,7 +907,8 @@ function _newton_power_flow(
             )
             if accepted
                 ρ, _, condest = _fixed_point_spectral_radius!(data, residual, J, time_step)
-                _log_diagnostics("Adaptive TR iter $i", ρ, residual.Rv, condest)
+                _log_diagnostics(
+                    "Adaptive TR iter $i", ρ, residual, J.data, time_step, condest)
             else
                 @info "Adaptive TR iter $i: step rejected (state unchanged; ρ/κ̂ skipped)"
             end
@@ -917,7 +922,7 @@ function _newton_power_flow(
                     F_inf_now, ρ_for_window, κ_for_window)
                 if kind === :fixed_point
                     msg, status = _stagnation_diagnostic(
-                        J.data, time_step, residual.Rv, J.Jv; condest = condest)
+                        residual, J.data, time_step, J.Jv; condest = condest)
                     @info "Adaptive TR stagnated at fixed point: ‖F‖_∞ = " *
                           "$(siground(F_inf_now)), stable across " *
                           "$(STAGNATION_WINDOW) iterations; stopping before " *
@@ -925,7 +930,7 @@ function _newton_power_flow(
                     break
                 elseif kind === :limit_cycle
                     msg, status = _limit_cycle_diagnostic(
-                        residual.Rv, ρ_window_tr, κ_window_tr)
+                        residual, J.data, time_step, ρ_window_tr, κ_window_tr)
                     @info "Adaptive TR in limit cycle: ‖F‖_∞ = " *
                           "$(siground(F_inf_now)) across " *
                           "$(STAGNATION_WINDOW) iterations; stopping before " *
@@ -1133,7 +1138,8 @@ function _newton_power_flow(
 
     if get_compute_fixed_point_spectral_radius(data)
         ρ, _, condest = _fixed_point_spectral_radius!(data, residual, J, time_step)
-        _log_diagnostics("x0 (time_step $time_step)", ρ, residual.Rv, condest)
+        _log_diagnostics(
+            "x0 (time_step $time_step)", ρ, residual, data, time_step, condest)
         if ρ >= 1.0
             @warn "fixed-point spectral radius ρ = $(round(ρ; sigdigits = 4)) ≥ 1 " *
                   "at x0 (time_step $time_step); Newton-Raphson may not converge " *

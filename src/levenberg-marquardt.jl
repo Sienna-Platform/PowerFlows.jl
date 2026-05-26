@@ -201,20 +201,22 @@ function _run_power_flow_method(
         if monitor_ρ
             ρ_now, _, condest_now =
                 _fixed_point_spectral_radius!(J.data, residual, J, time_step)
-            _log_diagnostics("LM iter $(i + iter_offset)", ρ_now, residual.Rv, condest_now)
+            _log_diagnostics(
+                "LM iter $(i + iter_offset)", ρ_now, residual, J.data, time_step,
+                condest_now)
         end
         if detect_stagnation && status === ACPowerFlowSolveStatus.RUNNING
             kind = _check_stagnation!(
                 F_window, ρ_window, κ_window, F_inf, ρ_now, condest_now)
             if kind === :fixed_point
                 msg, status = _stagnation_diagnostic(
-                    J.data, time_step, residual.Rv, J.Jv; condest = condest_now)
+                    residual, J.data, time_step, J.Jv; condest = condest_now)
                 @info "LM stagnated at fixed point: ‖F‖_∞ = " *
                       "$(siground(F_inf)), stable across " *
                       "$(STAGNATION_WINDOW) iterations" * msg
             elseif kind === :limit_cycle
                 msg, status = _limit_cycle_diagnostic(
-                    residual.Rv, ρ_window, κ_window)
+                    residual, J.data, time_step, ρ_window, κ_window)
                 @info "LM in limit cycle: ‖F‖_∞ = " *
                       "$(siground(F_inf)) across " *
                       "$(STAGNATION_WINDOW) iterations" * msg

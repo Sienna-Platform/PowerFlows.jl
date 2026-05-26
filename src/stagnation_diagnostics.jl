@@ -13,6 +13,84 @@ const STAGNATION_SUBSPACE_THRESHOLD = 0.9      # subspace alignment above → tr
 # Default number of bottom singular vectors probed by the subspace alignment.
 const STAGNATION_SUBSPACE_K = 3
 
+# ---------------------------------------------------------------------------
+# Formulation-aware residual-entry labeling for diagnostics.
+#
+# Decoding a global residual index `ix` into a readable "bus N (quantity)" /
+# "LCC #k row" label must dispatch on the residual type, because the layout
+# differs:
+#   * polar (ACPowerFlowResidual): [P₁,Q₁,…,Pₙ,Qₙ | LCC tail], fixed 2/bus.
+#   * rect CI (ACRectangularCIResidual): variable per-bus blocks (PQ/REF = 2 →
+#     ΔI real/imag; PV = 3 → ΔI real/imag + |V|²−V_set²), indexed by
+#     bus_state_offset.
+#   * mixed (ACMixedCPBResidual): 2/bus, but the two rows depend on bus type.
+# Both non-polar layouts share rect's `[bus state | 4·n_LCC tail]` split.
+# ---------------------------------------------------------------------------
+
+const _LCC_RESIDUAL_ROW_NAMES =
+    ("P-setpoint", "DC-line balance", "rectifier α-limit", "inverter α-limit")
+
+_diag_bus_number(data, bus_ix::Int) = axes(data.power_network_matrix, 1)[bus_ix]
+
+function _describe_lcc_residual_entry(data, tail_ix::Int)
+    i = div(tail_ix - 1, 4) + 1            # 1-based LCC index
+    row = mod1(tail_ix, 4)
+    (from_no, to_no) = data.lcc.arcs[i]
+    return "LCC #$i ($from_no→$to_no) $(_LCC_RESIDUAL_ROW_NAMES[row])"
+end
+
+# Owning bus (matrix index) and 0-based row within its block, for the
+# variable-block (rect/mixed) formulations. `bus_state_offset[b]` is the 1-based
+# block start; `searchsortedlast` returns the block containing `ix`.
+function _locate_variable_block(bus_state_offset::AbstractVector, ix::Int)
+    b = searchsortedlast(bus_state_offset, ix)
+    return b, ix - Int(bus_state_offset[b])
+end
+
+"""
+    _describe_residual_entry(residual, data, time_step, ix) -> String
+
+Formulation-aware label for global residual index `ix`: the owning bus number
+(or LCC arc) and the physical quantity of that equation. Used by the
+stagnation / limit-cycle / per-iteration diagnostics so they don't mislabel
+non-polar residuals — whose entries are current/voltage mismatches on
+variable-width blocks, not the polar fixed 2-per-bus P/Q."""
+function _describe_residual_entry(::ACPowerFlowResidual, data, time_step::Int, ix::Int)
+    n_bus_eqs = 2 * size(data.bus_type, 1)
+    ix > n_bus_eqs && return _describe_lcc_residual_entry(data, ix - n_bus_eqs)
+    bus_ix = div(ix + 1, 2)
+    qty = isodd(ix) ? "P" : "Q"
+    return "bus $(_diag_bus_number(data, bus_ix)) ($qty)"
+end
+
+function _describe_residual_entry(
+    r::ACRectangularCIResidual, data, time_step::Int, ix::Int,
+)
+    ix > r.total_bus_state &&
+        return _describe_lcc_residual_entry(data, ix - r.total_bus_state)
+    bus_ix, row = _locate_variable_block(r.bus_state_offset, ix)
+    # 2-block (PQ/REF): real/imag current mismatch. 3-block (PV) adds |V|²−V_set².
+    qty = row == 0 ? "ΔI_re" : row == 1 ? "ΔI_im" : "|V|²−V_set²"
+    return "bus $(_diag_bus_number(data, bus_ix)) ($qty)"
+end
+
+function _describe_residual_entry(r::ACMixedCPBResidual, data, time_step::Int, ix::Int)
+    ix > r.total_bus_state &&
+        return _describe_lcc_residual_entry(data, ix - r.total_bus_state)
+    bus_ix, row = _locate_variable_block(r.bus_state_offset, ix)
+    bt = data.bus_type[bus_ix, time_step]
+    # MCPB layout: PQ = divided-current balance, imag-first; PV = power balance
+    # then |V|²−V_set²; REF = rect's real/imag current rows.
+    qty = if bt == PSY.ACBusTypes.PV
+        row == 0 ? "ΔP" : "|V|²−V_set²"
+    elseif bt == PSY.ACBusTypes.PQ
+        row == 0 ? "ΔI_im" : "ΔI_re"     # imag-first
+    else                                  # REF
+        row == 0 ? "ΔI_re" : "ΔI_im"
+    end
+    return "bus $(_diag_bus_number(data, bus_ix)) ($qty)"
+end
+
 # Stability-gate parameters for `_check_stagnation!`. Two gates run in parallel:
 # the **strict** gate (`ρ` and `κ̂` within ~10%) detects a true fixed point of
 # the iteration map; the **loose** gate (~2×) detects period-≥2 limit cycles
@@ -161,10 +239,13 @@ iterate isn't actually at a single point. Reports the ρ and κ̂ ranges observe
 across the window (which capture the cycle's amplitude) plus condest and the
 top mismatches. Always returns `status = ACPowerFlowSolveStatus.LIMIT_CYCLE`."""
 function _limit_cycle_diagnostic(
-    Rv::AbstractVector{Float64},
+    residual,
+    data::ACPowerFlowData,
+    time_step::Int,
     ρ_window::AbstractVector{Float64},
     κ_window::AbstractVector{Float64},
 )
+    Rv = residual.Rv
     sf(x) = round(x; sigdigits = 4)
     ρ_part = if isempty(ρ_window)
         ""
@@ -180,12 +261,10 @@ function _limit_cycle_diagnostic(
     end
     k_top = min(3, length(Rv))
     top_ix = partialsortperm(Rv, 1:k_top; by = abs, rev = true)
-    parts = String[]
-    for ix in top_ix
-        pow_type = ix % 2 == 1 ? "P" : "Q"
-        bus_ix = div(ix + 1, 2)
-        push!(parts, "bus $bus_ix ($pow_type) = $(sf(Rv[ix]))")
-    end
+    parts = [
+        "$(_describe_residual_entry(residual, data, time_step, ix)) = $(sf(Rv[ix]))"
+        for ix in top_ix
+    ]
     status = ACPowerFlowSolveStatus.LIMIT_CYCLE
     msg =
         ρ_part * κ_part *
@@ -216,16 +295,24 @@ of `NON_ROOT_LOCAL_MIN`, `NON_ROOT_SADDLE`, `NON_ROOT_STATIONARY`,
 4. **STAGNATED_OTHER** — none of the above fire; mechanism unclear.
 
 The Hessian-vector-vector product is hardcoded to the polar formulation via
-[`acpf_hvvp`](@ref); other formulations would need their own hvvp routine to
-hook into the FOLD and curvature checks."""
+[`acpf_hvvp`](@ref), so for non-polar formulations (rectangular CI, mixed CPB)
+the FOLD and directional-curvature checks are skipped entirely — they would
+need a formulation-specific hvvp routine. The gradient/subspace tests, which
+use only `J` and `F`, still run for every formulation."""
 function _stagnation_diagnostic(
+    residual,
     data::ACPowerFlowData,
     time_step::Int,
-    Rv::AbstractVector{Float64},
     Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE};
     condest::Union{Float64, Nothing} = nothing,
     k::Int = STAGNATION_SUBSPACE_K,
 )
+    Rv = residual.Rv
+    # acpf_hvvp is polar-only; running it on a non-polar Δx (different basis,
+    # possibly different length) would either throw or — if the dimensions
+    # happen to coincide — return a silently wrong number. Gate the FOLD and
+    # directional-curvature checks on the polar formulation.
+    is_polar = residual isa ACPowerFlowResidual
     sf(x) = round(x; sigdigits = 4)
     cond_part = isnothing(condest) || !isfinite(condest) ? "" :
                 ", κ̂(J) = $(sf(condest))"
@@ -250,17 +337,21 @@ function _stagnation_diagnostic(
     # F + J·Δx + ½ H[Δx,Δx,·] = ½ H[Δx,Δx,·]. Ratio ≈ 0 → Newton converges
     # cleanly; ≳ 1 → curvature kills the linear step.
     quad_ratio = NaN
-    quad_part = try
-        F_klu = KLU.klu(Jv)
-        Δx = -(F_klu \ Vector(Rv))
-        h = acpf_hvvp(data, time_step, Δx, Δx)
-        nh = norm(h, Inf)
-        nFinf = norm(Rv, Inf)
-        quad_ratio = (nFinf > 0) ? 0.5 * nh / nFinf : NaN
-        isfinite(quad_ratio) ?
-        ", ‖½H[Δx,Δx]‖_∞/‖F‖_∞ = $(sf(quad_ratio))" : ""
-    catch _
+    quad_part = if !is_polar
         ""
+    else
+        try
+            F_klu = KLU.klu(Jv)
+            Δx = -(F_klu \ Vector(Rv))
+            h = acpf_hvvp(data, time_step, Δx, Δx)
+            nh = norm(h, Inf)
+            nFinf = norm(Rv, Inf)
+            quad_ratio = (nFinf > 0) ? 0.5 * nh / nFinf : NaN
+            isfinite(quad_ratio) ?
+            ", ‖½H[Δx,Δx]‖_∞/‖F‖_∞ = $(sf(quad_ratio))" : ""
+        catch _
+            ""
+        end
     end
     # Second-order test along v_min (right singular vector of smallest σ).
     # ∇²(½‖F‖²) = JᵀJ + Σ F_k Hᵏ; directional curvature at v_min is
@@ -268,7 +359,9 @@ function _stagnation_diagnostic(
     # σ_min² is tiny, so sign is decided by the F·H part. + → robust local min,
     # − → saddle.
     curv_ratio = NaN
-    curv_part = if !isempty(V)
+    curv_part = if !is_polar
+        ""
+    elseif !isempty(V)
         try
             v_min = V[1]
             Jv_min = Jv * v_min
@@ -305,14 +398,19 @@ function _stagnation_diagnostic(
     end
     k_top = min(3, length(Rv))
     top_ix = partialsortperm(Rv, 1:k_top; by = abs, rev = true)
-    parts = String[]
-    for ix in top_ix
-        pow_type = ix % 2 == 1 ? "P" : "Q"
-        bus_ix = div(ix + 1, 2)
-        push!(parts, "bus $bus_ix ($pow_type) = $(sf(Rv[ix]))")
-    end
+    parts = [
+        "$(_describe_residual_entry(residual, data, time_step, ix)) = $(sf(Rv[ix]))"
+        for ix in top_ix
+    ]
+    # Non-polar formulations skip the curvature/FOLD tests (acpf_hvvp is
+    # polar-only), so make that explicit rather than letting their absence read
+    # as "curvature was inconclusive".
+    formulation_part =
+        is_polar ? "" :
+        ", curvature/FOLD checks skipped (non-polar formulation)"
     msg =
         cond_part * align_part * grad_part * quad_part * curv_part *
+        formulation_part *
         "; top $k_top mismatches: " * join(parts, ", ") *
         " [status: $status]"
     return msg, status
