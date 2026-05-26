@@ -586,9 +586,12 @@ function initialize_LCCParameters!(
     lcc_inverter_tap[:, 1] .= PSY.get_inverter_tap_setting.(lccs)
     lcc_dc_line_resistance .=
         PSY.get_r.(lccs) .+ PSY.get_rectifier_rc.(lccs) .+ PSY.get_inverter_rc.(lccs)
-    lcc_i_dc .=
+    lcc_i_dc .= ifelse.(
+        iszero.(lcc_dc_line_resistance) .| iszero.(lcc_p_set),
+        lcc_p_set,
         (-1 .+ sqrt.(1 .+ 4 .* lcc_dc_line_resistance .* lcc_p_set)) ./
-        (2 .* lcc_dc_line_resistance)
+        (2 .* lcc_dc_line_resistance),
+    )
     lcc_rectifier_delay_angle[:, 1] .= PSY.get_rectifier_delay_angle.(lccs)
     lcc_inverter_extinction_angle[:, 1] .= PSY.get_inverter_extinction_angle.(lccs)
     lcc_rectifier_bus .= [

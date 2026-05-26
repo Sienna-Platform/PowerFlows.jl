@@ -115,6 +115,25 @@ end
     end
 end
 
+@testset "DC power flow with an LCC: i_dc initialization edge cases" begin
+    sys, lcc = simple_lcc_system()
+    PSY.set_r!(lcc, 0.0)
+
+    # With zero resistance, R * I_dc^2 + I_dc - P_set = 0 reduces to I_dc = P_set.
+    PSY.set_transfer_setpoint!(lcc, 25.0)
+    for T in (DCPowerFlow, PTDFDCPowerFlow, vPTDFDCPowerFlow)
+        data = PowerFlowData(T(; correct_bustypes = true), sys)
+        @test !isnan(data.lcc.i_dc[1, 1])
+        @test isapprox(data.lcc.i_dc[1, 1], data.lcc.p_set[1, 1]; atol = 1e-12)
+    end
+
+    # Zero setpoint should also initialize safely (no NaN).
+    PSY.set_transfer_setpoint!(lcc, 0.0)
+    data = PowerFlowData(DCPowerFlow(; correct_bustypes = true), sys)
+    @test !isnan(data.lcc.i_dc[1, 1])
+    @test iszero(data.lcc.i_dc[1, 1])
+end
+
 # TODO LCC DC test case with nonzero loss.
 
 @testset "DC power flow: results independent of units" begin
