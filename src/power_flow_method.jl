@@ -37,16 +37,19 @@ end
 
 """Solve for the Newton-Raphson step, given the factorization object for `J.Jv`
 (if non-singular) or its stand-in (if singular)."""
-function _solve_Δx_nr!(stateVector::StateVectorCache, cache::KLULinSolveCache{J_INDEX_TYPE})
+function _solve_Δx_nr!(stateVector::StateVectorCache, cache::PFLinearSolverCache)
     copyto!(stateVector.Δx_nr, stateVector.r)
     solve!(cache, stateVector.Δx_nr)
     return
 end
 
-"""Check error and do refinement."""
+"""Compute the relative residual `‖A·Δx_nr − r‖₁ / ‖r‖₁` of the linear solve and, if it
+exceeds `refinement_threshold`, run iterative refinement and recompute it. Returns the
+(post-refinement) relative residual; the caller uses it as a backend-agnostic singularity
+signal (see [`_set_Δx_nr!`](@ref))."""
 function _do_refinement!(stateVector::StateVectorCache,
     A::SparseMatrixCSC{Float64, J_INDEX_TYPE},
-    cache::KLULinSolveCache{J_INDEX_TYPE},
+    cache::PFLinearSolverCache,
     refinement_threshold::Float64,
     refinement_eps::Float64,
 )
@@ -60,45 +63,63 @@ function _do_refinement!(stateVector::StateVectorCache,
             A,
             stateVector.r,
             refinement_eps)
+        mul!(δ_temp, A, stateVector.Δx_nr)
+        δ_temp .-= stateVector.r
+        delta = norm(δ_temp, 1) / norm(stateVector.r, 1)
     end
-    return
+    return delta
 end
 
 """Sets the Newton-Raphson step. Usually, this is just `J.Jv \\ stateVector.r`, but
 `J.Jv` might be singular."""
 function _set_Δx_nr!(stateVector::StateVectorCache,
     J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
-    linSolveCache::KLULinSolveCache{J_INDEX_TYPE},
+    linSolveCache::PFLinearSolverCache,
     solver::ACPowerFlowSolverType,
     refinement_threshold::Float64,
     refinement_eps::Float64)
+    use_fallback = false
     try
         numeric_refactor!(linSolveCache, J.Jv)
     catch e
-        if e isa LinearAlgebra.SingularException
-            @warn("$solver hit a point where the Jacobian is singular.")
-            M = _singular_J_fallback(J.Jv, stateVector.x)
-            tempCache = KLULinSolveCache(M)
-            # creating a new solver cache to solve Mx = stateVector.r once. Default ldiv!
-            # might be faster, but singular J's should be rare.
-            full_factor!(tempCache, M)
-            _solve_Δx_nr!(stateVector, tempCache)
-            _do_refinement!(stateVector, M, tempCache, refinement_threshold, refinement_eps)
-            LinearAlgebra.rmul!(stateVector.Δx_nr, -1.0)
-        else
-            @error("KLU factorization failed: $e")
-        end
-    else
+        # KLU signals a singular factorization by throwing; AppleAccelerate and
+        # MKLPardiso do not (see `_set_Δx_nr!` residual guard below). Any factorization
+        # error routes to the regularized fallback.
+        e isa LinearAlgebra.SingularException ||
+            @error("Linear solver factorization failed: $e")
+        use_fallback = true
+    end
+
+    if !use_fallback
         _solve_Δx_nr!(stateVector, linSolveCache)
-        _do_refinement!(
+        # Backend-agnostic singular-Jacobian guard. KLU throws on a singular matrix (caught
+        # above), but AppleAccelerate and MKLPardiso silently return a finite garbage
+        # solution. `_do_refinement!` returns the relative residual ‖J·Δx − r‖/‖r‖ (after
+        # attempting iterative refinement, which rescues merely ill-conditioned solves). If
+        # the linear solve still cannot be driven below `refinement_threshold`, the Jacobian
+        # is (numerically) singular regardless of backend.
+        residual = _do_refinement!(
             stateVector,
             J.Jv,
             linSolveCache,
             refinement_threshold,
             refinement_eps,
         )
-        LinearAlgebra.rmul!(stateVector.Δx_nr, -1.0)
+        use_fallback = !isfinite(residual) || residual > refinement_threshold
     end
+
+    if use_fallback
+        @warn("$solver hit a point where the Jacobian is singular.")
+        M = _singular_J_fallback(J.Jv, stateVector.x)
+        # creating a new solver cache to solve Mx = stateVector.r once. Default ldiv!
+        # might be faster, but singular J's should be rare. KLU is used here because the
+        # fallback must reliably solve the regularized (nonsingular) system.
+        tempCache = make_linear_solver_cache(PNM.KLUSolver(), M)
+        full_factor!(tempCache, M)
+        _solve_Δx_nr!(stateVector, tempCache)
+        _do_refinement!(stateVector, M, tempCache, refinement_threshold, refinement_eps)
+    end
+    LinearAlgebra.rmul!(stateVector.Δx_nr, -1.0)
     return
 end
 
@@ -225,7 +246,7 @@ the value of the Jacobian at the new `x`, if needed. Unlike
 `_simple_step`, this has a return value, the updated value of `delta``."""
 function _trust_region_step(time_step::Int,
     stateVector::StateVectorCache,
-    linSolveCache::KLULinSolveCache{J_INDEX_TYPE},
+    linSolveCache::PFLinearSolverCache,
     residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
     J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
     delta::Float64,
@@ -428,7 +449,7 @@ end
  fields of the `stateVector`, and computes the Jacobian at the new `x`."""
 function _simple_step(time_step::Int,
     stateVector::StateVectorCache,
-    linSolveCache::KLULinSolveCache{J_INDEX_TYPE},
+    linSolveCache::PFLinearSolverCache,
     residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
     J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
     refinement_threshold::Float64 = DEFAULT_REFINEMENT_THRESHOLD,
@@ -464,7 +485,7 @@ the step was reverted. Consecutive reverts signal stagnation and the caller
 should terminate early."""
 function _iwamoto_step(time_step::Int,
     stateVector::StateVectorCache,
-    linSolveCache::KLULinSolveCache{J_INDEX_TYPE},
+    linSolveCache::PFLinearSolverCache,
     residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
     J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
     refinement_threshold::Float64 = DEFAULT_REFINEMENT_THRESHOLD,
@@ -569,7 +590,7 @@ end
     $DEFAULT_REFINEMENT_EPS """
 function _run_power_flow_method(time_step::Int,
     stateVector::StateVectorCache,
-    linSolveCache::KLULinSolveCache{J_INDEX_TYPE},
+    linSolveCache::PFLinearSolverCache,
     residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
     J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
     ::Type{NewtonRaphsonACPowerFlow};
@@ -644,7 +665,7 @@ end
     damping to salvage the step before reverting. Default: $DEFAULT_IWAMOTO_FALLBACK."""
 function _run_power_flow_method(time_step::Int,
     stateVector::StateVectorCache,
-    linSolveCache::KLULinSolveCache{J_INDEX_TYPE},
+    linSolveCache::PFLinearSolverCache,
     residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
     J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
     ::Type{TrustRegionACPowerFlow};
@@ -789,6 +810,8 @@ function _newton_power_flow(
     iwamoto_fallback::Bool = DEFAULT_IWAMOTO_FALLBACK,
     # initialize_power_flow_variables
     x0::Union{Vector{Float64}, Nothing} = nothing,
+    # linear solver backend ("KLU" | "AppleAccelerateLU" | "MKLPardiso"); nothing = platform default
+    linear_solver::Union{Nothing, AbstractString} = nothing,
     _ignored...,
 ) where {T <: Union{TrustRegionACPowerFlow, NewtonRaphsonACPowerFlow}}
 
@@ -805,7 +828,8 @@ function _newton_power_flow(
     i = 0
     x_final = x0_init
     if !converged
-        linSolveCache = KLULinSolveCache(J.Jv)
+        backend = resolve_linear_solver_backend(linear_solver)
+        linSolveCache = make_linear_solver_cache(backend, J.Jv)
         symbolic_factor!(linSolveCache, J.Jv)
         stateVector = StateVectorCache(x0_init, residual.Rv)
         converged, i = _run_power_flow_method(

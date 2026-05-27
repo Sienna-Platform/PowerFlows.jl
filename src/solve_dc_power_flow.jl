@@ -32,9 +32,11 @@ This function modifies the following fields of `data`, setting them to the compu
 Additionally, it sets `data.converged` to `true`, indicating that the power flow calculation was successful.
 """
 function solve_power_flow!(
-    data::PTDFPowerFlowData,
+    data::PTDFPowerFlowData;
+    linear_solver::Union{Nothing, AbstractString} = nothing,
 )
-    solver_cache = KLULinSolveCache(data.aux_network_matrix.data)
+    backend = resolve_linear_solver_backend(linear_solver)
+    solver_cache = make_linear_solver_cache(backend, data.aux_network_matrix.data)
     full_factor!(solver_cache, data.aux_network_matrix.data)
     # get net power injections
     power_injections = data.bus_active_power_injections .- data.bus_active_power_withdrawals
@@ -73,9 +75,11 @@ This function modifies the following fields of `data`, setting them to the compu
 Additionally, it sets `data.converged` to `true`, indicating that the power flow calculation was successful.
 """
 function solve_power_flow!(
-    data::vPTDFPowerFlowData,
+    data::vPTDFPowerFlowData;
+    linear_solver::Union{Nothing, AbstractString} = nothing,
 )
-    solver_cache = KLULinSolveCache(data.aux_network_matrix.data)
+    backend = resolve_linear_solver_backend(linear_solver)
+    solver_cache = make_linear_solver_cache(backend, data.aux_network_matrix.data)
     full_factor!(solver_cache, data.aux_network_matrix.data)
     power_injections = data.bus_active_power_injections .- data.bus_active_power_withdrawals
     power_injections .+= data.bus_hvdc_net_power
@@ -126,9 +130,11 @@ Losses are estimated differently depending on whether lossy flows are enabled
 """
 # DC flow: ABA and BA case
 function solve_power_flow!(
-    data::ABAPowerFlowData,
+    data::ABAPowerFlowData;
+    linear_solver::Union{Nothing, AbstractString} = nothing,
 )
-    solver_cache = KLULinSolveCache(data.power_network_matrix.data)
+    backend = resolve_linear_solver_backend(linear_solver)
+    solver_cache = make_linear_solver_cache(backend, data.power_network_matrix.data)
     full_factor!(solver_cache, data.power_network_matrix.data)
 
     power_injections = data.bus_active_power_injections - data.bus_active_power_withdrawals
@@ -197,11 +203,12 @@ display(d["1"]["bus_results"])
 function solve_power_flow(
     pf::T,
     sys::PSY.System,
-    flow_reporting::FlowReporting,
+    flow_reporting::FlowReporting;
+    linear_solver::Union{Nothing, AbstractString} = nothing,
 ) where {T <: AbstractDCPowerFlow}
     with_units_base(sys, PSY.UnitSystem.SYSTEM_BASE) do
         data = PowerFlowData(pf, sys)
-        solve_power_flow!(data)
+        solve_power_flow!(data; linear_solver)
         return write_results(data, sys, flow_reporting)
     end
 end
@@ -248,8 +255,9 @@ function solve_power_flow(
     data::Union{PTDFPowerFlowData, vPTDFPowerFlowData, ABAPowerFlowData},
     sys::PSY.System,
     flow_reporting::FlowReporting;
+    linear_solver::Union{Nothing, AbstractString} = nothing,
 )
-    solve_power_flow!(data)
+    solve_power_flow!(data; linear_solver)
     return write_results(data, sys, flow_reporting)
 end
 

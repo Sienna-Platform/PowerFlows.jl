@@ -36,7 +36,6 @@ import LinearAlgebra
 import LinearAlgebra: norm, dot, ldiv!, mul!
 import LinearAlgebra: norm, dot
 import JSON3
-import KLU
 import SparseArrays
 import InfrastructureSystems as IS
 import PowerNetworkMatrices as PNM
@@ -59,8 +58,7 @@ include("lcc_utils.jl")
 include("common.jl")
 include("initialize_power_flow_data.jl")
 include("psse_export.jl")
-include("LinearSolverCache/linear_solver_cache.jl")
-include("LinearSolverCache/klu_linear_solver.jl")
+include("linear_solver_backend.jl")
 include("dcpf_loss_injection.jl")
 include("solve_dc_power_flow.jl")
 include("state_indexing_helpers.jl")

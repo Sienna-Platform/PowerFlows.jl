@@ -779,7 +779,10 @@ function _calculate_loss_factors(
     pvpq_coord_mask = repeat(pvpq_mask; inner = 2)
     J_t = sparse(transpose(Jv[pvpq_coord_mask, pvpq_coord_mask]))
     dSbus_dV_ref = collect(Jv[2 .* ref .- 1, pvpq_coord_mask])[:]
-    lf = KLU.klu(J_t) \ dSbus_dV_ref
+    lf_cache = make_linear_solver_cache(PNM.KLUSolver(), J_t)
+    full_factor!(lf_cache, J_t)
+    lf = copy(dSbus_dV_ref)
+    solve!(lf_cache, lf)
     # only take the dPref_dP loss factors, ignore dPref_dQ
     data.loss_factors[pvpq_mask, time_step] .= lf[1:2:end]
     data.loss_factors[new_ref_mask, time_step] .= -1.0
@@ -872,7 +875,10 @@ function _singular_value_decomposition(
     tol::Float64 = 1e-9,
     max_iter::Integer = 100,
 )
-    factorized_block_J = KLU.klu(Jv)
+    # Voltage-stability factors require transpose solves (Aᵀ \ b), which only the
+    # KLU backend provides; this routine is KLU-only by construction.
+    factorized_block_J = make_linear_solver_cache(PNM.KLUSolver(), Jv)
+    full_factor!(factorized_block_J, Jv)
     n = size(Jv, 1)
     voltage_angle_indices = 1:npvpq
 
@@ -889,7 +895,8 @@ function _singular_value_decomposition(
     k = 1
 
     while k <= max_iter
-        ldiv!(left, factorized_block_J', right)
+        copyto!(left, right)
+        tsolve!(factorized_block_J, left)
         fill!(left_angle_section, 0.0)
         norm_left = norm(left, 2)
 
@@ -903,7 +910,8 @@ function _singular_value_decomposition(
             break
         end
 
-        ldiv!(right, factorized_block_J, left)
+        copyto!(right, left)
+        solve!(factorized_block_J, right)
         fill!(right_angle_section, 0.0)
         norm_right = norm(right, 2)
 

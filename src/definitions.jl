@@ -52,8 +52,11 @@ const BUS_VOLTAGE_MAGNITUDE_CUTOFF_MIN = 0.8
 const BUS_VOLTAGE_MAGNITUDE_CUTOFF_MAX = 1.2
 
 const TIs = Union{Int32, Int64}
-const J_INDEX_TYPE = Int32
-const REC_INDEX_TYPE = Int32
+# Int64 on Apple so AppleAccelerate's libSparse (Int64-only `columnStarts` ABI)
+# can factor the AC Jacobian natively; Int32 elsewhere (KLU only).
+const INDEX_TYPE = Sys.isapple() ? Int64 : Int32
+const J_INDEX_TYPE = INDEX_TYPE
+const REC_INDEX_TYPE = INDEX_TYPE
 
 # LCC line-commutated-converter scaling factor: the fundamental component of the
 # AC-side current per unit DC current is `(√6/π)·t·I_dc`. Used in `lcc_utils.jl`,
