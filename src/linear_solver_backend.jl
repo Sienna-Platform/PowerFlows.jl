@@ -1,0 +1,105 @@
+# Linear-solver backend selection for PowerFlows.
+#
+# PowerFlows consumes PowerNetworkMatrices' (PNM) cached linear solvers instead
+# of depending on KLU.jl directly. Two backends are available:
+#   - KLU (SuiteSparse, all platforms)
+#   - AppleAccelerate (libSparse, macOS only; Int64-indexed matrices only)
+#
+# PNM exposes KLU ops as PNM.solve!/full_factor!/... and AppleAccelerate ops as
+# PNM.AccelerateWrapper.solve!/full_factor!/...  PowerFlows unifies them below
+# via dispatch over the PFLinearSolverCache Union. A future PNM-side abstract
+# supertype will let us drop this Union.
+
+"""Cache for the MKLPardiso backend. The Pardiso handle is held opaquely because
+`Pardiso.MKLPardisoSolver`'s type is only available when the `Pardiso.jl`
+extension (`PowerFlowsPardisoExt`) is loaded; the operation methods live there.
+The matrix is snapshotted because Pardiso reads it at solve time. `Ti` is left
+abstract: Pardiso.jl converts the index arrays to `Int32` internally, so this
+cache accepts both the `Int32` AC Jacobian and the `Int`-indexed DC matrices."""
+mutable struct PardisoLinSolveCache
+    ps::Any                       # Pardiso.MKLPardisoSolver
+    A::SparseMatrixCSC{Float64}
+    is_factored::Bool
+end
+
+"""Union of the cached linear-solver types PowerFlows dispatches over (KLU,
+AppleAccelerate, MKLPardiso). A 3-way union stays within Julia's small-union
+splitting; a future PNM abstract supertype would replace it."""
+const PFLinearSolverCache =
+    Union{PNM.KLULinSolveCache{Float64}, PNM.AAFactorCache, PardisoLinSolveCache}
+
+# --- Backend-agnostic operations (forward to the owning PNM namespace) ---
+
+symbolic_factor!(c::PNM.KLULinSolveCache, A::SparseMatrixCSC{Float64}) =
+    PNM.symbolic_factor!(c, A)
+symbolic_factor!(c::PNM.AAFactorCache, A::SparseMatrixCSC{Float64}) =
+    PNM.AccelerateWrapper.symbolic_factor!(c, A)
+
+numeric_refactor!(c::PNM.KLULinSolveCache, A::SparseMatrixCSC{Float64}) =
+    PNM.numeric_refactor!(c, A)
+numeric_refactor!(c::PNM.AAFactorCache, A::SparseMatrixCSC{Float64}) =
+    PNM.AccelerateWrapper.numeric_refactor!(c, A)
+
+full_factor!(c::PNM.KLULinSolveCache, A::SparseMatrixCSC{Float64}) =
+    PNM.full_factor!(c, A)
+full_factor!(c::PNM.AAFactorCache, A::SparseMatrixCSC{Float64}) =
+    PNM.AccelerateWrapper.full_factor!(c, A)
+
+solve!(c::PNM.KLULinSolveCache, b::StridedVecOrMat{Float64}) = PNM.solve!(c, b)
+solve!(c::PNM.AAFactorCache, b::StridedVecOrMat{Float64}) =
+    PNM.AccelerateWrapper.solve!(c, b)
+
+"""Transpose solve `Aᵀ x = b` in place. KLU-only (AppleAccelerate has no
+transpose solve)."""
+tsolve!(c::PNM.KLULinSolveCache, b::StridedVecOrMat{Float64}) = PNM.tsolve!(c, b)
+
+# --- Backend resolution and construction ---
+
+"""Resolve the active linear-solver backend tag.
+
+Returns a PNM backend singleton (`PNM.KLUSolver()` or
+`PNM.AppleAccelerateLUSolver()`). When `override === nothing`, the platform
+default from PNM's preference logic is used. AppleAccelerate is rejected off
+Apple platforms."""
+function resolve_linear_solver_backend(override::Union{Nothing, AbstractString})
+    name = override === nothing ? PNM._default_linear_solver() : String(override)
+    tag = PNM.resolve_linear_solver(name)
+    if tag isa PNM.AppleAccelerateLUSolver && !Sys.isapple()
+        error("AppleAccelerate backend requested but not on an Apple platform.")
+    elseif tag isa PNM.MKLPardisoSolver
+        # Intel MKL is x86_64-only. On other architectures (notably Apple Silicon)
+        # it can never load, so give a definitive message rather than suggesting
+        # `import Pardiso`, which would not help. macOS on x86_64 (incl. CI under
+        # Rosetta) reports `:x86_64` and is allowed through.
+        if Sys.ARCH !== :x86_64
+            error(
+                "MKLPardiso backend requires an x86_64 platform with Intel MKL; it is " *
+                "unavailable on $(Sys.ARCH) architectures (e.g. Apple Silicon). " *
+                "Use the \"KLU\" or \"AppleAccelerateLU\" backend instead.",
+            )
+        elseif !PNM._has_mkl_pardiso_ext()
+            error(
+                "MKLPardiso backend requested but Pardiso.jl is not loaded. " *
+                "Run `import Pardiso` to load the PowerFlowsPardisoExt extension.",
+            )
+        end
+    end
+    return tag
+end
+
+"""Construct (without factorizing) the cache for backend `tag` over matrix `A`."""
+make_linear_solver_cache(::PNM.KLUSolver, A::SparseMatrixCSC{Float64}) =
+    PNM.KLULinSolveCache(A)
+make_linear_solver_cache(::PNM.AppleAccelerateLUSolver, A::SparseMatrixCSC{Float64}) =
+    PNM.AAFactorCache(A)
+
+"""Adapter: PowerFlows historically calls `solve_w_refinement(cache, A, b, eps)`
+with a step-tolerance `eps`. Map onto PNM's residual-based refined solve."""
+function solve_w_refinement(
+    cache::PFLinearSolverCache,
+    A::SparseMatrixCSC{Float64},
+    b::Vector{Float64},
+    refinement_eps::Float64,
+)
+    return PNM.solve_w_refinement(cache, A, b; tol = refinement_eps)
+end
