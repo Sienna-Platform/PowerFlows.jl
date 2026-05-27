@@ -719,6 +719,21 @@ function _set_entries_for_lcc_rect!(
         bus_type_fb = data.bus_type[fb, time_step]
         bus_type_tb = data.bus_type[tb, time_step]
 
+        if iszero(data.lcc.i_dc[i, time_step])
+            # 0-current converter: P_lcc ≡ 0, so it contributes nothing to the bus
+            # rows and its P-setpoint / DC-line-balance rows are vacuous. Zero the
+            # bus-coupling entries and pin the two tap states with identity rows
+            # (matching _write_lcc_tail!) — into existing structure positions only.
+            # All 24 LCC entries are ∝ i_dc except the two tap diagonals, so zero
+            # the whole block and pin: F_t_fb (P-setpoint) → tap_r at row 15,
+            # F_t_tb (DC-line balance) → tap_i at row 18. The α-limit identity
+            # diagonals are not in lcc_nz (set at pattern build), so they survive.
+            Jvnz[lcc_nz[1:24, i]] .= 0.0
+            Jvnz[lcc_nz[15, i]] = 1.0
+            Jvnz[lcc_nz[18, i]] = 1.0
+            continue
+        end
+
         e_fb = e_state[fb]
         f_fb = f_state[fb]
         Vm_fb_sq = e_fb^2 + f_fb^2

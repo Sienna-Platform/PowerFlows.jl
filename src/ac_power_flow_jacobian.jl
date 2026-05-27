@@ -579,6 +579,39 @@ function _set_entries_for_lcc(data::ACPowerFlowData,
         bus_type_fb = data.bus_type[fb, time_step]
         bus_type_tb = data.bus_type[tb, time_step]
 
+        if iszero(data.lcc.i_dc[i, time_step])
+            # 0-current converter: P_lcc ≡ 0, so it contributes nothing to the bus
+            # rows and its P-setpoint / DC-line-balance rows are vacuous. Zero its
+            # bus-coupling entries and pin the two tap states with identity rows
+            # (matching _write_lcc_tail!), keeping the block nonsingular without
+            # changing the sparsity structure.
+            Jv[idx_p_fb, idx_tap_from] = 0.0
+            Jv[idx_p_fb, idx_angle_from] = 0.0
+            Jv[idx_q_fb, idx_tap_from] = 0.0
+            Jv[idx_q_fb, idx_angle_from] = 0.0
+            Jv[idx_p_tb, idx_tap_to] = 0.0
+            Jv[idx_p_tb, idx_angle_to] = 0.0
+            Jv[idx_q_tb, idx_tap_to] = 0.0
+            Jv[idx_q_tb, idx_angle_to] = 0.0
+            if bus_type_fb == PSY.ACBusTypes.PQ
+                Jv[idx_tap_from, idx_p_fb] = 0.0
+                Jv[idx_tap_to, idx_p_fb] = 0.0
+            end
+            if bus_type_tb == PSY.ACBusTypes.PQ
+                Jv[idx_tap_from, idx_p_tb] = 0.0
+                Jv[idx_tap_to, idx_p_tb] = 0.0
+            end
+            Jv[idx_tap_from, idx_tap_from] = 1.0   # ∂(tap_r − tap_set)/∂tap_r
+            Jv[idx_tap_from, idx_angle_from] = 0.0
+            Jv[idx_tap_from, idx_tap_to] = 0.0
+            Jv[idx_tap_from, idx_angle_to] = 0.0
+            Jv[idx_tap_to, idx_tap_from] = 0.0
+            Jv[idx_tap_to, idx_tap_to] = 1.0       # ∂(tap_i − tap_set)/∂tap_i
+            Jv[idx_tap_to, idx_angle_from] = 0.0
+            Jv[idx_tap_to, idx_angle_to] = 0.0
+            continue
+        end
+
         s = _lcc_jacobian_scalars(data, i, time_step, Vm_fb, Vm_tb)
 
         dP_dV_fb = s.dP_dV_fb
