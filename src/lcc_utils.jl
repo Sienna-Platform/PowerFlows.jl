@@ -538,6 +538,16 @@ function initialize_LCCParameters!(
     return
 end
 
+"""
+    _lcc_i_dc_from_p_set(r, p) -> Float64
+
+DC current set point from the active-power set point `p` and total DC-side
+resistance `r`: the positive root of `r·I² + I − p = 0`. Have to special-case `r == 0`, 
+where the quadratic formula gives `I = 0/0 = NaN` instead of `I = p`.
+"""
+_lcc_i_dc_from_p_set(r::Float64, p::Float64) =
+    iszero(r) ? p : (-1.0 + sqrt(1.0 + 4.0 * r * p)) / (2.0 * r)
+
 function initialize_LCCParameters!(
     data::ACPowerFlowData,
     sys::PSY.System,
@@ -586,12 +596,7 @@ function initialize_LCCParameters!(
     lcc_inverter_tap[:, 1] .= PSY.get_inverter_tap_setting.(lccs)
     lcc_dc_line_resistance .=
         PSY.get_r.(lccs) .+ PSY.get_rectifier_rc.(lccs) .+ PSY.get_inverter_rc.(lccs)
-    lcc_i_dc .= ifelse.(
-        iszero.(lcc_dc_line_resistance) .| iszero.(lcc_p_set),
-        lcc_p_set,
-        (-1 .+ sqrt.(1 .+ 4 .* lcc_dc_line_resistance .* lcc_p_set)) ./
-        (2 .* lcc_dc_line_resistance),
-    )
+    lcc_i_dc .= _lcc_i_dc_from_p_set.(lcc_dc_line_resistance, lcc_p_set)
     lcc_rectifier_delay_angle[:, 1] .= PSY.get_rectifier_delay_angle.(lccs)
     lcc_inverter_extinction_angle[:, 1] .= PSY.get_inverter_extinction_angle.(lccs)
     lcc_rectifier_bus .= [
