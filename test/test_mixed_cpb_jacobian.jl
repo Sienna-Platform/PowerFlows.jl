@@ -221,7 +221,7 @@ end
 
     # Smoke check: the shared step functions accept the mixed R/J without a
     # MethodError.
-    linSolveCache = PF.KLULinSolveCache(J.Jv)
+    linSolveCache = PF.make_linear_solver_cache(PF.PNM.KLUSolver(), J.Jv)
     PF.symbolic_factor!(linSolveCache, J.Jv)
     stateVector = PF.StateVectorCache(x0, R.Rv)
     @test_nowarn PF._simple_step(1, stateVector, linSolveCache, R, J)
