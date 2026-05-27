@@ -168,6 +168,7 @@ struct ACPolarPowerFlow{ACSolver <: ACPowerFlowSolverType} <: AbstractACPowerFlo
     calculate_loss_factors::Bool
     calculate_voltage_stability_factors::Bool
     compute_fixed_point_spectral_radius::Bool
+    compute_min_jacobian_eigenvalue::Bool
     generator_slack_participation_factors::Union{
         Nothing,
         Dict{Tuple{DataType, String}, Float64},
@@ -222,6 +223,7 @@ function ACPolarPowerFlow{ACSolver}(;
     calculate_loss_factors::Bool = false,
     calculate_voltage_stability_factors::Bool = false,
     compute_fixed_point_spectral_radius::Bool = false,
+    compute_min_jacobian_eigenvalue::Bool = false,
     generator_slack_participation_factors::Union{
         Nothing,
         Dict{Tuple{DataType, String}, Float64},
@@ -252,6 +254,7 @@ function ACPolarPowerFlow{ACSolver}(;
         calculate_loss_factors,
         calculate_voltage_stability_factors,
         compute_fixed_point_spectral_radius,
+        compute_min_jacobian_eigenvalue,
         generator_slack_participation_factors,
         enhanced_flat_start,
         robust_power_flow,
@@ -296,6 +299,11 @@ get_calculate_voltage_stability_factors(pf::ACPolarPowerFlow) =
 get_compute_fixed_point_spectral_radius(::PowerFlowEvaluationModel) = false
 get_compute_fixed_point_spectral_radius(pf::ACPolarPowerFlow) =
     pf.compute_fixed_point_spectral_radius
+# Available on every AC formulation (and with LCC): unlike the spectral radius,
+# the min-eigenvalue diagnostic only needs the Jacobian itself.
+get_compute_min_jacobian_eigenvalue(::PowerFlowEvaluationModel) = false
+get_compute_min_jacobian_eigenvalue(pf::AbstractACPowerFlow) =
+    pf.compute_min_jacobian_eigenvalue
 
 """
     ACRectangularPowerFlow{ACSolver}(; kwargs...) where {ACSolver <: ACPowerFlowSolverType}
@@ -343,6 +351,7 @@ struct ACRectangularPowerFlow{ACSolver <: ACPowerFlowSolverType} <:
         Vector{Dict{Tuple{DataType, String}, Float64}},
     }
     enhanced_flat_start::Bool
+    compute_min_jacobian_eigenvalue::Bool
     skip_redistribution::Bool
     distribute_slack_proportional_to_headroom::Bool
     network_reductions::Vector{PNM.NetworkReduction}
@@ -361,6 +370,7 @@ function ACRectangularPowerFlow{ACSolver}(;
         Vector{Dict{Tuple{DataType, String}, Float64}},
     } = nothing,
     enhanced_flat_start::Bool = true,
+    compute_min_jacobian_eigenvalue::Bool = false,
     skip_redistribution::Bool = false,
     distribute_slack_proportional_to_headroom::Bool = false,
     network_reductions::Vector{PNM.NetworkReduction} = PNM.NetworkReduction[],
@@ -394,6 +404,7 @@ function ACRectangularPowerFlow{ACSolver}(;
         exporter,
         generator_slack_participation_factors,
         enhanced_flat_start,
+        compute_min_jacobian_eigenvalue,
         skip_redistribution,
         distribute_slack_proportional_to_headroom,
         network_reductions,
@@ -453,6 +464,7 @@ struct ACMixedPowerFlow{ACSolver <: ACPowerFlowSolverType} <:
         Vector{Dict{Tuple{DataType, String}, Float64}},
     }
     enhanced_flat_start::Bool
+    compute_min_jacobian_eigenvalue::Bool
     skip_redistribution::Bool
     distribute_slack_proportional_to_headroom::Bool
     network_reductions::Vector{PNM.NetworkReduction}
@@ -471,6 +483,7 @@ function ACMixedPowerFlow{ACSolver}(;
         Vector{Dict{Tuple{DataType, String}, Float64}},
     } = nothing,
     enhanced_flat_start::Bool = true,
+    compute_min_jacobian_eigenvalue::Bool = false,
     skip_redistribution::Bool = false,
     distribute_slack_proportional_to_headroom::Bool = false,
     network_reductions::Vector{PNM.NetworkReduction} = PNM.NetworkReduction[],
@@ -505,6 +518,7 @@ function ACMixedPowerFlow{ACSolver}(;
         exporter,
         generator_slack_participation_factors,
         enhanced_flat_start,
+        compute_min_jacobian_eigenvalue,
         skip_redistribution,
         distribute_slack_proportional_to_headroom,
         network_reductions,

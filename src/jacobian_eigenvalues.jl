@@ -11,15 +11,9 @@ or near-singular operating point where Newton-type methods struggle.
 
 # Method
 
-``J`` is large, sparse, and non-symmetric, so its eigenvalues are in general
-complex and the smallest-magnitude end of the spectrum is the hard end for a
-direct Arnoldi iteration on ``J``. Instead we use **inverse iteration**, reusing
-the sparse `KLU` factorization of ``J`` that the solver already builds: the
+We employ **inverse iteration**, reusing a sparse `KLU` factorization of ``J``.
 matvec ``v \\mapsto J^{-1} v`` is applied as a back-solve against that factor —
-the inverse is *never* formed explicitly (it would be dense). KrylovKit's
-matrix-free Arnoldi solver then extracts the eigenvalue ``μ`` of ``J^{-1}`` of
-largest magnitude, and we report ``λ_min = 1 / μ``, the eigenvalue of ``J``
-closest to the origin.
+the inverse is *never* formed explicitly, as it would be dense.
 
 Returns `(λ_min, info, condest)`, where `λ_min` may be complex, `info` is the
 KrylovKit convergence info, and `condest` is a Hager 1-norm estimate of the
@@ -39,6 +33,7 @@ function compute_min_jacobian_eigenvalue(
     maxiter::Int = 200,
     krylovdim::Int = 30,
 )
+    # PERF: have caller pass in the already constructed J and residual.
     residual = ACPowerFlowResidual(data, time_step)
     jac = ACPowerFlowJacobian(residual, time_step)
     x = isnothing(x0) ? calculate_x0(data, time_step) : copy(x0)
@@ -53,18 +48,20 @@ end
 """In-place smallest-magnitude Jacobian eigenvalue computation that reuses an
 already-evaluated `jac` (its `jac.Jv` must hold the Jacobian at the current
 state). Factorizes `jac.Jv` once with `KLU` and runs inverse iteration; see
-[`compute_min_jacobian_eigenvalue`](@ref). Returns `(λ_min, info, condest)`."""
+[`compute_min_jacobian_eigenvalue`](@ref). Returns `(λ_min, info, condest)`.
+
+Accepts any AC formulation's Jacobian (polar, rectangular-CI, mixed-CPB) — it
+only touches `jac.Jv`, which every formulation provides."""
 function _min_jacobian_eigenvalue!(
-    jac::ACPowerFlowJacobian;
+    jac::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian};
     tol::Float64 = 1e-6,
     maxiter::Int = 200,
     krylovdim::Int = 30,
 )
     n = size(jac.Jv, 1)
+    # PERF: use existing factorization.
     F = KLU.klu(jac.Jv)
-    # matvec v ↦ J⁻¹ v: a back-solve against the existing factor, never forming J⁻¹.
     matvec(v::AbstractVector) = F \ v
-    # Deterministic init for reproducibility across runs / CI logs.
     v_init = ones(Float64, n) ./ sqrt(n)
     # Largest-magnitude eigenvalue μ of J⁻¹ ⇒ smallest-magnitude eigenvalue 1/μ of J.
     vals, _, info = KrylovKit.eigsolve(

@@ -226,6 +226,8 @@ get_calculate_voltage_stability_factors(pfd::PowerFlowData) =
     get_calculate_voltage_stability_factors(pfd.pf)
 get_compute_fixed_point_spectral_radius(pfd::PowerFlowData) =
     get_compute_fixed_point_spectral_radius(pfd.pf)
+get_compute_min_jacobian_eigenvalue(pfd::PowerFlowData) =
+    get_compute_min_jacobian_eigenvalue(pfd.pf)
 get_network_reductions(pfd::PowerFlowData) = get_network_reductions(pfd.pf)
 get_time_steps(pfd::PowerFlowData) = get_time_steps(pfd.pf)
 get_time_step_names(pfd::PowerFlowData) = get_time_step_names(pfd.pf)

@@ -177,6 +177,7 @@ function _run_power_flow_method(
     tol::Float64 = DEFAULT_NR_TOL,
     λ_0::Float64 = DEFAULT_λ_0,
     monitor_ρ::Bool = get_compute_fixed_point_spectral_radius(J.data),
+    monitor_λ::Bool = get_compute_min_jacobian_eigenvalue(J.data),
     bail_on_stagnation::Bool = false,
     detect_stagnation::Bool = true,
     iter_offset::Int = 0,
@@ -198,12 +199,19 @@ function _run_power_flow_method(
         F_inf = norm(residual.Rv, Inf)
         ρ_now::Union{Float64, Nothing} = nothing
         condest_now::Union{Float64, Nothing} = nothing
+        λ_min_now::Union{Number, Nothing} = nothing
         if monitor_ρ
             ρ_now, _, condest_now =
                 _fixed_point_spectral_radius!(J.data, residual, J, time_step)
+        end
+        if monitor_λ
+            λ_min_now, _, condest_λ = _min_jacobian_eigenvalue!(J)
+            monitor_ρ || (condest_now = condest_λ)
+        end
+        if monitor_ρ || monitor_λ
             _log_diagnostics(
-                "LM iter $(i + iter_offset)", ρ_now, residual, J.data, time_step,
-                condest_now)
+                "LM iter $(i + iter_offset)", residual, J.data, time_step;
+                ρ = ρ_now, condest = condest_now, λ_min = λ_min_now)
         end
         if detect_stagnation && status === ACPowerFlowSolveStatus.RUNNING
             kind = _check_stagnation!(

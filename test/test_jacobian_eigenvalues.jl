@@ -54,3 +54,80 @@ end
     @test info.converged >= 1
     @test abs(λ - λ_true) / abs(λ_true) < 1e-8
 end
+
+# Helper: solve under `pf` and return the per-iteration/x0 diagnostic log lines.
+function _diagnostic_lines(pf, sys)
+    data = PowerFlowData(pf, sys)
+    tl = Test.TestLogger(; min_level = Logging.Info)
+    Logging.with_logger(tl) do
+        solve_power_flow!(data)
+    end
+    return [
+        r.message for r in tl.logs
+        if occursin("x0 (time_step", r.message) || occursin(r"iter \d+", r.message)
+    ]
+end
+
+@testset "compute_min_jacobian_eigenvalue flag is independent of spectral radius" begin
+    # With only the min-eigenvalue flag set, the per-iteration diagnostic lines
+    # carry λ_min(J) and κ̂(J) but NOT ρ — the (polar-only) spectral-radius path
+    # must not run.
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14")
+    pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+        correct_bustypes = true, compute_min_jacobian_eigenvalue = true)
+    lines = _diagnostic_lines(pf, sys)
+    @test length(lines) >= 2
+    for line in lines
+        @test occursin("λ_min(J) = ", line)
+        @test occursin("|λ_min| = ", line)
+        @test occursin("κ̂(J) = ", line)
+        @test !occursin("ρ = ", line)   # spectral radius must be absent
+    end
+end
+
+@testset "compute_min_jacobian_eigenvalue works for the rectangular-CI formulation" begin
+    # The spectral-radius flag is polar-only (getter returns false for rect/mixed),
+    # so rect-CI never logged before. The min-eigenvalue flag is available on every
+    # AC formulation.
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14")
+    pf = PF.ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
+        correct_bustypes = true, compute_min_jacobian_eigenvalue = true)
+    lines = _diagnostic_lines(pf, sys)
+    @test length(lines) >= 2
+    for line in lines
+        @test occursin("λ_min(J) = ", line)
+        @test !occursin("ρ = ", line)
+    end
+end
+
+@testset "compute_min_jacobian_eigenvalue works on LCC systems (spectral radius does not)" begin
+    # On an LCC system the spectral-radius monitor errors (its Hessian-vector
+    # product covers only bus states, mismatching the LCC-augmented factor),
+    # whereas the min-eigenvalue diagnostic only factorizes the Jacobian and works.
+    sys = System(joinpath(TEST_DATA_DIR, "case5_2_lcc.raw"))
+    @test length(collect(get_components(TwoTerminalLCCLine, sys))) == 2
+
+    # spectral-radius flag: the monitor blows up on the LCC-augmented system.
+    data_ρ = PowerFlowData(
+        ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+            compute_fixed_point_spectral_radius = true),
+        sys)
+    @test_throws Exception solve_power_flow!(data_ρ)
+
+    # min-eigenvalue flag: solves cleanly and logs λ_min on every line.
+    pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(; compute_min_jacobian_eigenvalue = true)
+    data = PowerFlowData(pf, sys)
+    tl = Test.TestLogger(; min_level = Logging.Info)
+    converged = Logging.with_logger(tl) do
+        solve_power_flow!(data)
+    end
+    @test converged
+    lines = [
+        r.message for r in tl.logs
+        if occursin("x0 (time_step", r.message) || occursin(r"iter \d+", r.message)
+    ]
+    @test length(lines) >= 2
+    for line in lines
+        @test occursin("λ_min(J) = ", line)
+    end
+end

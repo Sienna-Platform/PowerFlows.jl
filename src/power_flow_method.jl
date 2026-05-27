@@ -1,20 +1,41 @@
-"""Format a per-iteration diagnostic line: ρ, ‖F‖_∞ and the bus/equation where
-that infinity-norm is attained, and a κ̂(J) condition estimate. All numerics
-rounded to 4 significant figures."""
+"""Format a (possibly complex) eigenvalue to 4 significant figures as `a` or
+`a ± b im`."""
+function _fmt_eig(z::Number, sf)
+    iz = imag(z)
+    return if iz == 0
+        "$(sf(real(z)))"
+    else
+        "$(sf(real(z))) $(iz < 0 ? "-" : "+") $(sf(abs(iz)))im"
+    end
+end
+
+"""Format a per-iteration diagnostic line: always ‖F‖_∞ and the bus/equation
+where that infinity-norm is attained, plus whichever of the optional diagnostics
+were computed — the fixed-point spectral radius `ρ`, the condition estimate
+`κ̂(J)`, and `λ_min` (the Jacobian eigenvalue closest to the origin, shown with
+its magnitude). All numerics rounded to 4 significant figures. The optional
+diagnostics are gated by separate solver flags, so any subset may be `nothing`."""
 function _log_diagnostics(
     label::String,
-    ρ::Float64,
     residual,
     data::ACPowerFlowData,
-    time_step::Int,
-    condest::Float64,
+    time_step::Int;
+    ρ::Union{Float64, Nothing} = nothing,
+    condest::Union{Float64, Nothing} = nothing,
+    λ_min::Union{Number, Nothing} = nothing,
 )
     Rv = residual.Rv
     abs_max, ix = findmax(abs, Rv)
     sf(x) = round(x; sigdigits = 4)
-    @info "$label: ρ = $(sf(ρ)), ‖F‖_∞ = $(sf(abs_max)) at " *
-          "$(_describe_residual_entry(residual, data, time_step, ix)), " *
-          "κ̂(J) = $(sf(condest))"
+    parts = String[]
+    isnothing(ρ) || push!(parts, "ρ = $(sf(ρ))")
+    push!(parts,
+        "‖F‖_∞ = $(sf(abs_max)) at " *
+        "$(_describe_residual_entry(residual, data, time_step, ix))")
+    isnothing(condest) || push!(parts, "κ̂(J) = $(sf(condest))")
+    isnothing(λ_min) ||
+        push!(parts, "λ_min(J) = $(_fmt_eig(λ_min, sf)) (|λ_min| = $(sf(abs(λ_min))))")
+    @info "$label: " * join(parts, ", ")
     return
 end
 
@@ -609,6 +630,7 @@ function _run_power_flow_method(time_step::Int,
     i, converged = 1, false
     consecutive_reverts = 0
     monitor_ρ = get_compute_fixed_point_spectral_radius(J.data)
+    monitor_λ = get_compute_min_jacobian_eigenvalue(J.data)
     status::ACPowerFlowSolveStatus = ACPowerFlowSolveStatus.RUNNING
     F_window = Float64[]
     ρ_window = Float64[]
@@ -652,10 +674,20 @@ function _run_power_flow_method(time_step::Int,
         )
         ρ_now::Union{Float64, Nothing} = nothing
         condest_now::Union{Float64, Nothing} = nothing
+        λ_min_now::Union{Number, Nothing} = nothing
         if monitor_ρ
             ρ_now, _, condest_now =
                 _fixed_point_spectral_radius!(J.data, residual, J, time_step)
-            _log_diagnostics("NR iter $i", ρ_now, residual, J.data, time_step, condest_now)
+        end
+        if monitor_λ
+            # min-eigenvalue also yields a condest; use it only when the
+            # spectral-radius path (its own condest source) didn't run.
+            λ_min_now, _, condest_λ = _min_jacobian_eigenvalue!(J)
+            monitor_ρ || (condest_now = condest_λ)
+        end
+        if monitor_ρ || monitor_λ
+            _log_diagnostics("NR iter $i", residual, J.data, time_step;
+                ρ = ρ_now, condest = condest_now, λ_min = λ_min_now)
         end
         F_inf_now = norm(residual.Rv, Inf)
         if detect_stagnation && status === ACPowerFlowSolveStatus.RUNNING
@@ -744,6 +776,7 @@ function _run_power_flow_method(time_step::Int,
     @debug "initially: sum of squares $(siground(residualSize)), L ∞ norm $(siground(linf)), Δ $(siground(delta))"
 
     monitor_ρ = get_compute_fixed_point_spectral_radius(J.data)
+    monitor_λ = get_compute_min_jacobian_eigenvalue(J.data)
     status::ACPowerFlowSolveStatus = ACPowerFlowSolveStatus.RUNNING
     F_window = Float64[]
     ρ_window = Float64[]
@@ -753,6 +786,7 @@ function _run_power_flow_method(time_step::Int,
     # still feed the stagnation windows so a stretch of rejections registers.
     ρ_cached::Union{Float64, Nothing} = nothing
     condest_cached::Union{Float64, Nothing} = nothing
+    λ_min_cached::Union{Number, Nothing} = nothing
     while i < maxIterations && !converged
         delta, accepted = _trust_region_step(
             time_step,
@@ -772,12 +806,19 @@ function _run_power_flow_method(time_step::Int,
             vm_validation_range,
             i,
         )
-        if monitor_ρ
+        if monitor_ρ || monitor_λ
             if accepted
-                ρ_cached, _, condest_cached =
-                    _fixed_point_spectral_radius!(J.data, residual, J, time_step)
+                if monitor_ρ
+                    ρ_cached, _, condest_cached =
+                        _fixed_point_spectral_radius!(J.data, residual, J, time_step)
+                end
+                if monitor_λ
+                    λ_min_cached, _, condest_λ = _min_jacobian_eigenvalue!(J)
+                    monitor_ρ || (condest_cached = condest_λ)
+                end
                 _log_diagnostics(
-                    "TR iter $i", ρ_cached, residual, J.data, time_step, condest_cached)
+                    "TR iter $i", residual, J.data, time_step;
+                    ρ = ρ_cached, condest = condest_cached, λ_min = λ_min_cached)
             else
                 @info "TR iter $i: step rejected (state unchanged; ρ/κ̂ skipped)"
             end
@@ -855,8 +896,14 @@ function _newton_power_flow(
     converged = norm(residual.Rv, Inf) < tol
 
     ρ_x0, _, condest_x0 = _fixed_point_spectral_radius!(data, residual, J, time_step)
+    λ_min_x0 = if get_compute_min_jacobian_eigenvalue(data)
+        first(_min_jacobian_eigenvalue!(J))
+    else
+        nothing
+    end
     _log_diagnostics(
-        "x0 (time_step $time_step)", ρ_x0, residual, data, time_step, condest_x0)
+        "x0 (time_step $time_step)", residual, data, time_step;
+        ρ = ρ_x0, condest = condest_x0, λ_min = λ_min_x0)
 
     i = 0
     x_final = x0_init
@@ -907,8 +954,14 @@ function _newton_power_flow(
             )
             if accepted
                 ρ, _, condest = _fixed_point_spectral_radius!(data, residual, J, time_step)
+                λ_min_now = if get_compute_min_jacobian_eigenvalue(data)
+                    first(_min_jacobian_eigenvalue!(J))
+                else
+                    nothing
+                end
                 _log_diagnostics(
-                    "Adaptive TR iter $i", ρ, residual, J.data, time_step, condest)
+                    "Adaptive TR iter $i", residual, J.data, time_step;
+                    ρ = ρ, condest = condest, λ_min = λ_min_now)
             else
                 @info "Adaptive TR iter $i: step rejected (state unchanged; ρ/κ̂ skipped)"
             end
@@ -1136,12 +1189,25 @@ function _newton_power_flow(
         pf, data, time_step; init_kwargs...)
     converged = norm(residual.Rv, Inf) < tol
 
-    if get_compute_fixed_point_spectral_radius(data)
-        ρ, _, condest = _fixed_point_spectral_radius!(data, residual, J, time_step)
+    monitor_ρ_x0 = get_compute_fixed_point_spectral_radius(data)
+    monitor_λ_x0 = get_compute_min_jacobian_eigenvalue(data)
+    if monitor_ρ_x0 || monitor_λ_x0
+        ρ_x0::Union{Float64, Nothing} = nothing
+        condest_x0::Union{Float64, Nothing} = nothing
+        λ_min_x0::Union{Number, Nothing} = nothing
+        if monitor_ρ_x0
+            ρ_x0, _, condest_x0 =
+                _fixed_point_spectral_radius!(data, residual, J, time_step)
+        end
+        if monitor_λ_x0
+            λ_min_x0, _, condest_λ = _min_jacobian_eigenvalue!(J)
+            monitor_ρ_x0 || (condest_x0 = condest_λ)
+        end
         _log_diagnostics(
-            "x0 (time_step $time_step)", ρ, residual, data, time_step, condest)
-        if ρ >= 1.0
-            @warn "fixed-point spectral radius ρ = $(round(ρ; sigdigits = 4)) ≥ 1 " *
+            "x0 (time_step $time_step)", residual, data, time_step;
+            ρ = ρ_x0, condest = condest_x0, λ_min = λ_min_x0)
+        if !isnothing(ρ_x0) && ρ_x0 >= 1.0
+            @warn "fixed-point spectral radius ρ = $(round(ρ_x0; sigdigits = 4)) ≥ 1 " *
                   "at x0 (time_step $time_step); Newton-Raphson may not converge " *
                   "from this starting point"
         end
