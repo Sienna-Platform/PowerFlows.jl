@@ -19,7 +19,7 @@ than `O((N + n_LCC) · log(nnz_per_col))` of `Jv[r, c] = v` setindex.
   with sentinel 0 for non-PV buses)
 - Slack cross-term nzval caches `slack_nz_idx_e`, `slack_nz_idx_f`, plus
   `slack_bus_k` / `slack_c_k` for the corresponding per-iteration data
-- LCC tail nzval cache `lcc_nz` (20×n_lccs; the last 2 identity diagonals stay 1.0)
+- LCC tail nzval cache `lcc_nz` (24×n_lccs; the last 2 identity diagonals stay 1.0)
 """
 struct ACRectangularCIJacobian
     data::ACPowerFlowData
@@ -46,7 +46,7 @@ struct ACRectangularCIJacobian
     slack_nz_idx_f::Vector{Int}      # nzval index for Jv[k_off+1, ref_off]
     slack_bus_k::Vector{Int}         # bus_k per slack cross-term
     slack_c_k::Vector{Float64}       # c_k = bus_slack_participation_factors[bus_k]
-    lcc_nz::Matrix{Int}              # 20 × n_lccs; nzval indices for the LCC entries (order documented in _build_lcc_nz_cache!)
+    lcc_nz::Matrix{Int}              # 24 × n_lccs; nzval indices for the LCC entries (order documented in _build_lcc_nz_cache!)
 end
 
 function ACRectangularCIJacobian(
@@ -229,7 +229,7 @@ function _create_rect_ci_jacobian_structure(
         end
     end
 
-    # LCC tail entries: 17 per LCC, mirror polar structure.
+    # LCC tail entries, mirror polar structure.
     if n_lccs > 0
         _create_rect_ci_lcc_structure!(
             rows, cols, vals, data, bus_state_offset, total_bus_state,
@@ -278,6 +278,12 @@ function _create_rect_ci_lcc_structure!(
             (idx_tap_i, idx_tap_i, 0.0),
             (idx_tap_i, idx_alpha_r, 0.0),
             (idx_tap_i, idx_alpha_i, 0.0),
+            # Inverter-side slots for the P-setpoint row F_t_fb (idx_tap_r),
+            # used when the set point is at the inverter (F_t_fb = −P_lcc_to).
+            (idx_tap_r, col_e_tb, 0.0),
+            (idx_tap_r, col_f_tb, 0.0),
+            (idx_tap_r, idx_tap_i, 0.0),
+            (idx_tap_r, idx_alpha_i, 0.0),
             (idx_alpha_r, idx_alpha_r, 1.0),
             (idx_alpha_i, idx_alpha_i, 1.0),
         ]
@@ -384,13 +390,18 @@ end
 """
     _build_lcc_nz_cache(Jv, data, bus_state_offset, total_bus_state, n_lccs)
 
-Return a `20 × n_lccs` matrix of nzval indices for the per-LCC tail entries
+Return a `24 × n_lccs` matrix of nzval indices for the per-LCC tail entries
 that get updated each iteration. The two identity diagonals
 (`Jv[idx_alpha_r, idx_alpha_r]` and `Jv[idx_alpha_i, idx_alpha_i]`) are not
 included — they are set to 1.0 at structure-build time and never updated.
 The 8 FB/TB-side diagonal-block overlay entries are NOT included either —
 they share nzval slots with `diag_base_nz` for buses `fb` and `tb` and are
 addressed through that cache.
+
+Rows 9, 10, 15, 16, 21–24 belong to the P-setpoint row `F_t_fb`
+(`idx_tap_r`): rows 9, 10, 15, 16 hold its rectifier-side dependence and
+rows 21–24 its inverter-side dependence; `_lcc_jacobian_scalars` zeroes
+whichever side the set point is not on.
 
 Row layout (matches order pushed by [`_create_rect_ci_lcc_structure!`]):
   1: Jv[col_e_fb, idx_tap_r],   2: Jv[col_e_fb, idx_alpha_r],
@@ -403,6 +414,8 @@ Row layout (matches order pushed by [`_create_rect_ci_lcc_structure!`]):
  15: Jv[idx_tap_r, idx_tap_r], 16: Jv[idx_tap_r, idx_alpha_r],
  17: Jv[idx_tap_i, idx_tap_r], 18: Jv[idx_tap_i, idx_tap_i],
  19: Jv[idx_tap_i, idx_alpha_r], 20: Jv[idx_tap_i, idx_alpha_i],
+ 21: Jv[idx_tap_r, col_e_tb],  22: Jv[idx_tap_r, col_f_tb],
+ 23: Jv[idx_tap_r, idx_tap_i], 24: Jv[idx_tap_r, idx_alpha_i],
 """
 function _build_lcc_nz_cache(
     Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
@@ -411,7 +424,7 @@ function _build_lcc_nz_cache(
     total_bus_state::Int,
     n_lccs::Int,
 )
-    lcc_nz = Matrix{Int}(undef, 20, n_lccs)
+    lcc_nz = Matrix{Int}(undef, 24, n_lccs)
     n_lccs == 0 && return lcc_nz
     for (i, (fb, tb)) in enumerate(data.lcc.bus_indices)
         col_e_fb = Int(bus_state_offset[fb])
@@ -443,6 +456,10 @@ function _build_lcc_nz_cache(
         lcc_nz[18, i] = _jv_nz_index(Jv, idx_tap_i, idx_tap_i)
         lcc_nz[19, i] = _jv_nz_index(Jv, idx_tap_i, idx_alpha_r)
         lcc_nz[20, i] = _jv_nz_index(Jv, idx_tap_i, idx_alpha_i)
+        lcc_nz[21, i] = _jv_nz_index(Jv, idx_tap_r, col_e_tb)
+        lcc_nz[22, i] = _jv_nz_index(Jv, idx_tap_r, col_f_tb)
+        lcc_nz[23, i] = _jv_nz_index(Jv, idx_tap_r, idx_tap_i)
+        lcc_nz[24, i] = _jv_nz_index(Jv, idx_tap_r, idx_alpha_i)
     end
     return lcc_nz
 end
@@ -668,7 +685,7 @@ end
 end
 
 """
-Write the LCC Jacobian entries (17 per LCC). Mirrors polar `_set_entries_for_lcc`
+Write the LCC Jacobian entries. Mirrors polar `_set_entries_for_lcc`
 with these changes:
 
   * Polar's `idx_p_fb` (Vm slot, single column) becomes two rectangular columns
@@ -790,11 +807,15 @@ function _set_entries_for_lcc_rect!(
         # true-ϕ ∂P/∂V from the scalars helper (already boundary-guarded).
         # At REF buses (e, f) are not state, so the column slots there
         # hold (P_gen, Q_gen); write zero in that case.
+        # Rows 9,10 are ∂F_t_fb/∂(e_fb,f_fb); 11,12 are ∂F_t_tb/∂(e_fb,f_fb).
+        # F_t_fb's fb-side dependence is nonzero only with a rectifier-side set
+        # point (s.d_Ft_fb_d_V_fb is pre-zeroed otherwise); F_t_tb always sees
+        # P_lcc_from, so 11,12 use dP_dV_fb directly.
         if bus_type_fb == PSY.ACBusTypes.PQ || bus_type_fb == PSY.ACBusTypes.PV
             de_dV_fb = e_fb / Vm_fb
             df_dV_fb = f_fb / Vm_fb
-            Jvnz[lcc_nz[9, i]] = s.dP_dV_fb * de_dV_fb
-            Jvnz[lcc_nz[10, i]] = s.dP_dV_fb * df_dV_fb
+            Jvnz[lcc_nz[9, i]] = s.d_Ft_fb_d_V_fb * de_dV_fb
+            Jvnz[lcc_nz[10, i]] = s.d_Ft_fb_d_V_fb * df_dV_fb
             Jvnz[lcc_nz[11, i]] = s.dP_dV_fb * de_dV_fb
             Jvnz[lcc_nz[12, i]] = s.dP_dV_fb * df_dV_fb
         else
@@ -803,23 +824,34 @@ function _set_entries_for_lcc_rect!(
             Jvnz[lcc_nz[11, i]] = 0.0
             Jvnz[lcc_nz[12, i]] = 0.0
         end
+        # Rows 13,14 are ∂F_t_tb/∂(e_tb,f_tb) (always P_lcc_to); 21,22 are
+        # ∂F_t_fb/∂(e_tb,f_tb), nonzero only with an inverter-side set point.
         if bus_type_tb == PSY.ACBusTypes.PQ || bus_type_tb == PSY.ACBusTypes.PV
             de_dV_tb = e_tb / Vm_tb
             df_dV_tb = f_tb / Vm_tb
             Jvnz[lcc_nz[13, i]] = s.dP_dV_tb * de_dV_tb
             Jvnz[lcc_nz[14, i]] = s.dP_dV_tb * df_dV_tb
+            Jvnz[lcc_nz[21, i]] = s.d_Ft_fb_d_V_tb * de_dV_tb
+            Jvnz[lcc_nz[22, i]] = s.d_Ft_fb_d_V_tb * df_dV_tb
         else
             Jvnz[lcc_nz[13, i]] = 0.0
             Jvnz[lcc_nz[14, i]] = 0.0
+            Jvnz[lcc_nz[21, i]] = 0.0
+            Jvnz[lcc_nz[22, i]] = 0.0
         end
 
         # Tail × tail block (shared with polar via _lcc_jacobian_scalars).
+        # F_t_fb's tap/α dependence switches sides with the set point; the
+        # scalars helper zeroes the inactive side, so all four slots
+        # (15,16 rectifier; 23,24 inverter) are written unconditionally.
         Jvnz[lcc_nz[15, i]] = s.d_Ft_fb_d_tap_r
         Jvnz[lcc_nz[16, i]] = s.d_Ft_fb_d_alpha_r
         Jvnz[lcc_nz[17, i]] = s.d_Ft_tb_d_tap_r
         Jvnz[lcc_nz[18, i]] = s.d_Ft_tb_d_tap_i
         Jvnz[lcc_nz[19, i]] = s.d_Ft_tb_d_alpha_r
         Jvnz[lcc_nz[20, i]] = s.d_Ft_tb_d_alpha_i
+        Jvnz[lcc_nz[23, i]] = s.d_Ft_fb_d_tap_i
+        Jvnz[lcc_nz[24, i]] = s.d_Ft_fb_d_alpha_i
         # idx_alpha_r and idx_alpha_i identity diagonals stay at 1.0 (set at pattern build).
     end
     return

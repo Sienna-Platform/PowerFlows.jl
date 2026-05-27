@@ -316,6 +316,11 @@ function _create_jacobian_matrix_structure_lcc(
             (idx_tap_from, idx_p_fb, 0.0),  # ∂Fₜᵢ/∂Vᵢ
             (idx_tap_to, idx_p_fb, 0.0),  # ∂Fₜⱼ/∂Vᵢ
             (idx_tap_to, idx_p_tb, 0.0),  # ∂Fₜⱼ/∂Vⱼ
+            # Inverter-side slots for the P-setpoint row F_t_fb, used when the
+            # set point is at the inverter (F_t_fb = −P_lcc_to − P_set).
+            (idx_tap_from, idx_p_tb, 0.0),  # ∂Fₜᵢ/∂Vⱼ
+            (idx_tap_from, idx_tap_to, 0.0),  # ∂Fₜᵢ/∂tⱼ
+            (idx_tap_from, idx_angle_to, 0.0),  # ∂Fₜᵢ/∂αⱼ
             (idx_tap_from, idx_tap_from, 0.0),  # ∂Fₜᵢ/∂tᵢ
             (idx_tap_from, idx_angle_from, 0.0),  # ∂Fₜᵢ/∂αᵢ
             (idx_tap_to, idx_tap_from, 0.0),  # ∂Fₜⱼ/∂tᵢ
@@ -604,7 +609,9 @@ function _set_entries_for_lcc(data::ACPowerFlowData,
             Jv[idx_p_fb, idx_p_fb] += dP_dV_fb # ∂P_fb/∂V_fb
             Jv[idx_q_fb, idx_p_fb] +=
                 _calculate_dQ_dV_lcc(s.tap_r, s.i_dc, xtr_r, Vm_fb, phi_r) # ∂Q_fb/∂V_fb
-            Jv[idx_tap_from, idx_p_fb] = dP_dV_fb # ∂F_t_fb/∂V_fb
+            # ∂F_t_fb/∂V_fb is nonzero only with a rectifier-side set point;
+            # the scalar is pre-zeroed otherwise.
+            Jv[idx_tap_from, idx_p_fb] = s.d_Ft_fb_d_V_fb # ∂F_t_fb/∂V_fb
             Jv[idx_tap_to, idx_p_fb] = dP_dV_fb # ∂F_t_tb/∂V_fb
         end
 
@@ -612,11 +619,18 @@ function _set_entries_for_lcc(data::ACPowerFlowData,
             Jv[idx_p_tb, idx_p_tb] += dP_dV_tb # ∂P_tb/∂V_tb
             Jv[idx_q_tb, idx_p_tb] +=
                 _calculate_dQ_dV_lcc(s.tap_i, s.i_dc, xtr_i, Vm_tb, phi_i) # ∂Q_tb/∂V_tb
+            # ∂F_t_fb/∂V_tb is nonzero only with an inverter-side set point.
+            Jv[idx_tap_from, idx_p_tb] = s.d_Ft_fb_d_V_tb # ∂F_t_fb/∂V_tb
             Jv[idx_tap_to, idx_p_tb] = dP_dV_tb # ∂F_t_tb/∂V_tb
         end
 
+        # P-setpoint row F_t_fb: rectifier-side (tap_r, α_r) and inverter-side
+        # (tap_i, α_i) slots are written unconditionally; the scalars helper
+        # zeroes whichever side the set point is not on.
         Jv[idx_tap_from, idx_tap_from] = s.d_Ft_fb_d_tap_r
         Jv[idx_tap_from, idx_angle_from] = s.d_Ft_fb_d_alpha_r
+        Jv[idx_tap_from, idx_tap_to] = s.d_Ft_fb_d_tap_i
+        Jv[idx_tap_from, idx_angle_to] = s.d_Ft_fb_d_alpha_i
         Jv[idx_tap_to, idx_tap_from] = s.d_Ft_tb_d_tap_r
         Jv[idx_tap_to, idx_tap_to] = s.d_Ft_tb_d_tap_i
         Jv[idx_tap_to, idx_angle_from] = s.d_Ft_tb_d_alpha_r
