@@ -26,7 +26,7 @@ PowerFlowsPardisoExt = "Pardiso"
 [sources]
 # Track PNM main until a release with the KLU/AppleAccelerate/Pardiso solver
 # wrappers is registered. CI resolves PNM from here.
-PowerNetworkMatrices = {url = "https://github.com/NREL-Sienna/PowerNetworkMatrices.jl", rev = "main"}
+PowerNetworkMatrices = {url = "https://github.com/NREL-Sienna/PowerNetworkMatrices.jl", rev = "jd/handle_exceptions_modf"}
 
 [compat]
 DataFrames = "1"

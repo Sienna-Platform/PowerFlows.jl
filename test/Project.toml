@@ -28,7 +28,7 @@ TimeSeries = "9e3dc215-6440-5c97-bce1-76c03772f85e"
 [sources]
 # Track PNM main until a release with the KLU/AppleAccelerate/Pardiso solver
 # wrappers is registered. CI resolves PNM from here.
-PowerNetworkMatrices = {url = "https://github.com/NREL-Sienna/PowerNetworkMatrices.jl", rev = "main"}
+PowerNetworkMatrices = {url = "https://github.com/NREL-Sienna/PowerNetworkMatrices.jl", rev = "jd/handle_exceptions_modf"}
 
 [compat]
 julia = "^1.6"
