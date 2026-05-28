@@ -38,7 +38,7 @@ struct ACMixedCPBJacobian
     slack_nz_idx_e::Vector{Int}      # nzval index for Jv[k_off, ref_off]
     slack_nz_idx_f::Vector{Int}      # nzval index for Jv[k_off+1, ref_off]
     slack_c_k::Vector{Float64}       # c_k = bus_slack_participation_factors[bus_k]
-    lcc_nz::Matrix{Int}              # 20 × n_lccs; nzval indices for the LCC entries
+    lcc_nz::Matrix{Int}              # 24 × n_lccs; nzval indices for the LCC entries
 end
 
 function ACMixedCPBJacobian(
@@ -565,6 +565,21 @@ function _set_entries_for_lcc_mixed!(
         bus_type_fb = data.bus_type[fb, time_step]
         bus_type_tb = data.bus_type[tb, time_step]
 
+        if iszero(data.lcc.i_dc[i, time_step])
+            # 0-current converter: P_lcc ≡ 0, so it contributes nothing to the bus
+            # rows and its P-setpoint / DC-line-balance rows are vacuous. Zero the
+            # bus-coupling entries and pin the two tap states with identity rows
+            # (matching _write_lcc_tail!) — into existing structure positions only.
+            # All 24 LCC entries are ∝ i_dc except the two tap diagonals, so zero
+            # the whole block and pin: F_t_fb (P-setpoint) → tap_r at row 15,
+            # F_t_tb (DC-line balance) → tap_i at row 18. The α-limit identity
+            # diagonals are not in lcc_nz (set at pattern build), so they survive.
+            Jvnz[lcc_nz[1:24, i]] .= 0.0
+            Jvnz[lcc_nz[15, i]] = 1.0
+            Jvnz[lcc_nz[18, i]] = 1.0
+            continue
+        end
+
         e_fb = e_state[fb]
         f_fb = f_state[fb]
         Vm_fb_sq = e_fb^2 + f_fb^2
@@ -694,15 +709,16 @@ function _set_entries_for_lcc_mixed!(
         end
 
         # LCC tail row entries (∂F_t/∂V chain-ruled into (e, f)). These are the
-        # LCC tail residuals (rect helper, unchanged) — identical to rect.
+        # LCC tail residual rows (idx_tap_r/idx_tap_i, independent of bus type
+        # routing) — identical to rect. Rows 9,10 are ∂F_t_fb/∂(e_fb,f_fb);
+        # 11,12 are ∂F_t_tb/∂(e_fb,f_fb). F_t_fb's fb-side dependence is nonzero
+        # only with a rectifier-side set point (s.d_Ft_fb_d_V_fb pre-zeroed
+        # otherwise); F_t_tb always sees P_lcc_from, so 11,12 use dP_dV_fb.
         if bus_type_fb == PSY.ACBusTypes.PQ || bus_type_fb == PSY.ACBusTypes.PV
             de_dV_fb = e_fb / Vm_fb
             df_dV_fb = f_fb / Vm_fb
-            Jvnz[lcc_nz[9, i]] = s.dP_dV_fb * de_dV_fb
-            Jvnz[lcc_nz[10, i]] = s.dP_dV_fb * df_dV_fb
-            # d_Ft_tb_d_tap_r = dP_dt_fb (see _lcc_jacobian_scalars) — fb
-            # quantities intentionally reused for the idx_tap_i rows; mirrors
-            # rect.
+            Jvnz[lcc_nz[9, i]] = s.d_Ft_fb_d_V_fb * de_dV_fb
+            Jvnz[lcc_nz[10, i]] = s.d_Ft_fb_d_V_fb * df_dV_fb
             Jvnz[lcc_nz[11, i]] = s.dP_dV_fb * de_dV_fb
             Jvnz[lcc_nz[12, i]] = s.dP_dV_fb * df_dV_fb
         else
@@ -711,23 +727,34 @@ function _set_entries_for_lcc_mixed!(
             Jvnz[lcc_nz[11, i]] = 0.0
             Jvnz[lcc_nz[12, i]] = 0.0
         end
+        # Rows 13,14 are ∂F_t_tb/∂(e_tb,f_tb) (always P_lcc_to); 21,22 are
+        # ∂F_t_fb/∂(e_tb,f_tb), nonzero only with an inverter-side set point.
         if bus_type_tb == PSY.ACBusTypes.PQ || bus_type_tb == PSY.ACBusTypes.PV
             de_dV_tb = e_tb / Vm_tb
             df_dV_tb = f_tb / Vm_tb
             Jvnz[lcc_nz[13, i]] = s.dP_dV_tb * de_dV_tb
             Jvnz[lcc_nz[14, i]] = s.dP_dV_tb * df_dV_tb
+            Jvnz[lcc_nz[21, i]] = s.d_Ft_fb_d_V_tb * de_dV_tb
+            Jvnz[lcc_nz[22, i]] = s.d_Ft_fb_d_V_tb * df_dV_tb
         else
             Jvnz[lcc_nz[13, i]] = 0.0
             Jvnz[lcc_nz[14, i]] = 0.0
+            Jvnz[lcc_nz[21, i]] = 0.0
+            Jvnz[lcc_nz[22, i]] = 0.0
         end
 
         # Tail × tail block (shared with polar/rect via _lcc_jacobian_scalars).
+        # F_t_fb's tap/α dependence switches sides with the set point; the
+        # scalars helper zeroes the inactive side, so all four slots
+        # (15,16 rectifier; 23,24 inverter) are written unconditionally.
         Jvnz[lcc_nz[15, i]] = s.d_Ft_fb_d_tap_r
         Jvnz[lcc_nz[16, i]] = s.d_Ft_fb_d_alpha_r
         Jvnz[lcc_nz[17, i]] = s.d_Ft_tb_d_tap_r
         Jvnz[lcc_nz[18, i]] = s.d_Ft_tb_d_tap_i
         Jvnz[lcc_nz[19, i]] = s.d_Ft_tb_d_alpha_r
         Jvnz[lcc_nz[20, i]] = s.d_Ft_tb_d_alpha_i
+        Jvnz[lcc_nz[23, i]] = s.d_Ft_fb_d_tap_i
+        Jvnz[lcc_nz[24, i]] = s.d_Ft_fb_d_alpha_i
     end
     return
 end

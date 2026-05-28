@@ -371,13 +371,23 @@ end
     i_dc = data.lcc.i_dc[i, time_step]
     P_lcc_from = Vm_fb * tap_r * SQRT6_DIV_PI * i_dc * cos(phi_r)
     P_lcc_to = Vm_tb * tap_i * SQRT6_DIV_PI * i_dc * cos(phi_i)
-    F[offset_lcc + 1] = if data.lcc.setpoint_at_rectifier[i]
-        P_lcc_from - data.lcc.p_set[i, time_step]
+    if iszero(i_dc)
+        # 0-current converter (0-MW transfer setpoint): P_lcc ≡ 0, so the
+        # P-setpoint and DC-line-balance equations are vacuous (0 = 0) and the
+        # tap states are unconstrained. Pin the taps to their scheduled setting
+        # instead so the converter's Jacobian block stays nonsingular. The
+        # matching Jacobian assemblies write identity rows for these two slots.
+        F[offset_lcc + 1] = tap_r - data.lcc.rectifier.tap_setpoint[i]
+        F[offset_lcc + 2] = tap_i - data.lcc.inverter.tap_setpoint[i]
     else
-        -P_lcc_to - data.lcc.p_set[i, time_step]
+        F[offset_lcc + 1] = if data.lcc.setpoint_at_rectifier[i]
+            P_lcc_from - data.lcc.p_set[i, time_step]
+        else
+            -P_lcc_to - data.lcc.p_set[i, time_step]
+        end
+        F[offset_lcc + 2] =
+            P_lcc_from + P_lcc_to - data.lcc.dc_line_resistance[i] * i_dc^2
     end
-    F[offset_lcc + 2] =
-        P_lcc_from + P_lcc_to - data.lcc.dc_line_resistance[i] * i_dc^2
     F[offset_lcc + 3] =
         data.lcc.rectifier.thyristor_angle[i, time_step] -
         data.lcc.rectifier.min_thyristor_angle[i]
@@ -395,14 +405,20 @@ rectangular LCC Jacobian assembly for LCC `i` at `time_step`. `Vm_fb` /
 `Vm_tb` are the AC-side voltage magnitudes — polar reads them from
 `data.bus_magnitude`; rectangular computes `sqrt(e² + f²)` from state.
 
-The returned NamedTuple includes the six tail-row × tail-column entries
-that are identical between formulations (the tail rows themselves are
-identical, and so are the tail-state columns). These are computed via
-the true-ϕ helpers (`_calculate_dP_dt_lcc`, `_calculate_dP_dα_lcc`),
-which apply the `sin(ϕ) → 0` boundary guard: in the interior the
-algebraic identity makes the result equal to the α-approximation form,
-and at the clamp the guard correctly drops the chain term so the
-Jacobian matches the residual (which sees `∂ϕ/∂x = 0` at the clamp).
+The returned NamedTuple includes the tail-row × {tail-column, bus-V}
+entries that are shared between formulations. These are computed via the
+true-ϕ helpers (`_calculate_dP_dt_lcc`, `_calculate_dP_dα_lcc`,
+`_calculate_dP_dV_lcc`), which apply the `sin(ϕ) → 0` boundary guard: in
+the interior the algebraic identity makes the result equal to the
+α-approximation form, and at the clamp the guard correctly drops the
+chain term so the Jacobian matches the residual (which sees `∂ϕ/∂x = 0`
+at the clamp).
+
+The P-setpoint row `F_t_fb` depends on the rectifier-side state
+(`V_fb, tap_r, α_r`) when `data.lcc.setpoint_at_rectifier[i]` and on the
+inverter-side state (`V_tb, tap_i, α_i`) otherwise; the helper branches
+on that flag and zeroes the inactive side so each assembly writes its
+`F_t_fb` slots unconditionally.
 """
 function _lcc_jacobian_scalars(
     data::PowerFlowData,
@@ -412,6 +428,7 @@ function _lcc_jacobian_scalars(
     Vm_tb::Float64,
 )
     i_dc = max(data.lcc.i_dc[i, time_step], 1e-9)
+    setpoint_at_rect = data.lcc.setpoint_at_rectifier[i]
     tap_r = data.lcc.rectifier.tap[i, time_step]
     tap_i = data.lcc.inverter.tap[i, time_step]
     alpha_r = data.lcc.rectifier.thyristor_angle[i, time_step]
@@ -467,16 +484,26 @@ function _lcc_jacobian_scalars(
         dP_dt_tb = dP_dt_tb,
         dP_dα_fb = dP_dα_fb,
         dP_dα_tb = dP_dα_tb,
-        # Tail-row × tail-column block (6 entries). F_t_fb has the
-        # P_lcc_from contribution (in the setpoint_at_rectifier case);
-        # F_t_tb has both P_lcc_from and P_lcc_to. d_Ft_fb_d_alpha_i is
-        # zero because F_t_fb doesn't depend on α_i.
-        d_Ft_fb_d_tap_r = dP_dt_fb,
-        d_Ft_fb_d_alpha_r = dP_dα_fb,
+        # Tail-row × tail-column / × bus-V block. The DC-line-balance row
+        # F_t_tb = P_lcc_from + P_lcc_to − R·I_dc² depends on both sides, so
+        # its entries are unconditional.
         d_Ft_tb_d_tap_r = dP_dt_fb,
         d_Ft_tb_d_tap_i = dP_dt_tb,
         d_Ft_tb_d_alpha_r = dP_dα_fb,
         d_Ft_tb_d_alpha_i = dP_dα_tb,
+        # The P-setpoint row F_t_fb switches sides with the set point location:
+        #   setpoint_at_rectifier:  F_t_fb = P_lcc_from − P_set  → (V_fb, tap_r, α_r)
+        #   otherwise:              F_t_fb = −P_lcc_to  − P_set  → (V_tb, tap_i, α_i)
+        # Both sides are exposed; the inactive side is zeroed so each assembly
+        # can write every slot unconditionally and reset stale values on reuse.
+        # The inverter-side entries negate the dP/dx derivatives because the
+        # residual carries −P_lcc_to (dP_dα_tb is already sign-corrected above).
+        d_Ft_fb_d_V_fb = setpoint_at_rect ? dP_dV_fb : 0.0,
+        d_Ft_fb_d_tap_r = setpoint_at_rect ? dP_dt_fb : 0.0,
+        d_Ft_fb_d_alpha_r = setpoint_at_rect ? dP_dα_fb : 0.0,
+        d_Ft_fb_d_V_tb = setpoint_at_rect ? 0.0 : -dP_dV_tb,
+        d_Ft_fb_d_tap_i = setpoint_at_rect ? 0.0 : -dP_dt_tb,
+        d_Ft_fb_d_alpha_i = setpoint_at_rect ? 0.0 : -dP_dα_tb,
     )
 end
 
@@ -594,6 +621,9 @@ function initialize_LCCParameters!(
     lcc_p_set .= abs.(PSY.get_transfer_setpoint.(lccs) ./ base_power) # only one direction is supported, no reverse flow possible
     lcc_rectifier_tap[:, 1] .= PSY.get_rectifier_tap_setting.(lccs)
     lcc_inverter_tap[:, 1] .= PSY.get_inverter_tap_setting.(lccs)
+    # Fixed tap targets used to pin the tap state for 0-current (0-MW) converters.
+    data.lcc.rectifier.tap_setpoint .= PSY.get_rectifier_tap_setting.(lccs)
+    data.lcc.inverter.tap_setpoint .= PSY.get_inverter_tap_setting.(lccs)
     lcc_dc_line_resistance .=
         PSY.get_r.(lccs) .+ PSY.get_rectifier_rc.(lccs) .+ PSY.get_inverter_rc.(lccs)
     lcc_i_dc .= _lcc_i_dc_from_p_set.(lcc_dc_line_resistance, lcc_p_set)

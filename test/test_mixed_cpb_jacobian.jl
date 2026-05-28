@@ -158,6 +158,18 @@ end
         x .+= 1e-3 .* randn(length(x))
         _verify_mixed_jacobian(R, x, "mixed CPB LCC PV")
     end
+
+    @testset "LCC inverter-side setpoint" begin
+        # Negative transfer setpoint → F_t_fb depends on the inverter-side
+        # state; exercises the widened lcc_nz cache (rows 21–24) in MCPB.
+        sys, lcc = simple_lcc_system()
+        PSY.set_inverter_extinction_angle!(lcc, 1.0)   # interior, off ϕ clamp
+        PSY.set_transfer_setpoint!(lcc, -50.0)          # setpoint at inverter
+        R, x = _build_mixed_lcc_x(sys)
+        Random.seed!(2024)
+        x .+= 1e-3 .* randn(length(x))
+        _verify_mixed_jacobian(R, x, "mixed CPB LCC inverter-side setpoint")
+    end
 end
 
 @testset "Mixed CPB Jacobian: zero allocation per Newton iteration" begin
