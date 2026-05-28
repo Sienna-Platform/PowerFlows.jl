@@ -89,23 +89,26 @@ function solve_power_flow!(
     linear_solver::Union{Nothing, AbstractString} = nothing,
 )
     backend = resolve_linear_solver_backend(linear_solver)
-    solver_cache, _ =
+    solver_cache, scratch =
         _get_or_build_solver_cache!(data, backend, data.aux_network_matrix.data)
-    # get net power injections
-    power_injections = data.bus_active_power_injections .- data.bus_active_power_withdrawals
+    power_injections = scratch.power_injections
+    @. power_injections =
+        data.bus_active_power_injections - data.bus_active_power_withdrawals
     power_injections .+= data.bus_hvdc_net_power
-    # evaluate flows
-    data.arc_active_power_flow_from_to .=
-        data.power_network_matrix.data' * power_injections
-    data.arc_active_power_flow_to_from .= -data.arc_active_power_flow_from_to
+    mul!(
+        data.arc_active_power_flow_from_to,
+        transpose(data.power_network_matrix.data),
+        power_injections,
+    )
+    @. data.arc_active_power_flow_to_from = -data.arc_active_power_flow_from_to
     # HVDC flows stored separately and already calculated: see initialize_power_flow_data!
     valid_ix = get_valid_ix(data)
-    p_inj = power_injections[valid_ix, :]
+    p_inj = scratch.p_inj
+    @views p_inj .= power_injections[valid_ix, :]
     solve!(solver_cache, p_inj)
-    data.bus_angles[valid_ix, :] .= p_inj
-    _compute_arc_angle_differences_from_data!(data)
-    Rs = _get_arc_resistances(data)
-    data.arc_active_power_losses .= Rs .* data.arc_active_power_flow_from_to .^ 2
+    @views data.bus_angles[valid_ix, :] .= p_inj
+    mul!(data.arc_angle_differences, scratch.arc_bus_incidence, data.bus_angles)
+    data.arc_active_power_losses .= scratch.rs .* data.arc_active_power_flow_from_to .^ 2
     data.converged .= true
     if get_calculate_loss_factors(data)
         data.loss_factors .= dc_loss_factors(data, power_injections)
