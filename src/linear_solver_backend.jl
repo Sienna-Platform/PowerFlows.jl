@@ -1,21 +1,29 @@
 # Linear-solver backend selection for PowerFlows.
 #
 # PowerFlows consumes PowerNetworkMatrices' (PNM) cached linear solvers instead
-# of depending on KLU.jl directly. Two backends are available:
+# of depending on KLU.jl directly. Three backends are available:
 #   - KLU (SuiteSparse, all platforms)
 #   - AppleAccelerate (libSparse, macOS only; Int64-indexed matrices only)
+#   - MKLPardiso (Intel MKL, x86_64 only; lives in the `PowerFlowsPardisoExt`
+#     extension, loaded on `import Pardiso`)
 #
 # PNM exposes KLU ops as PNM.solve!/full_factor!/... and AppleAccelerate ops as
-# PNM.AccelerateWrapper.solve!/full_factor!/...  PowerFlows unifies them below
-# via dispatch over the PFLinearSolverCache Union. A future PNM-side abstract
-# supertype will let us drop this Union.
+# PNM.AccelerateWrapper.solve!/full_factor!/...; the MKLPardiso ops live in the
+# extension. PowerFlows unifies them below via dispatch over the
+# PFLinearSolverCache Union. A future PNM-side abstract supertype will let us
+# drop this Union.
 
 """Cache for the MKLPardiso backend. The Pardiso handle is held opaquely because
 `Pardiso.MKLPardisoSolver`'s type is only available when the `Pardiso.jl`
 extension (`PowerFlowsPardisoExt`) is loaded; the operation methods live there.
 The matrix is snapshotted because Pardiso reads it at solve time. `Ti` is left
 abstract: Pardiso.jl converts the index arrays to `Int32` internally, so this
-cache accepts both the `Int32` AC Jacobian and the `Int`-indexed DC matrices."""
+cache accepts both the `Int32` AC Jacobian and the `Int`-indexed DC matrices.
+`ps` is held as `Any` rather than a type parameter on purpose: that keeps
+`PardisoLinSolveCache` a concrete type so it can be a splittable member of
+`PFLinearSolverCache`. The cost of the untyped `ps` is confined to the Pardiso
+solve path (a thin wrapper over an MKL C call), so it never touches the KLU/AA
+hot paths."""
 mutable struct PardisoLinSolveCache
     ps::Any                       # Pardiso.MKLPardisoSolver
     A::SparseMatrixCSC{Float64}
@@ -25,10 +33,19 @@ mutable struct PardisoLinSolveCache
 end
 
 """Union of the cached linear-solver types PowerFlows dispatches over (KLU,
-AppleAccelerate, MKLPardiso). A 3-way union stays within Julia's small-union
-splitting; a future PNM abstract supertype would replace it."""
+AppleAccelerate, MKLPardiso). The KLU member is pinned to the concrete index type
+`J_INDEX_TYPE`: the AC Newton hot loop builds its cache from
+`J.Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE}` (and the regularized fallback matrix
+shares that index type), so this is the only KLU instantiation that flows through
+`::PFLinearSolverCache`-typed methods. Keeping every member concrete is what lets
+this 3-way union stay within Julia's small-union splitting; a future PNM abstract
+supertype would replace it."""
 const PFLinearSolverCache =
-    Union{PNM.KLULinSolveCache{Float64}, PNM.AAFactorCache, PardisoLinSolveCache}
+    Union{
+        PNM.KLULinSolveCache{Float64, J_INDEX_TYPE},
+        PNM.AAFactorCache,
+        PardisoLinSolveCache,
+    }
 
 # --- Backend-agnostic operations (forward to the owning PNM namespace) ---
 
@@ -59,10 +76,11 @@ tsolve!(c::PNM.KLULinSolveCache, b::StridedVecOrMat{Float64}) = PNM.tsolve!(c, b
 
 """Resolve the active linear-solver backend tag.
 
-Returns a PNM backend singleton (`PNM.KLUSolver()` or
-`PNM.AppleAccelerateLUSolver()`). When `override === nothing`, the platform
-default from PNM's preference logic is used. AppleAccelerate is rejected off
-Apple platforms."""
+Returns a PNM backend singleton: `PNM.KLUSolver()`, `PNM.AppleAccelerateLUSolver()`,
+or `PNM.MKLPardisoSolver()`. When `override === nothing`, the platform default from
+PNM's preference logic is used. Throws if AppleAccelerate is requested off an Apple
+platform, or if MKLPardiso is requested on a non-x86_64 architecture or without the
+`PowerFlowsPardisoExt` extension loaded (`import Pardiso`)."""
 function resolve_linear_solver_backend(override::Union{Nothing, AbstractString})
     name = override === nothing ? PNM._default_linear_solver() : String(override)
     tag = PNM.resolve_linear_solver(name)

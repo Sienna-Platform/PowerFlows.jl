@@ -40,7 +40,9 @@ function _get_or_build_solver_cache!(
     return cache, scratch
 end
 
-# Per-solve scratch buffers + network-fixed precomputes; built once with the cache.
+# Per-solve scratch buffers + network-fixed precomputes; built once with the cache. The signed
+# arc-bus incidence is built once at `PowerFlowData` construction via `PNM.IncidenceMatrix` (see
+# `_signed_arc_bus_incidence`) and reused here.
 function _make_dc_scratch(data::PowerFlowData)
     valid_ix = get_valid_ix(data)
     # InvertedIndex has no `length`; size via a view.
@@ -49,27 +51,8 @@ function _make_dc_scratch(data::PowerFlowData)
         power_injections = similar(data.bus_active_power_injections),
         p_inj = Matrix{Float64}(undef, p_inj_dims),
         rs = _get_arc_resistances(data),
-        arc_bus_incidence = _build_signed_arc_bus_incidence(data),
+        arc_bus_incidence = data.arc_bus_incidence,
     )
-end
-
-function _build_signed_arc_bus_incidence(data::PowerFlowData)
-    arcs = get_arc_axis(data)
-    bus_lookup = get_bus_lookup(data)
-    n_arcs = length(arcs)
-    n_buses = size(data.bus_angles, 1)
-    I = Vector{Int}(undef, 2 * n_arcs)
-    J = Vector{Int}(undef, 2 * n_arcs)
-    V = Vector{Float64}(undef, 2 * n_arcs)
-    @inbounds for (k, arc) in enumerate(arcs)
-        I[2k - 1] = k
-        J[2k - 1] = bus_lookup[first(arc)]
-        V[2k - 1] = 1.0
-        I[2k] = k
-        J[2k] = bus_lookup[last(arc)]
-        V[2k] = -1.0
-    end
-    return SparseArrays.sparse(I, J, V, n_arcs, n_buses)
 end
 
 """
@@ -108,7 +91,7 @@ function solve_power_flow!(
     solve!(solver_cache, p_inj)
     @views data.bus_angles[valid_ix, :] .= p_inj
     mul!(data.arc_angle_differences, scratch.arc_bus_incidence, data.bus_angles)
-    data.arc_active_power_losses .= scratch.rs .* data.arc_active_power_flow_from_to .^ 2
+    @. data.arc_active_power_losses = scratch.rs * data.arc_active_power_flow_from_to^2
     data.converged .= true
     if get_calculate_loss_factors(data)
         data.loss_factors .= dc_loss_factors(data, power_injections)
@@ -137,11 +120,12 @@ function solve_power_flow!(
     backend = resolve_linear_solver_backend(linear_solver)
     solver_cache, _ =
         _get_or_build_solver_cache!(data, backend, data.aux_network_matrix.data)
-    power_injections = data.bus_active_power_injections .- data.bus_active_power_withdrawals
+    power_injections =
+        @. data.bus_active_power_injections - data.bus_active_power_withdrawals
     power_injections .+= data.bus_hvdc_net_power
     data.arc_active_power_flow_from_to .=
         my_mul_mt(data.power_network_matrix, power_injections)
-    data.arc_active_power_flow_to_from .= -data.arc_active_power_flow_from_to
+    @. data.arc_active_power_flow_to_from = -data.arc_active_power_flow_from_to
     # HVDC flows stored separately and already calculated: see initialize_power_flow_data!
     valid_ix = get_valid_ix(data)
     p_inj = power_injections[valid_ix, :]
@@ -149,7 +133,7 @@ function solve_power_flow!(
     data.bus_angles[valid_ix, :] .= p_inj
     _compute_arc_angle_differences_from_data!(data)
     Rs = _get_arc_resistances(data)
-    data.arc_active_power_losses .= Rs .* data.arc_active_power_flow_from_to .^ 2
+    @. data.arc_active_power_losses = Rs * data.arc_active_power_flow_from_to^2
     data.converged .= true
     if get_calculate_loss_factors(data)
         data.loss_factors .= dc_loss_factors(data, power_injections)
@@ -207,18 +191,20 @@ function solve_power_flow!(
 
     if data.arc_lossy_admittance_from_to !== nothing
         # DC assumption: all bus voltage magnitudes are 1.0 p.u., so V = e^(jθ).
-        V = exp.(1im .* data.bus_angles)
+        V = @. exp(1im * data.bus_angles)
         arcs = get_arc_axis(data)
         bus_lookup = get_bus_lookup(data)
         fb_ix = [bus_lookup[first(arc)] for arc in arcs]
         tb_ix = [bus_lookup[last(arc)] for arc in arcs]
+        # Explicit dots (not `@.`) because the RHS embeds a matrix-vector product
+        # (`admittance * V`), which `@.` would wrongly broadcast as element-wise.
         Sft = V[fb_ix, :] .* conj.(data.arc_lossy_admittance_from_to * V)
         Stf = V[tb_ix, :] .* conj.(data.arc_lossy_admittance_to_from * V)
-        data.arc_active_power_flow_from_to .= real.(Sft)
-        data.arc_active_power_flow_to_from .= real.(Stf)
+        @. data.arc_active_power_flow_from_to = real(Sft)
+        @. data.arc_active_power_flow_to_from = real(Stf)
         # True losses come directly from the admittance calculation.
-        data.arc_active_power_losses .=
-            data.arc_active_power_flow_from_to .+ data.arc_active_power_flow_to_from
+        @. data.arc_active_power_losses =
+            data.arc_active_power_flow_from_to + data.arc_active_power_flow_to_from
     else
         mul!(
             data.arc_active_power_flow_from_to,
@@ -226,8 +212,8 @@ function solve_power_flow!(
             data.bus_angles,
         )
         @. data.arc_active_power_flow_to_from = -data.arc_active_power_flow_from_to
-        data.arc_active_power_losses .=
-            scratch.rs .* data.arc_active_power_flow_from_to .^ 2
+        @. data.arc_active_power_losses =
+            scratch.rs * data.arc_active_power_flow_from_to^2
     end
     # Δθ = A·θ as a single sparse SpMV using the cached signed incidence — replaces
     # the per-call rebuild of fb_ix/tb_ix index vectors in

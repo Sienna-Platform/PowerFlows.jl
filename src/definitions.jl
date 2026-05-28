@@ -54,7 +54,13 @@ const BUS_VOLTAGE_MAGNITUDE_CUTOFF_MAX = 1.2
 const TIs = Union{Int32, Int64}
 # Int64 on Apple so AppleAccelerate's libSparse (Int64-only `columnStarts` ABI)
 # can factor the AC Jacobian natively; Int32 elsewhere (KLU only).
-const INDEX_TYPE = Sys.isapple() ? Int64 : Int32
+# `@static` resolves the platform branch at lowering time so `INDEX_TYPE` const-folds
+# to a single concrete type per build (verifiable with `code_lowered`).
+const INDEX_TYPE = @static if Sys.isapple()
+    Int64
+else
+    Int32
+end
 const J_INDEX_TYPE = INDEX_TYPE
 const REC_INDEX_TYPE = INDEX_TYPE
 

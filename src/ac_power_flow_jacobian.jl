@@ -875,8 +875,9 @@ function _singular_value_decomposition(
     tol::Float64 = 1e-9,
     max_iter::Integer = 100,
 )
-    # Voltage-stability factors require transpose solves (Aᵀ \ b), which only the
-    # KLU backend provides; this routine is KLU-only by construction.
+    # Voltage-stability factors solve `Aᵀ x = b` reusing the existing factorization of
+    # `A` (rather than factoring `Aᵀ` separately). Only the KLU backend exposes that
+    # transposed-solve-from-an-A-factorization, so this routine is KLU-only by construction.
     factorized_block_J = make_linear_solver_cache(PNM.KLUSolver(), Jv)
     full_factor!(factorized_block_J, Jv)
     n = size(Jv, 1)

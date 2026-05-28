@@ -23,11 +23,17 @@ struct StateVectorCache
     Δx_cauchy::Vector{Float64} # Cauchy step
     Δx_nr::Vector{Float64} # Newton-Raphson step
     d::Vector{Float64}
-    # Persistent KLU cache for the regularized singular-Jacobian fallback. Lazily built on
-    # the first fallback and reused via `numeric_refactor!` while the regularized matrix's
-    # sparsity pattern is unchanged; rebuilt with a full factor when the pattern shifts
-    # (it can, e.g. near a flat start where some Jacobian entries vanish/reappear).
-    fallback_cache::Base.RefValue{Union{Nothing, PNM.KLULinSolveCache{Float64}}}
+    # Persistent regularized singular-Jacobian fallback, reused across repeated fallbacks
+    # (common on hard starts). `fallback_matrix` holds the regularized matrix `-(JᵀJ + λI)`
+    # with a fixed sparsity pattern, so its values are refreshed in place
+    # (`_refresh_singular_J_fallback!`) and `fallback_cache`'s symbolic factorization is reused
+    # via a cheap `numeric_refactor!` — no symbolic refactor. Both are rebuilt with a full
+    # analyze+factor only when the JᵀJ pattern shifts (it can, e.g. near a flat start where
+    # some Jacobian entries vanish/reappear).
+    fallback_cache::Base.RefValue{
+        Union{Nothing, PNM.KLULinSolveCache{Float64, J_INDEX_TYPE}},
+    }
+    fallback_matrix::Base.RefValue{Union{Nothing, SparseMatrixCSC{Float64, J_INDEX_TYPE}}}
 end
 
 function StateVectorCache(x0::Vector{Float64}, f0::Vector{Float64})
@@ -39,7 +45,8 @@ function StateVectorCache(x0::Vector{Float64}, f0::Vector{Float64})
     Δx_nr = copy(x0)
     return StateVectorCache(
         x, r, r_predict, Δx_proposed, Δx_cauchy, Δx_nr, ones(size(x0)),
-        Base.RefValue{Union{Nothing, PNM.KLULinSolveCache{Float64}}}(nothing),
+        Base.RefValue{Union{Nothing, PNM.KLULinSolveCache{Float64, J_INDEX_TYPE}}}(nothing),
+        Base.RefValue{Union{Nothing, SparseMatrixCSC{Float64, J_INDEX_TYPE}}}(nothing),
     )
 end
 
@@ -63,9 +70,14 @@ function _do_refinement!(stateVector::StateVectorCache,
 )
     # use stateVector.r_predict as temporary buffer.
     δ_temp = stateVector.r_predict
+    r_norm = norm(stateVector.r, 1)
+    # A zero residual is an exact (already-converged) solve, not a singular Jacobian. Return a
+    # zero relative residual rather than dividing 0/0 into a NaN, which the caller's
+    # `!isfinite(residual)` guard would otherwise misread as a singularity.
+    iszero(r_norm) && return 0.0
     mul!(δ_temp, A, stateVector.Δx_nr)
     δ_temp .-= stateVector.r
-    delta = norm(δ_temp, 1) / norm(stateVector.r, 1)
+    delta = norm(δ_temp, 1) / r_norm
     if delta > refinement_threshold
         stateVector.Δx_nr .= solve_w_refinement(cache,
             A,
@@ -73,7 +85,7 @@ function _do_refinement!(stateVector::StateVectorCache,
             refinement_eps)
         mul!(δ_temp, A, stateVector.Δx_nr)
         δ_temp .-= stateVector.r
-        delta = norm(δ_temp, 1) / norm(stateVector.r, 1)
+        delta = norm(δ_temp, 1) / r_norm
     end
     return delta
 end
@@ -90,11 +102,13 @@ function _set_Δx_nr!(stateVector::StateVectorCache,
     try
         numeric_refactor!(linSolveCache, J.Jv)
     catch e
-        # KLU signals a singular factorization by throwing; AppleAccelerate and
-        # MKLPardiso do not (see `_set_Δx_nr!` residual guard below). Any factorization
-        # error routes to the regularized fallback.
-        e isa LinearAlgebra.SingularException ||
-            @error("Linear solver factorization failed: $e")
+        # KLU signals a singular factorization by throwing a `SingularException`;
+        # AppleAccelerate and MKLPardiso do not (the residual guard below catches their
+        # silent garbage solves). Only a `SingularException` routes to the regularized
+        # fallback. Any other exception (dimension mismatch, allocation failure, an MKL
+        # error) is a genuine solver failure, not a singular Jacobian — rethrow it rather
+        # than masking it behind the "Jacobian is singular" warning.
+        e isa LinearAlgebra.SingularException || rethrow()
         use_fallback = true
     end
 
@@ -118,28 +132,24 @@ function _set_Δx_nr!(stateVector::StateVectorCache,
 
     if use_fallback
         @warn("$solver hit a point where the Jacobian is singular.")
-        M = _singular_J_fallback(J.Jv, stateVector.x)
         # KLU is used here because the fallback must reliably solve the regularized
-        # (nonsingular) system. Reuse the cached factorization across repeated fallbacks
-        # (common on hard starts): a cheap `numeric_refactor!` when the regularized
-        # matrix's pattern is unchanged, falling back to a full analyze+factor when it
-        # shifts (the pattern is not guaranteed stable, e.g. near a flat start). The
-        # reuse is gated by `numeric_refactor!`'s own pattern check — which knows the
-        # cache's internal (0-based) layout — so we let it throw on a mismatch and rebuild,
-        # rather than re-deriving that comparison here.
-        cache = stateVector.fallback_cache[]
-        reused = false
-        if cache !== nothing
-            try
-                numeric_refactor!(cache, M)
-                reused = true
-            catch
-                reused = false
-            end
-        end
-        if !reused
+        # (nonsingular) system `-(JᵀJ + λI)`. Reuse across repeated fallbacks (common on hard
+        # starts): refresh the regularized matrix's values in place while its sparsity pattern
+        # holds, so the cached symbolic factorization is reused via a cheap `numeric_refactor!`
+        # (no symbolic refactor). A pattern shift (not guaranteed stable, e.g. near a flat
+        # start where JᵀJ entries vanish/reappear) falls back to a full rebuild.
+        M_prev = stateVector.fallback_matrix[]
+        cache_prev = stateVector.fallback_cache[]
+        if M_prev !== nothing && cache_prev !== nothing &&
+           _refresh_singular_J_fallback!(M_prev, J.Jv, stateVector.x)
+            M = M_prev
+            cache = cache_prev
+            numeric_refactor!(cache, M)
+        else
+            M = _build_singular_J_fallback(J.Jv, stateVector.x)
             cache = make_linear_solver_cache(PNM.KLUSolver(), M)
             full_factor!(cache, M)
+            stateVector.fallback_matrix[] = M
             stateVector.fallback_cache[] = cache
         end
         _solve_Δx_nr!(stateVector, cache)
@@ -149,12 +159,38 @@ function _set_Δx_nr!(stateVector::StateVectorCache,
     return
 end
 
-"""Returns a stand-in matrix for singular J's."""
-function _singular_J_fallback(Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
+"""Returns a freshly-allocated stand-in matrix `-(JᵀJ + λI)` for a singular `J`. The result
+defines the sparsity pattern that [`_refresh_singular_J_fallback!`](@ref) reuses in place."""
+function _build_singular_J_fallback(Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
     x::Vector{Float64})
     fjac2 = Jv' * Jv
     lambda = NR_SINGULAR_SCALING * sqrt(length(x) * eps()) * norm(fjac2, 1)
     return -(fjac2 + lambda * LinearAlgebra.I)
+end
+
+"""Refresh the regularized fallback matrix `M = -(JᵀJ + λI)` in place, preserving its sparsity
+pattern so a cached symbolic factorization stays valid. Returns `false` (leaving `M` untouched)
+when the current `JᵀJ` pattern no longer matches `M`'s — signalling the caller to rebuild —
+otherwise overwrites `M`'s values and returns `true`. `λ` matches `_build_singular_J_fallback`,
+so a refreshed `M` is identical to a rebuilt one whenever the pattern holds."""
+function _refresh_singular_J_fallback!(M::SparseMatrixCSC{Float64, J_INDEX_TYPE},
+    Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
+    x::Vector{Float64})
+    fjac2 = Jv' * Jv
+    (fjac2.colptr == M.colptr && fjac2.rowval == M.rowval) || return false
+    lambda = NR_SINGULAR_SCALING * sqrt(length(x) * eps()) * norm(fjac2, 1)
+    Mnz = M.nzval
+    Fnz = fjac2.nzval
+    @inbounds for col in 1:size(M, 2)
+        for p in M.colptr[col]:(M.colptr[col + 1] - 1)
+            if M.rowval[p] == col
+                Mnz[p] = -(Fnz[p] + lambda)
+            else
+                Mnz[p] = -Fnz[p]
+            end
+        end
+    end
+    return true
 end
 
 """Sets `Δx_proposed` equal to the `Δx` by which we should update `x`. Decides
@@ -836,7 +872,9 @@ function _newton_power_flow(
     iwamoto_fallback::Bool = DEFAULT_IWAMOTO_FALLBACK,
     # initialize_power_flow_variables
     x0::Union{Vector{Float64}, Nothing} = nothing,
-    # linear solver backend ("KLU" | "AppleAccelerateLU" | "MKLPardiso"); nothing = platform default
+    # linear solver backend, resolved by `PNM.resolve_linear_solver`. Canonical names:
+    # "KLU" | "AppleAccelerateLU" | "MKLPardiso" (PNM is the source of truth for any
+    # aliases); `nothing` uses PNM's platform default.
     linear_solver::Union{Nothing, AbstractString} = nothing,
     _ignored...,
 ) where {T <: Union{TrustRegionACPowerFlow, NewtonRaphsonACPowerFlow}}

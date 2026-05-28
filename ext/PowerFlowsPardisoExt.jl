@@ -43,7 +43,9 @@ function PowerFlows.make_linear_solver_cache(
             Pardiso.set_phase!(c.ps, Pardiso.RELEASE_ALL)
             Pardiso.pardiso(c.ps)
         catch e
-            @debug "PardisoLinSolveCache finalizer: RELEASE_ALL failed" exception = e
+            # A finalizer must not throw, but a failed RELEASE_ALL leaks native Pardiso
+            # memory, so surface it at `@warn` rather than swallowing it silently.
+            @warn "PardisoLinSolveCache finalizer: RELEASE_ALL failed" exception = e
         end
     end
     return cache
@@ -107,10 +109,13 @@ function PowerFlows.solve!(cache::PardisoLinSolveCache, b::StridedMatrix{Float64
     return b
 end
 
-# Pardiso's SOLVE_ITERATIVE_REFINE phase already refines; preserve the (cache, A, b,
-# eps) call shape used by PowerFlows' Newton loop. The backend-agnostic singular
-# guard in `_set_Δx_nr!` covers MKL's silent pivot perturbation on (near-)singular
-# matrices.
+"""MKLPardiso refines internally during its `SOLVE_ITERATIVE_REFINE` phase, so this is a
+deliberate no-op wrapper around [`solve!`](@ref): `A` and `refinement_eps` are accepted
+only to match the `(cache, A, b, eps)` signature PowerFlows' Newton loop calls, and are
+intentionally unused. Because the "refined" solve is therefore identical to the plain
+solve, a solve that cannot be improved falls straight through to the backend-agnostic
+singular guard in `_set_Δx_nr!`, which covers MKL's silent pivot perturbation on
+(near-)singular matrices."""
 function PowerFlows.solve_w_refinement(
     cache::PardisoLinSolveCache,
     A::SparseMatrixCSC{Float64},
