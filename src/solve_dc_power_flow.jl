@@ -19,16 +19,8 @@ function adjust_power_injections_for_lccs!(power_injections::Matrix{Float64},
     return
 end
 
-"""
-Return a factorized linear-solver cache for the network matrix `M`, reusing the cache
-stored on `data` when the matrix object and backend are unchanged. This lets a loop of DC
-solves on the same `data` with a fixed network but changing injections (e.g. a production
-cost model) factor the network once and skip per-solve cache allocation/factorization.
-
-Rebuilds on first use, when the matrix object is swapped, or when the backend changes. The
-network matrix is assumed not mutated in place; rebuild the `PowerFlowData` to force a
-refactor after an in-place network change.
-"""
+# Reuse a cached factorization of `M` while the matrix object and backend are unchanged;
+# rebuild otherwise. Assumes the network matrix is not mutated in place.
 function _get_or_build_solver_cache!(
     data::PowerFlowData,
     backend,
@@ -48,22 +40,36 @@ function _get_or_build_solver_cache!(
     return cache, scratch
 end
 
-# Preallocated per-solve scratch buffers stored alongside the cached factorization. Sized
-# from `data` once and reused across PCM-loop solves so the common DC path can run with
-# zero per-call allocations on the injection / RHS slice.
+# Per-solve scratch buffers + network-fixed precomputes; built once with the cache.
 function _make_dc_scratch(data::PowerFlowData)
     valid_ix = get_valid_ix(data)
-    # `valid_ix` may be an `InvertedIndex` (no `length`); size the RHS buffer through a
-    # view of the injection matrix, which works for both `Vector{Int}` and InvertedIndex.
+    # InvertedIndex has no `length`; size via a view.
     p_inj_dims = size(view(data.bus_active_power_injections, valid_ix, :))
     return (
         power_injections = similar(data.bus_active_power_injections),
         p_inj = Matrix{Float64}(undef, p_inj_dims),
-        # Arc resistances depend only on the (fixed) network, so compute once at cache
-        # build and reuse — `_get_arc_resistances` otherwise rebuilds 4 arc-sized vectors
-        # (~2.2 MB on 10k-bus systems) every call.
         rs = _get_arc_resistances(data),
+        arc_bus_incidence = _build_signed_arc_bus_incidence(data),
     )
+end
+
+function _build_signed_arc_bus_incidence(data::PowerFlowData)
+    arcs = get_arc_axis(data)
+    bus_lookup = get_bus_lookup(data)
+    n_arcs = length(arcs)
+    n_buses = size(data.bus_angles, 1)
+    I = Vector{Int}(undef, 2 * n_arcs)
+    J = Vector{Int}(undef, 2 * n_arcs)
+    V = Vector{Float64}(undef, 2 * n_arcs)
+    @inbounds for (k, arc) in enumerate(arcs)
+        I[2k - 1] = k
+        J[2k - 1] = bus_lookup[first(arc)]
+        V[2k - 1] = 1.0
+        I[2k] = k
+        J[2k] = bus_lookup[last(arc)]
+        V[2k] = -1.0
+    end
+    return SparseArrays.sparse(I, J, V, n_arcs, n_buses)
 end
 
 """
@@ -220,7 +226,10 @@ function solve_power_flow!(
         data.arc_active_power_losses .=
             scratch.rs .* data.arc_active_power_flow_from_to .^ 2
     end
-    _compute_arc_angle_differences_from_data!(data)
+    # Δθ = A·θ as a single sparse SpMV using the cached signed incidence — replaces
+    # the per-call rebuild of fb_ix/tb_ix index vectors in
+    # `_compute_arc_angle_differences_from_data!` (~0.38 MB/call).
+    mul!(data.arc_angle_differences, scratch.arc_bus_incidence, data.bus_angles)
     data.converged .= true
     return
 end
