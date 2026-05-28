@@ -63,6 +63,7 @@ Modules = [PowerFlows]
 Public = true
 Private = true
 Pages = [
+    "linear_solver_backend.jl",
     "LinearSolverCache/klu_linear_solver.jl",
     "LinearSolverCache/linear_solver_cache.jl",
 ]
