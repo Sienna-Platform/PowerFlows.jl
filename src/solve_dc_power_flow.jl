@@ -36,15 +36,34 @@ function _get_or_build_solver_cache!(
 )
     entry = data.solver_cache[]
     if entry !== nothing
-        cached_M, cached_backend, cache = entry
+        cached_M, cached_backend, cache, scratch = entry
         if cached_M === M && typeof(cached_backend) === typeof(backend)
-            return cache
+            return cache, scratch
         end
     end
     cache = make_linear_solver_cache(backend, M)
     full_factor!(cache, M)
-    data.solver_cache[] = (M, backend, cache)
-    return cache
+    scratch = _make_dc_scratch(data)
+    data.solver_cache[] = (M, backend, cache, scratch)
+    return cache, scratch
+end
+
+# Preallocated per-solve scratch buffers stored alongside the cached factorization. Sized
+# from `data` once and reused across PCM-loop solves so the common DC path can run with
+# zero per-call allocations on the injection / RHS slice.
+function _make_dc_scratch(data::PowerFlowData)
+    valid_ix = get_valid_ix(data)
+    # `valid_ix` may be an `InvertedIndex` (no `length`); size the RHS buffer through a
+    # view of the injection matrix, which works for both `Vector{Int}` and InvertedIndex.
+    p_inj_dims = size(view(data.bus_active_power_injections, valid_ix, :))
+    return (
+        power_injections = similar(data.bus_active_power_injections),
+        p_inj = Matrix{Float64}(undef, p_inj_dims),
+        # Arc resistances depend only on the (fixed) network, so compute once at cache
+        # build and reuse — `_get_arc_resistances` otherwise rebuilds 4 arc-sized vectors
+        # (~2.2 MB on 10k-bus systems) every call.
+        rs = _get_arc_resistances(data),
+    )
 end
 
 """
@@ -64,7 +83,7 @@ function solve_power_flow!(
     linear_solver::Union{Nothing, AbstractString} = nothing,
 )
     backend = resolve_linear_solver_backend(linear_solver)
-    solver_cache =
+    solver_cache, _ =
         _get_or_build_solver_cache!(data, backend, data.aux_network_matrix.data)
     # get net power injections
     power_injections = data.bus_active_power_injections .- data.bus_active_power_withdrawals
@@ -107,7 +126,7 @@ function solve_power_flow!(
     linear_solver::Union{Nothing, AbstractString} = nothing,
 )
     backend = resolve_linear_solver_backend(linear_solver)
-    solver_cache =
+    solver_cache, _ =
         _get_or_build_solver_cache!(data, backend, data.aux_network_matrix.data)
     power_injections = data.bus_active_power_injections .- data.bus_active_power_withdrawals
     power_injections .+= data.bus_hvdc_net_power
@@ -162,15 +181,20 @@ function solve_power_flow!(
     linear_solver::Union{Nothing, AbstractString} = nothing,
 )
     backend = resolve_linear_solver_backend(linear_solver)
-    solver_cache =
+    solver_cache, scratch =
         _get_or_build_solver_cache!(data, backend, data.power_network_matrix.data)
 
-    power_injections = data.bus_active_power_injections - data.bus_active_power_withdrawals
+    # Reuse preallocated buffers from the cache scratch so a PCM-loop solve allocates
+    # nothing on the common (lossless) DC path beyond the bus-angle writeback view.
+    power_injections = scratch.power_injections
+    @. power_injections =
+        data.bus_active_power_injections - data.bus_active_power_withdrawals
     power_injections .+= data.bus_hvdc_net_power
     valid_ix = get_valid_ix(data)
-    p_inj = power_injections[valid_ix, :]
+    p_inj = scratch.p_inj
+    @views p_inj .= power_injections[valid_ix, :]
     solve!(solver_cache, p_inj)
-    data.bus_angles[valid_ix, :] .= p_inj
+    @views data.bus_angles[valid_ix, :] .= p_inj
 
     if data.arc_lossy_admittance_from_to !== nothing
         # DC assumption: all bus voltage magnitudes are 1.0 p.u., so V = e^(jθ).
@@ -187,11 +211,14 @@ function solve_power_flow!(
         data.arc_active_power_losses .=
             data.arc_active_power_flow_from_to .+ data.arc_active_power_flow_to_from
     else
-        data.arc_active_power_flow_from_to .=
-            data.aux_network_matrix.data' * data.bus_angles
-        data.arc_active_power_flow_to_from .= -data.arc_active_power_flow_from_to
-        Rs = _get_arc_resistances(data)
-        data.arc_active_power_losses .= Rs .* data.arc_active_power_flow_from_to .^ 2
+        mul!(
+            data.arc_active_power_flow_from_to,
+            transpose(data.aux_network_matrix.data),
+            data.bus_angles,
+        )
+        @. data.arc_active_power_flow_to_from = -data.arc_active_power_flow_from_to
+        data.arc_active_power_losses .=
+            scratch.rs .* data.arc_active_power_flow_from_to .^ 2
     end
     _compute_arc_angle_differences_from_data!(data)
     data.converged .= true

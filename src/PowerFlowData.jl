@@ -515,9 +515,7 @@ function PowerFlowData(
     pf::AbstractACPowerFlow{<:ACPowerFlowSolverType},
     sys::PSY.System,
 )
-    # PNM.Ybus mutates each reduction's irreducible_buses in place; copy so the
-    # caller's pf stays pristine and a second solve_power_flow(pf, sys) is correct.
-    network_reductions = deepcopy(get_network_reductions(pf))
+    network_reductions = get_network_reductions(pf)
     network_reduction_message(network_reductions, pf)
     power_network_matrix = PNM.Ybus(
         sys;
@@ -571,9 +569,7 @@ function PowerFlowData(
     pf::DCPowerFlow,
     sys::PSY.System,
 )
-    # PNM.Ybus mutates each reduction's irreducible_buses in place; copy so the
-    # caller's pf stays pristine and a second solve_power_flow(pf, sys) is correct.
-    network_reductions = deepcopy(get_network_reductions(pf))
+    network_reductions = get_network_reductions(pf)
     network_reduction_message(network_reductions, pf)
     ybus = PNM.Ybus(
         sys;
@@ -637,9 +633,7 @@ function PowerFlowData(
     pf::PTDFDCPowerFlow,
     sys::PSY.System,
 )
-    # PNM.Ybus mutates each reduction's irreducible_buses in place; copy so the
-    # caller's pf stays pristine and a second solve_power_flow(pf, sys) is correct.
-    network_reductions = deepcopy(get_network_reductions(pf))
+    network_reductions = get_network_reductions(pf)
     network_reduction_message(network_reductions, pf)
     # get the network matrices
     ybus = PNM.Ybus(sys; network_reductions = network_reductions)
@@ -684,9 +678,7 @@ function PowerFlowData(
     pf::vPTDFDCPowerFlow,
     sys::PSY.System,
 )
-    # PNM.Ybus mutates each reduction's irreducible_buses in place; copy so the
-    # caller's pf stays pristine and a second solve_power_flow(pf, sys) is correct.
-    network_reductions = deepcopy(get_network_reductions(pf))
+    network_reductions = get_network_reductions(pf)
     network_reduction_message(network_reductions, pf)
 
     # get the network matrices
