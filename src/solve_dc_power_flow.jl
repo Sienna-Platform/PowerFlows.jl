@@ -20,6 +20,34 @@ function adjust_power_injections_for_lccs!(power_injections::Matrix{Float64},
 end
 
 """
+Return a factorized linear-solver cache for the network matrix `M`, reusing the cache
+stored on `data` when the matrix object and backend are unchanged. This lets a loop of DC
+solves on the same `data` with a fixed network but changing injections (e.g. a production
+cost model) factor the network once and skip per-solve cache allocation/factorization.
+
+Rebuilds on first use, when the matrix object is swapped, or when the backend changes. The
+network matrix is assumed not mutated in place; rebuild the `PowerFlowData` to force a
+refactor after an in-place network change.
+"""
+function _get_or_build_solver_cache!(
+    data::PowerFlowData,
+    backend,
+    M::SparseMatrixCSC{Float64},
+)
+    entry = data.solver_cache[]
+    if entry !== nothing
+        cached_M, cached_backend, cache = entry
+        if cached_M === M && typeof(cached_backend) === typeof(backend)
+            return cache
+        end
+    end
+    cache = make_linear_solver_cache(backend, M)
+    full_factor!(cache, M)
+    data.solver_cache[] = (M, backend, cache)
+    return cache
+end
+
+"""
     solve_power_flow!(data::PTDFPowerFlowData)
 Evaluates the PTDF power flow and writes the result to the fields of the
 [`PTDFPowerFlowData`](@ref) structure.
@@ -36,8 +64,8 @@ function solve_power_flow!(
     linear_solver::Union{Nothing, AbstractString} = nothing,
 )
     backend = resolve_linear_solver_backend(linear_solver)
-    solver_cache = make_linear_solver_cache(backend, data.aux_network_matrix.data)
-    full_factor!(solver_cache, data.aux_network_matrix.data)
+    solver_cache =
+        _get_or_build_solver_cache!(data, backend, data.aux_network_matrix.data)
     # get net power injections
     power_injections = data.bus_active_power_injections .- data.bus_active_power_withdrawals
     power_injections .+= data.bus_hvdc_net_power
@@ -79,8 +107,8 @@ function solve_power_flow!(
     linear_solver::Union{Nothing, AbstractString} = nothing,
 )
     backend = resolve_linear_solver_backend(linear_solver)
-    solver_cache = make_linear_solver_cache(backend, data.aux_network_matrix.data)
-    full_factor!(solver_cache, data.aux_network_matrix.data)
+    solver_cache =
+        _get_or_build_solver_cache!(data, backend, data.aux_network_matrix.data)
     power_injections = data.bus_active_power_injections .- data.bus_active_power_withdrawals
     power_injections .+= data.bus_hvdc_net_power
     data.arc_active_power_flow_from_to .=
@@ -134,8 +162,8 @@ function solve_power_flow!(
     linear_solver::Union{Nothing, AbstractString} = nothing,
 )
     backend = resolve_linear_solver_backend(linear_solver)
-    solver_cache = make_linear_solver_cache(backend, data.power_network_matrix.data)
-    full_factor!(solver_cache, data.power_network_matrix.data)
+    solver_cache =
+        _get_or_build_solver_cache!(data, backend, data.power_network_matrix.data)
 
     power_injections = data.bus_active_power_injections - data.bus_active_power_withdrawals
     power_injections .+= data.bus_hvdc_net_power

@@ -20,7 +20,8 @@ mutable struct PardisoLinSolveCache
     ps::Any                       # Pardiso.MKLPardisoSolver
     A::SparseMatrixCSC{Float64}
     is_factored::Bool
-    scratch::Vector{Float64}      # persistent solve buffer (resized lazily) → non-alloc vector solve!
+    scratch::Vector{Float64}      # persistent vector solve buffer (resized lazily) → non-alloc vector solve!
+    scratch_mat::Matrix{Float64}  # persistent multi-RHS solve buffer (resized on shape change) → non-alloc matrix solve!
 end
 
 """Union of the cached linear-solver types PowerFlows dispatches over (KLU,

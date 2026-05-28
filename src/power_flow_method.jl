@@ -23,6 +23,11 @@ struct StateVectorCache
     Δx_cauchy::Vector{Float64} # Cauchy step
     Δx_nr::Vector{Float64} # Newton-Raphson step
     d::Vector{Float64}
+    # Persistent KLU cache for the regularized singular-Jacobian fallback. Lazily built on
+    # the first fallback and reused via `numeric_refactor!` while the regularized matrix's
+    # sparsity pattern is unchanged; rebuilt with a full factor when the pattern shifts
+    # (it can, e.g. near a flat start where some Jacobian entries vanish/reappear).
+    fallback_cache::Base.RefValue{Union{Nothing, PNM.KLULinSolveCache{Float64}}}
 end
 
 function StateVectorCache(x0::Vector{Float64}, f0::Vector{Float64})
@@ -32,7 +37,10 @@ function StateVectorCache(x0::Vector{Float64}, f0::Vector{Float64})
     Δx_proposed = copy(x0)
     Δx_cauchy = copy(x0)
     Δx_nr = copy(x0)
-    return StateVectorCache(x, r, r_predict, Δx_proposed, Δx_cauchy, Δx_nr, ones(size(x0)))
+    return StateVectorCache(
+        x, r, r_predict, Δx_proposed, Δx_cauchy, Δx_nr, ones(size(x0)),
+        Base.RefValue{Union{Nothing, PNM.KLULinSolveCache{Float64}}}(nothing),
+    )
 end
 
 """Solve for the Newton-Raphson step, given the factorization object for `J.Jv`
@@ -111,13 +119,31 @@ function _set_Δx_nr!(stateVector::StateVectorCache,
     if use_fallback
         @warn("$solver hit a point where the Jacobian is singular.")
         M = _singular_J_fallback(J.Jv, stateVector.x)
-        # creating a new solver cache to solve Mx = stateVector.r once. Default ldiv!
-        # might be faster, but singular J's should be rare. KLU is used here because the
-        # fallback must reliably solve the regularized (nonsingular) system.
-        tempCache = make_linear_solver_cache(PNM.KLUSolver(), M)
-        full_factor!(tempCache, M)
-        _solve_Δx_nr!(stateVector, tempCache)
-        _do_refinement!(stateVector, M, tempCache, refinement_threshold, refinement_eps)
+        # KLU is used here because the fallback must reliably solve the regularized
+        # (nonsingular) system. Reuse the cached factorization across repeated fallbacks
+        # (common on hard starts): a cheap `numeric_refactor!` when the regularized
+        # matrix's pattern is unchanged, falling back to a full analyze+factor when it
+        # shifts (the pattern is not guaranteed stable, e.g. near a flat start). The
+        # reuse is gated by `numeric_refactor!`'s own pattern check — which knows the
+        # cache's internal (0-based) layout — so we let it throw on a mismatch and rebuild,
+        # rather than re-deriving that comparison here.
+        cache = stateVector.fallback_cache[]
+        reused = false
+        if cache !== nothing
+            try
+                numeric_refactor!(cache, M)
+                reused = true
+            catch
+                reused = false
+            end
+        end
+        if !reused
+            cache = make_linear_solver_cache(PNM.KLUSolver(), M)
+            full_factor!(cache, M)
+            stateVector.fallback_cache[] = cache
+        end
+        _solve_Δx_nr!(stateVector, cache)
+        _do_refinement!(stateVector, M, cache, refinement_threshold, refinement_eps)
     end
     LinearAlgebra.rmul!(stateVector.Δx_nr, -1.0)
     return

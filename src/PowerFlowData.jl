@@ -134,6 +134,13 @@ struct PowerFlowData{
     lcc::LCCParameters
     arc_lossy_admittance_from_to::Union{SparseMatrixCSC{YBUS_ELTYPE, Int}, Nothing}
     arc_lossy_admittance_to_from::Union{SparseMatrixCSC{YBUS_ELTYPE, Int}, Nothing}
+    # Persistent linear-solver cache for the DC solves. Reused across repeated solves on
+    # the same data (e.g. a PCM loop: fixed network, changing injections) so the network
+    # matrix is factored once and the solve buffer is not reallocated. Holds a
+    # `(matrix, cache)` pair and is reused only while the network-matrix object is
+    # unchanged; lazily populated by `solve_power_flow!`. Typed `Any` because the concrete
+    # cache type is defined in a later include (`linear_solver_backend.jl`).
+    solver_cache::Base.RefValue{Any}
 end
 
 # aliases for specific type parameter combinations.
@@ -369,6 +376,7 @@ function PowerFlowData(
         lcc_parameters,
         arc_lossy_admittance_from_to,
         arc_lossy_admittance_to_from,
+        Base.RefValue{Any}(nothing), # solver_cache (lazily populated)
     )
 end
 
@@ -507,7 +515,9 @@ function PowerFlowData(
     pf::AbstractACPowerFlow{<:ACPowerFlowSolverType},
     sys::PSY.System,
 )
-    network_reductions = get_network_reductions(pf)
+    # PNM.Ybus mutates each reduction's irreducible_buses in place; copy so the
+    # caller's pf stays pristine and a second solve_power_flow(pf, sys) is correct.
+    network_reductions = deepcopy(get_network_reductions(pf))
     network_reduction_message(network_reductions, pf)
     power_network_matrix = PNM.Ybus(
         sys;
@@ -561,7 +571,9 @@ function PowerFlowData(
     pf::DCPowerFlow,
     sys::PSY.System,
 )
-    network_reductions = get_network_reductions(pf)
+    # PNM.Ybus mutates each reduction's irreducible_buses in place; copy so the
+    # caller's pf stays pristine and a second solve_power_flow(pf, sys) is correct.
+    network_reductions = deepcopy(get_network_reductions(pf))
     network_reduction_message(network_reductions, pf)
     ybus = PNM.Ybus(
         sys;
@@ -625,7 +637,9 @@ function PowerFlowData(
     pf::PTDFDCPowerFlow,
     sys::PSY.System,
 )
-    network_reductions = get_network_reductions(pf)
+    # PNM.Ybus mutates each reduction's irreducible_buses in place; copy so the
+    # caller's pf stays pristine and a second solve_power_flow(pf, sys) is correct.
+    network_reductions = deepcopy(get_network_reductions(pf))
     network_reduction_message(network_reductions, pf)
     # get the network matrices
     ybus = PNM.Ybus(sys; network_reductions = network_reductions)
@@ -670,7 +684,9 @@ function PowerFlowData(
     pf::vPTDFDCPowerFlow,
     sys::PSY.System,
 )
-    network_reductions = get_network_reductions(pf)
+    # PNM.Ybus mutates each reduction's irreducible_buses in place; copy so the
+    # caller's pf stays pristine and a second solve_power_flow(pf, sys) is correct.
+    network_reductions = deepcopy(get_network_reductions(pf))
     network_reduction_message(network_reductions, pf)
 
     # get the network matrices

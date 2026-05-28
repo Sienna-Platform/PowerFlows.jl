@@ -37,7 +37,7 @@ function PowerFlows.make_linear_solver_cache(
     )
     ps = Pardiso.MKLPardisoSolver()
     _init_pardiso!(ps)
-    cache = PardisoLinSolveCache(ps, A, false, Float64[])
+    cache = PardisoLinSolveCache(ps, A, false, Float64[], Matrix{Float64}(undef, 0, 0))
     finalizer(cache) do c
         try
             Pardiso.set_phase!(c.ps, Pardiso.RELEASE_ALL)
@@ -82,10 +82,11 @@ function PowerFlows.full_factor!(
     return cache
 end
 
-# In-place solve A·x = b. Pardiso solves out-of-place, so it writes into scratch and
-# copies back. The vector path (the Newton hot loop) reuses a persistent scratch
-# buffer to stay allocation-free, matching the KLU/AA caches. The multi-RHS matrix
-# path (e.g. multi-period DC) is not a hot loop, so it allocates per call.
+# In-place solve A·x = b. Pardiso solves out-of-place, so it writes into a scratch buffer
+# and copies back. Both paths reuse a persistent buffer to stay allocation-free, matching
+# the KLU/AA caches: the vector path (Newton hot loop) reuses `scratch`, and the multi-RHS
+# matrix path (e.g. multi-period / PCM DC, reusing a cached factorization) reuses
+# `scratch_mat`.
 function PowerFlows.solve!(cache::PardisoLinSolveCache, b::StridedVector{Float64})
     Pardiso.set_phase!(cache.ps, Pardiso.SOLVE_ITERATIVE_REFINE)
     length(cache.scratch) == length(b) || resize!(cache.scratch, length(b))
@@ -96,9 +97,13 @@ end
 
 function PowerFlows.solve!(cache::PardisoLinSolveCache, b::StridedMatrix{Float64})
     Pardiso.set_phase!(cache.ps, Pardiso.SOLVE_ITERATIVE_REFINE)
-    x = similar(b)
-    Pardiso.pardiso(cache.ps, x, cache.A, b)
-    copyto!(b, x)
+    # Reuse a persistent buffer so a loop of multi-RHS solves on a cached factorization
+    # (e.g. multi-period / PCM DC) does not allocate an n×nrhs matrix per call. The shape
+    # is stable across such a loop, so the resize happens at most once.
+    size(cache.scratch_mat) == size(b) ||
+        (cache.scratch_mat = Matrix{Float64}(undef, size(b)))
+    Pardiso.pardiso(cache.ps, cache.scratch_mat, cache.A, b)
+    copyto!(b, cache.scratch_mat)
     return b
 end
 
