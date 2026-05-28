@@ -109,13 +109,10 @@ function PowerFlows.solve!(cache::PardisoLinSolveCache, b::StridedMatrix{Float64
     return b
 end
 
-"""MKLPardiso refines internally during its `SOLVE_ITERATIVE_REFINE` phase, so this is a
-deliberate no-op wrapper around [`solve!`](@ref): `A` and `refinement_eps` are accepted
-only to match the `(cache, A, b, eps)` signature PowerFlows' Newton loop calls, and are
-intentionally unused. Because the "refined" solve is therefore identical to the plain
-solve, a solve that cannot be improved falls straight through to the backend-agnostic
-singular guard in `_set_Δx_nr!`, which covers MKL's silent pivot perturbation on
-(near-)singular matrices."""
+"""No-op wrapper: MKLPardiso refines internally in its `SOLVE_ITERATIVE_REFINE` phase, so `A`
+and `refinement_eps` are unused (kept only to match the Newton loop's call signature). The refined
+solve equals the plain solve; the singular guard in `_set_Δx_nr!` handles MKL's silent pivot
+perturbation on (near-)singular matrices."""
 function PowerFlows.solve_w_refinement(
     cache::PardisoLinSolveCache,
     A::SparseMatrixCSC{Float64},

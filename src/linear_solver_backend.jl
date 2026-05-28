@@ -13,17 +13,11 @@
 # PFLinearSolverCache Union. A future PNM-side abstract supertype will let us
 # drop this Union.
 
-"""Cache for the MKLPardiso backend. The Pardiso handle is held opaquely because
-`Pardiso.MKLPardisoSolver`'s type is only available when the `Pardiso.jl`
-extension (`PowerFlowsPardisoExt`) is loaded; the operation methods live there.
-The matrix is snapshotted because Pardiso reads it at solve time. `Ti` is left
-abstract: Pardiso.jl converts the index arrays to `Int32` internally, so this
-cache accepts both the `Int32` AC Jacobian and the `Int`-indexed DC matrices.
-`ps` is held as `Any` rather than a type parameter on purpose: that keeps
-`PardisoLinSolveCache` a concrete type so it can be a splittable member of
-`PFLinearSolverCache`. The cost of the untyped `ps` is confined to the Pardiso
-solve path (a thin wrapper over an MKL C call), so it never touches the KLU/AA
-hot paths."""
+"""Cache for the MKLPardiso backend. `ps` (the `Pardiso.MKLPardisoSolver` handle) is held as
+`Any`: its type is only available once the `Pardiso.jl` extension loads, and keeping it untyped
+also keeps this struct concrete so it stays a splittable member of `PFLinearSolverCache` (the cost
+is confined to the Pardiso solve path). `A` is snapshotted because Pardiso reads it at solve time;
+`Ti` is left abstract since Pardiso converts indices to `Int32` internally."""
 mutable struct PardisoLinSolveCache
     ps::Any                       # Pardiso.MKLPardisoSolver
     A::SparseMatrixCSC{Float64}
@@ -32,14 +26,10 @@ mutable struct PardisoLinSolveCache
     scratch_mat::Matrix{Float64}  # persistent multi-RHS solve buffer (resized on shape change) → non-alloc matrix solve!
 end
 
-"""Union of the cached linear-solver types PowerFlows dispatches over (KLU,
-AppleAccelerate, MKLPardiso). The KLU member is pinned to the concrete index type
-`J_INDEX_TYPE`: the AC Newton hot loop builds its cache from
-`J.Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE}` (and the regularized fallback matrix
-shares that index type), so this is the only KLU instantiation that flows through
-`::PFLinearSolverCache`-typed methods. Keeping every member concrete is what lets
-this 3-way union stay within Julia's small-union splitting; a future PNM abstract
-supertype would replace it."""
+"""Union of the KLU, AppleAccelerate, and MKLPardiso solver caches. Every member is concrete so
+the 3-way union stays within Julia's small-union splitting; the KLU member is pinned to
+`J_INDEX_TYPE` because that is the only instantiation flowing through these methods (the AC Newton
+cache and its fallback are built from `J.Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE}`)."""
 const PFLinearSolverCache =
     Union{
         PNM.KLULinSolveCache{Float64, J_INDEX_TYPE},

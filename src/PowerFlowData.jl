@@ -126,10 +126,8 @@ struct PowerFlowData{
     time_step_map::Dict{Int, String}
     power_network_matrix::M
     aux_network_matrix::N
-    # Signed arc-bus incidence (rows = arcs, cols = buses; +1 from-bus, -1 to-bus), built once
-    # from `PNM.IncidenceMatrix` and aligned to the metadata matrix's arc/bus axes so it lines
-    # up with `get_arc_axis(data)`/`get_bus_lookup(data)`. Used by the DC solves to compute
-    # Δθ = A·θ as a single SpMV. `nothing` for methods that don't need it (AC, vPTDF).
+    # Signed arc-bus incidence (rows = arcs; +1 from-bus, -1 to-bus), built once from
+    # `PNM.IncidenceMatrix`. Used by DC solves for Δθ = A·θ; `nothing` for AC/vPTDF.
     arc_bus_incidence::Union{SparseMatrixCSC{Int8, Int}, Nothing}
     neighbors::Vector{Set{Int}}
     converged::BitVector
@@ -499,12 +497,9 @@ function make_and_initialize_power_flow_data(
     return data
 end
 
-# Build the signed arc-bus incidence (rows = arcs, cols = buses; +1 from-bus, -1 to-bus) from
-# PNM's `IncidenceMatrix`, permuted so its rows/columns line up with `metadata_matrix`'s arc
-# and bus axes — i.e. with `get_arc_axis(data)`/`get_bus_lookup(data)` at solve time. Both come
-# from the same `Ybus`, so the permutation is usually the identity, but aligning explicitly
-# guards against a future divergence in PNM's per-matrix axis ordering. Entries are `Int8`
-# (matching PNM), 8× smaller than a `Float64` copy.
+# Build the signed arc-bus incidence from PNM's `IncidenceMatrix`, permuted to align its rows/cols
+# with `metadata_matrix`'s axes (= `get_arc_axis(data)`/`get_bus_lookup(data)` at solve time);
+# the explicit permutation guards against PNM axis drift. `Int8` entries match PNM.
 function _signed_arc_bus_incidence(ybus::PNM.Ybus, metadata_matrix::PNM.PowerNetworkMatrix)
     inc = PNM.IncidenceMatrix(ybus)
     arc_lookup = PNM.get_arc_lookup(inc)

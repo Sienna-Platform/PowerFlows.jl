@@ -23,13 +23,9 @@ struct StateVectorCache
     Δx_cauchy::Vector{Float64} # Cauchy step
     Δx_nr::Vector{Float64} # Newton-Raphson step
     d::Vector{Float64}
-    # Persistent regularized singular-Jacobian fallback, reused across repeated fallbacks
-    # (common on hard starts). `fallback_matrix` holds the regularized matrix `-(JᵀJ + λI)`
-    # with a fixed sparsity pattern, so its values are refreshed in place
-    # (`_refresh_singular_J_fallback!`) and `fallback_cache`'s symbolic factorization is reused
-    # via a cheap `numeric_refactor!` — no symbolic refactor. Both are rebuilt with a full
-    # analyze+factor only when the JᵀJ pattern shifts (it can, e.g. near a flat start where
-    # some Jacobian entries vanish/reappear).
+    # Persistent regularized singular-Jacobian fallback `-(JᵀJ + λI)`, reused across repeated
+    # fallbacks: `fallback_matrix` keeps a fixed pattern so values are refreshed in place and
+    # `fallback_cache`'s symbolic factorization is reused; both are rebuilt only on a pattern shift.
     fallback_cache::Base.RefValue{
         Union{Nothing, PNM.KLULinSolveCache{Float64, J_INDEX_TYPE}},
     }
@@ -132,12 +128,8 @@ function _set_Δx_nr!(stateVector::StateVectorCache,
 
     if use_fallback
         @warn("$solver hit a point where the Jacobian is singular.")
-        # KLU is used here because the fallback must reliably solve the regularized
-        # (nonsingular) system `-(JᵀJ + λI)`. Reuse across repeated fallbacks (common on hard
-        # starts): refresh the regularized matrix's values in place while its sparsity pattern
-        # holds, so the cached symbolic factorization is reused via a cheap `numeric_refactor!`
-        # (no symbolic refactor). A pattern shift (not guaranteed stable, e.g. near a flat
-        # start where JᵀJ entries vanish/reappear) falls back to a full rebuild.
+        # KLU is used because the fallback must reliably solve the regularized system. Refresh
+        # values in place while the pattern holds (reusing the factorization); rebuild if it shifts.
         M_prev = stateVector.fallback_matrix[]
         cache_prev = stateVector.fallback_cache[]
         if M_prev !== nothing && cache_prev !== nothing &&
@@ -168,11 +160,8 @@ function _build_singular_J_fallback(Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
     return -(fjac2 + lambda * LinearAlgebra.I)
 end
 
-"""Refresh the regularized fallback matrix `M = -(JᵀJ + λI)` in place, preserving its sparsity
-pattern so a cached symbolic factorization stays valid. Returns `false` (leaving `M` untouched)
-when the current `JᵀJ` pattern no longer matches `M`'s — signalling the caller to rebuild —
-otherwise overwrites `M`'s values and returns `true`. `λ` matches `_build_singular_J_fallback`,
-so a refreshed `M` is identical to a rebuilt one whenever the pattern holds."""
+"""Refresh `M = -(JᵀJ + λI)` in place (λ as in [`_build_singular_J_fallback`](@ref)). Returns
+`false` without touching `M` when the `JᵀJ` pattern no longer matches `M`'s, so the caller rebuilds."""
 function _refresh_singular_J_fallback!(M::SparseMatrixCSC{Float64, J_INDEX_TYPE},
     Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
     x::Vector{Float64})
