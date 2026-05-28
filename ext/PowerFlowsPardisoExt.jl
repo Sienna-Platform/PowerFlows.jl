@@ -37,12 +37,13 @@ function PowerFlows.make_linear_solver_cache(
     )
     ps = Pardiso.MKLPardisoSolver()
     _init_pardiso!(ps)
-    cache = PardisoLinSolveCache(ps, A, false)
+    cache = PardisoLinSolveCache(ps, A, false, Float64[])
     finalizer(cache) do c
         try
             Pardiso.set_phase!(c.ps, Pardiso.RELEASE_ALL)
             Pardiso.pardiso(c.ps)
-        catch
+        catch e
+            @debug "PardisoLinSolveCache finalizer: RELEASE_ALL failed" exception = e
         end
     end
     return cache
@@ -81,8 +82,19 @@ function PowerFlows.full_factor!(
     return cache
 end
 
-# In-place solve A·x = b. Pardiso solves out-of-place, so use scratch and copy back.
-function PowerFlows.solve!(cache::PardisoLinSolveCache, b::StridedVecOrMat{Float64})
+# In-place solve A·x = b. Pardiso solves out-of-place, so it writes into scratch and
+# copies back. The vector path (the Newton hot loop) reuses a persistent scratch
+# buffer to stay allocation-free, matching the KLU/AA caches. The multi-RHS matrix
+# path (e.g. multi-period DC) is not a hot loop, so it allocates per call.
+function PowerFlows.solve!(cache::PardisoLinSolveCache, b::StridedVector{Float64})
+    Pardiso.set_phase!(cache.ps, Pardiso.SOLVE_ITERATIVE_REFINE)
+    length(cache.scratch) == length(b) || resize!(cache.scratch, length(b))
+    Pardiso.pardiso(cache.ps, cache.scratch, cache.A, b)
+    copyto!(b, cache.scratch)
+    return b
+end
+
+function PowerFlows.solve!(cache::PardisoLinSolveCache, b::StridedMatrix{Float64})
     Pardiso.set_phase!(cache.ps, Pardiso.SOLVE_ITERATIVE_REFINE)
     x = similar(b)
     Pardiso.pardiso(cache.ps, x, cache.A, b)
