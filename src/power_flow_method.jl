@@ -192,6 +192,7 @@ function _dogleg!(Δx_proposed::Vector{Float64},
     Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
     d::Vector{Float64},
     delta::Float64,
+    Jg::Vector{Float64},
 )
     nr_norm = wnorm(d, Δx_nr)
     @debug "Trust region: ||Δx_nr|| = $(siground(nr_norm)), δ = $(siground(delta))"
@@ -204,7 +205,9 @@ function _dogleg!(Δx_proposed::Vector{Float64},
         g = Δx_proposed
         LinearAlgebra.mul!(g, Jv', r)
         g .= g ./ d .^ 2
-        Δx_cauchy .= -wnorm(d, g)^2 / sum(abs2, Jv * g) .* g # Cauchy point
+        # Jg = J·g into the caller's scratch buffer, avoiding a per-call allocation.
+        LinearAlgebra.mul!(Jg, Jv, g)
+        Δx_cauchy .= -wnorm(d, g)^2 / sum(abs2, Jg) .* g # Cauchy point
 
         cauchy_norm = wnorm(d, Δx_cauchy)
         @debug "Cauchy point: ||Δx_cauchy|| = $(siground(cauchy_norm))"
@@ -264,13 +267,16 @@ function _iwamoto_fallback!(
     J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
     old_residual::Vector{Float64},
     old_residual_norm::Float64,
-    new_residual_norm::Float64,
     autoscale::Bool,
 )::Bool
     g0 = old_residual_norm
-    g1 = dot(old_residual, residual.Rv)
-    g2 = new_residual_norm
-    μ = _iwamoto_multiplier(g0, g1, g2)
+    # Exact quadratic mismatch model along the dogleg step Δx_proposed:
+    # F(x+μΔx) = f₀ + μ·(J·Δx) + μ²·a. The linear prediction r_predict = f₀ + J·Δx
+    # was already formed for the ρ test, so the true quadratic coefficient
+    # a = F(x+Δx) − r_predict needs no extra matrix-vector product.
+    c_fb, c_bb, c_fa, c_ba, c_aa =
+        _iwamoto_quadratic_dots(old_residual, stateVector.r_predict, residual.Rv)
+    μ = _iwamoto_multiplier(2.0 * c_fb, c_bb + 2.0 * c_fa, 2.0 * c_ba, c_aa)
     # Revert full step, apply damped step in a single fused pass.
     @. stateVector.x += (μ - 1.0) * stateVector.Δx_proposed
     residual(stateVector.x, time_step)
@@ -323,6 +329,7 @@ function _trust_region_step(time_step::Int,
         J.Jv,
         stateVector.d,
         delta,
+        stateVector.r_predict,  # scratch for J·g; overwritten with the true r_predict below
     )
     # find proposed next point.
     stateVector.x .+= stateVector.Δx_proposed
@@ -338,9 +345,17 @@ function _trust_region_step(time_step::Int,
     # Ratio of actual to predicted reduction
     LinearAlgebra.mul!(stateVector.r_predict, J.Jv, stateVector.Δx_proposed)
     stateVector.r_predict .+= stateVector.r
-    rho =
-        (sum(abs2, stateVector.r) - sum(abs2, residual.Rv)) /
-        (sum(abs2, stateVector.r) - sum(abs2, stateVector.r_predict))
+    predicted_reduction = old_residual_norm - sum(abs2, stateVector.r_predict)
+    # A non-positive predicted reduction means the local model predicts no
+    # improvement (e.g. a singular-Jacobian fallback step that is not a descent
+    # direction). Dividing by it would yield a NaN/Inf ρ that passes neither the
+    # accept test nor the shrink test and stalls the solver, so force a
+    # rejected-step ρ that shrinks the trust region.
+    rho = if predicted_reduction > 0.0
+        (old_residual_norm - new_residual_norm) / predicted_reduction
+    else
+        -Inf
+    end
 
     @debug "Trust region step: ρ = $(siground(rho)), η = $(siground(eta)), ||Δx|| = $(siground(norm(stateVector.Δx_proposed)))"
 
@@ -356,7 +371,7 @@ function _trust_region_step(time_step::Int,
         if iwamoto_fallback
             iwamoto_accepted = _iwamoto_fallback!(
                 time_step, stateVector, residual, J,
-                oldResidual, old_residual_norm, new_residual_norm, autoscale)
+                oldResidual, old_residual_norm, autoscale)
             if iwamoto_accepted
                 # Iwamoto accepted a damped step — shrink trust region since the
                 # full proposed step was rejected by rho. Do not use rho-based
@@ -390,28 +405,55 @@ function _trust_region_step(time_step::Int,
     return delta
 end
 
-"""Evaluate the Iwamoto objective g(μ) = ‖(1-μ)f₀ + μ²f₁‖² expanded as
-g(μ) = (1-μ)²g₀ + 2μ²(1-μ)g₁ + μ⁴g₂ where g₀=‖f₀‖², g₁=f₀ᵀf₁, g₂=‖f₁‖²."""
-@inline function _iwamoto_objective(
-    μ::Float64, g0::Float64, g1::Float64, g2::Float64,
-)::Float64
-    om = 1.0 - μ
-    μ2 = μ * μ
-    return om * om * g0 + 2.0 * μ2 * om * g1 + μ2 * μ2 * g2
+"""Accumulate the five inner products of the exact quadratic mismatch model
+`F(x + μΔx) = f₀ + μ·b + μ²·a`, where `b = J·Δx` is the linear term and
+`a = F(x+Δx) − f₀ − b` is the true quadratic coefficient. Given `f₀`, the linear
+prediction `rpred = f₀ + b` (`= r + J·Δx`), and the trial residual `rv = F(x+Δx)`,
+returns `(f₀·b, b·b, f₀·a, b·a, a·a)`. Zero-allocation, O(n)."""
+@inline function _iwamoto_quadratic_dots(
+    f0::Vector{Float64}, rpred::Vector{Float64}, rv::Vector{Float64},
+)::NTuple{5, Float64}
+    c_fb = 0.0
+    c_bb = 0.0
+    c_fa = 0.0
+    c_ba = 0.0
+    c_aa = 0.0
+    @inbounds @simd for i in eachindex(f0, rpred, rv)
+        b = rpred[i] - f0[i]   # b = (f₀ + b) − f₀
+        a = rv[i] - rpred[i]   # a = (f₀ + b + a) − (f₀ + b)
+        c_fb += f0[i] * b
+        c_bb += b * b
+        c_fa += f0[i] * a
+        c_ba += b * a
+        c_aa += a * a
+    end
+    return c_fb, c_bb, c_fa, c_ba, c_aa
 end
 
-"""If μ ∈ [IWAMOTO_MU_MIN, IWAMOTO_MU_MAX] and g(μ) < best_g, return the
-improved (μ, g(μ)); otherwise return (best_μ, best_g) unchanged."""
+"""Evaluate the Iwamoto objective (minus its μ-independent constant `f₀·f₀`) for
+the exact quadratic model `g(μ) = ‖f₀ + μ·b + μ²·a‖²`:
+    g̃(μ) = q₁·μ + q₂·μ² + q₃·μ³ + q₄·μ⁴
+with `q₁ = 2 f₀·b`, `q₂ = b·b + 2 f₀·a`, `q₃ = 2 b·a`, `q₄ = a·a`. The dropped
+constant does not affect the minimizer."""
+@inline function _iwamoto_objective(
+    μ::Float64, q1::Float64, q2::Float64, q3::Float64, q4::Float64,
+)::Float64
+    return μ * (q1 + μ * (q2 + μ * (q3 + μ * q4)))
+end
+
+"""If μ ∈ [IWAMOTO_MU_MIN, IWAMOTO_MU_MAX] and g̃(μ) < best_g, return the
+improved (μ, g̃(μ)); otherwise return (best_μ, best_g) unchanged."""
 @inline function _try_iwamoto_candidate(
     μ::Float64,
     best_μ::Float64,
     best_g::Float64,
-    g0::Float64,
-    g1::Float64,
-    g2::Float64,
+    q1::Float64,
+    q2::Float64,
+    q3::Float64,
+    q4::Float64,
 )::Tuple{Float64, Float64}
     if IWAMOTO_MU_MIN <= μ <= IWAMOTO_MU_MAX
-        gval = _iwamoto_objective(μ, g0, g1, g2)
+        gval = _iwamoto_objective(μ, q1, q2, q3, q4)
         if gval < best_g
             return μ, gval
         end
@@ -420,22 +462,29 @@ improved (μ, g(μ)); otherwise return (best_μ, best_g) unchanged."""
 end
 
 """Compute the optimal Iwamoto step multiplier μ ∈ [IWAMOTO_MU_MIN, IWAMOTO_MU_MAX]
-by minimizing g(μ) = (1-μ)²g₀ + 2μ²(1-μ)g₁ + μ⁴g₂.
+minimizing the exact quadratic mismatch model `g̃(μ) = q₁μ + q₂μ² + q₃μ³ + q₄μ⁴`
+(see [`_iwamoto_quadratic_dots`](@ref) for the coefficients).
 
-The stationary points satisfy the cubic g'(μ)/2 = 2g₂μ³ - 3g₁μ² + (g₀+2g₁)μ - g₀ = 0.
-All real roots are found analytically via the depressed-cubic trigonometric/Cardano form,
-and the global minimizer of g over the domain is returned. O(1), zero-allocation."""
-function _iwamoto_multiplier(g0::Float64, g1::Float64, g2::Float64)::Float64
+The stationary points satisfy the cubic `g̃'(μ) = 4q₄μ³ + 3q₃μ² + 2q₂μ + q₁ = 0`.
+All real roots are found analytically via the depressed-cubic trigonometric/Cardano
+form, and the global minimizer of g̃ over the domain is returned. O(1), zero-allocation.
+
+When the step is the exact Newton step (`b = −f₀`), this reduces to the classical
+Iwamoto & Tamura (1981) optimal multiplier; for a non-Newton step (e.g. the
+trust-region dogleg) it remains exact because the power-flow mismatch is captured
+by `(f₀, b, a)` through its value and gradient at μ=0 and value at μ=1."""
+function _iwamoto_multiplier(q1::Float64, q2::Float64, q3::Float64, q4::Float64)::Float64
     # Initialize best candidate from domain boundaries.
     best_μ = IWAMOTO_MU_MIN
-    best_g = _iwamoto_objective(IWAMOTO_MU_MIN, g0, g1, g2)
-    best_μ, best_g = _try_iwamoto_candidate(IWAMOTO_MU_MAX, best_μ, best_g, g0, g1, g2)
+    best_g = _iwamoto_objective(IWAMOTO_MU_MIN, q1, q2, q3, q4)
+    best_μ, best_g =
+        _try_iwamoto_candidate(IWAMOTO_MU_MAX, best_μ, best_g, q1, q2, q3, q4)
 
     # Cubic coefficients: c₃μ³ + c₂μ² + c₁μ + c₀ = 0
-    c3 = 2.0 * g2
-    c2 = -3.0 * g1
-    c1 = g0 + 2.0 * g1
-    c0 = -g0
+    c3 = 4.0 * q4
+    c2 = 3.0 * q3
+    c1 = 2.0 * q2
+    c0 = q1
 
     if abs(c3) < IWAMOTO_DEGENERACY_TOL
         # Degenerate: solve quadratic c₂μ² + c₁μ + c₀ = 0
@@ -444,11 +493,13 @@ function _iwamoto_multiplier(g0::Float64, g1::Float64, g2::Float64)::Float64
             if disc >= 0.0
                 sq = sqrt(disc)
                 for μ in ((-c1 + sq) / (2.0 * c2), (-c1 - sq) / (2.0 * c2))
-                    best_μ, best_g = _try_iwamoto_candidate(μ, best_μ, best_g, g0, g1, g2)
+                    best_μ, best_g =
+                        _try_iwamoto_candidate(μ, best_μ, best_g, q1, q2, q3, q4)
                 end
             end
         elseif abs(c1) > IWAMOTO_DEGENERACY_TOL
-            best_μ, best_g = _try_iwamoto_candidate(-c0 / c1, best_μ, best_g, g0, g1, g2)
+            best_μ, best_g =
+                _try_iwamoto_candidate(-c0 / c1, best_μ, best_g, q1, q2, q3, q4)
         end
         return best_μ
     end
@@ -471,29 +522,37 @@ function _iwamoto_multiplier(g0::Float64, g1::Float64, g2::Float64)::Float64
         for k in 0:2
             best_μ, best_g = _try_iwamoto_candidate(
                 m * cos(φ3 - 2.0 * π * k / 3.0) - p3,
-                best_μ, best_g, g0, g1, g2)
+                best_μ, best_g, q1, q2, q3, q4)
         end
     elseif Δ < 0.0
         # One real root — Cardano's formula.
         sqD = sqrt(max(-Δ / 108.0, 0.0))
         best_μ, best_g = _try_iwamoto_candidate(
             cbrt(-B / 2.0 + sqD) + cbrt(-B / 2.0 - sqD) - p3,
-            best_μ, best_g, g0, g1, g2)
+            best_μ, best_g, q1, q2, q3, q4)
     else
         # Δ ≈ 0 — repeated roots.
         if abs(A) < IWAMOTO_DEGENERACY_TOL
             # Triple root at t = 0.
-            best_μ, best_g = _try_iwamoto_candidate(-p3, best_μ, best_g, g0, g1, g2)
+            best_μ, best_g = _try_iwamoto_candidate(-p3, best_μ, best_g, q1, q2, q3, q4)
         else
             # Simple root t₁ = 3B/A and double root t₂ = -3B/(2A).
             for t in (3.0 * B / A, -3.0 * B / (2.0 * A))
                 best_μ, best_g = _try_iwamoto_candidate(
-                    t - p3, best_μ, best_g, g0, g1, g2)
+                    t - p3, best_μ, best_g, q1, q2, q3, q4)
             end
         end
     end
 
     return best_μ
+end
+
+"""Iwamoto multiplier for the exact Newton step, where the linear term is
+`b = J·Δx = −f₀`. Then `q₁ = −2g₀`, `q₂ = g₀ + 2g₁`, `q₃ = −2g₁`, `q₄ = g₂` with
+`g₀ = ‖f₀‖²`, `g₁ = f₀ᵀf₁`, `g₂ = ‖f₁‖²` and `f₁ = F(x+Δx)` the full-step residual.
+This is the classical Iwamoto & Tamura (1981) form."""
+@inline function _iwamoto_multiplier(g0::Float64, g1::Float64, g2::Float64)::Float64
+    return _iwamoto_multiplier(-2.0 * g0, g0 + 2.0 * g1, -2.0 * g1, g2)
 end
 
 """Does a single iteration of `NewtonRaphsonACPowerFlow`. Updates the `r` and `x`
