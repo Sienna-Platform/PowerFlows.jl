@@ -27,6 +27,31 @@ function _validate_shunt!(
     return nothing
 end
 
+"""Validate tap invariants at construction time. Separated to allow direct unit testing."""
+function _validate_tap!(
+    name::String,
+    p_min::Float64,
+    p_max::Float64,
+    ntp::Int,
+)
+    if p_min > p_max
+        error(
+            "ControlledTap \"$name\": p_min=$p_min exceeds p_max=$p_max — malformed tap-ratio limits",
+        )
+    end
+    if p_min == p_max
+        error(
+            "ControlledTap \"$name\": no controllable tap-ratio range (p_min == p_max == $p_min); not a valid voltage-controlled device",
+        )
+    end
+    if ntp < 2
+        error(
+            "ControlledTap \"$name\": needs at least 2 tap positions (got ntp=$ntp)",
+        )
+    end
+    return nothing
+end
+
 function _controlled_bus_number(ext::Dict, fallback::Int)
     for k in ("NREG", "RMIDNT")
         if haskey(ext, k)
@@ -71,6 +96,7 @@ function build_controlled_device_set(
         pmax = _ext_float(ext, "RMA", DEFAULT_TAP_RATIO_MAX)
         ntp = Int(_ext_float(ext, "NTP", Float64(DEFAULT_TAP_POSITIONS)))
         ntp < 2 && (ntp = DEFAULT_TAP_POSITIONS)
+        _validate_tap!(PSY.get_name(tx), pmin, pmax, ntp)
         vset = if haskey(ext, "VSET")
             _ext_float(ext, "VSET", DEFAULT_TAP_VSET)
         else
