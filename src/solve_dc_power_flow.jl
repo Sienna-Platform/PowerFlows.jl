@@ -106,26 +106,16 @@ function _shift_angles_to_stored_reference!(
     end
 end
 
-"""
-    solve_power_flow!(data::PTDFPowerFlowData)
-
-Evaluates the PTDF power flow and writes the result to the fields of the
-[`PTDFPowerFlowData`](@ref) structure (a type alias of [`PowerFlowData`](@ref)).
-
-This function modifies the following fields of `data`, setting them to the computed values:
-- `data.bus_angles`: the bus angles for each bus in the system.
-- `data.branch_active_power_flow_from_to`: the active power flow from the "from" bus to the "to" bus of each branch
-- `data.branch_active_power_flow_to_from`: the active power flow from the "to" bus to the "from" bus of each branch
-
-Additionally, it sets `data.converged` to `true`, indicating that the power flow calculation was successful.
-"""
-function solve_power_flow!(
-    data::PTDFPowerFlowData;
-    linear_solver::Union{Nothing, AbstractString} = nothing,
+# Function barriers for the DC solves. `cache`/`scratch` come out of a `Ref{Any}`
+# (the persistent `solver_cache`), so they are not statically typed at the call
+# site. Passing them into these typed workers lets Julia specialize the hot
+# arithmetic on their concrete types — one dynamic dispatch at the boundary, then
+# an allocation-free, type-stable body (the PCM-loop "allocates nothing" goal).
+function _run_ptdf_solve!(
+    data::PTDFPowerFlowData,
+    solver_cache::PFLinearSolverCache,
+    scratch,
 )
-    backend = resolve_linear_solver_backend(linear_solver)
-    solver_cache, scratch =
-        _get_or_build_solver_cache!(data, backend, data.aux_network_matrix.data)
     power_injections = scratch.power_injections
     @. power_injections =
         data.bus_active_power_injections - data.bus_active_power_withdrawals
@@ -152,6 +142,104 @@ function solve_power_flow!(
     return
 end
 
+function _run_vptdf_solve!(data::vPTDFPowerFlowData, solver_cache::PFLinearSolverCache)
+    power_injections =
+        @. data.bus_active_power_injections - data.bus_active_power_withdrawals
+    power_injections .+= data.bus_hvdc_net_power
+    data.arc_active_power_flow_from_to .=
+        my_mul_mt(data.power_network_matrix, power_injections)
+    @. data.arc_active_power_flow_to_from = -data.arc_active_power_flow_from_to
+    # HVDC flows stored separately and already calculated: see initialize_power_flow_data!
+    valid_ix = get_valid_ix(data)
+    p_inj = power_injections[valid_ix, :]
+    solve!(solver_cache, p_inj)
+    data.bus_angles[valid_ix, :] .= p_inj
+    _shift_angles_to_stored_reference!(data)
+    _compute_arc_angle_differences_from_data!(data)
+    Rs = _get_arc_resistances(data)
+    @. data.arc_active_power_losses = Rs * data.arc_active_power_flow_from_to^2
+    data.converged .= true
+    if get_calculate_loss_factors(data)
+        data.loss_factors .= dc_loss_factors(data, power_injections)
+    end
+    return
+end
+
+function _run_aba_solve!(
+    data::ABAPowerFlowData,
+    solver_cache::PFLinearSolverCache,
+    scratch,
+)
+    # Reuse preallocated buffers from the cache scratch so a PCM-loop solve allocates
+    # nothing on the common (lossless) DC path beyond the bus-angle writeback view.
+    power_injections = scratch.power_injections
+    @. power_injections =
+        data.bus_active_power_injections - data.bus_active_power_withdrawals
+    power_injections .+= data.bus_hvdc_net_power
+    valid_ix = get_valid_ix(data)
+    p_inj = scratch.p_inj
+    @views p_inj .= power_injections[valid_ix, :]
+    solve!(solver_cache, p_inj)
+    @views data.bus_angles[valid_ix, :] .= p_inj
+    _shift_angles_to_stored_reference!(data)
+
+    if data.arc_lossy_admittance_from_to !== nothing
+        # DC assumption: all bus voltage magnitudes are 1.0 p.u., so V = e^(jθ).
+        V = @. exp(1im * data.bus_angles)
+        arcs = get_arc_axis(data)
+        bus_lookup = get_bus_lookup(data)
+        fb_ix = [bus_lookup[first(arc)] for arc in arcs]
+        tb_ix = [bus_lookup[last(arc)] for arc in arcs]
+        # Explicit dots (not `@.`) because the RHS embeds a matrix-vector product
+        # (`admittance * V`), which `@.` would wrongly broadcast as element-wise.
+        Sft = V[fb_ix, :] .* conj.(data.arc_lossy_admittance_from_to * V)
+        Stf = V[tb_ix, :] .* conj.(data.arc_lossy_admittance_to_from * V)
+        @. data.arc_active_power_flow_from_to = real(Sft)
+        @. data.arc_active_power_flow_to_from = real(Stf)
+        # True losses come directly from the admittance calculation.
+        @. data.arc_active_power_losses =
+            data.arc_active_power_flow_from_to + data.arc_active_power_flow_to_from
+    else
+        mul!(
+            data.arc_active_power_flow_from_to,
+            transpose(data.aux_network_matrix.data),
+            data.bus_angles,
+        )
+        @. data.arc_active_power_flow_to_from = -data.arc_active_power_flow_from_to
+        @. data.arc_active_power_losses =
+            scratch.rs * data.arc_active_power_flow_from_to^2
+    end
+    # Δθ = A·θ as a single sparse SpMV using the cached signed incidence — replaces
+    # the per-call rebuild of fb_ix/tb_ix index vectors in
+    # `_compute_arc_angle_differences_from_data!` (~0.38 MB/call).
+    mul!(data.arc_angle_differences, scratch.arc_bus_incidence, data.bus_angles)
+    data.converged .= true
+    return
+end
+
+"""
+    solve_power_flow!(data::PTDFPowerFlowData)
+Evaluates the PTDF power flow and writes the result to the fields of the
+[`PTDFPowerFlowData`](@ref) structure.
+
+This function modifies the following fields of `data`, setting them to the computed values:
+- `data.bus_angles`: the bus angles for each bus in the system.
+- `data.branch_active_power_flow_from_to`: the active power flow from the "from" bus to the "to" bus of each branch
+- `data.branch_active_power_flow_to_from`: the active power flow from the "to" bus to the "from" bus of each branch
+
+Additionally, it sets `data.converged` to `true`, indicating that the power flow calculation was successful.
+"""
+function solve_power_flow!(
+    data::PTDFPowerFlowData;
+    linear_solver::Union{Nothing, AbstractString} = nothing,
+)
+    backend = resolve_linear_solver_backend(linear_solver)
+    solver_cache, scratch =
+        _get_or_build_solver_cache!(data, backend, data.aux_network_matrix.data)
+    _run_ptdf_solve!(data, solver_cache, scratch)
+    return
+end
+
 """
     solve_power_flow!(data::vPTDFPowerFlowData)
 
@@ -173,25 +261,7 @@ function solve_power_flow!(
     backend = resolve_linear_solver_backend(linear_solver)
     solver_cache, _ =
         _get_or_build_solver_cache!(data, backend, data.aux_network_matrix.data)
-    power_injections =
-        @. data.bus_active_power_injections - data.bus_active_power_withdrawals
-    power_injections .+= data.bus_hvdc_net_power
-    data.arc_active_power_flow_from_to .=
-        my_mul_mt(data.power_network_matrix, power_injections)
-    @. data.arc_active_power_flow_to_from = -data.arc_active_power_flow_from_to
-    # HVDC flows stored separately and already calculated: see initialize_power_flow_data!
-    valid_ix = get_valid_ix(data)
-    p_inj = power_injections[valid_ix, :]
-    solve!(solver_cache, p_inj)
-    data.bus_angles[valid_ix, :] .= p_inj
-    _shift_angles_to_stored_reference!(data)
-    _compute_arc_angle_differences_from_data!(data)
-    Rs = _get_arc_resistances(data)
-    @. data.arc_active_power_losses = Rs * data.arc_active_power_flow_from_to^2
-    data.converged .= true
-    if get_calculate_loss_factors(data)
-        data.loss_factors .= dc_loss_factors(data, power_injections)
-    end
+    _run_vptdf_solve!(data, solver_cache)
     return
 end
 
