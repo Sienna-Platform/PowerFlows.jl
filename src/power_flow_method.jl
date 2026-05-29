@@ -205,7 +205,6 @@ function _dogleg!(Δx_proposed::Vector{Float64},
         g = Δx_proposed
         LinearAlgebra.mul!(g, Jv', r)
         g .= g ./ d .^ 2
-        # Jg = J·g into the caller's scratch buffer, avoiding a per-call allocation.
         LinearAlgebra.mul!(Jg, Jv, g)
         Δx_cauchy .= -wnorm(d, g)^2 / sum(abs2, Jg) .* g # Cauchy point
 
@@ -270,10 +269,8 @@ function _iwamoto_fallback!(
     autoscale::Bool,
 )::Bool
     g0 = old_residual_norm
-    # Exact quadratic mismatch model along the dogleg step Δx_proposed:
-    # F(x+μΔx) = f₀ + μ·(J·Δx) + μ²·a. The linear prediction r_predict = f₀ + J·Δx
-    # was already formed for the ρ test, so the true quadratic coefficient
-    # a = F(x+Δx) − r_predict needs no extra matrix-vector product.
+    # Quadratic model F(x+μΔx) = f₀ + μ·(J·Δx) + μ²·a along Δx_proposed. r_predict
+    # (= f₀ + J·Δx) from the ρ test gives a = F(x+Δx) − r_predict for free (no extra matvec).
     c_fb, c_bb, c_fa, c_ba, c_aa =
         _iwamoto_quadratic_dots(old_residual, stateVector.r_predict, residual.Rv)
     μ = _iwamoto_multiplier(2.0 * c_fb, c_bb + 2.0 * c_fa, 2.0 * c_ba, c_aa)
@@ -346,11 +343,8 @@ function _trust_region_step(time_step::Int,
     LinearAlgebra.mul!(stateVector.r_predict, J.Jv, stateVector.Δx_proposed)
     stateVector.r_predict .+= stateVector.r
     predicted_reduction = old_residual_norm - sum(abs2, stateVector.r_predict)
-    # A non-positive predicted reduction means the local model predicts no
-    # improvement (e.g. a singular-Jacobian fallback step that is not a descent
-    # direction). Dividing by it would yield a NaN/Inf ρ that passes neither the
-    # accept test nor the shrink test and stalls the solver, so force a
-    # rejected-step ρ that shrinks the trust region.
+    # Non-positive predicted reduction (e.g. a non-descent fallback step) would give a
+    # NaN/Inf ρ that stalls the solver; force a rejected-step ρ to shrink the trust region.
     rho = if predicted_reduction > 0.0
         (old_residual_norm - new_residual_norm) / predicted_reduction
     else
@@ -405,11 +399,9 @@ function _trust_region_step(time_step::Int,
     return delta
 end
 
-"""Accumulate the five inner products of the exact quadratic mismatch model
-`F(x + μΔx) = f₀ + μ·b + μ²·a`, where `b = J·Δx` is the linear term and
-`a = F(x+Δx) − f₀ − b` is the true quadratic coefficient. Given `f₀`, the linear
-prediction `rpred = f₀ + b` (`= r + J·Δx`), and the trial residual `rv = F(x+Δx)`,
-returns `(f₀·b, b·b, f₀·a, b·a, a·a)`. Zero-allocation, O(n)."""
+"""Inner products for the quadratic model `F(x+μΔx) = f₀ + μ·b + μ²·a` with
+`b = J·Δx`, `a = F(x+Δx) − f₀ − b`. From `f₀`, `rpred = f₀ + b`, and `rv = F(x+Δx)`
+returns `(f₀·b, b·b, f₀·a, b·a, a·a)`."""
 @inline function _iwamoto_quadratic_dots(
     f0::Vector{Float64}, rpred::Vector{Float64}, rv::Vector{Float64},
 )::NTuple{5, Float64}
@@ -419,8 +411,8 @@ returns `(f₀·b, b·b, f₀·a, b·a, a·a)`. Zero-allocation, O(n)."""
     c_ba = 0.0
     c_aa = 0.0
     @inbounds @simd for i in eachindex(f0, rpred, rv)
-        b = rpred[i] - f0[i]   # b = (f₀ + b) − f₀
-        a = rv[i] - rpred[i]   # a = (f₀ + b + a) − (f₀ + b)
+        b = rpred[i] - f0[i]
+        a = rv[i] - rpred[i]
         c_fb += f0[i] * b
         c_bb += b * b
         c_fa += f0[i] * a
@@ -430,11 +422,8 @@ returns `(f₀·b, b·b, f₀·a, b·a, a·a)`. Zero-allocation, O(n)."""
     return c_fb, c_bb, c_fa, c_ba, c_aa
 end
 
-"""Evaluate the Iwamoto objective (minus its μ-independent constant `f₀·f₀`) for
-the exact quadratic model `g(μ) = ‖f₀ + μ·b + μ²·a‖²`:
-    g̃(μ) = q₁·μ + q₂·μ² + q₃·μ³ + q₄·μ⁴
-with `q₁ = 2 f₀·b`, `q₂ = b·b + 2 f₀·a`, `q₃ = 2 b·a`, `q₄ = a·a`. The dropped
-constant does not affect the minimizer."""
+"""Iwamoto objective minus its μ-independent constant:
+`g̃(μ) = q₁μ + q₂μ² + q₃μ³ + q₄μ⁴`. Dropping the constant preserves the minimizer."""
 @inline function _iwamoto_objective(
     μ::Float64, q1::Float64, q2::Float64, q3::Float64, q4::Float64,
 )::Float64
@@ -461,18 +450,11 @@ improved (μ, g̃(μ)); otherwise return (best_μ, best_g) unchanged."""
     return best_μ, best_g
 end
 
-"""Compute the optimal Iwamoto step multiplier μ ∈ [IWAMOTO_MU_MIN, IWAMOTO_MU_MAX]
-minimizing the exact quadratic mismatch model `g̃(μ) = q₁μ + q₂μ² + q₃μ³ + q₄μ⁴`
-(see [`_iwamoto_quadratic_dots`](@ref) for the coefficients).
-
-The stationary points satisfy the cubic `g̃'(μ) = 4q₄μ³ + 3q₃μ² + 2q₂μ + q₁ = 0`.
-All real roots are found analytically via the depressed-cubic trigonometric/Cardano
-form, and the global minimizer of g̃ over the domain is returned. O(1), zero-allocation.
-
-When the step is the exact Newton step (`b = −f₀`), this reduces to the classical
-Iwamoto & Tamura (1981) optimal multiplier; for a non-Newton step (e.g. the
-trust-region dogleg) it remains exact because the power-flow mismatch is captured
-by `(f₀, b, a)` through its value and gradient at μ=0 and value at μ=1."""
+"""Optimal Iwamoto multiplier μ ∈ [IWAMOTO_MU_MIN, IWAMOTO_MU_MAX] minimizing
+`g̃(μ) = q₁μ + q₂μ² + q₃μ³ + q₄μ⁴` (coefficients from [`_iwamoto_quadratic_dots`](@ref)).
+Stationary points solve the cubic `g̃'(μ) = 4q₄μ³ + 3q₃μ² + 2q₂μ + q₁ = 0`, found
+analytically (depressed-cubic Cardano/trig form). Exact for the dogleg step;
+reduces to classical Iwamoto & Tamura (1981) when `b = −f₀` (Newton step)."""
 function _iwamoto_multiplier(q1::Float64, q2::Float64, q3::Float64, q4::Float64)::Float64
     # Initialize best candidate from domain boundaries.
     best_μ = IWAMOTO_MU_MIN
@@ -547,10 +529,8 @@ function _iwamoto_multiplier(q1::Float64, q2::Float64, q3::Float64, q4::Float64)
     return best_μ
 end
 
-"""Iwamoto multiplier for the exact Newton step, where the linear term is
-`b = J·Δx = −f₀`. Then `q₁ = −2g₀`, `q₂ = g₀ + 2g₁`, `q₃ = −2g₁`, `q₄ = g₂` with
-`g₀ = ‖f₀‖²`, `g₁ = f₀ᵀf₁`, `g₂ = ‖f₁‖²` and `f₁ = F(x+Δx)` the full-step residual.
-This is the classical Iwamoto & Tamura (1981) form."""
+"""Classical Iwamoto & Tamura (1981) multiplier for the Newton step (`b = −f₀`),
+with `g₀ = ‖f₀‖²`, `g₁ = f₀ᵀf₁`, `g₂ = ‖f₁‖²`, `f₁ = F(x+Δx)`."""
 @inline function _iwamoto_multiplier(g0::Float64, g1::Float64, g2::Float64)::Float64
     return _iwamoto_multiplier(-2.0 * g0, g0 + 2.0 * g1, -2.0 * g1, g2)
 end

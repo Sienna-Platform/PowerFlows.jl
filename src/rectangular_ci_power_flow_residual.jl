@@ -205,13 +205,10 @@ function _update_rect_ci_residual_values!(
     # ZIP constant-Z is folded into `Y_bus_eff` at setup (see `fold_zip_constant_z!`
     # in `rectangular_ci_setup.jl`), so only constant-P and constant-I appear here.
     @inbounds for i in 1:n_buses
-        # ZIP const-I uses |V_state|, not V_set; V_FLOOR2 (1e-16) guards 1/|V|².
-        # The floor only activates at a degenerate |V| < 1e-8 pu (never at/near a
-        # solution). In that branch ∂(floored |V|²)/∂x = 0 is deliberately NOT
-        # reflected in the Jacobian, which keeps the unfloored quotient and
-        # const-I chain terms; there the Jacobian is an inexact but finite,
-        # |V|-restoring approximation, not the exact derivative of the floored
-        # residual. This is harmless because the iteration never converges there.
+        # ZIP const-I uses |V_state|; V_FLOOR2 (1e-16) guards 1/|V|². The floor only
+        # trips at degenerate |V| < 1e-8 pu (never near a solution), where the Jacobian
+        # keeps the unfloored derivative: inexact but finite and |V|-restoring, and
+        # harmless since the iteration never converges there.
         Vm = sqrt(max(e_state[i]^2 + f_state[i]^2, V_FLOOR2))
         P_eff_cache[i] = P_net_const[i] - const_I_P[i] * Vm
         Q_eff_cache[i] = Q_net_const[i] - const_I_Q[i] * Vm

@@ -105,11 +105,41 @@ J(time_step)  # Updates the Jacobian matrix stored internally in J.
 J.Jv  # Access the Jacobian matrix stored internally in J.
 ```
 """
+# Memoize the expensive Jacobian sparse-structure build (~3.2 MB on 2000 buses) in the
+# persistent `data.solver_cache` Ref so it is built once and reused across the Q-limit
+# inner loop and repeated PCM solves. The structure depends only on network topology, REF
+# layout, and slack-participation pattern — none change on the PV→PQ flips that drive the
+# Q-limit loop (colptr/rowval verified byte-identical across a flip). Cache key is the
+# network-matrix identity + slack nonzero pattern, so a distributed-slack participant drop
+# (which changes the pattern) correctly rebuilds. A full `copy` is returned because some
+# nzval entries (e.g. LCC angle-constraint diagonals = 1.0) are set at structure creation
+# and never rewritten by `J(time_step)`, so they must be carried over, not zeroed.
+function _get_or_build_jacobian_structure(
+    data::ACPowerFlowData,
+    slack_factors::SparseVector{Float64, Int},
+    subnetworks::Dict{Int64, Vector{Int64}},
+    time_step::Int64,
+)
+    nzind = SparseArrays.nonzeroinds(slack_factors)
+    entry = data.solver_cache[]
+    if entry isa Tuple{Symbol, Any, Vector{Int}, SparseMatrixCSC{Float64, J_INDEX_TYPE}} &&
+       entry[1] === :ac_jac_structure &&
+       entry[2] === data.power_network_matrix &&
+       entry[3] == nzind
+        return copy(entry[4])
+    end
+    Jv0 = _create_jacobian_matrix_structure(data, slack_factors, subnetworks, time_step)
+    # Cache a pristine copy; `Jv0` is about to be mutated by the Newton loop.
+    data.solver_cache[] =
+        (:ac_jac_structure, data.power_network_matrix, copy(nzind), copy(Jv0))
+    return Jv0
+end
+
 function ACPowerFlowJacobian(
     residual::ACPowerFlowResidual,
     time_step::Int64,
 )
-    Jv0 = _create_jacobian_matrix_structure(
+    Jv0 = _get_or_build_jacobian_structure(
         residual.data,
         residual.bus_slack_participation_factors,
         residual.subnetworks,
