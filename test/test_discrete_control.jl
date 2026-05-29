@@ -81,6 +81,17 @@ end
     ) === nothing
 end
 
+@testset "discrete control: tap invariant validation" begin
+    # p_min > p_max (malformed) triggers error.
+    @test_throws ErrorException PowerFlows._validate_tap!("bad_tap", 1.1, 0.9, 33)
+    # p_min == p_max (no controllable range) triggers error.
+    @test_throws ErrorException PowerFlows._validate_tap!("no_range", 1.0, 1.0, 33)
+    # ntp < 2 (no controllable positions) triggers error.
+    @test_throws ErrorException PowerFlows._validate_tap!("one_pos", 0.9, 1.1, 1)
+    # Valid case — no error.
+    @test PowerFlows._validate_tap!("ok_tap", 0.9, 1.1, 33) === nothing
+end
+
 @testset "discrete control: sigmoid target" begin
     # ControlledTap, controlled-on-primary (eq.46):
     # tr = (tr_max-tr_min)/(1+exp(S*(|V|-Vset))) + tr_min
@@ -106,6 +117,66 @@ end
         [1], zeros(Int, length(block_dB_sh)), 0.0)
     @test PowerFlows.target_from_voltage(sh, 1.0, S) ≈ 0.1 atol = 1e-9
     @test PowerFlows.target_from_voltage(sh, 0.5, S) ≈ 0.2 atol = 1e-6  # low V → max B
+end
+
+@testset "discrete control: negative-feedback orientation" begin
+    # The effective control law `_control_target` must produce negative feedback:
+    # sign(d target / dV) opposite to sign(dV/dp), so the closed-loop gain
+    # g' = σ'(V)·dV/dp ≤ 0 for ANY device wiring (primary tap, secondary tap,
+    # shunt) and for both signs of the measured plant sensitivity dV/dp.
+    S = 100.0
+    δ = 0.02
+    primary = PowerFlows.ControlledTap("tp", 1, 2, 2, true, 1.0,
+        1.0 / (0.01 + 0.1im), 0.0 + 0.0im, 0.0, 0.9, 1.1,
+        collect(range(0.9, 1.1; length = 33)), (1, 2, 3, 4), 1.0)
+    secondary = PowerFlows.ControlledTap("ts", 1, 2, 1, false, 1.0,
+        1.0 / (0.01 + 0.1im), 0.0 + 0.0im, 0.0, 0.9, 1.1,
+        collect(range(0.9, 1.1; length = 33)), (1, 2, 3, 4), 1.0)
+    shunt = PowerFlows.ControlledSwitchedShunt("sh", 3, 3, 1.0, 0.0, 0.0,
+        [4], [0.05], 0.0, 0.2, [1], zeros(Int, 1), 0.0)
+    for d in (primary, secondary, shunt)
+        vset = PowerFlows.voltage_setpoint(d)
+        for dVdp in (1.0, -1.0)
+            up = PowerFlows._control_target(d, vset + δ, S, dVdp)
+            dn = PowerFlows._control_target(d, vset - δ, S, dVdp)
+            # negative feedback: the slope in V and dV/dp have opposite signs.
+            @test (up - dn) * dVdp <= 0.0
+        end
+    end
+end
+
+@testset "discrete control: relaxation yields monotone slope" begin
+    # `_relaxation` must keep the damped fixed-point map slope NON-NEGATIVE
+    # (monotone, no oscillation) for the worst-case gain. The slope is
+    # m = 1 + ω·(g'−1) with g' ≤ 0 and |g'| ≤ gbound = 0.25|hi-lo|·S·|dVdp|, so
+    # m ≥ 0 iff ω·(1+gbound) ≤ 1. (A negative slope is what previously made the
+    # iterate alternate every step and tripped the oscillation-freeze detector.)
+    d = PowerFlows.ControlledTap("t", 1, 2, 2, true, 1.0, 1.0 / (0.01 + 0.1im),
+        0.0 + 0.0im, 0.0, 0.9, 1.1, collect(range(0.9, 1.1; length = 33)),
+        (1, 2, 3, 4), 1.0)
+    lo, hi = PowerFlows.parameter_limits(d)
+    for S in (1.0e2, 1.0e3, 5.0e3), dVdp in (-5.0, -1.0, -0.1, 0.1, 1.0, 5.0)
+        ω = PowerFlows._relaxation(d, S, dVdp)
+        gbound = 0.25 * abs(hi - lo) * S * abs(dVdp)
+        @test 0.0 < ω <= PowerFlows.CONTROL_RELAXATION_MAX
+        @test ω * (1.0 + gbound) <= 1.0 + 1e-12   # ⇒ map slope m ≥ 0 (monotone)
+    end
+end
+
+@testset "discrete control: ramp completes, tight regulation" begin
+    # After the monotone-convergence fix the steepness ramp runs to completion
+    # (no oscillation freeze at the initial steepness), so the controlled bus is
+    # regulated to within one discrete tap step — previously it stalled ~5e-3 off
+    # and only passed under a much looser +1e-2 tolerance.
+    sys = _make_solvable_tap_shunt_system()
+    pf = ACPolarPowerFlow(; control_discrete_devices = true)
+    data = PowerFlowData(pf, sys)
+    solve_power_flow!(data)
+    @test all(data.converged)
+    t = data.controlled_devices.taps[1]
+    @test t.current in t.levels
+    spacing = (t.p_max - t.p_min) / (length(t.levels) - 1)
+    @test abs(data.bus_magnitude[t.controlled_ix, 1] - t.vset) < spacing
 end
 
 @testset "discrete control: snap" begin

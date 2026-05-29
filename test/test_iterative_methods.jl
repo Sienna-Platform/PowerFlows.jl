@@ -1,3 +1,39 @@
+@testset "Iwamoto multiplier: exact quadratic minimizer" begin
+    # The optimal multiplier must minimize the exact quadratic mismatch model
+    # g(μ) = ‖f₀ + μ·b + μ²·a‖² over μ ∈ [0, 1] (b = J·Δx, a = true quadratic term).
+    g_model(f0, b, a, μ) = sum(abs2, f0 .+ μ .* b .+ (μ * μ) .* a)
+    function brute(f0, b, a)
+        best_μ, best_g = 0.0, g_model(f0, b, a, 0.0)
+        for k in 0:200_000
+            μ = k / 200_000
+            gv = g_model(f0, b, a, μ)
+            gv < best_g && ((best_μ, best_g) = (μ, gv))
+        end
+        return best_μ
+    end
+    cases = (
+        ([1.0, -2.0, 0.5], [-0.3, 1.2, -0.7], [0.4, -0.1, 0.9]),
+        ([2.0, 1.0], [-2.0, -1.0], [0.5, -0.3]),
+        ([0.1, 0.2, -0.4, 0.3], [1.0, -1.0, 0.2, 0.0], [-0.5, 0.5, -0.5, 0.5]),
+        ([3.0], [-3.0], [1.0]),
+    )
+    for (f0, b, a) in cases
+        c_fb, c_bb = dot(f0, b), dot(b, b)
+        c_fa, c_ba, c_aa = dot(f0, a), dot(b, a), dot(a, a)
+        μ = PF._iwamoto_multiplier(2c_fb, c_bb + 2c_fa, 2c_ba, c_aa)
+        @test 0.0 <= μ <= 1.0
+        # The analytic minimizer must be no worse than a fine brute-force grid.
+        @test g_model(f0, b, a, μ) <= g_model(f0, b, a, brute(f0, b, a)) + 1e-6
+    end
+    # Newton-step special case (b = −f₀): 3-arg convenience == 4-arg general form.
+    f0 = [1.0, -0.5, 2.0, 0.3]
+    a = [0.2, 0.7, -0.4, 1.1]
+    b = -f0
+    g0, g1, g2 = dot(f0, f0), dot(f0, a), dot(a, a)
+    @test PF._iwamoto_multiplier(g0, g1, g2) == PF._iwamoto_multiplier(
+        2 * dot(f0, b), dot(b, b) + 2 * dot(f0, a), 2 * dot(b, a), dot(a, a))
+end
+
 @testset "NewtonRaphsonACPowerFlow kwargs" begin
     # test NR kwargs.
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
@@ -188,9 +224,11 @@ end
 end
 
 @testset "Iwamoto multiplier root-finding" begin
-    # Verify that _iwamoto_multiplier recovers the global minimizer of
+    # Verify that _iwamoto_multiplier recovers the global minimizer of the
+    # classical (exact-Newton-step) Iwamoto objective
     # g(μ) = (1-μ)²g₀ + 2μ²(1-μ)g₁ + μ⁴g₂ on [0, 1] by comparing against
     # a brute-force grid search.
+    g_classic(μ, g0, g1, g2) = (1 - μ)^2 * g0 + 2 * μ^2 * (1 - μ) * g1 + μ^4 * g2
     grid = range(0.0, 1.0; length = 10001)
 
     test_cases = [
@@ -214,9 +252,9 @@ end
     for (g0, g1, g2, desc) in test_cases
         μ = PF._iwamoto_multiplier(g0, g1, g2)
         @test 0.0 <= μ <= 1.0
-        g_opt = PF._iwamoto_objective(μ, g0, g1, g2)
+        g_opt = g_classic(μ, g0, g1, g2)
         # Brute-force minimum over the grid.
-        g_grid_min = minimum(PF._iwamoto_objective(m, g0, g1, g2) for m in grid)
+        g_grid_min = minimum(g_classic(m, g0, g1, g2) for m in grid)
         @test g_opt <= g_grid_min + 1e-10
     end
 end
@@ -228,21 +266,22 @@ end
     g1 = 10.0
     g2 = 100.0
     μ = PF._iwamoto_multiplier(g0, g1, g2)
-    g_at_mu = PF._iwamoto_objective(μ, g0, g1, g2)
+    g_at_mu = (1 - μ)^2 * g0 + 2 * μ^2 * (1 - μ) * g1 + μ^4 * g2
     # The optimizer must be able to return μ=0 or at least match g(0)=g₀.
     @test g_at_mu <= g0 + 1e-12
 end
 
 @testset "Iwamoto multiplier degenerate cases" begin
     # Degenerate cubic (g₂ ≈ 0): leading coefficient of derivative cubic is ~0.
+    g_classic(μ, g0, g1, g2) = (1 - μ)^2 * g0 + 2 * μ^2 * (1 - μ) * g1 + μ^4 * g2
     g0 = 1.0
     g1 = 0.5
     g2 = 1e-35
     μ = PF._iwamoto_multiplier(g0, g1, g2)
     @test 0.0 <= μ <= 1.0
-    g_opt = PF._iwamoto_objective(μ, g0, g1, g2)
+    g_opt = g_classic(μ, g0, g1, g2)
     grid = range(0.0, 1.0; length = 10001)
-    g_grid_min = minimum(PF._iwamoto_objective(m, g0, g1, g2) for m in grid)
+    g_grid_min = minimum(g_classic(m, g0, g1, g2) for m in grid)
     @test g_opt <= g_grid_min + 1e-10
 
     # Degenerate quadratic (g₂ ≈ 0 and g₁ ≈ 0): both leading coefficients ~0.
