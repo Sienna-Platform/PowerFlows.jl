@@ -4,7 +4,6 @@ const INFINITE_BOUND = 1e6 # used as default when a branch has rating 0.0, as im
 const MAX_REACTIVE_POWER_ITERATIONS = 10
 
 # Discrete control device λ-continuation outer loop.
-# The budget covers ~log2(MAX/INITIAL_CONTROL_STEEPNESS) ≈ 6 steepness doublings.
 const MAX_CONTROL_OUTER_ITERATIONS = 100
 const CONTROL_PARAM_TOL = 1e-5
 const INITIAL_LAMBDA_STEP = 1.0

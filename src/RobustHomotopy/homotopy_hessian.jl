@@ -6,10 +6,9 @@ struct HomotopyHessian
     PQ_V_mags::BitVector # true iff that coordinate in the state vector is V_mag at a PQ bus
     grad::Vector{Float64}
     Hv::SparseMatrixCSC{Float64, J_INDEX_TYPE}
-    # Reused scratch / precomputes to keep the per-evaluation hot path allocation-free:
-    # `Jt_R` holds Jᵀ·Rv; `pq_diag_nz` are the `Hv.nzval` indices of the PQ |V|
-    # diagonal entries that take the (1−t) homotopy term (avoids materializing the
-    # bus-type column and O(log nnz) sparse `setindex!` each call).
+    # Scratch/precompute for an allocation-free hot path: `Jt_R` holds Jᵀ·Rv; `pq_diag_nz`
+    # are the Hv.nzval indices of the PQ |V| diagonal entries that take the (1−t) term
+    # (avoids a per-call sparse `setindex!` on those diagonals).
     Jt_R::Vector{Float64}
     pq_diag_nz::Vector{Int}
 end
@@ -35,7 +34,7 @@ function (hess::HomotopyHessian)(x::Vector{Float64}, t_k::Float64, time_step::In
     A_plus_eq_BT_B!(hess.Hv, Jv)
     Hvnz = SparseArrays.nonzeros(hess.Hv)
     Hvnz .*= t_k
-    # (1−t) homotopy term on the PQ |V| diagonal, written directly into nzval.
+    # (1−t) homotopy term on the PQ |V| diagonal.
     @inbounds for k in hess.pq_diag_nz
         Hvnz[k] += (1 - t_k)
     end
@@ -43,7 +42,7 @@ function (hess::HomotopyHessian)(x::Vector{Float64}, t_k::Float64, time_step::In
     return
 end
 
-# grad = (1−t)·mask·(x−1) + t·Jᵀ·Rv, written in place (no per-call temporaries).
+# grad = (1−t)·mask·(x−1) + t·Jᵀ·Rv, in place.
 function _homotopy_gradient!(
     grad::Vector{Float64},
     hess::HomotopyHessian,
@@ -64,7 +63,7 @@ end
 function F_value(hess::HomotopyHessian, t_k::Float64, x::Vector{Float64}, time_step::Int)
     hess.pfResidual(x, time_step)
     Rv = hess.pfResidual.Rv
-    # φ = (x − 1) restricted to PQ |V| coordinates; sum its squares in place.
+    # Σ (x−1)² over PQ |V| coordinates.
     φ_sq = 0.0
     mask = hess.PQ_V_mags
     @inbounds for i in eachindex(x)

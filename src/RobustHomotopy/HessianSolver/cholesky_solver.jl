@@ -30,9 +30,8 @@ function modify_and_numeric_factor!(
             H[i, i] += τ - τ_old # now try H + τ*I
         end
         set_values!(hSolver.mat, SparseArrays.nonzeros(H))
-        # `issuccess` reports CHOLMOD positive-definiteness directly, avoiding the
-        # throwaway `F \ ones` solve previously needed to surface a non-PD factor.
-        # A PosDefException can still be thrown during `numeric_factor!`, so catch it.
+        # `issuccess` checks PD directly, replacing the throwaway `F \ ones` solve.
+        # `numeric_factor!` can still throw PosDefException, so keep the catch.
         ok = try
             numeric_factor!(hSolver.F, hSolver.mat)
             LinearAlgebra.issuccess(hSolver.F)
