@@ -3,28 +3,36 @@
 # contraction at the current steepness S (see `_relaxation`); the fixed point
 # itself (where p == sigmoid(V(p))) is independent of ω.
 const CONTROL_RELAXATION_MAX = 0.8
-# Target one-step contraction ratio for the damped iteration.  ω is chosen so
-# the local iteration-map slope magnitude is ≤ this; < 1 ⇒ monotone, stable.
-const CONTROL_CONTRACTION = 0.7
+# Target one-step contraction ratio for the damped iteration: the local
+# iteration-map slope near the fixed point is ≈ this value (see `_relaxation`),
+# 0 < m < 1 ⇒ monotone, non-oscillatory convergence. Smaller ⇒ faster settling
+# but a thinner safety margin against the worst-case-gain bound underestimating
+# the true plant gain; 0.5 keeps a 2× margin while settling within the outer budget.
+const CONTROL_CONTRACTION = 0.5
 
 @inline _read_vmag(data, ix::Int, ts::Int) = data.bus_magnitude[ix, ts]
 
-# Sign-corrected sigmoid control law.  `target_from_voltage` encodes a fixed
-# orientation via `controlled_on_primary`.  The engine measures the plant
-# sensitivity dV/dp once per device (see `_plant_sign`) and flips the sigmoid
-# orientation when the device's nominal orientation would give *positive*
-# feedback, so the closed loop is always negative feedback regardless of the
-# device's primary/secondary wiring.
-@inline function _control_target(d, vmag::Float64, S::Float64, flip::Bool)
-    flip || return target_from_voltage(d, vmag, S)
+# Sign-corrected sigmoid control law.  The orientation is chosen purely from the
+# MEASURED plant sensitivity dV/dp (see `_plant_sign`), not from the device's
+# nominal primary/secondary wiring: a DECREASING law when dV/dp > 0 and an
+# INCREASING law when dV/dp < 0.  Either way the closed-loop gain
+# g' = σ'(V)·dV/dp ≤ 0 (negative feedback), so the damped iteration is a
+# contraction regardless of how the device is wired.  `_sigmoid(lo, hi, …)` is
+# decreasing in V when hi > lo and increasing when hi < lo.
+@inline function _control_target(d, vmag::Float64, S::Float64, dVdp::Float64)
     lo, hi = parameter_limits(d)
-    return clamp(_sigmoid(hi, lo, S, vmag, voltage_setpoint(d)), lo, hi)
+    return if dVdp > 0.0
+        clamp(_sigmoid(lo, hi, S, vmag, voltage_setpoint(d)), lo, hi)
+    else
+        clamp(_sigmoid(hi, lo, S, vmag, voltage_setpoint(d)), lo, hi)
+    end
 end
 
 # Measure the plant sensitivity dV/dp at the controlled bus by a small
 # perturbation about the current parameter; restore afterwards.  Returns
-# (dVdp, flip) where `flip=true` means the nominal sigmoid orientation is
-# positive feedback for this plant and must be reversed.
+# (dVdp, reliable).  `reliable=false` means a probe solve failed, so the measured
+# sensitivity (and hence the negative-feedback orientation) cannot be trusted;
+# the caller freezes such a device rather than stepping it with an unknown sign.
 function _plant_sign(d, data, ts::Int, pf; kwargs...)::Tuple{Float64, Bool}
     p0 = current_parameter(d)
     cix = controlled_bus_ix(d)
@@ -40,20 +48,11 @@ function _plant_sign(d, data, ts::Int, pf; kwargs...)::Tuple{Float64, Bool}
     V1 = _read_vmag(data, cix, ts)
     apply_parameter!(d, data, p0, ts)
     ok2 = _solve_with_q_limits!(pf, data, ts; kwargs...)
-    # If either solve failed: V1 or the restored base point is unreliable.
-    # dVdp=0 makes _relaxation return CONTROL_RELAXATION_MAX (safe conservative cap).
-    dVdp = (ok1 && ok2 && h != 0.0) ? (V1 - V0) / h : 0.0
-    # Sign analysis for negative-feedback orientation:
-    #   _sigmoid(lo, hi, S, x, xset) is DECREASING in x when hi > lo, INCREASING when hi < lo.
-    #   controlled_on_primary=true  (eq.46): target_from_voltage uses (lo=p_min, hi=p_max),
-    #     so hi > lo → nominal d(p_target)/dV < 0.  Negative feedback needs dVdp > 0
-    #     (product < 0). flip=true swaps lo/hi → increasing law → product still < 0.
-    #   controlled_on_primary=false (eq.47): target_from_voltage uses (lo=p_max, hi=p_min),
-    #     so hi < lo → nominal d(p_target)/dV > 0.  Negative feedback needs dVdp < 0.
-    #   In both cases: `flip = (dVdp > 0)` flips exactly when the nominal orientation
-    #   would give positive feedback, ensuring the closed-loop gain is always negative.
-    flip = dVdp > 0.0
-    return dVdp, flip
+    # A failed probe solve leaves V1 (or the restored base point) unreliable, so
+    # the orientation is unknown — report the device as unreliable to be frozen.
+    reliable = ok1 && ok2 && h != 0.0
+    dVdp = reliable ? (V1 - V0) / h : 0.0
+    return dVdp, reliable
 end
 
 # Incremental robust applicator: walk the parameter from `start = d.current`
@@ -89,14 +88,18 @@ end
 
 # Adaptive under-relaxation.  The damped fixed-point iteration
 # p ← p + ω·(σ(V(p)) − p) has local map slope m = 1 + ω·(g′ − 1), where
-# g′ = σ′(V)·dV/dp is the closed-loop gain.  After sign correction g′ ≤ 0, so
-# m decreases in ω and the binding bound is m ≥ −θ ⟹ ω ≤ (1+θ)/(1+|g′|).
-# |σ′(V)| ≤ |hi−lo|·S/4 (sigmoid slope, max at V=Vset), giving a guaranteed
-# contraction at every steepness without per-iteration plant re-measurement.
+# g′ = σ′(V)·dV/dp is the closed-loop gain.  After sign correction g′ ≤ 0.
+# We choose ω so the slope stays NON-NEGATIVE (monotone convergence, 0 ≤ m < 1)
+# rather than merely bounded in magnitude: m ≥ θ ⟹ ω ≤ (1−θ)/(1+|g′|).  A
+# negative slope would converge too, but oscillates about the fixed point on
+# every step, which the sign-reversal oscillation detector then misreads as a
+# limit cycle and freezes (see `_step_device!`).  |σ′(V)| ≤ |hi−lo|·S/4 (sigmoid
+# slope, max at V=Vset) bounds g′, giving a guaranteed monotone contraction at
+# every steepness without per-iteration plant re-measurement.
 @inline function _relaxation(d, S::Float64, dVdp::Float64)
     lo, hi = parameter_limits(d)
     gbound = 0.25 * abs(hi - lo) * S * abs(dVdp)
-    ω = (1.0 + CONTROL_CONTRACTION) / (1.0 + gbound)
+    ω = (1.0 - CONTROL_CONTRACTION) / (1.0 + gbound)
     return min(CONTROL_RELAXATION_MAX, ω)
 end
 
@@ -107,17 +110,21 @@ end
 # a contraction at S.
 function _step_device!(
     d,
+    idx::Int,
     data,
     ts::Int,
     S::Float64,
     pf,
-    flip::Dict{String, Bool},
-    dVdp::Dict{String, Float64},
-    osc::Dict{String, Int},
-    prev_sign::Dict{String, Int};
+    frozen::Vector{Bool},
+    dVdp::Vector{Float64},
+    osc::Vector{Int},
+    prev_sign::Vector{Int};
     kwargs...,
 )::Float64
-    n_osc = get(osc, d.name, 0)
+    # Unreliable plant probe: leave the device at its current parameter and do
+    # not block settling on it (a zero change counts as settled).
+    frozen[idx] && return 0.0
+    n_osc = osc[idx]
     if n_osc > CONTROL_OSCILLATION_LIMIT
         # Frozen: return Inf so the outer loop never counts this device as settled.
         return Inf
@@ -125,25 +132,26 @@ function _step_device!(
     Vc = _read_vmag(data, controlled_bus_ix(d), ts)
     p_now = current_parameter(d)
     lo, hi = parameter_limits(d)
-    ω = _relaxation(d, S, get(dVdp, d.name, 0.0))
-    p_tgt = _control_target(d, Vc, S, get(flip, d.name, false))
+    dv = dVdp[idx]
+    ω = _relaxation(d, S, dv)
+    p_tgt = _control_target(d, Vc, S, dv)
     # Track sign reversals to detect oscillation.
     s = Int(sign(p_tgt - p_now))
-    ps = get(prev_sign, d.name, 0)
+    ps = prev_sign[idx]
     if ps != 0 && s != 0 && s != ps
         new_n = n_osc + 1
-        osc[d.name] = new_n
+        osc[idx] = new_n
         # Warn exactly once when the limit is first exceeded.
         # Fires exactly once: the n_osc > LIMIT early-return above prevents
-        # osc[d.name] from ever advancing past LIMIT+1.
+        # osc[idx] from ever advancing past LIMIT+1.
         new_n == CONTROL_OSCILLATION_LIMIT + 1 &&
             @warn "discrete control: device $(d.name) is oscillating \
                 ($(new_n) sign reversals); freezing at current parameter $(p_now) \
                 (time step $ts)"
     end
-    prev_sign[d.name] = s
+    prev_sign[idx] = s
     # Re-check after potential increment.
-    get(osc, d.name, 0) > CONTROL_OSCILLATION_LIMIT && return Inf
+    osc[idx] > CONTROL_OSCILLATION_LIMIT && return Inf
     p_new = clamp(p_now + ω * (p_tgt - p_now), lo, hi)
     reached = _continuation_to!(d, data, ts, p_new, pf; kwargs...)
     set_current_parameter!(d, reached)
@@ -161,33 +169,56 @@ function _control_continuation!(
     converged || return false
 
     # Measure each device's plant sensitivity dV/dp once, from the converged
-    # base point.  `flip` makes the sigmoid law negative feedback regardless of
-    # primary/secondary wiring; `dVdp` drives the adaptive under-relaxation.
-    flip = Dict{String, Bool}()
-    dVdp = Dict{String, Float64}()
-    for d in set.taps
-        s, fl = _plant_sign(d, data, ts, pf; kwargs...)
-        flip[d.name] = fl
-        dVdp[d.name] = s
+    # base point.  Its sign sets the negative-feedback orientation in
+    # `_control_target`; its magnitude drives the adaptive under-relaxation.
+    # Devices whose probe was unreliable are frozen (left at their current
+    # parameter) rather than stepped with an unknown orientation.
+    n_taps = length(set.taps)
+    n_dev = n_taps + length(set.shunts)
+    # Per-device state indexed in parallel with [taps; shunts] — plain vectors,
+    # no per-iteration string hashing. dVdp's sign sets the negative-feedback
+    # orientation in `_control_target`; its magnitude drives the under-relaxation.
+    # Devices whose probe was unreliable are frozen rather than stepped with an
+    # unknown orientation.
+    dVdp = zeros(n_dev)
+    frozen = fill(false, n_dev)
+    osc = zeros(Int, n_dev)
+    prev_sign = zeros(Int, n_dev)
+    for (i, d) in enumerate(set.taps)
+        s, reliable = _plant_sign(d, data, ts, pf; kwargs...)
+        reliable ? (dVdp[i] = s) : (frozen[i] = true)
     end
-    for d in set.shunts
-        s, fl = _plant_sign(d, data, ts, pf; kwargs...)
-        flip[d.name] = fl
-        dVdp[d.name] = s
+    for (j, d) in enumerate(set.shunts)
+        s, reliable = _plant_sign(d, data, ts, pf; kwargs...)
+        reliable ? (dVdp[n_taps + j] = s) : (frozen[n_taps + j] = true)
+    end
+    if any(frozen)
+        frozen_names = join(
+            vcat(
+                [set.taps[i].name for i in 1:n_taps if frozen[i]],
+                [set.shunts[j].name
+                    for j in eachindex(set.shunts) if frozen[n_taps + j]],
+            ),
+            ", ",
+        )
+        @warn "discrete control: $(count(frozen)) device(s) had an unreliable \
+            plant-sensitivity probe and were frozen at their current parameter \
+            (time step $ts): $frozen_names"
     end
 
     S = INITIAL_CONTROL_STEEPNESS
-    osc = Dict{String, Int}()
-    prev_sign = Dict{String, Int}()
     regulation_complete = false
     for _ in 1:MAX_CONTROL_OUTER_ITERATIONS
         settled = true
-        for d in set.taps
-            g = _step_device!(d, data, ts, S, pf, flip, dVdp, osc, prev_sign; kwargs...)
+        for (i, d) in enumerate(set.taps)
+            g = _step_device!(
+                d, i, data, ts, S, pf, frozen, dVdp, osc, prev_sign; kwargs...)
             g >= CONTROL_PARAM_TOL && (settled = false)
         end
-        for d in set.shunts
-            g = _step_device!(d, data, ts, S, pf, flip, dVdp, osc, prev_sign; kwargs...)
+        for (j, d) in enumerate(set.shunts)
+            g = _step_device!(
+                d, n_taps + j, data, ts, S, pf, frozen, dVdp, osc, prev_sign;
+                kwargs...)
             g >= CONTROL_PARAM_TOL && (settled = false)
         end
         if settled
