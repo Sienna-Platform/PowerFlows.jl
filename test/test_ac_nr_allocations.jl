@@ -17,7 +17,7 @@
     @test (@allocated J(1)) < 200
 
     # --- _do_refinement! mul! path: A * Δx_nr should be zero-alloc when using mul! ---
-    cache = PF.KLULinSolveCache(J.Jv)
+    cache = PF.make_linear_solver_cache(PF.PNM.KLUSolver(), J.Jv)
     PF.full_factor!(cache, J.Jv)
     b = randn(size(J.Jv, 1))
     PF.solve!(cache, b)
@@ -50,9 +50,9 @@ end
     @test (@allocated residual(x0, 1)) < 500
     @test (@allocated J(1)) < 500
 
-    # The linear-solve step also goes through KLULinSolveCache for the
+    # The linear-solve step also goes through the PNM linear-solver cache for the
     # rectangular Jacobian; mul! against the rect Jv must be zero-alloc.
-    cache = PF.KLULinSolveCache(J.Jv)
+    cache = PF.make_linear_solver_cache(PF.PNM.KLUSolver(), J.Jv)
     PF.full_factor!(cache, J.Jv)
     b = randn(size(J.Jv, 1))
     PF.solve!(cache, b)

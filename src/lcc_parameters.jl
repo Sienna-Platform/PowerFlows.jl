@@ -5,6 +5,11 @@ struct LCCConverterParameters
     phi::Matrix{Float64}
     transformer_reactance::Vector{Float64}
     min_thyristor_angle::Vector{Float64}
+    # Scheduled tap setting (time-invariant). Used to pin the tap state when the
+    # converter carries no DC current (i_dc = 0, e.g. a 0-MW transfer setpoint):
+    # P_lcc ≡ 0 makes the P-setpoint / DC-line-balance equations vacuous and the
+    # tap states unconstrained, so they are replaced by `tap - tap_setpoint`.
+    tap_setpoint::Vector{Float64}
 end
 
 LCCConverterParameters(n_time_steps::Int, n_lccs::Int) = LCCConverterParameters(
@@ -12,6 +17,7 @@ LCCConverterParameters(n_time_steps::Int, n_lccs::Int) = LCCConverterParameters(
     zeros(Float64, n_lccs, n_time_steps),
     zeros(Float64, n_lccs, n_time_steps),
     zeros(Float64, n_lccs, n_time_steps),
+    zeros(Float64, n_lccs),
     zeros(Float64, n_lccs),
     zeros(Float64, n_lccs),
 )

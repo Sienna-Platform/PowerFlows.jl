@@ -126,6 +126,9 @@ struct PowerFlowData{
     time_step_map::Dict{Int, String}
     power_network_matrix::M
     aux_network_matrix::N
+    # Signed arc-bus incidence (rows = arcs; +1 from-bus, -1 to-bus), built once from
+    # `PNM.IncidenceMatrix`. Used by DC solves for Δθ = A·θ; `nothing` for AC/vPTDF.
+    arc_bus_incidence::Union{SparseMatrixCSC{Int8, Int}, Nothing}
     neighbors::Vector{Set{Int}}
     converged::BitVector
     loss_factors::Union{Matrix{Float64}, Nothing}
@@ -135,6 +138,17 @@ struct PowerFlowData{
     arc_lossy_admittance_from_to::Union{SparseMatrixCSC{YBUS_ELTYPE, Int}, Nothing}
     arc_lossy_admittance_to_from::Union{SparseMatrixCSC{YBUS_ELTYPE, Int}, Nothing}
     controlled_devices::Union{Nothing, ControlledDeviceSet}
+    # Persistent linear-solver cache for the DC solves. Reused across repeated solves on
+    # the same data (e.g. a PCM loop: fixed network, changing injections) so the network
+    # matrix is factored once and the solve buffer is not reallocated. Despite the name it
+    # is not a `PFLinearSolverCache`: it holds a `(matrix, backend, cache, scratch)` tuple,
+    # where `matrix` and `backend` are kept only to invalidate the reuse (rebuild when either
+    # the network-matrix object or the backend changes — see `_get_or_build_solver_cache!`),
+    # `cache` is the actual `PFLinearSolverCache`, and `scratch` is the per-solve buffers.
+    # The `Base.Ref` allows lazy, in-place population on the first `solve_power_flow!` without
+    # reconstructing `data`. Typed `Any` because the concrete cache type is defined in a later
+    # include (`linear_solver_backend.jl`).
+    solver_cache::Base.RefValue{Any}
 end
 
 # aliases for specific type parameter combinations.
@@ -315,6 +329,7 @@ function PowerFlowData(
     arc_lossy_admittance_from_to::Union{SparseMatrixCSC{YBUS_ELTYPE, Int}, Nothing} = nothing,
     arc_lossy_admittance_to_from::Union{SparseMatrixCSC{YBUS_ELTYPE, Int}, Nothing} = nothing,
     controlled_devices::Union{Nothing, ControlledDeviceSet} = nothing,
+    arc_bus_incidence::Union{SparseMatrixCSC{Int8, Int}, Nothing} = nothing,
 ) where {
     T <: PowerFlowEvaluationModel,
     M <: PNM.PowerNetworkMatrix,
@@ -364,6 +379,7 @@ function PowerFlowData(
         time_step_map,
         power_network_matrix,
         aux_network_matrix,
+        arc_bus_incidence,
         neighbors,
         falses(n_time_steps), # converged
         calculate_loss_factors ? zeros(n_buses, n_time_steps) : nothing, # loss_factors
@@ -373,6 +389,7 @@ function PowerFlowData(
         arc_lossy_admittance_from_to,
         arc_lossy_admittance_to_from,
         controlled_devices,
+        Base.RefValue{Any}(nothing), # solver_cache (lazily populated)
     )
 end
 
@@ -460,6 +477,7 @@ function make_and_initialize_power_flow_data(
     arc_lossy_admittance_from_to::Union{SparseMatrixCSC{YBUS_ELTYPE, Int}, Nothing} = nothing,
     arc_lossy_admittance_to_from::Union{SparseMatrixCSC{YBUS_ELTYPE, Int}, Nothing} = nothing,
     controlled_devices::Union{Nothing, ControlledDeviceSet} = nothing,
+    arc_bus_incidence::Union{SparseMatrixCSC{Int8, Int}, Nothing} = nothing,
 ) where {M <: PNM.PowerNetworkMatrix, N <: Union{PNM.PowerNetworkMatrix, Nothing}}
     check_unit_setting(sys)
     removed_buses =
@@ -478,10 +496,23 @@ function make_and_initialize_power_flow_data(
         arc_lossy_admittance_from_to = arc_lossy_admittance_from_to,
         arc_lossy_admittance_to_from = arc_lossy_admittance_to_from,
         controlled_devices = controlled_devices,
+        arc_bus_incidence = arc_bus_incidence,
     )
     @assert length(data.lcc.setpoint_at_rectifier) == n_lccs
     initialize_power_flow_data!(data, pf, sys; correct_bustypes = get_correct_bustypes(pf))
     return data
+end
+
+# Build the signed arc-bus incidence from PNM's `IncidenceMatrix`, permuted to align its rows/cols
+# with `metadata_matrix`'s axes (= `get_arc_axis(data)`/`get_bus_lookup(data)` at solve time);
+# the explicit permutation guards against PNM axis drift. `Int8` entries match PNM.
+function _signed_arc_bus_incidence(ybus::PNM.Ybus, metadata_matrix::PNM.PowerNetworkMatrix)
+    inc = PNM.IncidenceMatrix(ybus)
+    arc_lookup = PNM.get_arc_lookup(inc)
+    bus_lookup = PNM.get_bus_lookup(inc)
+    arc_perm = [arc_lookup[arc] for arc in PNM.get_arc_axis(metadata_matrix)]
+    bus_perm = [bus_lookup[bus] for bus in PNM.get_bus_axis(metadata_matrix)]
+    return inc.data[arc_perm, bus_perm]
 end
 
 """
@@ -585,6 +616,8 @@ function PowerFlowData(
     )
     power_network_matrix = PNM.ABA_Matrix(ybus; factorize = true)
     aux_network_matrix = PNM.BA_Matrix(ybus)
+    # `get_arc_axis(data)`/`get_bus_lookup(data)` read the BA (metadata) matrix for this method.
+    arc_bus_incidence = _signed_arc_bus_incidence(ybus, aux_network_matrix)
 
     if pf.lossy_flows
         # Reorder rows of the arc admittance matrices to match the BA matrix arc
@@ -606,6 +639,7 @@ function PowerFlowData(
         aux_network_matrix;
         arc_lossy_admittance_from_to = arc_lossy_from_to,
         arc_lossy_admittance_to_from = arc_lossy_to_from,
+        arc_bus_incidence = arc_bus_incidence,
     )
 end
 
@@ -646,11 +680,14 @@ function PowerFlowData(
     ybus = PNM.Ybus(sys; network_reductions = network_reductions)
     power_network_matrix = PNM.PTDF(ybus)
     aux_network_matrix = PNM.ABA_Matrix(ybus; factorize = true)
+    # `get_arc_axis(data)`/`get_bus_lookup(data)` read the PTDF (metadata) matrix for this method.
+    arc_bus_incidence = _signed_arc_bus_incidence(ybus, power_network_matrix)
     return make_and_initialize_power_flow_data(
         pf,
         sys,
         power_network_matrix,
-        aux_network_matrix,
+        aux_network_matrix;
+        arc_bus_incidence = arc_bus_incidence,
     )
 end
 
