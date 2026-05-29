@@ -19,6 +19,10 @@ mutable struct LMWorkspace
     # Marquardt diagonal scaling (length n). All-ones ⇒ √λ·I.
     D::Vector{Float64}
     marquardt_scaling::Bool
+    # Per-trial scratch reused each iteration to avoid allocations: `temp_x` holds
+    # the linear-model residual `Rv + J·Δx` (length m); `x_trial = x + Δx` (length n).
+    temp_x::Vector{Float64}
+    x_trial::Vector{Float64}
 end
 
 """Build the augmented matrix `[J; D]` once, recording which `A.nzval` entries
@@ -62,7 +66,8 @@ function LMWorkspace(
     D = marquardt_scaling ? zeros(n) : ones(n)
 
     ws = LMWorkspace(
-        A, j_nzval_indices, λ_diag_indices, F, b, D, marquardt_scaling)
+        A, j_nzval_indices, λ_diag_indices, F, b, D, marquardt_scaling,
+        Vector{Float64}(undef, m), Vector{Float64}(undef, n))
     if marquardt_scaling
         update_column_scale!(ws, Jv)
     end
@@ -222,15 +227,19 @@ function compute_error(
     m = length(residual.Rv)
     @assert m == length(ws.b) - size(J.Jv, 2) "residual/J size mismatch vs preallocated LM buffer (m=$m, buf=$(length(ws.b)), n=$(size(J.Jv, 2)))"
     @views ws.b[1:m] .= .-residual.Rv   # bottom n entries stay zero from construction
+    # SPQR `\` allocates Δx and `update_lambda!` rebuilds the QR each iteration
+    # (SPQR exposes no in-place symbolic reuse); these dominate, so Δx is left as-is.
     Δx = ws.F \ ws.b
 
-    temp_x = residual.Rv .+ J.Jv * Δx
+    # temp_x = Rv + J·Δx, reusing the workspace buffer (no per-iteration allocation).
+    LinearAlgebra.mul!(ws.temp_x, J.Jv, Δx)
+    ws.temp_x .+= residual.Rv
 
-    x_trial = x .+ Δx
-    residual(x_trial, time_step) # M(x_c + Δx)
+    ws.x_trial .= x .+ Δx
+    residual(ws.x_trial, time_step) # M(x_c + Δx)
     newResidualSize = dot(residual.Rv, residual.Rv)
 
-    predicted_reduction = residualSize - dot(temp_x, temp_x)
+    predicted_reduction = residualSize - dot(ws.temp_x, ws.temp_x)
     actual_reduction = residualSize - newResidualSize
 
     # Guard against zero/negative predicted reduction.
