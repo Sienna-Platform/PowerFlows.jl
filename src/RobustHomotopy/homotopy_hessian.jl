@@ -6,6 +6,12 @@ struct HomotopyHessian
     PQ_V_mags::BitVector # true iff that coordinate in the state vector is V_mag at a PQ bus
     grad::Vector{Float64}
     Hv::SparseMatrixCSC{Float64, J_INDEX_TYPE}
+    # Reused scratch / precomputes to keep the per-evaluation hot path allocation-free:
+    # `Jt_R` holds Jᵀ·Rv; `pq_diag_nz` are the `Hv.nzval` indices of the PQ |V|
+    # diagonal entries that take the (1−t) homotopy term (avoids materializing the
+    # bus-type column and O(log nnz) sparse `setindex!` each call).
+    Jt_R::Vector{Float64}
+    pq_diag_nz::Vector{Int}
 end
 
 """Does `A += B' * B`, in a way that preserves the sparse structure of `A`, if possible.
@@ -27,23 +33,47 @@ function (hess::HomotopyHessian)(x::Vector{Float64}, t_k::Float64, time_step::In
     Jv = hess.J.Jv
     _update_hessian_matrix_values!(hess.Hv, Rv, hess.data, time_step)
     A_plus_eq_BT_B!(hess.Hv, Jv)
-    SparseArrays.nonzeros(hess.Hv) .*= t_k
-    for (bus_ix, bt) in enumerate(get_bus_type(hess.data)[:, time_step]) # PERF: allocating
-        if bt == PSY.ACBusTypes.PQ
-            hess.Hv[2 * bus_ix - 1, 2 * bus_ix - 1] += (1 - t_k)
-        end
+    Hvnz = SparseArrays.nonzeros(hess.Hv)
+    Hvnz .*= t_k
+    # (1−t) homotopy term on the PQ |V| diagonal, written directly into nzval.
+    @inbounds for k in hess.pq_diag_nz
+        Hvnz[k] += (1 - t_k)
     end
-    # PERF: allocating
-    hess.grad .= (1 - t_k) * hess.PQ_V_mags .* (x - ones(size(x, 1))) + t_k * Jv' * Rv
+    _homotopy_gradient!(hess.grad, hess, t_k, x, Jv, Rv)
     return
+end
+
+# grad = (1−t)·mask·(x−1) + t·Jᵀ·Rv, written in place (no per-call temporaries).
+function _homotopy_gradient!(
+    grad::Vector{Float64},
+    hess::HomotopyHessian,
+    t_k::Float64,
+    x::Vector{Float64},
+    Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
+    Rv::Vector{Float64},
+)
+    LinearAlgebra.mul!(hess.Jt_R, Jv', Rv)
+    mask = hess.PQ_V_mags
+    @inbounds for i in eachindex(grad)
+        grad[i] = t_k * hess.Jt_R[i] +
+                  (mask[i] ? (1 - t_k) * (x[i] - 1.0) : 0.0)
+    end
+    return grad
 end
 
 function F_value(hess::HomotopyHessian, t_k::Float64, x::Vector{Float64}, time_step::Int)
     hess.pfResidual(x, time_step)
     Rv = hess.pfResidual.Rv
-    φ_vector = x[hess.PQ_V_mags] .- 1.0 # PERF: allocating
-    F_value = (1 - t_k) * 0.5 * dot(φ_vector, φ_vector) + t_k * 0.5 * dot(Rv, Rv)
-    return F_value
+    # φ = (x − 1) restricted to PQ |V| coordinates; sum its squares in place.
+    φ_sq = 0.0
+    mask = hess.PQ_V_mags
+    @inbounds for i in eachindex(x)
+        if mask[i]
+            d = x[i] - 1.0
+            φ_sq += d * d
+        end
+    end
+    return (1 - t_k) * 0.5 * φ_sq + t_k * 0.5 * dot(Rv, Rv)
 end
 
 # slightly confusing that I have the field grad, and the argument grad.
@@ -57,10 +87,7 @@ function gradient_value!(grad::Vector{Float64},
     hess.J(time_step) # PERF bottleneck. Look into a different line search strategy?
     # or otherwise reduce the number of gradient computations?
     # for a 10k bus system, computing J takes over 10x longer than computing F.
-    Jv = hess.J.Jv
-    mask = hess.PQ_V_mags
-    # PERF: allocating
-    grad .= (1 - t_k) * (mask .* (x - ones(size(x, 1)))) + t_k * Jv' * hess.pfResidual.Rv
+    _homotopy_gradient!(grad, hess, t_k, x, hess.J.Jv, hess.pfResidual.Rv)
     return grad
 end
 
@@ -74,7 +101,7 @@ end
 
 function homotopy_x0(data::ACPowerFlowData, time_step::Int)
     x = calculate_x0(data, time_step)
-    for (bus_ix, bt) in enumerate(get_bus_type(data)[:, time_step]) # PERF: allocating
+    for (bus_ix, bt) in enumerate(view(get_bus_type(data), :, time_step))
         if bt == PSY.ACBusTypes.PQ
             x[2 * bus_ix - 1] = 1.0
         end
@@ -165,14 +192,23 @@ function HomotopyHessian(data::ACPowerFlowData, time_step::Int)
     nbuses = size(get_bus_type(data), 1)
     n_lcc = size(data.lcc.p_set, 1)
     n_state = 2 * nbuses + 4 * n_lcc
-    PQ_mask = get_bus_type(data)[:, time_step] .== (PSY.ACBusTypes.PQ,)
+    bus_types = view(get_bus_type(data), :, time_step)
+    PQ_mask = bus_types .== (PSY.ACBusTypes.PQ,)
     # PQ_V_mags marks the V_mag coordinate at each PQ bus; LCC state slots
     # (tap, thyristor angle) are excluded — the homotopy continuation
     # `(1 − t_k)·(x − 1)` only pulls bus voltages toward 1.0.
     PQ_V_mags = Vector{Bool}(undef, n_state)
     PQ_V_mags[1:(2 * nbuses)] .= collect(Iterators.flatten(zip(PQ_mask, falses(nbuses))))
     PQ_V_mags[(2 * nbuses + 1):n_state] .= false
-    return HomotopyHessian(data, pfResidual, J, PQ_V_mags, zeros(n_state), Hv)
+    # Precompute the Hv.nzval indices of the PQ |V| diagonal entries (always
+    # structurally present in the JᵀJ pattern, since that column of J is nonzero).
+    pq_diag_nz = [
+        _nz_index(Hv, 2 * b - 1, 2 * b - 1)
+        for b in 1:nbuses if bus_types[b] == PSY.ACBusTypes.PQ
+    ]
+    return HomotopyHessian(
+        data, pfResidual, J, PQ_V_mags, zeros(n_state), Hv,
+        zeros(n_state), pq_diag_nz)
 end
 
 """

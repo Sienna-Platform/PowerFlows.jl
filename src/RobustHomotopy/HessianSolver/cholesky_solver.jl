@@ -1,6 +1,6 @@
 struct CholeskyHessianSolver <: HessianSolver
     F::SparseArrays.CHOLMOD.Factor{Float64, J_INDEX_TYPE}
-    mat::FixedStructureCHOLMOD
+    mat::FixedStructureCHOLMOD{Float64, J_INDEX_TYPE}
     buff::Vector{Float64} # buffer for solving
 end
 
@@ -22,33 +22,30 @@ function modify_and_numeric_factor!(
 )
     minDiagElem = minimum(H[i, i] for i in axes(H, 1))
     τ_old = 0.0
-    if minDiagElem > 0.0
-        τ = 0.0
-    else
-        τ = -minDiagElem + β
-    end
+    τ = minDiagElem > 0.0 ? 0.0 : -minDiagElem + β
     @debug "initial τ = $τ"
     nonsingular = false
-    fill!(hSolver.buff, 1.0)
     while !nonsingular
         for i in axes(H, 1)
             H[i, i] += τ - τ_old # now try H + τ*I
         end
-        try
-            fill!(hSolver.buff, 1.0) # reset b to a vector of ones.
-            set_values!(hSolver.mat, SparseArrays.nonzeros(H))
+        set_values!(hSolver.mat, SparseArrays.nonzeros(H))
+        # `issuccess` reports CHOLMOD positive-definiteness directly, avoiding the
+        # throwaway `F \ ones` solve previously needed to surface a non-PD factor.
+        # A PosDefException can still be thrown during `numeric_factor!`, so catch it.
+        ok = try
             numeric_factor!(hSolver.F, hSolver.mat)
-            hSolver.F \ hSolver.buff # sometimes the error isn't thrown until we use the factorization.
+            LinearAlgebra.issuccess(hSolver.F)
+        catch e
+            e isa SparseArrays.CHOLMOD.PosDefException ? false : rethrow(e)
+        end
+        if ok
             nonsingular = true
             @debug "nonsingular with τ = $τ"
-        catch e
-            if e isa SparseArrays.CHOLMOD.PosDefException
-                τ_old = τ
-                τ *= 2.0
-                τ = max(τ, β) # ensure τ is at least β
-            else
-                rethrow(e)
-            end
+        else
+            τ_old = τ
+            τ *= 2.0
+            τ = max(τ, β) # ensure τ is at least β
         end
     end
     return
