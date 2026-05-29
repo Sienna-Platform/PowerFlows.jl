@@ -7,9 +7,13 @@ end
 using Dates
 
 pushed_to_args = false
-if length(ARGS) == 0 && !is_running_on_ci()
+if length(ARGS) == 0
     pushed_to_args = true
-    push!(ARGS, "Local Test at $(Dates.now())")
+    if is_running_on_ci()
+        push!(ARGS, "CI Test at $(Dates.now())")
+    else
+        push!(ARGS, "Local Test at $(Dates.now())")
+    end
 end
 
 open("precompile_time_$(ARGS[1]).txt", "w") do io
