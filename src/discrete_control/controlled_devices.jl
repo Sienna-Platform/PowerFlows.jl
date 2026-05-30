@@ -35,6 +35,7 @@ mutable struct ControlledSwitchedShunt <: AbstractShuntControl
     b_max::Float64
     block_order::Vector{Int}         # sortperm(block_dB; rev=true), cached at construction
     block_n::Vector{Int}             # per-block chosen step counts, reused in-place each snap
+    continuous::Bool                 # MODSW==2 ⇒ continuous regulation (no discrete snap)
     current::Float64                 # current total susceptance b
 end
 
@@ -150,6 +151,7 @@ end
 # overshooting; ±1 bounded refinement then corrects any under-committed block.
 # block_order and block_n are pre-allocated fields — no per-call heap allocation.
 function snap_to_discrete(d::ControlledSwitchedShunt, b::Float64)
+    d.continuous && return clamp(b, d.b_min, d.b_max)   # continuous: no grid snap
     target_clamped = clamp(b, d.b_min, d.b_max)
     target = target_clamped - d.b0
     total = d.b0

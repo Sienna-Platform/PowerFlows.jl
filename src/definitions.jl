@@ -18,6 +18,7 @@ const DEFAULT_TAP_RATIO_MIN = 0.9
 const DEFAULT_TAP_RATIO_MAX = 1.1
 const DEFAULT_TAP_POSITIONS = 33
 const DEFAULT_TAP_VSET = 1.0
+const DEFAULT_SHUNT_MODSW = 1   # discrete voltage control when ext lacks "MODSW"
 const DEFAULT_MAX_REDISTRIBUTION_ITERATIONS = 10
 const LARGE_RESIDUAL = 10 # threshold for "bad initial guess": default
 # norm(residual, 1)/length(residual) > 10.
