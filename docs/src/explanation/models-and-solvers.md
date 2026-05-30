@@ -39,7 +39,7 @@ state vector, residual, and Jacobian structure:
     is the only one that currently supports the loss-factor, voltage-stability,
     and DC-fallback post-processing options.
   - [`ACRectangularPowerFlow`](@ref): per-bus state is `(eᵢ, fᵢ)` (with an extra
-    Qᵢ at PV buses); the residual is the complex *current* mismatch
+    `Qᵢ` at PV buses); the residual is the complex *current* mismatch
     `ΔIᵢ = I_specᵢ − Y_bus·V`. Off-diagonal Jacobian blocks are constant 2×2
     real blocks of `Y_bus`, which makes refactorization cheap. Pick this
     formulation if you want the current-injection structure or are integrating
@@ -56,7 +56,7 @@ state vector, residual, and Jacobian structure:
 
 All three formulations support the LCC (line-commutated converter) HVDC model.
 The LCC state and Jacobian rows are appended to the network state and share the
-same true-φ derivation across polar, rectangular, and mixed code paths; see
+same true-`φ` derivation across polar, rectangular, and mixed code paths; see
 [Line-Commutated Converter (LCC) Implementations](@ref).
 
 ## 2. The AC solver: *how* to drive the residual to zero
