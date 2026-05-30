@@ -53,7 +53,7 @@ function _validate_tap!(
 end
 
 function _controlled_bus_number(ext::Dict, fallback::Int)
-    for k in ("NREG", "RMIDNT")
+    for k in ("NREG", "SWREM", "RMIDNT")
         if haskey(ext, k)
             v = ext[k]
             n = v isa Integer ? Int(v) : tryparse(Int, string(v))
@@ -67,6 +67,12 @@ function _ext_float(ext::Dict, key::String, default::Float64)
     haskey(ext, key) || return default
     v = ext[key]
     return v isa Real ? Float64(v) : something(tryparse(Float64, string(v)), default)
+end
+
+function _ext_int(ext::Dict, key::String, default::Int)
+    haskey(ext, key) || return default
+    v = ext[key]
+    return v isa Integer ? Int(v) : something(tryparse(Int, string(v)), default)
 end
 
 """Build the type-stable device set from a `PSY.System`.
@@ -138,6 +144,23 @@ function build_controlled_device_set(
         bus = PSY.get_number(PSY.get_bus(sa))
         haskey(bus_lookup, bus) || continue
         ext = PSY.get_ext(sa)
+        modsw = _ext_int(ext, "MODSW", DEFAULT_SHUNT_MODSW)
+        if modsw == 0
+            @debug "ControlledSwitchedShunt $(PSY.get_name(sa)): MODSW=0 (locked); \
+                treated as fixed admittance, not enrolled."
+            continue
+        elseif modsw == 1
+            continuous = false
+        elseif modsw == 2
+            continuous = true
+        else
+            error(
+                "ControlledSwitchedShunt $(PSY.get_name(sa)): MODSW=$modsw \
+                (remote reactive-power / remote-device control) is not supported. \
+                Only voltage-control modes are implemented: MODSW=1 (discrete) \
+                and MODSW=2 (continuous).",
+            )
+        end
         cbus = _controlled_bus_number(ext, bus)
         haskey(bus_lookup, cbus) ||
             error(
@@ -173,6 +196,7 @@ function build_controlled_device_set(
                 bmax,
                 bo,
                 bn,
+                continuous,
                 current_b,
             ),
         )

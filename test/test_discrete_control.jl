@@ -42,6 +42,64 @@ end
     @test s.vset == (0.9 + 1.1) / 2
 end
 
+@testset "discrete control: MODSW gating" begin
+    function _build(modsw)
+        sys = _make_tap_shunt_system()
+        sa = first(PSY.get_components(PSY.SwitchedAdmittance, sys))
+        PSY.get_ext(sa)["MODSW"] = modsw
+        data = PowerFlowData(ACPolarPowerFlow(), sys)
+        return PowerFlows.build_controlled_device_set(
+            sys, PF.get_bus_lookup(data), data.power_network_matrix)
+    end
+
+    # MODSW=0 (locked): shunt not enrolled; tap unaffected.
+    set0 = _build(0)
+    @test length(set0.shunts) == 0
+    @test length(set0.taps) == 1
+
+    # MODSW=1 (discrete voltage): enrolled, continuous == false.
+    set1 = _build(1)
+    @test length(set1.shunts) == 1
+    @test set1.shunts[1].continuous == false
+
+    # MODSW=2 (continuous voltage): enrolled, continuous == true.
+    set2 = _build(2)
+    @test length(set2.shunts) == 1
+    @test set2.shunts[1].continuous == true
+
+    # MODSW 3–6 (remote reactive-power / device control): unsupported ⇒ error.
+    for m in (3, 4, 5, 6)
+        @test_throws ErrorException _build(m)
+    end
+end
+
+@testset "discrete control: shunt controlled bus SWREM/NREG" begin
+    function _shunt(ext_pairs...)
+        sys = _make_tap_shunt_system()
+        sa = first(PSY.get_components(PSY.SwitchedAdmittance, sys))
+        for (k, v) in ext_pairs
+            PSY.get_ext(sa)[k] = v
+        end
+        data = PowerFlowData(ACPolarPowerFlow(), sys)
+        bl = PF.get_bus_lookup(data)
+        set = PowerFlows.build_controlled_device_set(
+            sys, bl, data.power_network_matrix)
+        return set.shunts[1], bl
+    end
+
+    # v32/33: regulated bus comes from SWREM.
+    s_swrem, bl = _shunt("SWREM" => 2)
+    @test s_swrem.controlled_ix == bl[2]
+
+    # v35: NREG takes precedence over SWREM.
+    s_nreg, bl2 = _shunt("NREG" => 2, "SWREM" => 3)
+    @test s_nreg.controlled_ix == bl2[2]
+
+    # No remote-bus key ⇒ falls back to the shunt's local bus (3).
+    s_local, bl3 = _shunt()
+    @test s_local.controlled_ix == bl3[3]
+end
+
 @testset "discrete control: shunt invariant validation" begin
     # Test that b0 outside [b_min, b_max] triggers error.
     @test_throws ErrorException PowerFlows._validate_shunt!(
@@ -114,7 +172,7 @@ end
     block_dB_sh = [0.05]
     sh = PowerFlows.ControlledSwitchedShunt("s", 3, 3, 1.0, 0.0, 0.0,
         [4], block_dB_sh, 0.0, 0.2,
-        [1], zeros(Int, length(block_dB_sh)), 0.0)
+        [1], zeros(Int, length(block_dB_sh)), false, 0.0)
     @test PowerFlows.target_from_voltage(sh, 1.0, S) ≈ 0.1 atol = 1e-9
     @test PowerFlows.target_from_voltage(sh, 0.5, S) ≈ 0.2 atol = 1e-6  # low V → max B
 end
@@ -133,7 +191,7 @@ end
         1.0 / (0.01 + 0.1im), 0.0 + 0.0im, 0.0, 0.9, 1.1,
         collect(range(0.9, 1.1; length = 33)), (1, 2, 3, 4), 1.0)
     shunt = PowerFlows.ControlledSwitchedShunt("sh", 3, 3, 1.0, 0.0, 0.0,
-        [4], [0.05], 0.0, 0.2, [1], zeros(Int, 1), 0.0)
+        [4], [0.05], 0.0, 0.2, [1], zeros(Int, 1), false, 0.0)
     for d in (primary, secondary, shunt)
         vset = PowerFlows.voltage_setpoint(d)
         for dVdp in (1.0, -1.0)
@@ -179,6 +237,20 @@ end
     @test abs(data.bus_magnitude[t.controlled_ix, 1] - t.vset) < spacing
 end
 
+@testset "discrete control: continuous shunt not grid-pinned" begin
+    sys = _make_solvable_tap_shunt_system()
+    sa = first(PSY.get_components(PSY.SwitchedAdmittance, sys))
+    PSY.get_ext(sa)["MODSW"] = 2
+    pf = ACPolarPowerFlow(; control_discrete_devices = true)
+    data = PowerFlowData(pf, sys)
+    solve_power_flow!(data)
+    @test all(data.converged)
+    sh = data.controlled_devices.shunts[1]
+    @test sh.continuous == true
+    # final susceptance stays within the controllable band (continuous, not snapped).
+    @test sh.b_min - 1e-9 <= sh.current <= sh.b_max + 1e-9
+end
+
 @testset "discrete control: snap" begin
     d = PowerFlows.ControlledTap("t", 1, 2, 2, true, 1.0, 1.0 + 0im,
         0im, 0.0, 0.9, 1.1, collect(range(0.9, 1.1; length = 5)),
@@ -189,17 +261,34 @@ end
     sh = PowerFlows.ControlledSwitchedShunt("s", 3, 3, 1.0, 0.0, 0.0,
         [4], block_dB_sh_snap, 0.0, 0.2,
         [1], zeros(Int, length(block_dB_sh_snap)),
-        0.0)  # reachable: 0,0.05,0.10,0.15,0.20
+        false, 0.0)  # reachable: 0,0.05,0.10,0.15,0.20
     @test PowerFlows.snap_to_discrete(sh, 0.12) == 0.10
     block_dB_sh2 = [0.1, 0.02]
     sh2 = PowerFlows.ControlledSwitchedShunt("s2", 3, 3, 1.0, 0.0, 0.0,
         [2, 3], block_dB_sh2, 0.0, 0.26,
         [1, 2], zeros(Int, length(block_dB_sh2)),
-        0.0)  # block-greedy with ±1 refinement
+        false, 0.0)  # block-greedy with ±1 refinement
     # Floor-greedy: block 0.1 first → n=floor(0.17/0.1)=1 → 0.10;
     # residual 0.07 → n=floor(0.07/0.02)=3 → 0.06; total=0.16.
     # ±1 refinement: no block improves on abs(0.16-0.17)=0.01 → stays 0.16.
     @test PowerFlows.snap_to_discrete(sh2, 0.17) == 0.16
+end
+
+@testset "discrete control: continuous shunt no snap" begin
+    # continuous == true ⇒ snap_to_discrete returns the clamped continuous value,
+    # NOT the nearest reachable block grid point.
+    block_dB = [0.05]
+    cont = PowerFlows.ControlledSwitchedShunt("c", 3, 3, 1.0, 0.0, 0.0,
+        [4], block_dB, 0.0, 0.2, [1], zeros(Int, length(block_dB)), true, 0.0)
+    # 0.12 is between grid points 0.10 and 0.15; continuous must return it unchanged.
+    @test PowerFlows.snap_to_discrete(cont, 0.12) == 0.12
+    # clamped at the rails.
+    @test PowerFlows.snap_to_discrete(cont, 0.30) == 0.2
+    @test PowerFlows.snap_to_discrete(cont, -0.10) == 0.0
+    # sanity: the discrete twin DOES snap 0.12 → 0.10.
+    disc = PowerFlows.ControlledSwitchedShunt("d", 3, 3, 1.0, 0.0, 0.0,
+        [4], block_dB, 0.0, 0.2, [1], zeros(Int, length(block_dB)), false, 0.0)
+    @test PowerFlows.snap_to_discrete(disc, 0.12) == 0.10
 end
 
 @testset "discrete control: in-place Ybus == rebuild" begin
