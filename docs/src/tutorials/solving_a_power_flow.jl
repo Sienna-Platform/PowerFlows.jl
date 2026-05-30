@@ -3,19 +3,16 @@
 # solvers and compare their results.
 
 # ## Building a System
-# To get started, load the needed packages. We're using a standard test system and want to
-# keep output clean, so we adjust the logging settings to filter out a few precautionary warnings.
+# To get started, load the needed packages.
 
 using PowerSystemCaseBuilder
 using PowerFlows
 using PowerSystems
-using Logging
 
-disable_logging(Logging.Warn)
+# Create a [`PowerSystems.System`](@extref) from [`PowerSystemCaseBuilder.build_system`](@extref).
+# We build the test system with `runchecks = false` to reduce REPL output:
 
-# Create a [`PowerSystems.System`](@extref) from [`PowerSystemCaseBuilder.build_system`](@extref):
-
-sys = build_system(MatpowerTestSystems, "matpower_case5_sys")
+sys = build_system(MatpowerTestSystems, "matpower_case5_sys"; runchecks = false)
 
 # ## DC Power Flow
 # [`DCPowerFlow`](@ref) solves for bus voltage angles using the bus admittance matrix,
