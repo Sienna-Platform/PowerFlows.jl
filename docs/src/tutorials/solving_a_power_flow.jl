@@ -98,4 +98,6 @@ ac_results["flow_results"]
 #
 # - Compare AC formulations and solvers at scale in [How to choose an AC formulation and solver](@ref choose-ac-formulation-and-solver).
 # - Read [Evaluation Models vs. Solver Algorithms](@ref) for the distinction between
-#   evaluation models and iterative solvers.
+#   evaluation models and iterative solvers (polar, rectangular, and mixed).
+# - For the mixed current–power balance formulation, see
+#   [Mixed Current-Power Balance Formulation](@ref).

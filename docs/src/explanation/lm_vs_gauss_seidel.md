@@ -34,12 +34,9 @@ step
 where $D$ is the optional Marquardt column scaling (identity by default on the
 polar formulation). The damping $\lambda$ interpolates between two regimes:
 
-  - $\lambda \to 0$: the step approaches the **Gauss-Newton / Newton** step —
+  - When $\lambda \to 0$, the step approaches the **Gauss-Newton / Newton** step —
     fast (quadratic) but fragile far from the solution.
-  - $\lambda \to \infty$: the step approaches
-    $\Delta x \approx -\tfrac{1}{\lambda} D^{-2} J^\top F(x)$ — a short, scaled
-    **steepest-descent** step: cautious, first-order, with a very large
-    convergence basin.
+  - When $\lambda \to \infty$, the step approaches $\Delta x \approx -\tfrac{1}{\lambda} D^{-2} J^\top F(x)$ — a short, scaled **steepest-descent** step: cautious, first-order, with a very large convergence basin.
 
 The heavily-damped regime is first-order, robust, and slow — the same
 qualitative behaviour that makes Gauss-Seidel dependable on difficult or
@@ -97,6 +94,22 @@ pf = ACPolarPowerFlow{LevenbergMarquardtACPowerFlow}(;
 solve_power_flow(pf, sys)
 ```
 
+## Formulation matters for LM
+
+LM's per-iteration cost and iteration count depend strongly on the AC
+formulation. On large systems (10k buses and above),
+[`ACRectangularPowerFlow`](@ref)`{LevenbergMarquardtACPowerFlow}` can require
+many more iterations than Newton or trust-region on the same formulation, while
+[`ACMixedPowerFlow`](@ref)`{LevenbergMarquardtACPowerFlow}` converges in a
+handful of iterations with the lowest LM median at every benchmark size.
+[`ACPolarPowerFlow`](@ref)`{LevenbergMarquardtACPowerFlow}` is a reasonable
+middle ground. See the benchmark tables in
+[How to choose an AC formulation and solver](@ref choose-ac-formulation-and-solver).
+
+`marquardt_scaling` defaults to `true` on rectangular and mixed formulations
+and `false` on polar; set it explicitly when chasing GS-like behaviour on polar
+(see above).
+
 ## A caveat on cost, and when to pick LM
 
 Each LM iteration refactorizes a sparse augmented system, so a GS-like
@@ -119,4 +132,6 @@ ill-conditioned start, LM (optionally in the GS-like configuration above) is the
 method to try.
 
 See also: [`LevenbergMarquardtACPowerFlow`](@ref),
-[`TrustRegionACPowerFlow`](@ref), [`RobustHomotopyPowerFlow`](@ref).
+[`TrustRegionACPowerFlow`](@ref), [`RobustHomotopyPowerFlow`](@ref),
+[How to choose an AC formulation and solver](@ref choose-ac-formulation-and-solver),
+[Mixed Current-Power Balance Formulation](@ref).

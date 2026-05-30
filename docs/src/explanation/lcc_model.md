@@ -24,6 +24,12 @@ We implement the control logic of LCC based on the principle of maintaining the 
 
 The AC power flow calculation in Sienna is modified to directly solve for tap steps and thyristor angles of the LCC system. To this end, the state vector, the Jacobian matrix, the residuals are modified. The state vector is extended by 4 additional variables for each LCC system, namely 2 for tap positions and 2 for thyristor angles of the rectifier and inverter sides of the LCC system. The Jacobian matrix is extended by additional terms that represent the relevant partial derivatives. The residuals are extended by 4 terms per LCC system to match the additional state variables. The first two account for the active power set point and active power balance in the LCC system using the tap steps. The other two residual terms control for keeping the thyristor angles at their respective minimum limits. This approach follows the method in Panosyan, A. (2010). Modeling of Advanced Power Transmission System Controllers (PhD dissertation).
 
+LCC extensions are implemented for all three AC formulations —
+[`ACPolarPowerFlow`](@ref), [`ACRectangularPowerFlow`](@ref), and
+[`ACMixedPowerFlow`](@ref) — with the same true-φ derivation in each code path;
+see [Mixed Current-Power Balance Formulation](@ref) for mixed-formulation parity
+notes.
+
 The complex apparent power for a rectifier or inverter is calculated as $S = V t \frac{\sqrt{6}}{\pi} I_{dc} e^{j \phi}$, where $V$ is the magnitude of AC voltage at the terminal, $I_{dc}$ is the DC current in the LCC system (positive for flow direction rectifier to inverter, and vice versa), and $\phi$ is the angle between AC voltage and current.
 
 To allow for the Jacobian implementation, a simplified calculation of the angle between the AC current and voltage at the LCC terminals was used. The equation below represents the calculation used for the angle:
