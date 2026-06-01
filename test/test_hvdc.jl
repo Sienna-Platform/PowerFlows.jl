@@ -54,10 +54,9 @@ end
 @testset "Test HVDC injections helper function" begin
     sys = build_system(MatpowerTestSystems, "matpower_case5_dc_sys")
     hvdc = only(get_components(TwoTerminalHVDC, sys))
-    set_units_base_system!(sys, UnitSystem.NATURAL_UNITS)
 
     P_dc = 10.0
-    set_active_power_flow!(hvdc, P_dc)
+    set_active_power_flow!(hvdc, P_dc * PSY.MW)
 
     # fixed slope loss function: 1% loss
     loss_coeff = 0.01
@@ -77,7 +76,7 @@ end
     loss_curve = PiecewiseIncrementalCurve(0.0, 0.0, [0.0, 20.0, 100.0], [0.01, 0.02])
     set_loss!(hvdc, loss_curve)
     for P_dc_setpoint in (10.0, 30.0)
-        set_active_power_flow!(hvdc, P_dc_setpoint)
+        set_active_power_flow!(hvdc, P_dc_setpoint * PSY.MW)
         (P_from, P_to) = PF.hvdc_injections_natural_units(hvdc)
         expected_loss =
             0.01 * min(P_dc_setpoint, 20.0) + 0.02 * max(0.0, P_dc_setpoint - 20.0)
@@ -87,7 +86,7 @@ end
 
     # test reversed flow error
     _, lcc = simple_lcc_system()
-    set_active_power_flow!(lcc, -15.0)
+    set_active_power_flow!(lcc, -15.0 * PSY.MW)
     @test_throws ArgumentError PF.hvdc_injections_natural_units(lcc)
 end
 
@@ -140,8 +139,7 @@ function add_component_with_power!(sys::PSY.System, bus::PSY.ACBus, P::Float64)
             ext = Dict{String, Any}(),
         )
         add_component!(sys, gen)
-        @assert get_active_power(gen) == P
-        @assert PSY.get_units_setting(gen).unit_system == PSY.UnitSystem.SYSTEM_BASE
+        @assert get_active_power(gen, PSY.SU) == P
     else
         load = PowerLoad(;
             name = "load_$(PSY.get_number(bus))_hvdc_$(-P)",
@@ -154,21 +152,18 @@ function add_component_with_power!(sys::PSY.System, bus::PSY.ACBus, P::Float64)
             max_reactive_power = 0.0,
         )
         add_component!(sys, load)
-        @assert get_active_power(load) == -P
-        @assert PSY.get_units_setting(load).unit_system == PSY.UnitSystem.SYSTEM_BASE
+        @assert get_active_power(load, PSY.SU) == -P
     end
 end
 
 function replace_generic_hvdcs!(sys)
     for hvdc in get_components(PSY.TwoTerminalGenericHVDCLine, sys)
-        if PSY.get_active_power_flow(hvdc) == 0.0
-            @assert PSY.get_units_setting(hvdc).unit_system ==
-                    PSY.UnitSystem.SYSTEM_BASE
-            set_active_power_flow!(hvdc, 0.1)
+        if PSY.get_active_power_flow(hvdc, PSY.SU) == 0.0
+            set_active_power_flow!(hvdc, 0.1 * PSY.SU)
         end
         (P_from, P_to) = PF.hvdc_injections_natural_units(hvdc)
-        P_from /= PSY.get_base_power(sys)
-        P_to /= PSY.get_base_power(sys)
+        P_from /= PSY.get_base_power(sys, PSY.NU)
+        P_to /= PSY.get_base_power(sys, PSY.NU)
         arc = get_arc(hvdc)
         bus_from = arc.from
         bus_to = arc.to
@@ -181,12 +176,9 @@ end
 
 function test_generic_hvdc_on_big_system(pf_type::Type{<:PF.PowerFlowEvaluationModel})
     sys_original = build_system(PSISystems, "HVDC_TWO_RTO_RTS_1Hr_sys")
-    set_units_base_system!(sys_original, "SYSTEM_BASE")
 
     for hvdc in get_components(PSY.TwoTerminalGenericHVDCLine, sys_original)
-        @assert PSY.get_units_setting(hvdc).unit_system ==
-                PSY.UnitSystem.SYSTEM_BASE
-        set_active_power_flow!(hvdc, 0.1)
+        set_active_power_flow!(hvdc, 0.1 * PSY.SU)
     end
 
     pf = pf_type(; correct_bustypes = true)
@@ -196,7 +188,6 @@ function test_generic_hvdc_on_big_system(pf_type::Type{<:PF.PowerFlowEvaluationM
     @test all(data_original.bus_angles[ref_bus_inds] .== 0.0)
 
     sys_modified = deepcopy(sys_original)
-    set_units_base_system!(sys_modified, "SYSTEM_BASE")
     replace_generic_hvdcs!(sys_modified)
 
     data_modified = PF.PowerFlowData(pf, sys_modified)
@@ -274,7 +265,7 @@ end
     # where [time_step, i] was incorrectly used instead of [i, time_step]
     # The bug only manifested when there were multiple LCC lines.
     raw_path = joinpath(TEST_DATA_DIR, "case5_2_lcc.raw")
-    sys = System(raw_path)
+    sys = make_system(PFP.PowerModelsData(raw_path); runchecks = false)
 
     # Verify we have multiple LCC lines
     lcc_components = collect(get_components(TwoTerminalLCCLine, sys))

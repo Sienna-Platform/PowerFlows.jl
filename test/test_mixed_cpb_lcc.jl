@@ -35,7 +35,7 @@ end
     # 4 LCC tail residual rows are satisfied at the polar-converged state.
     @testset "case5_2_lcc (PQ terminals)" begin
         raw_path = joinpath(TEST_DATA_DIR, "case5_2_lcc.raw")
-        sys = System(raw_path)
+        sys = make_system(PFP.PowerModelsData(raw_path); runchecks = false)
         nrm = _mixed_lcc_residual_norm(sys)
         @test nrm < 1e-6
     end

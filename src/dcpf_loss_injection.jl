@@ -50,8 +50,8 @@ function _get_arc_branch_params(
     for (ix, arc) in enumerate(arc_ax)
         if haskey(direct_map, arc)
             branch = direct_map[arc]
-            rs[ix] = PSY.get_r(branch)
-            xs[ix] = PSY.get_x(branch)
+            rs[ix] = PSY.get_r(branch, PSY.SU)
+            xs[ix] = PSY.get_x(branch, PSY.SU)
             taps[ix] = _branch_tap(branch)
             shifts[ix] = _branch_shift(branch)
         elseif haskey(parallel_map, arc) || haskey(series_map, arc)

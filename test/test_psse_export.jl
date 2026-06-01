@@ -377,7 +377,6 @@ function load_test_system(sys_name::String)
     sys = with_logger(SimpleLogger(Error)) do
         build_system(PSSEParsingTestSystems, sys_name; force_build = true)
     end
-    set_units_base_system!(sys, UnitSystem.SYSTEM_BASE)
     return sys
 end
 
@@ -443,7 +442,6 @@ end
         build_system(PSISystems, "modified_RTS_GMLC_DA_sys"; force_build = true)
     end
     isnothing(sys) && return
-    set_units_base_system!(sys, UnitSystem.SYSTEM_BASE)
 
     undefined_obj =
         PSY.TransformerControlObjectiveModule.TransformerControlObjective.UNDEFINED
@@ -564,7 +562,7 @@ function test_psse_exporter_inner(
     # Updating with changed value should result in a different reimport (System version)
     sys2 = deepcopy(sys)
     line_to_change = first(get_components(Line, sys2))
-    set_rating!(line_to_change, get_rating(line_to_change) * 123.4)  # careful not to exceed PF.INFINITE_BOUND
+    set_rating!(line_to_change, get_rating(line_to_change, PSY.SU) * 123.4 * PSY.SU)  # careful not to exceed PF.INFINITE_BOUND
     update_exporter!(exporter, sys2)
     write_export(exporter, "basic4"; overwrite = true)
     reread_sys2 = read_system_with_metadata(joinpath(export_location, "basic4"))

@@ -36,7 +36,6 @@ end
     for ACSolver in AC_SOLVERS_TO_TEST
         @testset "AC Solver: $(ACSolver)" begin
             sys_original = build_system(PSISystems, "RTS_GMLC_DA_sys")
-            set_units_base_system!(sys_original, PSY.UnitSystem.SYSTEM_BASE)
             data_original =
                 PowerFlowData(
                     ACPowerFlow{ACSolver}(; correct_bustypes = true),
@@ -44,7 +43,6 @@ end
                 )
 
             sys_modified = deepcopy(sys_original)
-            set_units_base_system!(sys_modified, PSY.UnitSystem.SYSTEM_BASE)
             modify_rts_system!(sys_modified)
             data_modified =
                 PowerFlowData(
@@ -56,13 +54,13 @@ end
             # update_system! with unmodified PowerFlowData should result in system that yields unmodified PowerFlowData
             # (NOTE does NOT necessarily yield original system due to power redistribution)
             sys_null_updated = deepcopy(sys_original)
-            set_units_base_system!(sys_null_updated, PSY.UnitSystem.SYSTEM_BASE)
             PF.update_system!(sys_null_updated, data_original)
             data_null_updated =
                 PowerFlowData(
                     ACPowerFlow{ACSolver}(; correct_bustypes = true),
                     sys_null_updated,
                 )
+            # TODO this is the next test failure to address.
             @test IS.compare_values(power_flow_match_fn, data_null_updated, data_original)
 
             # Modified versions should not be the same as unmodified versions
