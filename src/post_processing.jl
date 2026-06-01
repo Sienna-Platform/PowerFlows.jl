@@ -51,12 +51,12 @@ function _power_redistribution_ref(
     sources = filter(x -> x isa PSY.Source, collect(devices_))
     non_source_devices = filter(x -> typeof(x) !== PSY.Source, collect(devices_))
     if length(sources) > 0 && length(non_source_devices) > 0
-        P_gen -= sum(PSY.get_active_power.(sources, PSY.SU))
+        P_gen -= sum(PSY.get_active_power.(sources, (PSY.SU,)))
         devices_ = setdiff(devices_, sources)
         @warn "Found sources and non-source devices at the same bus. Active power re-distribution is not well defined for this case. Source active power will remain unchanged and remaining active power will be re-distributed among non-source devices."
     elseif length(sources) > 1 && length(non_source_devices) == 0
-        Psources = sum(PSY.get_active_power.(sources, PSY.SU))
-        Qsources = sum(PSY.get_reactive_power.(sources))
+        Psources = sum(PSY.get_active_power.(sources, (PSY.SU,)))
+        Qsources = sum(PSY.get_reactive_power.(sources, (PSY.SU,)))
         if isapprox(Psources, P_gen; atol = 0.001) &&
            isapprox(Qsources, Q_gen; atol = 0.001)
             @warn "Only sources found at reference bus --- no redistribution of active or reactive power will take place"

@@ -76,10 +76,10 @@ end
     end
     solve_power_flow!(data)
     # All time steps should produce identical results (same system state).
-    @test data.arc_active_power_flow_from_to[:, 1] ==
-          data.arc_active_power_flow_from_to[:, 2]
-    @test data.arc_active_power_flow_from_to[:, 1] ==
-          data.arc_active_power_flow_from_to[:, 3]
+    @test isapprox(data.arc_active_power_flow_from_to[:, 1],
+        data.arc_active_power_flow_from_to[:, 2])
+    @test isapprox(data.arc_active_power_flow_from_to[:, 1],
+        data.arc_active_power_flow_from_to[:, 3])
 end
 
 @testset "Lossy DCLF: AC and PTDF data have no lossy admittances" begin

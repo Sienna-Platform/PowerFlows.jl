@@ -799,7 +799,7 @@ serialize_component_ids(id_mapping::Dict{Tuple{Tuple{Int64, Int64}, String}, Str
 _get_mag_defaults(t::PSY.ThreeWindingTransformer) =
     (PSY.get_g(t, PSY.SU), PSY.get_b(t, PSY.SU))
 _get_mag_defaults(t::PSY.TwoWindingTransformer) =
-    (real(PSY.get_primary_shunt(t, PSY.SU)), imag(PSY.get_primary_shunt(t)))
+    (real(PSY.get_primary_shunt(t, PSY.SU)), imag(PSY.get_primary_shunt(t, PSY.SU)))
 
 """Write the first record line for a 2-winding transformer."""
 function _write_2w_transformer_record1!(
@@ -2355,9 +2355,11 @@ function _compute_dcline_common_fields(
     NAME = _is_valid_psse_name(dcline_name) ? dcline_name : last(dcline_name, 12)
     NAME = _psse_quote_string(NAME)
     MDC = Int(PSY.get_power_mode(dcline))
+    # FIXME HVDC getters like `get_r` aren't using units. Did they ever use units?
+    # should they use units?
     RDC =
         _psse_round_val(
-            PSY.get_r(dcline, PSY.SU) * PSY.get_rectifier_base_voltage(dcline)^2 /
+            PSY.get_r(dcline) * PSY.get_rectifier_base_voltage(dcline)^2 /
             PSY.get_base_power(exporter.system, PSY.NU),
         )
     SETVL = PSY.get_transfer_setpoint(dcline)
@@ -2645,8 +2647,9 @@ function write_to_buffers!(
             base_voltage = PSY.get_dc_setpoint_to(vscline)
         end
         Zbase = base_voltage^2 / PSY.get_base_power(exporter.system, PSY.NU)
-        RDC_org = if PSY.get_g(vscline, PSY.SU) != 0.0
-            (1 / PSY.get_g(vscline, PSY.SU)) * Zbase
+        # FIXME: no units.
+        RDC_org = if PSY.get_g(vscline) != 0.0
+            (1 / PSY.get_g(vscline)) * Zbase
         else
             0.0
         end
@@ -3191,7 +3194,7 @@ function get_psse_export_paths(
 )
     name = last(splitdir(export_subdir))
     raw_path = joinpath(export_subdir, "$name.raw")
-    metadata_path = joinpath(export_subdir, "$(name)$(PSY.PSSE_EXPORT_METADATA_EXTENSION)")
+    metadata_path = joinpath(export_subdir, "$(name)$(PSSE_EXPORT_METADATA_EXTENSION)")
     return (raw_path, metadata_path)
 end
 
