@@ -254,7 +254,7 @@ display(d["1"]["bus_results"])
 function solve_power_flow(
     pf::T,
     sys::PSY.System,
-    flow_reporting::FlowReporting = FlowReporting.ARC_FLOWS,
+    flow_reporting::FlowReporting = FlowReporting.ARC_FLOWS;
     linear_solver::Union{Nothing, AbstractString} = nothing,
 ) where {T <: AbstractDCPowerFlow}
     with_units_base(sys, PSY.UnitSystem.SYSTEM_BASE) do
