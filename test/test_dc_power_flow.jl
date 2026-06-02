@@ -26,8 +26,11 @@ end
     data = PowerFlowData(DCPowerFlow(; correct_bustypes = true), sys)
     power_injections =
         deepcopy(data.bus_active_power_injections - data.bus_active_power_withdrawals)
-    matrix_data = deepcopy(data.power_network_matrix.K)       # LU factorization of ABA
-    aux_network_matrix = deepcopy(data.aux_network_matrix)    # BA matrix
+    # Share the PNM matrices by reference: deepcopying an ABA_Matrix (or its `K`
+    # field) is disallowed because the KLU factorization cache holds raw libklu
+    # pointers. Both are only read below (the `\` solve and the BA transpose).
+    matrix_data = data.power_network_matrix.K                 # LU factorization of ABA
+    aux_network_matrix = data.aux_network_matrix              # BA matrix
 
     valid_ix = setdiff(
         1:length(power_injections),
