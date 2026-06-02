@@ -171,20 +171,17 @@ end
     solve_power_flow(
         pf::T,
         sys::PSY.System,
-        flow_reporting::FlowReporting
+        flow_reporting::FlowReporting = FlowReporting.ARC_FLOWS,
     ) where T <: AbstractDCPowerFlow
 
 
 Evaluates the provided DC power flow method `pf` on the [PowerSystems.System](@extref) `sys`,
 returning a dictionary of `DataFrame`s containing the calculated flows and bus angles.
-The `flow_reporting` input determines if flows are reported for arcs (`FlowReporting.ARC_FLOWS`)
-or for branches (`FlowReporting.BRANCH_FLOWS`).
+The `flow_reporting` input determines if flows are reported for arcs (`FlowReporting.ARC_FLOWS`,
+the default) or for branches (`FlowReporting.BRANCH_FLOWS`).
 
 Configuration options like `time_steps`, `time_step_names`, `network_reductions`, and
 `correct_bustypes` should be set on the power flow object (e.g., `DCPowerFlow(; time_steps=2)`).
-
-Provided for convenience: this interface bypasses the need to create a [`PowerFlowData`](@ref)
-struct, but that's still what's happening under the hood.
 
 # Example
 ```julia
@@ -198,20 +195,13 @@ display(d["1"]["bus_results"])
 function solve_power_flow(
     pf::T,
     sys::PSY.System,
-    flow_reporting::FlowReporting,
+    flow_reporting::FlowReporting = FlowReporting.ARC_FLOWS,
 ) where {T <: AbstractDCPowerFlow}
     with_units_base(sys, PSY.UnitSystem.SYSTEM_BASE) do
         data = PowerFlowData(pf, sys)
         solve_power_flow!(data)
         return write_results(data, sys, flow_reporting)
     end
-end
-
-function solve_power_flow(
-    pf::T,
-    sys::PSY.System,
-) where {T <: AbstractDCPowerFlow}
-    return solve_power_flow(pf, sys, FlowReporting.ARC_FLOWS)
 end
 
 # MULTI PERIOD ###############################################################
