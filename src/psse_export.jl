@@ -1337,10 +1337,8 @@ function _compute_generator_powers(
     base_power::Float64,
 )
     pg, qg = get_active_and_reactive_power_from_generator(generator, PSY.NU)
-    gen_sign = hvdc_end == "TO" ? -1.0 : 1.0
-    if hvdc_end !== nothing
-        pg *= gen_sign * base_power
-        qg *= base_power
+    if hvdc_end == "TO"
+        pg = -pg
     end
     return pg, qg
 end
@@ -1352,14 +1350,7 @@ function _compute_reactive_power_limits(
     hvdc_end::Union{String, Nothing},
     base_power::Float64,
 )
-    limits = get_reactive_power_limits_for_power_flow(generator, PSY.NU)
-    if hvdc_end !== nothing
-        return (
-            min = limits.min * base_power,
-            max = limits.max * base_power,
-        )
-    end
-    return limits
+    return get_reactive_power_limits_for_power_flow(generator, PSY.NU)
 end
 
 """Compute active power limits considering HVDC scaling."""
@@ -1370,11 +1361,8 @@ function _compute_active_power_limits(
     base_power::Float64,
 )
     limits = get_active_power_limits_for_power_flow(generator, PSY.NU)
-    if hvdc_end !== nothing
-        return (
-            min = limits.min * base_power,
-            max = limits.max * base_power,
-        )
+    if hvdc_end == "TO"
+        return (min = -limits.max, max = -limits.min)
     end
     return limits
 end
