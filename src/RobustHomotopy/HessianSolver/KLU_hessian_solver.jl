@@ -1,10 +1,10 @@
 
 struct KLUHessianSolver <: HessianSolver
-    linearSolver::KLULinSolveCache{J_INDEX_TYPE}
+    linearSolver::PNM.KLULinSolveCache{Float64, J_INDEX_TYPE}
 end
 
 function KLUHessianSolver(H::SparseMatrixCSC{Float64, J_INDEX_TYPE})
-    linearSolver = KLULinSolveCache(H)
+    linearSolver = PNM.KLULinSolveCache(H)
     return KLUHessianSolver(linearSolver)
 end
 
@@ -12,7 +12,7 @@ function symbolic_factor!(
     hSolver::KLUHessianSolver,
     H::SparseMatrixCSC{Float64, J_INDEX_TYPE},
 )
-    symbolic_factor!(hSolver.linearSolver.K, H)
+    symbolic_factor!(hSolver.linearSolver, H)
     return
 end
 

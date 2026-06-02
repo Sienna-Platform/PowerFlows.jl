@@ -232,9 +232,10 @@ end
     @test PF._default_marquardt_scaling(
         ACRectangularPowerFlow{LevenbergMarquardtACPowerFlow}()) == true
 
-    # Known J with distinct column 2-norms: col1 = 5, col2 = 12.
+    # Known J with distinct column 2-norms: col1 = 5, col2 = 12. Index type must
+    # match `LMWorkspace`'s `J_INDEX_TYPE` (Int64 on Apple, Int32 elsewhere).
     J = SparseArrays.sparse(
-        Int32[1, 2, 3], Int32[1, 1, 2], [3.0, 4.0, 12.0], 3, 2)
+        PF.J_INDEX_TYPE[1, 2, 3], PF.J_INDEX_TYPE[1, 1, 2], [3.0, 4.0, 12.0], 3, 2)
 
     ws_on = PF.LMWorkspace(J; marquardt_scaling = true)
     @test ws_on.marquardt_scaling == true

@@ -686,10 +686,13 @@ function write_power_flow_solution!(
     end
 
     if get_lcc_count(data) > 0
-        # TODO LCCs and network reductions.
+        # Key on the reduction-mapped arc tuple so the lookup matches
+        # `data.lcc.arcs` (which stores reduced tuples); handles zero-impedance
+        # bus merges that relabel an LCC terminal (e.g. 102→100).
+        nrd = PNM.get_network_reduction_data(data.power_network_matrix)
         arc_to_lcc = Dict{Tuple{Int, Int}, PSY.TwoTerminalLCCLine}()
         for lcc in PSY.get_available_components(PSY.TwoTerminalLCCLine, sys)
-            arc_to_lcc[PNM.get_arc_tuple(PSY.get_arc(lcc))] = lcc
+            arc_to_lcc[PNM.get_arc_tuple(PSY.get_arc(lcc), nrd)] = lcc
         end
 
         for (i, arc) in enumerate(data.lcc.arcs)
@@ -1195,8 +1198,13 @@ end
 function get_lcc_names(data::PowerFlowData, sys::PSY.System)
     lcc_names = String[]
     if get_lcc_count(data) > 0
+        # `data.lcc.arcs` stores reduction-mapped arc tuples (see lcc_utils.jl, where
+        # they are set via `get_arc_tuple(arc, nrd)`), so the lookup must key on the
+        # same reduced tuple — otherwise zero-impedance bus merges (e.g. 102→100)
+        # produce a key miss.
+        nrd = PNM.get_network_reduction_data(data.power_network_matrix)
         lcc_lookup = Dict{Tuple{Int, Int}, String}([
-            (PNM.get_arc_tuple(PSY.get_arc(lcc)) => PSY.get_name(lcc))
+            (PNM.get_arc_tuple(PSY.get_arc(lcc), nrd) => PSY.get_name(lcc))
             for lcc in PSY.get_available_components(PSY.TwoTerminalLCCLine, sys)
         ])
         for arc in data.lcc.arcs
