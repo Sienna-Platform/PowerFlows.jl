@@ -20,7 +20,7 @@ Concrete evaluation models fall into three families:
 |:------ |:---------------------------------------------------------------------------------------------------------------------- |:--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | DC     | [`DCPowerFlow`](@ref), [`PTDFDCPowerFlow`](@ref), [`vPTDFDCPowerFlow`](@ref)                                           | Linear approximation: solves for voltage angles (or computes flows directly via PTDF). Fast, supports multi-period.                                                                                       |
 | AC     | [`ACPolarPowerFlow`](@ref) (alias [`ACPowerFlow`](@ref)), [`ACRectangularPowerFlow`](@ref), [`ACMixedPowerFlow`](@ref) | Full non-linear AC power flow. Three **formulations** — polar power balance `(V, θ)`, Da Costa current injection `(e, f)`, and mixed current–power balance (MCPB, also rectangular state, `2n` unknowns). |
-| Export | [`PSSEExportPowerFlow`](@ref)                                                                                          | Writes a PSS/e raw file as a "solve" step.                                                                                                                                                                |
+| Export | [`PSSEExportPowerFlow`](@ref)                                                                                          | Writes a PSS/E raw file as a "solve" step.                                                                                                                                                                |
 
 Every AC model carries the bookkeeping for the AC problem: bus-type handling,
 slack distribution, network reductions, time steps, the optional reactive-power
@@ -110,7 +110,7 @@ solver is just data.
     post-processing options you need. Loss factors, voltage-stability factors,
     and the DC robust fallback are [`ACPolarPowerFlow`](@ref)-only; the
     rectangular and mixed formulations share the same rectangular-state
-    limitations. PSS/e export is independent of formulation.
+    limitations. PSS/E export is independent of formulation.
   - **Choosing a solver**: driven by *numerics* — how well-conditioned the
     problem is and how close your initial guess is to the solution. If a
     default Newton-Raphson run does not converge, escalate to

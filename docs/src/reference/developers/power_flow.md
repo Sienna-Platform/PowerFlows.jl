@@ -28,7 +28,7 @@ system_data = build_system(PSITestSystems, "c_sys14")
     in the static injection devices. Returns a dictionary with results in a DataFrame that
     can be exported or manipulated as needed.
 
- 2. Solves the power flow and updated the devices in the system to the operating condition.
+ 2. Solves the power flow and updates the devices in the system to the operating condition.
     This model will update the values of magnitudes and angles in the system's buses. It
     also updates the active and reactive power flows in the branches and devices connected
     to PV buses. It also updates the active and reactive power of the injection devices

@@ -9,7 +9,7 @@ CurrentModule = PowerFlows
 `PowerFlows.jl` is part of the National Laboratory of the Rockies'
 [Sienna platform](https://sienna-platform.github.io/Sienna/), an open source framework for
 scheduling problems and dynamic simulations for power systems. The Sienna platform can be
-[found on github](https://github.com/Sienna-Platform/).
+[found on GitHub](https://github.com/Sienna-Platform/).
 
 `PowerFlows.jl` provides a uniform interface to multiple power-flow formulations and solvers
 for [`PowerSystems.jl`](https://sienna-platform.github.io/PowerSystems.jl/stable/) data models.
@@ -19,7 +19,7 @@ Main capabilities include:
   - **AC power flow** — polar, rectangular current-injection, and mixed current–power balance formulations.
   - **Iterative AC solvers** — Newton–Raphson, trust region, Levenberg–Marquardt, and robust homotopy options.
   - **Multi-period DC workflows** — batch validation of time-coupled dispatches (for example, post–unit commitment checks).
-  - **Post-processing and export** — structured `DataFrame` results, optional PSS/e export, loss and voltage-stability factors.
+  - **Post-processing and export** — structured `DataFrame` results, optional PSS/E export, loss and voltage-stability factors.
 
 The package builds on network matrices from
 [`PowerNetworkMatrices.jl`](https://sienna-platform.github.io/PowerNetworkMatrices.jl/stable/)
