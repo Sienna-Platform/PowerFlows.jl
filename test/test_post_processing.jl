@@ -205,7 +205,7 @@ end
         (ix_from, ix_to) = (bus_lookup[equivalent_arc[1]], bus_lookup[equivalent_arc[2]])
         V0 = data.bus_magnitude[ix_from, 1] * exp(im * data.bus_angles[ix_from, 1])
         Vn = data.bus_magnitude[ix_to, 1] * exp(im * data.bus_angles[ix_to, 1])
-        x = PF._solve_series_interior_voltages(segments, equivalent_arc, (V0, Vn))
+        x = PF._solve_series_interior_voltages(segments, equivalent_arc, (V0, Vn), nrd)
         all_V = vcat([V0], x, [Vn])
 
         # At each interior node k (1 <= k <= n-1), the total current must be zero:
@@ -219,9 +219,9 @@ end
             (sf_l, _) = PNM.get_arc_tuple(seg_left)
             rev_l = sf_l != expected_from
             (_, _, y21_l, y22_l) = if rev_l
-                reverse(PNM.ybus_branch_entries(seg_left))
+                reverse(PNM.ybus_branch_entries(seg_left, nrd))
             else
-                PNM.ybus_branch_entries(seg_left)
+                PNM.ybus_branch_entries(seg_left, nrd)
             end
             # Current into node k from the left segment (to-side of segment k)
             I_from_left = y21_l * all_V[k] + y22_l * all_V[k + 1]
@@ -232,9 +232,9 @@ end
             (sf_r, _) = PNM.get_arc_tuple(seg_right)
             rev_r = sf_r != next_from
             (y11_r, y12_r, _, _) = if rev_r
-                reverse(PNM.ybus_branch_entries(seg_right))
+                reverse(PNM.ybus_branch_entries(seg_right, nrd))
             else
-                PNM.ybus_branch_entries(seg_right)
+                PNM.ybus_branch_entries(seg_right, nrd)
             end
             # Current into node k from the right segment (from-side of segment k+1)
             I_from_right = y11_r * all_V[k + 1] + y12_r * all_V[k + 2]
