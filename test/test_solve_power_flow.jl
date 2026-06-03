@@ -82,19 +82,6 @@ end
 function test_ac_line_configurations(ACSolver)
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
     pf = ACPowerFlow{ACSolver}(; correct_bustypes = true)
-    base_res = solve_power_flow(pf, sys)
-    branch = first(PSY.get_components(Line, sys))
-    dyn_branch = DynamicBranch(branch)
-    add_component!(sys, dyn_branch)
-    @test dyn_pf = solve_and_store_power_flow!(pf, sys)
-    dyn_pf = solve_power_flow(pf, sys)
-    @test LinearAlgebra.norm(
-        dyn_pf["bus_results"].Vm - base_res["bus_results"].Vm,
-        Inf,
-    ) <= 1e-6
-
-    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
-    pf = ACPowerFlow{ACSolver}(; correct_bustypes = true)
     line = get_component(Line, sys, "Line4")
     PSY.set_available!(line, false)
     solve_and_store_power_flow!(pf, sys)
@@ -117,8 +104,7 @@ function test_ac_line_configurations(ACSolver)
 end
 
 @testset "AC Power Flow 14-Bus Line Configurations" begin
-    # TODO(PSY6): DynamicBranch components are problematic. PSY issue #1689
-    @test_skip foreach(test_ac_line_configurations, AC_SOLVERS_TO_TEST)
+    foreach(test_ac_line_configurations, AC_SOLVERS_TO_TEST)
 end
 
 function test_ac_3bus_fixed_admittance(ACSolver)
