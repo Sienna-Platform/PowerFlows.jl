@@ -1,6 +1,6 @@
 # Guidelines for Developers
 
-In order to contribute to `PowerSimulationsDynamics.jl` repository please read the following
+In order to contribute to `PowerFlows.jl` please read the following
 sections of [`InfrastructureSystems.jl`](https://github.com/Sienna-Platform/InfrastructureSystems.jl)
 documentation in detail:
 

@@ -31,7 +31,10 @@ pages = OrderedDict(
         "Public API Reference" => "reference/api/public.md",
         "Internal API Reference - Core" => "reference/api/internal.md",
         "Internal API Reference - Solvers & Utilities" => "reference/api/internal_solvers.md",
-        "Code Base Developer Guide" => "reference/developers/developer.md",
+        "Code Base Developer Guide" => Any[
+            "Guidelines" => "reference/developers/developer.md",
+            "Power Flow Overview for Developers" => "reference/developers/power_flow.md",
+        ],
     ],
 )
 
