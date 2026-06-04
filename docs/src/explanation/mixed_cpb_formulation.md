@@ -41,7 +41,7 @@ I^{i}_i &= \sum_k \left(B_{ik} e_k + G_{ik} f_k\right)
 \end{aligned}
 ```
 
-$P_i$ and $Q_i$ denote the effective constant-power net injection (generation minus
+``P_i`` and ``Q_i`` denote the effective constant-power net injection (generation minus
 constant-power load). Constant-impedance ZIP load is folded into the
 admittance matrix diagonal; constant-current ZIP load is subtracted as
 $-\,\mathrm{const\_I}\cdot|V_i|$ — identical to the
