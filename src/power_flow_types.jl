@@ -144,6 +144,8 @@ with the specified solver type.
 - `time_step_names::Vector{String}`: Names for each time step. Default is an empty vector.
 - `correct_bustypes::Bool`: Whether to automatically correct bus types based on available generation.
     Default is `false`.
+- `control_discrete_devices::Bool`: Whether to run discrete device control (tap changers, switched
+    shunts) via λ-continuation. Default is `false`.
 - `solver_settings::Dict{Symbol, Any}`: Additional keyword arguments to pass to the solver.
     Default is an empty dictionary.
 """
@@ -165,6 +167,7 @@ struct ACPolarPowerFlow{ACSolver <: ACPowerFlowSolverType} <: AbstractACPowerFlo
     time_steps::Int
     time_step_names::Vector{String}
     correct_bustypes::Bool
+    control_discrete_devices::Bool
     solver_settings::Dict{Symbol, Any}
 end
 
@@ -218,6 +221,7 @@ function ACPolarPowerFlow{ACSolver}(;
     time_steps::Int = 1,
     time_step_names::Vector{String} = String[],
     correct_bustypes::Bool = false,
+    control_discrete_devices::Bool = false,
     solver_settings::AbstractDict = Dict{Symbol, Any}(),
 ) where {ACSolver <: ACPowerFlowSolverType}
     settings = Dict{Symbol, Any}(solver_settings)
@@ -243,6 +247,7 @@ function ACPolarPowerFlow{ACSolver}(;
         time_steps,
         time_step_names,
         correct_bustypes,
+        control_discrete_devices,
         settings,
     )
 end
@@ -275,6 +280,9 @@ get_calculate_loss_factors(pf::ACPolarPowerFlow) = pf.calculate_loss_factors
 get_calculate_voltage_stability_factors(::AbstractACPowerFlow) = false
 get_calculate_voltage_stability_factors(pf::ACPolarPowerFlow) =
     pf.calculate_voltage_stability_factors
+
+get_control_discrete_devices(pf::AbstractACPowerFlow) = pf.control_discrete_devices
+get_control_discrete_devices(::PowerFlowEvaluationModel) = false
 
 """
     ACRectangularPowerFlow{ACSolver}(; kwargs...) where {ACSolver <: ACPowerFlowSolverType}
@@ -310,6 +318,8 @@ polar state layout and have no current-injection equivalent.
 - `time_steps::Int`: Default `1`.
 - `time_step_names::Vector{String}`: Default empty.
 - `correct_bustypes::Bool`: Default `false`.
+- `control_discrete_devices::Bool`: Whether to run discrete device control via λ-continuation.
+    Default `false`.
 - `solver_settings::Dict{Symbol, Any}`: Default empty.
 """
 struct ACRectangularPowerFlow{ACSolver <: ACPowerFlowSolverType} <:
@@ -328,6 +338,7 @@ struct ACRectangularPowerFlow{ACSolver <: ACPowerFlowSolverType} <:
     time_steps::Int
     time_step_names::Vector{String}
     correct_bustypes::Bool
+    control_discrete_devices::Bool
     solver_settings::Dict{Symbol, Any}
 end
 
@@ -346,6 +357,7 @@ function ACRectangularPowerFlow{ACSolver}(;
     time_steps::Int = 1,
     time_step_names::Vector{String} = String[],
     correct_bustypes::Bool = false,
+    control_discrete_devices::Bool = false,
     solver_settings::Dict{Symbol, Any} = Dict{Symbol, Any}(),
 ) where {ACSolver <: ACPowerFlowSolverType}
     if ACSolver <: Union{
@@ -378,6 +390,7 @@ function ACRectangularPowerFlow{ACSolver}(;
         time_steps,
         time_step_names,
         correct_bustypes,
+        control_discrete_devices,
         solver_settings,
     )
 end
@@ -419,6 +432,8 @@ polar state layout and have no mixed current-power equivalent.
 - `time_steps::Int`: Default `1`.
 - `time_step_names::Vector{String}`: Default empty.
 - `correct_bustypes::Bool`: Default `false`.
+- `control_discrete_devices::Bool`: Whether to run discrete device control via λ-continuation.
+    Default `false`.
 - `solver_settings::Dict{Symbol, Any}`: Default empty.
 """
 struct ACMixedPowerFlow{ACSolver <: ACPowerFlowSolverType} <:
@@ -437,6 +452,7 @@ struct ACMixedPowerFlow{ACSolver <: ACPowerFlowSolverType} <:
     time_steps::Int
     time_step_names::Vector{String}
     correct_bustypes::Bool
+    control_discrete_devices::Bool
     solver_settings::Dict{Symbol, Any}
 end
 
@@ -455,6 +471,7 @@ function ACMixedPowerFlow{ACSolver}(;
     time_steps::Int = 1,
     time_step_names::Vector{String} = String[],
     correct_bustypes::Bool = false,
+    control_discrete_devices::Bool = false,
     solver_settings::Dict{Symbol, Any} = Dict{Symbol, Any}(),
 ) where {ACSolver <: ACPowerFlowSolverType}
     if ACSolver <: Union{
@@ -488,6 +505,7 @@ function ACMixedPowerFlow{ACSolver}(;
         time_steps,
         time_step_names,
         correct_bustypes,
+        control_discrete_devices,
         solver_settings,
     )
 end

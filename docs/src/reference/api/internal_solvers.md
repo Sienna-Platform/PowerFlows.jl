@@ -42,6 +42,19 @@ Pages = [
 ]
 ```
 
+## Discrete Control via λ-Continuation
+
+```@autodocs
+Modules = [PowerFlows]
+Public = true
+Private = true
+Pages = [
+    "discrete_control/controlled_devices.jl",
+    "discrete_control/control_metadata.jl",
+    "discrete_control/control_continuation.jl",
+]
+```
+
 # Linear Algebra Backends
 
 ## Robust Homotopy

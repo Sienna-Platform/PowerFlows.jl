@@ -137,6 +137,7 @@ struct PowerFlowData{
     lcc::LCCParameters
     arc_lossy_admittance_from_to::Union{SparseMatrixCSC{YBUS_ELTYPE, Int}, Nothing}
     arc_lossy_admittance_to_from::Union{SparseMatrixCSC{YBUS_ELTYPE, Int}, Nothing}
+    controlled_devices::Union{Nothing, ControlledDeviceSet}
     # Persistent linear-solver cache for the DC solves. Reused across repeated solves on
     # the same data (e.g. a PCM loop: fixed network, changing injections) so the network
     # matrix is factored once and the solve buffer is not reallocated. Despite the name it
@@ -229,6 +230,7 @@ get_converged(pfd::PowerFlowData) = pfd.converged
 get_loss_factors(pfd::PowerFlowData) = pfd.loss_factors
 get_voltage_stability_factors(pfd::PowerFlowData) = pfd.voltage_stability_factors
 get_arc_active_power_losses(pfd::PowerFlowData) = pfd.arc_active_power_losses
+get_controlled_devices(pfd::PowerFlowData) = pfd.controlled_devices
 
 # Field getter for expanded slack participation factors (one dict per time step)
 # Named "computed" to distinguish from the user-supplied pf.generator_slack_participation_factors
@@ -326,6 +328,7 @@ function PowerFlowData(
     neighbors = Vector{Set{Int}}(),
     arc_lossy_admittance_from_to::Union{SparseMatrixCSC{YBUS_ELTYPE, Int}, Nothing} = nothing,
     arc_lossy_admittance_to_from::Union{SparseMatrixCSC{YBUS_ELTYPE, Int}, Nothing} = nothing,
+    controlled_devices::Union{Nothing, ControlledDeviceSet} = nothing,
     arc_bus_incidence::Union{SparseMatrixCSC{Int8, Int}, Nothing} = nothing,
 ) where {
     T <: PowerFlowEvaluationModel,
@@ -385,6 +388,7 @@ function PowerFlowData(
         lcc_parameters,
         arc_lossy_admittance_from_to,
         arc_lossy_admittance_to_from,
+        controlled_devices,
         Base.RefValue{Any}(nothing), # solver_cache (lazily populated)
     )
 end
@@ -472,6 +476,7 @@ function make_and_initialize_power_flow_data(
     neighbors = Vector{Set{Int}}(),
     arc_lossy_admittance_from_to::Union{SparseMatrixCSC{YBUS_ELTYPE, Int}, Nothing} = nothing,
     arc_lossy_admittance_to_from::Union{SparseMatrixCSC{YBUS_ELTYPE, Int}, Nothing} = nothing,
+    controlled_devices::Union{Nothing, ControlledDeviceSet} = nothing,
     arc_bus_incidence::Union{SparseMatrixCSC{Int8, Int}, Nothing} = nothing,
 ) where {M <: PNM.PowerNetworkMatrix, N <: Union{PNM.PowerNetworkMatrix, Nothing}}
     check_unit_setting(sys)
@@ -490,6 +495,7 @@ function make_and_initialize_power_flow_data(
         neighbors = neighbors,
         arc_lossy_admittance_from_to = arc_lossy_admittance_from_to,
         arc_lossy_admittance_to_from = arc_lossy_admittance_to_from,
+        controlled_devices = controlled_devices,
         arc_bus_incidence = arc_bus_incidence,
     )
     @assert length(data.lcc.setpoint_at_rectifier) == n_lccs
@@ -555,12 +561,21 @@ function PowerFlowData(
         aux_network_matrix = nothing
     end
 
+    controlled_devices = if get_control_discrete_devices(pf)
+        bus_lookup = PNM.get_bus_lookup(power_network_matrix)
+        set = build_controlled_device_set(sys, bus_lookup, power_network_matrix)
+        isempty(set) ? nothing : set
+    else
+        nothing
+    end
+
     return make_and_initialize_power_flow_data(
         pf,
         sys,
         power_network_matrix,
         aux_network_matrix;
         neighbors = neighbors,
+        controlled_devices = controlled_devices,
     )
 end
 

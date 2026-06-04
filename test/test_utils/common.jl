@@ -495,6 +495,165 @@ function prepare_ts_data!(data::PowerFlowData, time_steps::Int64 = 24)
     return
 end
 
+"""Build a minimal 3-bus system with one `TapTransformer` (VOLTAGE control) and one
+`SwitchedAdmittance` for testing `build_controlled_device_set`."""
+function _make_tap_shunt_system()
+    sys = System(100.0)
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.0, 0.0)
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.PQ, 230, 1.0, 0.0)
+    b3 = _add_simple_bus!(sys, 3, ACBusTypes.PQ, 230, 1.0, 0.0)
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    _add_simple_load!(sys, b2, 0.1, 0.05)
+    _add_simple_load!(sys, b3, 0.1, 0.05)
+    # Line between buses 1 and 3 so the network is connected.
+    _add_simple_line!(sys, b1, b3, 1e-2, 1e-2, 0.0)
+    tap_arc = Arc(; from = b1, to = b2)
+    tx = TapTransformer(;
+        name = "tap_1_2",
+        available = true,
+        active_power_flow = 0.0,
+        reactive_power_flow = 0.0,
+        arc = tap_arc,
+        r = 0.01,
+        x = 0.10,
+        primary_shunt = 0.0 + 0.0im,
+        tap = 1.0,
+        rating = 1.0,
+        base_power = 100.0,
+        control_objective = PSY.TransformerControlObjective.VOLTAGE,
+    )
+    add_component!(sys, tx)
+    sa = SwitchedAdmittance(;
+        name = "shunt_3",
+        available = true,
+        bus = b3,
+        Y = 0.0 + 0.0im,
+        initial_status = [0],
+        number_of_steps = [4],
+        Y_increase = [0.0 + 0.05im],
+        admittance_limits = (min = 0.9, max = 1.1),
+    )
+    add_component!(sys, sa)
+    return sys
+end
+
+"""Build a 3-bus system with one `TapTransformer` (VOLTAGE control) and one
+`SwitchedAdmittance`, designed so the AC base case converges cleanly.
+
+Bus 2 carries a significant load (0.5 pu on 100 MVA base) through a low-impedance
+transformer from the REF bus, so that the tap is the sole voltage-support mechanism
+for that bus.  Bus 3 is separately connected to the REF bus via a line and hosts the
+shunt.  Buses 2 and 3 are decoupled (both see the REF bus but not each other), so
+shunt adjustments do not perturb the tap-controlled bus and vice-versa.
+
+The continuation engine with `INITIAL_CONTROL_STEEPNESS=100` typically drives the
+tap to a saturation extreme (p_min or p_max) before the oscillation guard triggers.
+`snap_and_restore!` then snaps the tap to the nearest discrete level and re-solves;
+convergence is guaranteed.  The voltage at the snapped level may be far from vset
+for this network—this is expected behaviour of the oscillation guard.  Integration
+tests using this fixture should assert convergence and correct snapping, not voltage
+proximity."""
+function _make_solvable_tap_shunt_system()
+    sys = System(100.0)
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.0, 0.0)
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.PQ, 230, 1.0, 0.0)
+    b3 = _add_simple_bus!(sys, 3, ACBusTypes.PQ, 230, 1.0, 0.0)
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    # Significant load so the base case converges with a non-trivial solution.
+    load2 = PowerLoad(;
+        name = "load_2",
+        available = true,
+        bus = b2,
+        active_power = 0.5,
+        reactive_power = 0.25,
+        base_power = 100.0,
+        max_active_power = 100.0,
+        max_reactive_power = 100.0,
+    )
+    add_component!(sys, load2)
+    load3 = PowerLoad(;
+        name = "load_3",
+        available = true,
+        bus = b3,
+        active_power = 0.05,
+        reactive_power = 0.025,
+        base_power = 100.0,
+        max_active_power = 100.0,
+        max_reactive_power = 100.0,
+    )
+    add_component!(sys, load3)
+    # Bus 3 connected to REF bus; decoupled from bus 2.
+    _add_simple_line!(sys, b1, b3, 1e-2, 1e-2, 0.0)
+    tap_arc = Arc(; from = b1, to = b2)
+    tx = TapTransformer(;
+        name = "tap_1_2",
+        available = true,
+        active_power_flow = 0.0,
+        reactive_power_flow = 0.0,
+        arc = tap_arc,
+        r = 0.01,
+        x = 0.10,
+        primary_shunt = 0.0 + 0.0im,
+        tap = 1.0,
+        rating = 1.0,
+        base_power = 100.0,
+        control_objective = PSY.TransformerControlObjective.VOLTAGE,
+    )
+    add_component!(sys, tx)
+    sa = SwitchedAdmittance(;
+        name = "shunt_3",
+        available = true,
+        bus = b3,
+        Y = 0.0 + 0.0im,
+        initial_status = [0],
+        number_of_steps = [4],
+        Y_increase = [0.0 + 0.05im],
+        admittance_limits = (min = 0.9, max = 1.1),
+    )
+    add_component!(sys, sa)
+    return sys
+end
+
+"""Build a 4-bus system where the TapTransformer's FROM bus is the controlled bus
+(`controlled_on_primary=true`), exercising the eq.46 orientation path.
+
+Topology: REF(1) ─line─ PQ(2) ─tap─ PQ(3); REF(1) ─line─ PQ(4).
+Bus 2 is both the FROM bus of the tap and the controlled bus (set via ext["NREG"]).
+The tap has real authority over bus 2 voltage through the impedance seen by bus 2."""
+function _make_primary_controlled_tap_system()
+    sys = System(100.0)
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.0, 0.0)
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.PQ, 230, 1.0, 0.0)
+    b3 = _add_simple_bus!(sys, 3, ACBusTypes.PQ, 230, 1.0, 0.0)
+    b4 = _add_simple_bus!(sys, 4, ACBusTypes.PQ, 230, 1.0, 0.0)
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    _add_simple_load!(sys, b2, 0.3, 0.15)
+    _add_simple_load!(sys, b3, 0.1, 0.05)
+    _add_simple_load!(sys, b4, 0.05, 0.025)
+    # Line feeds bus 2 from REF.
+    _add_simple_line!(sys, b1, b2, 1e-2, 5e-2, 0.0)
+    # Bus 4 connected to REF (keeps network connected after b3 has only the tap).
+    _add_simple_line!(sys, b1, b4, 1e-2, 1e-2, 0.0)
+    tap_arc = Arc(; from = b2, to = b3)
+    tx = TapTransformer(;
+        name = "tap_2_3",
+        available = true,
+        active_power_flow = 0.0,
+        reactive_power_flow = 0.0,
+        arc = tap_arc,
+        r = 0.01,
+        x = 0.10,
+        primary_shunt = 0.0 + 0.0im,
+        tap = 1.0,
+        rating = 1.0,
+        base_power = 100.0,
+        control_objective = PSY.TransformerControlObjective.VOLTAGE,
+        ext = Dict{String, Any}("NREG" => 2),  # controlled bus = bus 2 (FROM) → primary
+    )
+    add_component!(sys, tx)
+    return sys
+end
+
 function simple_lcc_system()
     sys = System(100.0)
     b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.1, 0.0)

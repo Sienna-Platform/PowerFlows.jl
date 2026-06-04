@@ -5,7 +5,6 @@ A struct to keep track of the residuals in the Newton-Raphson AC power flow calc
 
 # Fields
 - `data::ACPowerFlowData`: The grid model data.
-- `Rf!::Function`: A function that updates the residuals based on the latest values stored in the grid at the given iteration.
 - `Rv::Vector{Float64}`: A vector of the values of the residuals.
 - `P_net::Vector{Float64}`: A vector of net active power injections.
 - `Q_net::Vector{Float64}`: A vector of net reactive power injections.
@@ -17,7 +16,6 @@ A struct to keep track of the residuals in the Newton-Raphson AC power flow calc
 """
 struct ACPowerFlowResidual
     data::ACPowerFlowData
-    Rf!::Function
     Rv::Vector{Float64}
     P_net::Vector{Float64}
     Q_net::Vector{Float64}
@@ -85,7 +83,6 @@ function ACPowerFlowResidual(data::ACPowerFlowData, time_step::Int64)
 
     return ACPowerFlowResidual(
         data,
-        _update_residual_values!,
         Vector{Float64}(undef, 2 * n_buses + 4 * n_lccs),
         P_net,
         Q_net,
@@ -121,7 +118,7 @@ function (Residual::ACPowerFlowResidual)(
     x::Vector{Float64},
     time_step::Int64,
 )
-    Residual.Rf!(
+    _update_residual_values!(
         Residual.Rv,
         x,
         Residual.P_net,
@@ -155,7 +152,7 @@ Calling the `ACPowerFlowResidual` will also update the values of P, Q, V, Θ in 
 - `time_step::Int64`: The current time step.
 """
 function (Residual::ACPowerFlowResidual)(x::Vector{Float64}, time_step::Int64)
-    Residual.Rf!(
+    _update_residual_values!(
         Residual.Rv,
         x,
         Residual.P_net,
