@@ -343,11 +343,14 @@ function _trust_region_step(time_step::Int,
     LinearAlgebra.mul!(stateVector.r_predict, J.Jv, stateVector.Δx_proposed)
     stateVector.r_predict .+= stateVector.r
     predicted_reduction = old_residual_norm - sum(abs2, stateVector.r_predict)
-    # Non-positive predicted reduction (e.g. a non-descent fallback step) would give a
-    # NaN/Inf ρ that stalls the solver; force a rejected-step ρ to shrink the trust region.
+    # The dogleg model reduction is non-negative by construction; a non-positive value
+    # here is floating-point cancellation near convergence (‖r‖²≈0). Force a rejected-step
+    # ρ to shrink the trust region — standard recovery, matching the LM solver's guard.
     rho = if predicted_reduction > 0.0
         (old_residual_norm - new_residual_norm) / predicted_reduction
     else
+        @debug "Non-positive predicted reduction $(siground(predicted_reduction)); \
+            rejecting step, shrinking trust region"
         -Inf
     end
 

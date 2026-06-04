@@ -111,9 +111,10 @@ J.Jv  # Access the Jacobian matrix stored internally in J.
 # layout, and slack-participation pattern — none change on the PV→PQ flips that drive the
 # Q-limit loop (colptr/rowval verified byte-identical across a flip). Cache key is the
 # network-matrix identity + slack nonzero pattern, so a distributed-slack participant drop
-# (which changes the pattern) correctly rebuilds. A full `copy` is returned because some
-# nzval entries (e.g. LCC angle-constraint diagonals = 1.0) are set at structure creation
-# and never rewritten by `J(time_step)`, so they must be carried over, not zeroed.
+# (which changes the pattern) correctly rebuilds. A full `copy` is returned so each
+# `ACPowerFlowJacobian` owns a fresh mutable buffer (the Newton loop mutates it in place;
+# Q-limit/PCM hold several live instances). Every nzval entry is rewritten by
+# `J(time_step)`, so the cached template stays pristine.
 function _get_or_build_jacobian_structure(
     data::ACPowerFlowData,
     slack_factors::SparseVector{Float64, Int},
@@ -594,6 +595,11 @@ function _set_entries_for_lcc(data::ACPowerFlowData,
         idx_tap_to = offset_lcc + 2
         idx_angle_from = offset_lcc + 3
         idx_angle_to = offset_lcc + 4
+
+        # F_α = α − α_min has a constant unit self-derivative; write it each iteration so
+        # every nonzero is owned by the update path, not seeded only at construction.
+        Jv[idx_angle_from, idx_angle_from] = 1.0
+        Jv[idx_angle_to, idx_angle_to] = 1.0
 
         alpha_r = data.lcc.rectifier.thyristor_angle[i, time_step]
         alpha_i = data.lcc.inverter.thyristor_angle[i, time_step]
