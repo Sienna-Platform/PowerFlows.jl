@@ -40,8 +40,8 @@ mutable struct ControlledSwitchedShunt <: AbstractShuntControl
 end
 
 # Reserved seams — not implemented in this scope.
-mutable struct ControlledPhaseShifter <: AbstractBranchControl end
-mutable struct ControlledFACTS <: AbstractShuntControl end
+struct ControlledPhaseShifter <: AbstractBranchControl end
+struct ControlledFACTS <: AbstractShuntControl end
 
 struct ControlledDeviceSet
     taps::Vector{ControlledTap}
@@ -109,9 +109,12 @@ function apply_parameter!(d::ControlledTap, data, p::Float64, ::Int)
     return nothing
 end
 
+# Delta-update (`+=`, not `=`): `_get_withdrawals!` accumulates all constant-Z devices on
+# this bus into one slot, so overwriting would drop co-located contributions. Only
+# susceptance is controlled; g0 is constant and stays in the baseline.
 function apply_parameter!(d::ControlledSwitchedShunt, data, b::Float64, ts::Int)
-    data.bus_active_power_constant_impedance_withdrawals[d.bus_ix, ts] = d.g0
-    data.bus_reactive_power_constant_impedance_withdrawals[d.bus_ix, ts] = -b
+    data.bus_reactive_power_constant_impedance_withdrawals[d.bus_ix, ts] +=
+        d.current - b
     d.current = b
     return nothing
 end

@@ -7,6 +7,22 @@ const CONTROL_CONTRACTION = 0.5
 
 @inline _read_vmag(data, ix::Int, ts::Int) = data.bus_magnitude[ix, ts]
 
+# Snapshot / capture / restore the per-time-step bus voltage state. A failed solve leaves
+# the diverged iterate in `data`, so the backtracking applicators roll back to the last
+# converged columns before retrying with a smaller step.
+@inline _snapshot_voltage(data, ts::Int) =
+    (data.bus_magnitude[:, ts], data.bus_angles[:, ts])
+@inline function _capture_voltage!((vmag, vang), data, ts::Int)
+    vmag .= view(data.bus_magnitude, :, ts)
+    vang .= view(data.bus_angles, :, ts)
+    return nothing
+end
+@inline function _restore_voltage!(data, ts::Int, (vmag, vang))
+    data.bus_magnitude[:, ts] .= vmag
+    data.bus_angles[:, ts] .= vang
+    return nothing
+end
+
 # Sign-corrected sigmoid law: orientation comes from the MEASURED dV/dp (not the
 # device's primary/secondary wiring) so the closed-loop gain σ'(V)·dV/dp ≤ 0
 # (negative feedback) regardless of wiring. `_sigmoid(lo,hi,…)` decreases in V when hi>lo.
@@ -26,6 +42,7 @@ function _plant_sign(d, data, ts::Int, pf; kwargs...)::Tuple{Float64, Bool}
     p0 = current_parameter(d)
     cix = controlled_bus_ix(d)
     V0 = _read_vmag(data, cix, ts)
+    snap = _snapshot_voltage(data, ts)   # rolled back below if the probe can't re-converge
     lo, hi = parameter_limits(d)
     δ = 1e-3 * (hi - lo)
     δ = δ > 0.0 ? δ : 1e-6
@@ -39,6 +56,8 @@ function _plant_sign(d, data, ts::Int, pf; kwargs...)::Tuple{Float64, Bool}
     ok2 = _solve_with_q_limits!(pf, data, ts; kwargs...)
     reliable = ok1 && ok2 && h != 0.0
     dVdp = reliable ? (V1 - V0) / h : 0.0
+    # Parameter is already back at p0; restore the converged state when the probe failed.
+    reliable || _restore_voltage!(data, ts, snap)
     return dVdp, reliable
 end
 
@@ -53,6 +72,7 @@ function _continuation_to!(d, data, ts::Int, target::Float64, pf; kwargs...)
     done = 0.0                       # fraction of [start,target] applied so far
     step = MIN_LAMBDA_STEP
     reached = start
+    snap = _snapshot_voltage(data, ts)   # last converged state, restored on a failed trial
     while done < 1.0
         trial = min(1.0, done + step)
         p = start + trial * (target - start)
@@ -60,11 +80,14 @@ function _continuation_to!(d, data, ts::Int, target::Float64, pf; kwargs...)
         if _solve_with_q_limits!(pf, data, ts; kwargs...)
             done = trial
             reached = p
+            _capture_voltage!(snap, data, ts)
             step = min(step * CONTROL_STEP_GROWTH, MAX_LAMBDA_STEP)
         else
             apply_parameter!(d, data, reached, ts)
+            _restore_voltage!(data, ts, snap)
             step /= 2.0
             if step < MIN_LAMBDA_STEP
+                # Re-solve from the restored converged state to reset `converged[ts]`.
                 _solve_with_q_limits!(pf, data, ts; kwargs...)
                 return reached
             end
@@ -218,6 +241,7 @@ function _restore_one!(d, data, ts::Int, continuous::Float64, pf; kwargs...)::Bo
     done = 0.0
     step = MIN_LAMBDA_STEP
     last_good = snapped
+    snap = _snapshot_voltage(data, ts)   # last converged state, restored on a failed trial
     while done < 1.0
         trial = min(1.0, done + step)
         p = snapped + trial * (continuous - snapped)
@@ -225,12 +249,14 @@ function _restore_one!(d, data, ts::Int, continuous::Float64, pf; kwargs...)::Bo
         if _solve_with_q_limits!(pf, data, ts; kwargs...)
             done = trial
             last_good = p
+            _capture_voltage!(snap, data, ts)
             step = min(step * CONTROL_STEP_GROWTH, MAX_LAMBDA_STEP)
         else
+            # Revert to the last converged parameter and state, not the failed trial.
+            apply_parameter!(d, data, last_good, ts)
+            _restore_voltage!(data, ts, snap)
             step /= 2.0
             if step < MIN_LAMBDA_STEP
-                # Leave data at the last converged parameter, not the failed trial.
-                apply_parameter!(d, data, last_good, ts)
                 return false
             end
         end

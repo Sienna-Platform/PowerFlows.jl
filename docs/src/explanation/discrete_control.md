@@ -63,14 +63,16 @@ typed fields. All outer-loop traversal iterates `for d in set.taps` and `for
 d in set.shunts`, so dispatch is monomorphic and the hot-path kernels are
 allocation-free.
 
-For `ControlledTap`, `apply_parameter!` rewrites four `nzval` entries of the
-sparse Y-bus in place using cached linear offsets (`nz_offsets::NTuple{4,Int}`)
-resolved once at device-set construction. The delta update
-`nzval[k] += Y_new − Y_old` preserves any parallel-branch contributions already
-in the shared slot; `d.current` (not the lossy `nzval`) is the authoritative
-source for the old parameter. For `ControlledSwitchedShunt`,
-`apply_parameter!` is a scalar write to
-`data.bus_reactive_power_constant_impedance_withdrawals[bus_ix, ts]`.
+For `ControlledTap`, `apply_parameter!` rewrites three of the four cached `nzval`
+entries of the sparse Y-bus in place (Y11, Y12, Y21) using cached linear offsets
+(`nz_offsets::NTuple{4,Int}`) resolved once at device-set construction; Y22 = Yt
+is tap-independent and is skipped. The delta update `nzval[k] += Y_new − Y_old`
+preserves any parallel-branch contributions already in the shared slot;
+`d.current` (not the lossy `nzval`) is the authoritative source for the old
+parameter. For `ControlledSwitchedShunt`, `apply_parameter!` applies the
+analogous reactive delta to
+`data.bus_reactive_power_constant_impedance_withdrawals[bus_ix, ts]`, so
+co-located constant-impedance contributions on the same bus are preserved.
 
 ## The sigmoid control law
 
@@ -114,7 +116,7 @@ negative feedback regardless of device wiring.
 ## The continuation engine
 
 The outer loop `_control_continuation!` runs up to
-`MAX_CONTROL_OUTER_ITERATIONS = 20` passes. Each pass:
+`MAX_CONTROL_OUTER_ITERATIONS = 100` passes. Each pass:
 
 1. Computes the sigmoid target $p^*$ for every device given the current
    controlled-bus voltage and steepness $S$.
@@ -123,17 +125,19 @@ The outer loop `_control_continuation!` runs up to
 3. Applies each update via `_continuation_to!`, the incremental robust
    applicator.
 
-**Under-relaxation.** The factor $\omega$ is chosen so the local iteration-map
-slope magnitude is at most `CONTROL_CONTRACTION = 0.7`. The closed-loop slope
-is bounded by $|h - \ell| \cdot S/4 \cdot |\partial|V|/\partial p|$ (the
-maximum sigmoid derivative times the plant gain), giving
+**Under-relaxation.** The damped iteration $p \leftarrow p + \omega(p^* - p)$ has
+local slope $m = 1 + \omega(g' - 1)$, where $g' = \sigma'(|V|)\cdot\partial|V|/\partial p \le 0$
+after sign correction. The factor $\omega$ is chosen to keep $m$ non-negative
+(monotone, $0 \le m < 1$) with target $m \ge \theta$, i.e.
 
-$$\omega \leq \frac{1 + \theta}{1 + |g'|}$$
+$$\omega \leq \frac{1 - \theta}{1 + |g'|}$$
 
-where $\theta = 0.7$ is the contraction target and $g'$ is the closed-loop
-gain bound. This guarantees monotone convergence at every steepness without
-re-measuring the plant gain each iteration. The cap `CONTROL_RELAXATION_MAX =
-0.8` prevents $\omega$ from being set too high when $g'$ is near zero.
+where `CONTROL_CONTRACTION = 0.5` is the contraction target $\theta$ and $g'$ is
+the closed-loop gain bound $|h - \ell| \cdot S/4 \cdot |\partial|V|/\partial p|$
+(the maximum sigmoid derivative times the plant gain). This guarantees monotone
+convergence at every steepness without re-measuring the plant gain each
+iteration. The cap `CONTROL_RELAXATION_MAX = 0.8` prevents $\omega$ from being
+set too high when $g'$ is near zero.
 
 **Incremental applicator.** `_continuation_to!` walks the parameter from its
 current value to the relaxed target in sub-steps. The first sub-step is
