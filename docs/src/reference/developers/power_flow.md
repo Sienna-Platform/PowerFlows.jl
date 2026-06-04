@@ -129,12 +129,13 @@ PSI documents the end-to-end workflow (template setup, auxiliary variables, comp
 PTDF UC flows to AC in-loop flows) in its tutorial
 [Running Power Flow In The Loop with Unit Commitment](@extref uc-inloop-pf).
 
-Standalone PF examples and formulation trade-offs remain in this package's
-[Tutorials](@ref) and [Explanation](@ref) sections.
+Standalone PF examples and formulation trade-offs remain in the
+[Solving a Power Flow](@ref) tutorial and the Explanation pages (for example
+[Evaluation Models vs. Solver Algorithms](@ref)).
 
 ## Related reading
 
   - [Evaluation Models vs. Solver Algorithms](@ref)
   - [Mixed Current-Power Balance Formulation](@ref)
-  - [LCC Model Implementation](@ref)
-  - [Public API Reference](@ref) — evaluation models and `solve_*` entry points
+  - [Line-Commutated Converter (LCC) Implementations](@ref)
+  - [Public API](@ref) — evaluation models and `solve_*` entry points
