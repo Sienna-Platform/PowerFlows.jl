@@ -277,6 +277,11 @@ function _dc_power_flow_fallback!(data::ACPowerFlowData, time_step::Int)
     # PNM's KLUWrapper.KLULinSolveCache exposes solve! (in-place) instead of ldiv!.
     PNM.solve!(solver_cache, p_inj)
     data.bus_angles[valid_ix, time_step] .= p_inj
+    # The reduced solve is referenced to 0 at each ref bus, but the AC solve holds each
+    # ref bus fixed at its stored angle: shift the warm start onto the AC reference so
+    # arcs incident to a ref bus with nonzero stored angle don't start with a spurious
+    # angle difference. Only this column — others may hold solved AC states.
+    _shift_angles_to_stored_reference!(data, time_step)
 end
 
 function initialize_power_flow_variables(pf::ACPolarPowerFlow{T},
