@@ -283,6 +283,12 @@ get_arc_lookup(pfd::ACPowerFlowData) =
 get_arc_axis(pfd::ACPowerFlowData) =
     PNM.get_arc_axis(pfd.power_network_matrix.arc_admittance_from_to)
 
+# used for shifting angles relative to REF bus after DC solve.
+subnetwork_axes(data::PTDFPowerFlowData) = data.aux_network_matrix.subnetwork_axes
+subnetwork_axes(data::vPTDFPowerFlowData) = data.aux_network_matrix.subnetwork_axes
+subnetwork_axes(data::ABAPowerFlowData) = data.power_network_matrix.subnetwork_axes
+subnetwork_axes(data::ACPowerFlowData) = get_aux_network_matrix(data).subnetwork_axes
+
 # so we can initialize things to the correct size inside the below constructor.
 # No `PowerFlowData` instance, so can't call get_arc_axis or similar to get the size.
 arc_count(::AbstractACPowerFlow,
