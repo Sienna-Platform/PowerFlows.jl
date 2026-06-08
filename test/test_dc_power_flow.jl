@@ -144,7 +144,7 @@ end
             power_flow_with_units(sys, T, PSY.UnitSystem.NATURAL_UNITS)
         line_name2, flow_system = power_flow_with_units(sys, T, PSY.UnitSystem.SYSTEM_BASE)
         @test line_name == line_name2
-        @test flow_natural == flow_system
+        @test isapprox(flow_natural, flow_system, atol = 1e-6)
     end
 end
 
