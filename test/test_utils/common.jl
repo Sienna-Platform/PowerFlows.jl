@@ -446,7 +446,8 @@ function _add_simple_lcc!(
         rectifier_xc = xr,
         rectifier_base_voltage = 230.0,
         inverter_bridges = 1,
-        inverter_extinction_angle_limits = (min = 0, max = π / 2),
+        # Keep operation conditions off the clamp.
+        inverter_extinction_angle_limits = (min = deg2rad(17), max = π / 2),
         inverter_rc = 0.0,
         inverter_xc = xi,
         inverter_base_voltage = 230.0,
@@ -464,7 +465,7 @@ function _add_simple_lcc!(
         inverter_tap_setting = 1.0,
         inverter_tap_limits = (min = 0.5, max = 1.5),
         inverter_tap_step = 0.05,
-        inverter_extinction_angle = 0.0,
+        inverter_extinction_angle = deg2rad(17),
         inverter_capacitor_reactance = 0.0,
         active_power_limits_from = (min = 0.0, max = 0.0),
         active_power_limits_to = (min = 0.0, max = 0.0),
