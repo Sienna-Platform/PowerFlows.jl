@@ -156,17 +156,25 @@ cross-references "fixed(-slope) decoupled Newton-Raphson"/FDNS so PSS/E users fi
 |---|---|---|
 | `fd_variant::Symbol` | polar: `:decoupled`; rect/mixed: `:fixed_jacobian` | `:decoupled` = B′/B″ half-iterations (polar only in v1); `:fixed_jacobian` = frozen full formulation Jacobian, factor-once (all formulations) |
 | `fd_scheme::Symbol` | `:XB` | B′/B″ scheme, `:XB` (Stott–Alsac, PSS/E-like) or `:BX` (van Amerongen). Only meaningful for polar `:decoupled` |
+| `fd_non_divergent::Bool` | `true` | PSS/E-style non-divergent backtracking (POM §6.5.3, offered for FNSL/FDNS only): per cycle, if `Σ mismatch²` fails to drop below `NDVFCT ×` previous, halve the step factor and re-try (≤ 10 halvings); on exhaustion terminate keeping the best-Σmismatch² state. Subsumes stall detection. (PSS/E ships it as an opt-in; we default it on because our default mode is pure FD with no handoff) |
 | `handoff_solver` | `nothing` | `nothing` (pure FD) or `NewtonRaphsonACPowerFlow` / `TrustRegionACPowerFlow` (v1; LM follow-on). Validated, descriptive `ArgumentError` otherwise |
-| `handoff_tol::Float64` | `DEFAULT_FD_HANDOFF_TOL = 1e-3` | FD-stage exit ∞-norm when handoff configured. 1e-3 pu ≙ PSS/E's default convergence tolerance TOLN = 0.1 MW/MVAr on a 100 MVA base — the FD stage exits at commercial-tool tolerance, the refinement stage continues to the package's 1e-9 |
+| `handoff_tol::Float64` | `DEFAULT_FD_HANDOFF_TOL = 1e-3` | FD-stage exit ∞-norm when handoff configured. 1e-3 pu ≙ PSS/E's default convergence tolerance TOLN = 0.1 MW/MVAr on a 100 MVA base (POM §6.5.1) — the FD stage exits at commercial-tool tolerance, the refinement stage continues to the package's 1e-9 |
 | `refreeze_on_stall::Bool` | `true` | `:fixed_jacobian` only: on stall, re-evaluate + refactor the frozen J once, continue |
 | `maxIterations::Int` | `DEFAULT_FD_MAX_ITER = 150` | FD-stage cap (linear convergence needs more, cheaper iterations than NR's 50) |
 | `tol`, `validate_voltage_magnitudes`, `vm_validation_range`, `linear_solver` | existing defaults | shared semantics with other solvers |
 
-New constants in `src/definitions.jl` (naming style of existing block at :15-45):
-`DEFAULT_FD_MAX_ITER = 150`, `DEFAULT_FD_HANDOFF_TOL = 1e-3`, `DEFAULT_FD_STALL_WINDOW = 10`
-(iterations without sufficient best-norm improvement), `DEFAULT_FD_STALL_RATIO = 0.99`
-(improvement factor defining "progress"), `DEFAULT_FD_DIVERGENCE_FACTOR = 1e3` (abort when
-`‖Rv‖∞ > factor·best`), `DEFAULT_FD_SCHEME = :XB`, `DEFAULT_FD_REFREEZE_ON_STALL = true`.
+New constants in `src/definitions.jl` (naming style of existing block at :15-45). Safeguard
+values are PSS/E POM 36.1.0 parity (§6.5.1/§6.5.3; FDNS shares them with FNSL per §6.7):
+`DEFAULT_FD_MAX_ITER = 150`, `DEFAULT_FD_HANDOFF_TOL = 1e-3`, `DEFAULT_FD_SCHEME = :XB`,
+`DEFAULT_FD_REFREEZE_ON_STALL = true`, `DEFAULT_FD_NON_DIVERGENT = true`,
+`DEFAULT_FD_NDVFCT = 0.99` (non-divergent improvement factor ≙ PSS/E NDVFCT),
+`DEFAULT_FD_MAX_STEP_HALVINGS = 10` (≙ PSS/E's ≤10 inner mismatch calculations,
+step factor down to ~0.002), `DEFAULT_FD_BLOWUP = 5.0` (largest unscaled per-half-step
+|Δθ| (rad) / |ΔV/V| abort threshold ≙ PSS/E BLOWUP; bypassed when `fd_non_divergent`),
+`DEFAULT_FD_DVLIM = 0.99` (uniform scale-down of the ΔV vector so the largest applied
+voltage-magnitude change ≤ DVLIM, plus the ΔV/V ≤ −1 positivity guard ≙ PSS/E DVLIM),
+`DEFAULT_FD_VM_ABORT = 0.01` (abort if any bus |V| is driven to ≈0 — POM §6.7: "Activity
+FDNS is terminated if the voltage magnitude at a bus is driven to very nearly 0.0").
 
 Usage examples (for docs):
 ```julia
@@ -191,17 +199,27 @@ pf = ACMixedPowerFlow{FastDecoupledACPowerFlow}()                              #
 setup: residual, J, x0 from initialize_power_flow_variables (J needed for handoff/loss factors)
        fetch-or-build FD cache: B′ factored (full_factor!), B″ factored for current PQ set
        sync explicit rows (below); residual(x, t); best = ‖Rv‖∞
-loop while i < maxIterations and not converged:
-  1. P half-step: rp[k] = Rv[p_row_idx[k]] / Vm[pvpq[k]]          (V from data.bus_magnitude)
-     solve!(Bp_cache, rp);  x[theta_x_idx] .-= rp                 (mirror solve-then-negate)
+loop while i < maxIterations and not converged:                   # log half-steps as i.0 / i.5 (PSS/E style)
+  1. P half-step (i.0): rp[k] = Rv[p_row_idx[k]] / Vm[pvpq[k]]    (V from data.bus_magnitude)
+     solve!(Bp_cache, rp);  blowup check on max|rp|;  x[theta_x_idx] .-= rp   (solve-then-negate)
   2. sync explicit rows; residual(x, t)
-  3. Q half-step: rq[k] = Rv[q_row_idx[k]] / Vm[pq[k]]
-     solve!(Bpp_cache, rq); x[v_x_idx] .-= rq
-  4. sync explicit rows; residual(x, t)
-  5. converged = ‖Rv‖∞ < stage_tol   (stage_tol = handoff_tol if handing off else tol)
-     stall/divergence bookkeeping on ‖Rv‖∞ (best-norm tracking, window/ratio/factor constants)
+  3. Q half-step (i.5): rq[k] = Rv[q_row_idx[k]] / Vm[pq[k]]
+     solve!(Bpp_cache, rq)
+     DVLIM clamp: if max|rq| > DVLIM, scale rq uniformly so max applied |ΔV| = DVLIM;
+     guard ΔV/V ≤ −1 (positivity); blowup check;  x[v_x_idx] .-= rq
+  4. sync explicit rows; residual(x, t); abort if any Vm < DEFAULT_FD_VM_ABORT
+  5. non-divergent control (fd_non_divergent, default on): if Σ(Rv²) ≥ NDVFCT · Σ(Rv²)_prev,
+     halve the applied step factor (re-apply from the cycle-start state) and recompute, up to
+     MAX_STEP_HALVINGS times; on exhaustion terminate, restoring the best-Σ(Rv²) state seen
+     (POM §6.5.3 semantics — the "failed" state still localizes trouble spots, so keep it in
+     data). When fd_non_divergent = false, the BLOWUP threshold is the only divergence guard.
+  6. converged = ‖Rv‖∞ < stage_tol   (stage_tol = handoff_tol if handing off else tol)
 optional voltage validation per iteration via _validate_state_magnitudes (as NR loop :691-696)
 ```
+
+Logging (PSS/E convergence-monitor style, POM §6.5/§6.7): `@debug` per half-step with the
+`i.0`/`i.5` label, largest mismatch and its bus number (decode pattern as in
+`src/power_flow_setup.jl:33-40`), and largest applied |Δθ|/|ΔV|; `@info` totals at exit.
 
 *Reference-implementation alignment (see §11)*: this matches MATPOWER `fdpf.m` — mismatches
 `(V·conj(Ybus·V) − S)/Vm`, P rows at PV∪PQ / Q rows at PQ, strict successive P→Q half-iterations
@@ -209,10 +227,14 @@ with mismatch re-evaluation after **each** half-step, factor-once LU, negated up
 Amerongen specifically reports that strict P/Q alternation prevents the convergence *cycling*
 seen in some systems — do not "optimize" by skipping the mid-cycle residual refresh. One
 deliberate divergence: MATPOWER converges on the V-normalized mismatches, while this plan keeps
-the package-wide criterion `‖Rv‖∞ < tol` on raw mismatches (identical at |V|≈1 pu; consistency
-with every other PowerFlows solver and the Q-limit loop matters more). Iteration-count logs
-should state the convention "1 iteration = one P + one Q half-step" (PSS/E FDNS reports half-
-iterations; numbers differ by ~2× — note this in the docstring to preempt comparisons).
+the package-wide criterion `‖Rv‖∞ < tol` on raw mismatches — which is the **PSS/E convention**
+(POM §6.5.1: TOLN tests the largest raw MW/Mvar mismatch), identical to MATPOWER's at |V|≈1 pu.
+Iteration accounting also matches PSS/E: the POM's FDNS convergence monitor labels half-steps
+`i.0` (angle) / `i.5` (voltage) under main-iteration number `i` — i.e. "1 iteration = one P + one
+Q half-step", same as this plan. Where PSS/E splits tolerances (TOLN vs VCTOLQ for controlled
+buses), we use the single package `tol` for all rows — REF/PV explicit rows are synced to ≈0
+each iteration anyway, mirroring the POM's note that controlled-bus Q mismatch "will normally
+be zero" when devices are off-limits.
 
 **Sign convention contract**: B′/B″ are defined as constant approximations of the codebase's own
 Jacobian sub-blocks — B′ ≈ ∂(Rv_P/V)/∂θ over pvpq, B″ ≈ ∂(Rv_Q/V)/∂V over pq — and the update
@@ -272,8 +294,11 @@ residual, J, x0 = initialize_power_flow_variables(pf, data, time_step; ...)
 ensure J holds values at x0 (polar setup calls J(t); rect/mixed: call J(t) once if constructor doesn't)
 cache = make_linear_solver_cache(backend, J.Jv); full_factor!(cache, J.Jv)     # ONCE
 loop: copyto!(sv.r, residual.Rv); _solve_Δx_nr_frozen!(sv, cache)   # solve + negate, NO refactor
-      sv.x .+= sv.Δx_nr; residual(sv.x, t); convergence/stall/divergence checks
-on stall && refreeze_on_stall (once): J(t); numeric_refactor!(cache, J.Jv); continue
+      sv.x .+= sv.Δx_nr; residual(sv.x, t)
+      safeguards as §4.1: blowup check on the step, V≈0 abort, and the same fd_non_divergent
+      backtracking (shared helper; here it halves the full Δx step)
+on non-divergent termination && refreeze_on_stall (once): J(t); numeric_refactor!(cache, J.Jv);
+      reset the backtracking state and continue   # one "refreeze" before giving up
 ```
 Notes: do **not** call `_set_Δx_nr!` (it refactors every call — that's the thing being avoided);
 add a tiny frozen-step helper that reuses `_solve_Δx_nr!` + `rmul!(−1)`. LCC variables and
@@ -297,7 +322,8 @@ disabled/undocumented. Not on the critical path; nothing else depends on it.
 ### 4.4 Handoff stage (opt-in)
 
 In the FD driver, when `handoff_solver !== nothing` and the FD stage exits (reached
-`handoff_tol`, stalled, diverged, or hit maxIterations) without meeting `tol`:
+`handoff_tol`, blowup, non-divergent termination — which restores the best state seen, a good
+NR starting point — or hit maxIterations) without meeting `tol`:
 ```
 J(time_step)                                   # refresh Jacobian values at current x
 hcache = make_linear_solver_cache(backend, J.Jv); symbolic_factor!(hcache, J.Jv)
@@ -353,8 +379,11 @@ vectors. Invalidation keys: Ybus object identity (`data.power_network_matrix ===
 backend type, scheme. Effects: across time steps with identical bus-type columns and across
 Q-limit retries that return to a previously-seen PQ set, **zero refactorizations**; B′ is
 factored exactly once per (data, scheme, backend) lifetime; a PV→PQ switch refactors only B″
-(small, ~ms at 10k buses). The FD iteration loop itself must be allocation-free (buffers in the
-cache; `@views`; no closures capturing boxed state).
+(small, ~ms at 10k buses). This is exactly the PSS/E FDNS contract (POM §6.7: the P-θ matrix
+"remains fixed throughout the solution, while the matrix used for the reactive power-voltage
+calculation changes only as voltage controlled buses switch between voltage regulating (PV) and
+reactive power limited (PQ) boundary conditions"). The FD iteration loop itself must be
+allocation-free (buffers in the cache; `@views`; no closures capturing boxed state).
 
 ### 4.6 Special cases (explicit behavior matrix)
 
@@ -362,7 +391,7 @@ cache; `@views`; no closures capturing boxed state).
 |---|---|---|
 | LCC HVDC present (`get_lcc_count(data) > 0`; LCC vars = 4 trailing x entries + 4 residual rows each) | `ArgumentError` at driver entry: half-iterations don't span LCC vars so `‖Rv‖∞` can't converge. Message points to `:fixed_jacobian`, rect/mixed FD, or NR/TR. (Per-LCC 4×4 Gauss-Seidel sub-step = WP7 stretch.) | Supported (LCC rows live in frozen J) |
 | Distributed slack (participation factors / headroom) | Supported via rank-1 slack sync (§4.1); dedicated test T6; if validation shows instability on test systems, tighten to `ArgumentError` + suggest `:fixed_jacobian` (decision recorded in WP3) | Supported |
-| Q-limit switching (`check_reactive_power_limits`) | Supported; B″ refactor via cache keyed on PQ set | Supported (outer loop re-invokes driver; J re-frozen at new x0) |
+| Q-limit switching (`check_reactive_power_limits`) | Supported; B″ refactor via cache keyed on PQ set. Deliberate divergence: PSS/E switches bus types *within* FDNS iterations (with anti-oscillation lookback, POM §6.5); we enforce between driver re-invocations like every other PowerFlows solver — the B′/B″ cache + warm start make re-invocations cheap | Supported (outer loop re-invokes driver; J re-frozen at new x0) |
 | Loss factors / voltage-stability factors (polar-only features) | Supported; driver refreshes `J(t)` at solution | Same |
 | Multiple islands | Supported (block-diagonal B′/B″) | Supported |
 | `correct_bustypes`, ZIP loads, `skip_redistribution`, exporter | Orthogonal — handled in data construction/residual; no FD-specific code | Same |
@@ -418,9 +447,14 @@ cache; `@views`; no closures capturing boxed state).
 - **T7 — Multi-period & caching**: `time_steps > 1` (pattern of `test_multiperiod_ac_power_flow.jl`):
   all steps converge; FD cache reused (B′ factored once; B″ per distinct bus-type signature) —
   expose a counter on `FastDecoupledCache` for testability.
-- **T8 — Stall/divergence path**: pathological case (e.g. very high r/x ratio system built with
-  test utils, XB scheme): FD stalls → with handoff: still converges via NR; without: returns
-  false, no exception, NaN-overwrite behavior intact (`solve_power_flow!` :184-195).
+- **T8 — Safeguard paths**: pathological case (e.g. very high r/x ratio system built with test
+  utils, XB scheme — POM's NSOL/FDNS failure mode: "reaches some mismatch level and then begins
+  to diverge, usually slowly"): (a) non-divergent backtracking terminates and **restores the
+  best-Σ(mismatch²) state into `data`** (assert final state == best recorded, not the last
+  diverged one); (b) with handoff: still converges via NR from that best state; (c) without:
+  returns false, no exception, NaN-overwrite behavior intact (`solve_power_flow!` :184-195);
+  (d) `fd_non_divergent=false`: BLOWUP threshold aborts on the step-size check; (e) DVLIM
+  clamping engages on a contrived large-ΔV case and the solve still converges.
 - **T9 — Loss factors / vstab factors**: c_sys14 with `calculate_loss_factors=true`: FD factors ==
   NR factors (tolerance per `test_loss_factors.jl`) — catches the stale-J pitfall.
 - **T10 — Allocations**: mirror `test_ac_nr_allocations.jl` for the FD loop (post-warmup
@@ -431,8 +465,10 @@ cache; `@views`; no closures capturing boxed state).
   resort (LM precedent at `test_loss_factors.jl:5`).
 - **Performance** (`test/performance`): 2000-bus benchmark — wall-time per solve FD vs NR for
   (a) single solve, (b) 24-step multi-period re-solve; report iteration counts. Target evidence
-  (not hard CI assert): FD per-iteration ≥ 5× cheaper; multi-period total time competitive or
-  better despite more iterations.
+  (not hard CI assert), anchored to the POM §6.7 figures: FD **half-iteration ≈ 1/5 of an NR
+  iteration** (full P+Q cycle ≤ ~0.5×), startup allowed to be slower ("the start-up time is
+  longer, as the fixed matrices are calculated"); multi-period total time competitive or better
+  despite more iterations, with startup amortized by the cache.
 - Optional dev-time cross-check (not CI): MATPOWER `runpf` with `FDXB`/`FDBX` on case5/case14 —
   compare iteration counts (±2) and solutions.
 
@@ -455,7 +491,7 @@ contract changes go through the integrator (WP0 owner).
 |---|---|---|---|---|
 | **WP0** | Type, constants, exports, settings parsing/validation, driver skeleton (`ArgumentError("not yet implemented")` per variant), docstring stubs | — | first, small, single agent | Package loads; `ACPowerFlow{FastDecoupledACPowerFlow}()` constructs for all 3 formulations; settings validation unit tests |
 | **WP1** | `fast_decoupled_matrices.jl` + T1 | WP0 | ∥ WP2 | T1 green incl. WECC240 restamp |
-| **WP2** | Frozen-Jacobian loop (all formulations) + stall/divergence helpers + T3 (non-LCC parts) + T8 skeleton | WP0 | ∥ WP1 | T3 parity green on polar+rect+mixed |
+| **WP2** | Frozen-Jacobian loop (all formulations) + shared safeguard helpers (non-divergent backtracking with best-state restore, BLOWUP, DVLIM, V≈0 abort) + T3 (non-LCC parts) + T8 skeleton | WP0 | ∥ WP1 | T3 parity green on polar+rect+mixed; T8 (a)(d)(e) green |
 | **WP3** | Polar `:decoupled` loop: index maps, half-steps, `_sync_explicit_state!`, distributed slack; T2, T6 | WP0+WP1 (+WP2's shared helpers) | after WP1 | T2/T6 green; records the distributed-slack keep-or-restrict decision |
 | **WP4** | Handoff stage (NR/TR; LM adapter follow-on) + T4 | WP0+WP2 (extend to WP3 output) | ∥ WP3 (against WP2 first) | T4 green for both variants |
 | **WP5** | `FastDecoupledCache` in `data.solver_cache`, multi-period reuse, Q-limit integration, LCC gating, loss-factor J refresh, allocation-free pass; T5/T7/T9/T10, LCC parts of T3 | WP2+WP3 | integration, single agent | T5/T7/T9/T10 green; counter-verified factor-once behavior |
@@ -491,9 +527,10 @@ Do not bump the version or touch CHANGELOG (none exists) — maintainer's call.
   impedance branches (cap susceptance, log), reduction-generated equivalent arcs, ComplexF32
   noise, τ-side convention mismatches. Mitigated by the restamp-reconstruction test on WECC240 +
   reduced-network cases; residual exactness bounds the damage to convergence rate.
-- **FD divergence on high-r/x or stressed cases is *expected algorithm behavior***, not a bug:
-  the deliverables are honest stall detection, useful error guidance, BX option, and handoff —
-  not unconditional convergence. Document prominently.
+- **FD divergence on high-r/x or stressed cases is *expected algorithm behavior***, not a bug
+  (the POM documents it for NSOL/FDNS): the deliverables are the PSS/E-parity safeguards
+  (non-divergent backtracking with best-state restore, BLOWUP, DVLIM, V≈0 abort), useful error
+  guidance, the BX option, and handoff — not unconditional convergence. Document prominently.
 - **Distributed slack under `:decoupled`** is the most novel piece (sequential rank-1 update).
   T6 validates; pre-agreed fallback = restrict with a clear error while `:fixed_jacobian` covers
   it. Decision must be recorded in WP3, not silently dropped.
@@ -516,41 +553,64 @@ Do not bump the version or touch CHANGELOG (none exists) — maintainer's call.
 
 Every load-bearing design decision was checked against commercial-tool documentation, the de
 facto open reference implementation (MATPOWER), and the founding literature (June 2026 review).
+**Primary source:** the PSS/E 36.1.0 Program Operation Manual §6.5–6.7 (FNSL/NSOL/FDNS activity
+descriptions, maintainer-provided excerpt) was read directly; POM citations below are firsthand.
 
 | Plan element | Industry/literature reference | Verdict |
 |---|---|---|
-| Name & semantics: "fast decoupled" = PSS/E FDNS | PSS/E API `psspy.fdns` is documented as the **fixed slope decoupled Newton-Raphson** method (psspy.org forum usage; Siemens API naming) | Corroborated |
+| Name & semantics: "fast decoupled" = PSS/E FDNS | POM §6.7: activity FDNS "uses a **fixed-slope decoupled Newton-Raphson** iterative algorithm" | Corroborated (primary source) |
+| Half-iteration structure (θ with V held, then V with θ held) | POM §6.7: "each iteration consists of a pair of half iterations; first with the voltage magnitudes held constant and new voltage phase angles determined, then with the phase angles fixed and new voltage magnitudes calculated" | Corroborated verbatim |
+| B′ factored once per data lifetime; B″ refactored only on PV↔PQ switching (the cache design, §4.5) | POM §6.7: the approximate Jacobian is "insensitive to bus voltages… the matrix used in the active power-angle solution **remains fixed throughout the solution**, while the matrix used for the reactive power-voltage calculation **changes only as voltage controlled buses switch** between PV and PQ" | Corroborated verbatim — this is the central FDNS contract |
+| Safeguards: non-divergent backtracking (NDVFCT=0.99, ≤10 halvings, best-state restore), BLOWUP=5.0, DVLIM=0.99 + V-positivity guard, V≈0 abort | POM §6.5.1/§6.5.3/§6.7 (FDNS shares FNSL's blowup check, ΔV-vector scaling, and the non-divergent option, which PSS/E offers **only** for FNSL and FDNS) | Adopted at PSS/E parity, constants matched |
+| Iteration accounting: 1 iteration = P half + Q half | POM §6.6/§6.7 convergence monitor: half-steps labeled `i.0` (angle) / `i.5` (voltage) under main iteration `i` | Corroborated — counts are directly comparable to PSS/E |
+| Convergence on raw `‖Rv‖∞` mismatches | POM §6.5.1: TOLN tests the **largest raw MW/Mvar mismatch** (default 0.1 ≙ 1e-3 pu); FDNS shares FNSL's criteria | Corroborated (PSS/E-aligned; diverges only from MATPOWER's V-normalized test) |
+| Per-iteration cost expectation (§6 benchmarks) | POM §6.7: FDNS "time per half iteration… roughly 1/5 of the time per FNSL iteration. The start-up time is longer, as the fixed matrices are calculated"; §6.6: NSOL ≈ 1/4 | Adopted as the benchmark target |
+| FD as conditioner for poor starts | POM §6.7: FDNS "is much less sensitive to a poor initial voltage estimate than is FNSL" | Corroborated |
 | B′ rules (charging=0, shunts=0, taps→1, phase shift retained; XB: r=0) and B″ rules (shift=0, tap magnitude/charging/shunts kept; BX: r=0) | MATPOWER `makeB.m` source — identical zeroing rules per `FDXB`/`FDBX` | Corroborated, rule-for-rule |
 | Mismatch normalization ΔP/V, ΔQ/V; P rows at PV∪PQ, Q rows at PQ; factor-once LU; negated updates | MATPOWER `fdpf.m` source — `mis = (V·conj(Ybus·V) − Sbus)./Vm`, same row sets, Bp/Bpp factored once, `dVa`/`dVm` applied with negative sign | Corroborated |
 | Strict successive P→Q half-iterations with residual re-evaluation after each half-step | MATPOWER `fdpf.m`; van Amerongen (1989): strict alternation *prevents convergence cycling* | Corroborated (and load-bearing — keep the mid-cycle refresh) |
 | XB default, BX offered for high-r/x robustness | Stott & Alsac (1974) = XB standard; van Amerongen (1989): neglect r in B″ instead of B′ → ~equal iterations on normal systems, faster when problematic r/x present; MATPOWER ships both (`FDXB` default naming order) | Corroborated |
 | Handoff FD→NR, opt-in, plus stall→handoff fallback | PowerWorld official docs: FD "solved first… then immediately solves… Newton-Raphson"; built-in **Robust Solution Process** = controls off → fast decoupled → Newton-Raphson. PSS/E practice: FDNS then FNSL | Corroborated — the plan's staging is standard commercial practice |
-| `handoff_tol = 1e-3` pu default | PSS/E convergence tolerance TOLN default **0.1 MW/MVAr** (= 1e-3 pu @ 100 MVA): FD stage exits at commercial tolerance; refinement reaches 1e-9 | Corroborated |
+| `handoff_tol = 1e-3` pu default | POM §6.5.1: "The default mismatch tolerances (TOLN and VCTOLQ) are 0.1 MW and Mvar (0.001 pu on 100 MVA base)"; FNSL default ITMXN = 20 iterations | Corroborated (primary source) |
 | `:fixed_jacobian` (constant-matrix Newton) for rect/mixed (and polar option) | Moura & Moura, *IJEPES* 2013, "Newton–Raphson power flow with constant matrices": constant-G/B-matrix NR with decoupled V/θ solves outperforms XB/BX on iterations incl. high-r/x systems | Corroborated as a literature-established method |
 | Experimental decoupled current-injection variant (gated) | de Oliveira, Bonini Neto, Alves, Minussi & Castro, *Energies* 16(6):2548 (2023): current-injection NR (polar coords) + **fast decoupled current-injection (BX version)**, validated on 57/118/300/787-bus systems, performance ≈ power-injection methods | Corroborated as viable research-grade; correctly *not* default (commercial tools are polar-only) |
-| FD divergence on stressed/high-r/x cases is expected; mitigate via BX/handoff/stall detection | van Amerongen (1989); PowerWorld robust-process design (FD used as conditioner, NR as closer) | Corroborated |
+| FD divergence on stressed/high-r/x cases is expected; safeguards terminate gracefully | POM §6.6 (NSOL/FDNS family): with r ≳ x branches "the iteration usually reaches some mismatch level and then begins to diverge, usually slowly"; van Amerongen (1989); PowerWorld robust-process design (FD as conditioner, NR as closer) | Corroborated |
 
-**Deliberate divergences from commercial tools (documented, justified):**
-1. Convergence test on raw `‖Rv‖∞` rather than MATPOWER's V-normalized mismatches or PSS/E's
-   MW/MVAr units — package-wide consistency (identical at |V|≈1 pu).
-2. Iteration counting: 1 iteration = one P+Q cycle (PSS/E FDNS reports half-iterations; ~2×
-   difference — stated in the docstring).
-3. Q-limit enforcement stays in the package's existing outer loop (`MAX_REACTIVE_POWER_ITERATIONS`)
-   rather than PSS/E-style in-loop adjustment passes — consistent with every other PowerFlows
-   solver, and in the spirit of PowerWorld's controls-off-during-FD robust process.
-4. Tap / switched-shunt / area-interchange adjustment loops of FDNS/FNSL are out of scope for the
-   whole package, not an FD-specific omission.
+**Deliberate divergences from commercial tools (documented, justified — do not "fix"):**
+1. Single tolerance: PSS/E splits TOLN (P, and Q at PQ buses) from VCTOLQ/VCTOLV (controlled
+   buses, remote control, droop); we apply one `tol` to all residual rows. REF/PV explicit rows
+   are synced to ≈0 each iteration, so in practice this matches the POM's "normally zero" note
+   for locally-controlled buses. (Convergence-norm choice itself is PSS/E-aligned — see table.)
+2. Q-limit enforcement stays in the package's existing outer loop (`MAX_REACTIVE_POWER_ITERATIONS`)
+   rather than PSS/E's in-iteration var-limit switching with anti-oscillation lookback (POM §6.5)
+   — consistent with every other PowerFlows solver; the B′/B″ cache makes the outer-loop
+   re-invocations cheap. PSS/E's delayed-application default ("ignored until the largest reactive
+   power mismatch has been reduced to a preset multiple of TOLN") is effectively reproduced,
+   since limits are checked only after each converged inner solve.
+3. Tap / switched-shunt / area-interchange / DC-tap adjustment loops of FDNS/FNSL (POM §6.5.2,
+   incl. their P-half/Q-half hook points and ADJTHR gating) are out of scope for the whole
+   package, not an FD-specific omission. Note for future work: the POM specifies *where* these
+   hook in (taps/shunts after a P half-step with |Δθ|max < ADJTHR; phase shifters/area
+   interchange after a Q half-step with |ΔV|max < ADJTHR) — the half-step loop should keep
+   those seams visible.
+4. PSS/E's ACCN acceleration (applied to voltage adjustments at setpoint-controlled buses) has
+   no equivalent here — Sienna's PV model is local-setpoint without the remote/droop control
+   machinery ACCN exists to stabilize.
+5. "Optimized FDNS" for contingency analysis (POM §6.7: base-case B′ reused across contingencies
+   with compensation correction vectors; B″ kept when switching is PV→PQ only) — out of scope;
+   listed as future work for contingency screening on top of this implementation.
 
-**Sources** (primary where accessible; matpower.org, MDPI, PowerWorld help, and psspy.org pages
-were variously read via raw GitHub source or search excerpts):
+**Sources** (PSS/E POM read directly from the maintainer-provided excerpt; matpower source read
+from raw GitHub; MDPI, PowerWorld help, and psspy.org pages read via search excerpts):
+- Siemens PTI, *PSS®E 36.1.0 Program Operation Manual*, §6.5 (FNSL: characteristics, automatic
+  adjustments, non-divergent solution option), §6.6 (NSOL), §6.7 (FDNS, optimized FDNS)
 - MATPOWER `makeB.m`, `fdpf.m` — github.com/MATPOWER/matpower (`lib/makeB.m`, `lib/fdpf.m`)
 - B. Stott, O. Alsac, "Fast decoupled load flow", IEEE Trans. PAS-93(3), 1974
 - R.A.M. van Amerongen, "A general-purpose version of the fast decoupled load flow", IEEE Trans.
   Power Systems 4(2):760-770, 1989
 - PowerWorld Simulator WebHelp: "Power Flow Solution: Common Options", "Solving the Power Flow"
   (Robust Solution Process)
-- PSS/E: `psspy.fdns`/`psspy.fnsl` API semantics and TOLN solution parameter (Siemens PTI POM;
-  psspy.org help-forum discussions)
+- psspy.org help-forum discussions (secondary; consistent with the POM)
 - A.M. Moura, A.P. Moura, "Newton–Raphson power flow with constant matrices: a comparison with
   decoupled power flow methods", IJEPES 46:108-115, 2013
 - C.C. de Oliveira, A. Bonini Neto, D.A. Alves, C.R. Minussi, C.A. Castro, "Alternative Current
