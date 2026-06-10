@@ -157,7 +157,7 @@ cross-references "fixed(-slope) decoupled Newton-Raphson"/FDNS so PSS/E users fi
 | `fd_variant::Symbol` | polar: `:decoupled`; rect/mixed: `:fixed_jacobian` | `:decoupled` = B′/B″ half-iterations (polar only in v1); `:fixed_jacobian` = frozen full formulation Jacobian, factor-once (all formulations) |
 | `fd_scheme::Symbol` | `:XB` | B′/B″ scheme, `:XB` (Stott–Alsac, PSS/E-like) or `:BX` (van Amerongen). Only meaningful for polar `:decoupled` |
 | `handoff_solver` | `nothing` | `nothing` (pure FD) or `NewtonRaphsonACPowerFlow` / `TrustRegionACPowerFlow` (v1; LM follow-on). Validated, descriptive `ArgumentError` otherwise |
-| `handoff_tol::Float64` | `DEFAULT_FD_HANDOFF_TOL = 1e-3` | FD-stage exit ∞-norm when handoff configured |
+| `handoff_tol::Float64` | `DEFAULT_FD_HANDOFF_TOL = 1e-3` | FD-stage exit ∞-norm when handoff configured. 1e-3 pu ≙ PSS/E's default convergence tolerance TOLN = 0.1 MW/MVAr on a 100 MVA base — the FD stage exits at commercial-tool tolerance, the refinement stage continues to the package's 1e-9 |
 | `refreeze_on_stall::Bool` | `true` | `:fixed_jacobian` only: on stall, re-evaluate + refactor the frozen J once, continue |
 | `maxIterations::Int` | `DEFAULT_FD_MAX_ITER = 150` | FD-stage cap (linear convergence needs more, cheaper iterations than NR's 50) |
 | `tol`, `validate_voltage_magnitudes`, `vm_validation_range`, `linear_solver` | existing defaults | shared semantics with other solvers |
@@ -202,6 +202,17 @@ loop while i < maxIterations and not converged:
      stall/divergence bookkeeping on ‖Rv‖∞ (best-norm tracking, window/ratio/factor constants)
 optional voltage validation per iteration via _validate_state_magnitudes (as NR loop :691-696)
 ```
+
+*Reference-implementation alignment (see §11)*: this matches MATPOWER `fdpf.m` — mismatches
+`(V·conj(Ybus·V) − S)/Vm`, P rows at PV∪PQ / Q rows at PQ, strict successive P→Q half-iterations
+with mismatch re-evaluation after **each** half-step, factor-once LU, negated updates. Van
+Amerongen specifically reports that strict P/Q alternation prevents the convergence *cycling*
+seen in some systems — do not "optimize" by skipping the mid-cycle residual refresh. One
+deliberate divergence: MATPOWER converges on the V-normalized mismatches, while this plan keeps
+the package-wide criterion `‖Rv‖∞ < tol` on raw mismatches (identical at |V|≈1 pu; consistency
+with every other PowerFlows solver and the Q-limit loop matters more). Iteration-count logs
+should state the convention "1 iteration = one P + one Q half-step" (PSS/E FDNS reports half-
+iterations; numbers differ by ~2× — note this in the docstring to preempt comparisons).
 
 **Sign convention contract**: B′/B″ are defined as constant approximations of the codebase's own
 Jacobian sub-blocks — B′ ≈ ∂(Rv_P/V)/∂θ over pvpq, B″ ≈ ∂(Rv_Q/V)/∂V over pq — and the update
@@ -249,9 +260,13 @@ outer-adjustment style).
 
 ### 4.2 `:fixed_jacobian` — all three formulations
 
-The frozen-Jacobian ("dishonest Newton") variant generalizes the fixed-slope idea and is the
-default for rect/mixed (their off-diagonal Jacobian blocks are constant Ybus terms already —
-docstring at `src/power_flow_types.jl:288-289` — so freezing mostly affects diagonal blocks):
+The frozen-Jacobian ("dishonest Newton" / constant-matrix Newton) variant generalizes the
+fixed-slope idea and is the default for rect/mixed (their off-diagonal Jacobian blocks are
+constant Ybus terms already — docstring at `src/power_flow_types.jl:288-289` — so freezing
+mostly affects diagonal blocks). This is a literature-established method, not an expedient:
+constant-matrix NR variants have been shown competitive with — often better-iterating than —
+XB/BX decoupled methods, including on high-r/x systems (Moura & Moura, *Int. J. Electrical Power
+& Energy Systems*, 2013; see §11):
 ```
 residual, J, x0 = initialize_power_flow_variables(pf, data, time_step; ...)
 ensure J holds values at x0 (polar setup calls J(t); rect/mixed: call J(t) once if constructor doesn't)
@@ -272,8 +287,12 @@ True real/imag current split for the CI family (when G≪B: ΔI_r couples mainly
 via the constant B matrix; one factorization can serve both half-systems). PV-bus handling is the
 hard part: the augmented rect formulation carries Q variables and |V|² rows (mixed: power-balance
 + |V|² rows at PV) whose columns/rows don't decouple cleanly; MCPB PQ rows are divided by V̄ᵢ,
-making even off-diagonals state-dependent. **Acceptance gate**: NR-parity on every system in §6
-(T3) or it ships disabled/undocumented. Not on the critical path; nothing else depends on it.
+making even off-diagonals state-dependent. Literature support exists — a fast decoupled
+current-injection method (BX version) was published and validated on 57–787-bus systems with
+performance similar to the polar power-injection FDPF (de Oliveira, Bonini Neto, Alves, Minussi
+& Castro, *Energies* 16(6):2548, 2023; see §11) — use it as the design reference for PV-bus
+treatment. **Acceptance gate**: NR-parity on every system in §6 (T3) or it ships
+disabled/undocumented. Not on the critical path; nothing else depends on it.
 
 ### 4.4 Handoff stage (opt-in)
 
@@ -294,6 +313,14 @@ inside WP4, keep `ArgumentError` until done. Works for all formulations and both
 Cross-formulation "handoff" (e.g. polar FD warm-starting a rect solve) already exists naturally —
 the residual functor syncs V/θ into `data`, and every formulation's `improve_x0` warm-starts from
 `data` — document the two-solve composition in the explanation page rather than building API.
+
+*Industry precedent (see §11)*: this staging is standard commercial practice, not an invention.
+PowerWorld Simulator documents both the manual pattern ("Fast Decoupled… can be solved first,
+and if it reaches a solution, Simulator then immediately solves… using the Newton-Raphson load
+flow") and a built-in *Robust Solution Process* (controls off → fast decoupled → Newton-Raphson);
+PSS/E practice is the analogous FDNS-then-FNSL activity sequencing. The stall→handoff semantics
+in this plan mirror the PowerWorld robust process; the `handoff_tol` exit mirrors "FDNS converged
+at engineering tolerance, FNSL polishes".
 
 ### 4.5 Driver, caching, multi-period
 
@@ -484,3 +511,47 @@ Do not bump the version or touch CHANGELOG (none exists) — maintainer's call.
 - **Scope discipline**: commercial FDNS also bundles tap/switched-shunt/area-interchange
   adjustments — explicitly **out of scope** here (as for all existing solvers); remote-bus
   voltage control likewise (Sienna models PV locally). Listed in docs as future work.
+
+## 11. Industry corroboration
+
+Every load-bearing design decision was checked against commercial-tool documentation, the de
+facto open reference implementation (MATPOWER), and the founding literature (June 2026 review).
+
+| Plan element | Industry/literature reference | Verdict |
+|---|---|---|
+| Name & semantics: "fast decoupled" = PSS/E FDNS | PSS/E API `psspy.fdns` is documented as the **fixed slope decoupled Newton-Raphson** method (psspy.org forum usage; Siemens API naming) | Corroborated |
+| B′ rules (charging=0, shunts=0, taps→1, phase shift retained; XB: r=0) and B″ rules (shift=0, tap magnitude/charging/shunts kept; BX: r=0) | MATPOWER `makeB.m` source — identical zeroing rules per `FDXB`/`FDBX` | Corroborated, rule-for-rule |
+| Mismatch normalization ΔP/V, ΔQ/V; P rows at PV∪PQ, Q rows at PQ; factor-once LU; negated updates | MATPOWER `fdpf.m` source — `mis = (V·conj(Ybus·V) − Sbus)./Vm`, same row sets, Bp/Bpp factored once, `dVa`/`dVm` applied with negative sign | Corroborated |
+| Strict successive P→Q half-iterations with residual re-evaluation after each half-step | MATPOWER `fdpf.m`; van Amerongen (1989): strict alternation *prevents convergence cycling* | Corroborated (and load-bearing — keep the mid-cycle refresh) |
+| XB default, BX offered for high-r/x robustness | Stott & Alsac (1974) = XB standard; van Amerongen (1989): neglect r in B″ instead of B′ → ~equal iterations on normal systems, faster when problematic r/x present; MATPOWER ships both (`FDXB` default naming order) | Corroborated |
+| Handoff FD→NR, opt-in, plus stall→handoff fallback | PowerWorld official docs: FD "solved first… then immediately solves… Newton-Raphson"; built-in **Robust Solution Process** = controls off → fast decoupled → Newton-Raphson. PSS/E practice: FDNS then FNSL | Corroborated — the plan's staging is standard commercial practice |
+| `handoff_tol = 1e-3` pu default | PSS/E convergence tolerance TOLN default **0.1 MW/MVAr** (= 1e-3 pu @ 100 MVA): FD stage exits at commercial tolerance; refinement reaches 1e-9 | Corroborated |
+| `:fixed_jacobian` (constant-matrix Newton) for rect/mixed (and polar option) | Moura & Moura, *IJEPES* 2013, "Newton–Raphson power flow with constant matrices": constant-G/B-matrix NR with decoupled V/θ solves outperforms XB/BX on iterations incl. high-r/x systems | Corroborated as a literature-established method |
+| Experimental decoupled current-injection variant (gated) | de Oliveira, Bonini Neto, Alves, Minussi & Castro, *Energies* 16(6):2548 (2023): current-injection NR (polar coords) + **fast decoupled current-injection (BX version)**, validated on 57/118/300/787-bus systems, performance ≈ power-injection methods | Corroborated as viable research-grade; correctly *not* default (commercial tools are polar-only) |
+| FD divergence on stressed/high-r/x cases is expected; mitigate via BX/handoff/stall detection | van Amerongen (1989); PowerWorld robust-process design (FD used as conditioner, NR as closer) | Corroborated |
+
+**Deliberate divergences from commercial tools (documented, justified):**
+1. Convergence test on raw `‖Rv‖∞` rather than MATPOWER's V-normalized mismatches or PSS/E's
+   MW/MVAr units — package-wide consistency (identical at |V|≈1 pu).
+2. Iteration counting: 1 iteration = one P+Q cycle (PSS/E FDNS reports half-iterations; ~2×
+   difference — stated in the docstring).
+3. Q-limit enforcement stays in the package's existing outer loop (`MAX_REACTIVE_POWER_ITERATIONS`)
+   rather than PSS/E-style in-loop adjustment passes — consistent with every other PowerFlows
+   solver, and in the spirit of PowerWorld's controls-off-during-FD robust process.
+4. Tap / switched-shunt / area-interchange adjustment loops of FDNS/FNSL are out of scope for the
+   whole package, not an FD-specific omission.
+
+**Sources** (primary where accessible; matpower.org, MDPI, PowerWorld help, and psspy.org pages
+were variously read via raw GitHub source or search excerpts):
+- MATPOWER `makeB.m`, `fdpf.m` — github.com/MATPOWER/matpower (`lib/makeB.m`, `lib/fdpf.m`)
+- B. Stott, O. Alsac, "Fast decoupled load flow", IEEE Trans. PAS-93(3), 1974
+- R.A.M. van Amerongen, "A general-purpose version of the fast decoupled load flow", IEEE Trans.
+  Power Systems 4(2):760-770, 1989
+- PowerWorld Simulator WebHelp: "Power Flow Solution: Common Options", "Solving the Power Flow"
+  (Robust Solution Process)
+- PSS/E: `psspy.fdns`/`psspy.fnsl` API semantics and TOLN solution parameter (Siemens PTI POM;
+  psspy.org help-forum discussions)
+- A.M. Moura, A.P. Moura, "Newton–Raphson power flow with constant matrices: a comparison with
+  decoupled power flow methods", IJEPES 46:108-115, 2013
+- C.C. de Oliveira, A. Bonini Neto, D.A. Alves, C.R. Minussi, C.A. Castro, "Alternative Current
+  Injection Newton and Fast Decoupled Power Flow", Energies 16(6):2548, 2023
