@@ -1376,7 +1376,7 @@ end
 """
      update_system!(sys::PSY.System, data::PowerFlowData; time_step = 1)
 
-Modify the values in the given [`System`](@extref PowerSystems.System) to correspond to the
+Modify the values in the given [`PowerSystems.System`](@extref) to correspond to the
 given `PowerFlowData` such that if a new `PowerFlowData` is constructed from the resulting
 system it is the same as `data`. See also [`write_power_flow_solution!`](@ref). NOTE this
 assumes that `data` was initialized from `sys` and then solved with no further

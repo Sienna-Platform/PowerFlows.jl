@@ -86,8 +86,9 @@ end
 
 """
     solve_power_flow!(data::PTDFPowerFlowData)
+
 Evaluates the PTDF power flow and writes the result to the fields of the
-[`PTDFPowerFlowData`](@ref) structure.
+[`PTDFPowerFlowData`](@ref) structure (a type alias of [`PowerFlowData`](@ref)).
 
 This function modifies the following fields of `data`, setting them to the computed values:
 - `data.bus_angles`: the bus angles for each bus in the system.
@@ -261,20 +262,17 @@ end
     solve_power_flow(
         pf::T,
         sys::PSY.System,
-        flow_reporting::FlowReporting
+        flow_reporting::FlowReporting = FlowReporting.ARC_FLOWS,
     ) where T <: AbstractDCPowerFlow
 
 
 Evaluates the provided DC power flow method `pf` on the [PowerSystems.System](@extref) `sys`,
 returning a dictionary of `DataFrame`s containing the calculated flows and bus angles.
-The `flow_reporting` input determines if flows are reported for arcs (`FlowReporting.ARC_FLOWS`)
-or for branches (`FlowReporting.BRANCH_FLOWS`).
+The `flow_reporting` input determines if flows are reported for arcs (`FlowReporting.ARC_FLOWS`,
+the default) or for branches (`FlowReporting.BRANCH_FLOWS`).
 
 Configuration options like `time_steps`, `time_step_names`, `network_reductions`, and
 `correct_bustypes` should be set on the power flow object (e.g., `DCPowerFlow(; time_steps=2)`).
-
-Provided for convenience: this interface bypasses the need to create a [`PowerFlowData`](@ref)
-struct, but that's still what's happening under the hood.
 
 # Example
 ```julia
@@ -288,7 +286,7 @@ display(d["1"]["bus_results"])
 function solve_power_flow(
     pf::T,
     sys::PSY.System,
-    flow_reporting::FlowReporting;
+    flow_reporting::FlowReporting = FlowReporting.ARC_FLOWS;
     linear_solver::Union{Nothing, AbstractString} = nothing,
 ) where {T <: AbstractDCPowerFlow}
     with_units_base(sys, PSY.UnitSystem.SYSTEM_BASE) do
@@ -324,7 +322,7 @@ or for branches (`FlowReporting.BRANCH_FLOWS`).
 - `flow_reporting::FlowReporting`:
         Format for reporting flows
 
-Note that `data` must have been created from the [System](@extref PowerSystems.System)
+Note that `data` must have been created from the [`PowerSystems.System`](@extref)
 `sys` using one of the [`PowerFlowData`](@ref) constructors.
 
 # Example
