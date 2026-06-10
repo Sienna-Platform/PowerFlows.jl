@@ -111,6 +111,7 @@ Non-negotiable rules for the multi-agent implementation:
    must pass before any iteration-loop work merges.
 3. Do NOT add `FastDecoupledACPowerFlow` to the rect/mixed constructor rejection unions.
 4. New defaults/constants go in `src/definitions.jl` as `DEFAULT_FD_*` (values in plan §3.2).
-5. Industry alignment is documented in plan §11 (MATPOWER makeB/fdpf, PSS/E FDNS/TOLN,
-   PowerWorld FD→NR robust process, van Amerongen) — including four *deliberate* divergences.
-   Don't "fix" those divergences.
+5. Industry alignment is documented in plan §11 — primary source: PSS/E 36.1.0 POM §6.5–6.7
+   (FNSL/NSOL/FDNS), plus MATPOWER makeB/fdpf, PowerWorld FD→NR robust process, van Amerongen.
+   Safeguards (non-divergent backtracking, BLOWUP, DVLIM) are PSS/E-parity; §11 also lists five
+   *deliberate* divergences. Don't "fix" the divergences or "simplify" the safeguards.
