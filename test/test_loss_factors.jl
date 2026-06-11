@@ -113,11 +113,11 @@ Used as a reference implementation to validate the matrix-based `dc_loss_factors
 function _summation_dc_loss_factors(sys, data)
     Rs = Dict{Tuple{Int, Int}, Float64}()
     for line in get_components(PSY.Line, sys)
-        Rs[PNM.get_arc_tuple(line)] = get_r(line)
+        Rs[PNM.get_arc_tuple(line)] = get_r(line, PSY.SU)
     end
     for comp_type in (PSY.TapTransformer, PSY.Transformer2W)
         for line in get_components(comp_type, sys)
-            Rs[PNM.get_arc_tuple(line)] = PSY.get_r(line)
+            Rs[PNM.get_arc_tuple(line)] = PSY.get_r(line, PSY.SU)
         end
     end
     ptdf = data.power_network_matrix

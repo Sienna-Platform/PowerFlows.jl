@@ -518,7 +518,6 @@ function make_and_initialize_power_flow_data(
     arc_lossy_admittance_to_from::Union{SparseMatrixCSC{YBUS_ELTYPE, Int}, Nothing} = nothing,
     arc_bus_incidence::Union{SparseMatrixCSC{Int8, Int}, Nothing} = nothing,
 ) where {M <: PNM.PowerNetworkMatrix, N <: Union{PNM.PowerNetworkMatrix, Nothing}}
-    check_unit_setting(sys)
     removed_buses =
         PNM.get_removed_buses(PNM.get_network_reduction_data(power_network_matrix))
     lcc_filter =

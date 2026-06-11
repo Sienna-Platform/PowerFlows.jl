@@ -163,7 +163,6 @@ end
 
 @testset "ACTIVSg2000 (LM): polar and rectangular match polar NR" begin
     sys = PSB.build_system(PSB.MatpowerTestSystems, "matpower_ACTIVSg2000_sys")
-    PSY.set_units_base_system!(sys, "SYSTEM_BASE")
 
     # Tight tolerance + generous iteration budget: LM refactorizes the sparse QR
     # every iteration and needs more iterations than NR on a 2000-bus system.

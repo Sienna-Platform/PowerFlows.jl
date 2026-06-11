@@ -116,35 +116,35 @@ end
                         im * sum(arc_flows[ix, "Q_from_to"])
                 end
                 @test solve_and_store_power_flow!(pf, sys)
-                base_power = PSY.get_base_power(sys)
+                base_power = PSY.get_base_power(sys, PSY.NU)
                 # check that transformer bus-to-star entries are there.
                 @test isapprox(
-                    PSY.get_active_power_flow_primary(test_trf),
+                    PSY.get_active_power_flow_primary(test_trf, PSY.SU),
                     real(trf_arc_flows[1]) / base_power;
                     atol = 1e-5,
                 )
                 @test isapprox(
-                    PSY.get_reactive_power_flow_primary(test_trf),
+                    PSY.get_reactive_power_flow_primary(test_trf, PSY.SU),
                     imag(trf_arc_flows[1]) / base_power;
                     atol = 1e-5,
                 )
                 @test isapprox(
-                    PSY.get_active_power_flow_secondary(test_trf),
+                    PSY.get_active_power_flow_secondary(test_trf, PSY.SU),
                     real(trf_arc_flows[2]) / base_power;
                     atol = 1e-5,
                 )
                 @test isapprox(
-                    PSY.get_reactive_power_flow_secondary(test_trf),
+                    PSY.get_reactive_power_flow_secondary(test_trf, PSY.SU),
                     imag(trf_arc_flows[2]) / base_power;
                     atol = 1e-5,
                 )
                 @test isapprox(
-                    PSY.get_active_power_flow_tertiary(test_trf),
+                    PSY.get_active_power_flow_tertiary(test_trf, PSY.SU),
                     real(trf_arc_flows[3]) / base_power;
                     atol = 1e-5,
                 )
                 @test isapprox(
-                    PSY.get_reactive_power_flow_tertiary(test_trf),
+                    PSY.get_reactive_power_flow_tertiary(test_trf, PSY.SU),
                     imag(trf_arc_flows[3]) / base_power;
                     atol = 1e-5,
                 )
@@ -183,9 +183,9 @@ function compare_power_flows(
     unreduced_active_flow = unreduced.arc_active_power_flow_from_to[arc_ix, 1]
     unreduced_reactive_flow = unreduced.arc_reactive_power_flow_from_to[arc_ix, 1]
     reduced_active_flow =
-        PSY.get_active_power_flow(PSY.get_component(PSY.Branch, sys, name))
+        PSY.get_active_power_flow(PSY.get_component(PSY.Branch, sys, name), PSY.SU)
     reduced_reactive_flow =
-        PSY.get_reactive_power_flow(PSY.get_component(PSY.Branch, sys, name))
+        PSY.get_reactive_power_flow(PSY.get_component(PSY.Branch, sys, name), PSY.SU)
     @test isapprox(unreduced_active_flow, reduced_active_flow; atol = 1e-3)
     @test isapprox(unreduced_reactive_flow, reduced_reactive_flow; atol = 1e-3)
 end
@@ -237,8 +237,8 @@ end
         for br in branches
             @assert PNM.get_arc_tuple(br) == (from_bus_no, to_bus_no)
             total_flow +=
-                PSY.get_active_power_flow(br) +
-                im * PSY.get_reactive_power_flow(br)
+                PSY.get_active_power_flow(br, PSY.SU) +
+                im * PSY.get_reactive_power_flow(br, PSY.SU)
         end
         if reversed
             @test isapprox(net_from_to_from, total_flow; atol = 1e-3)

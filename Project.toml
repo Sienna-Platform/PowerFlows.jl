@@ -26,7 +26,6 @@ PowerFlowsPardisoExt = "Pardiso"
 
 [compat]
 DataFrames = "1"
-Pardiso = "1"
 DataStructures = "0.19"
 Dates = "1"
 InfrastructureSystems = "3"

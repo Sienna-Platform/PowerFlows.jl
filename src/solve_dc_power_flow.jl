@@ -311,11 +311,9 @@ function solve_power_flow(
     flow_reporting::FlowReporting = FlowReporting.ARC_FLOWS;
     linear_solver::Union{Nothing, AbstractString} = nothing,
 ) where {T <: AbstractDCPowerFlow}
-    with_units_base(sys, PSY.UnitSystem.SYSTEM_BASE) do
-        data = PowerFlowData(pf, sys)
-        solve_power_flow!(data; linear_solver)
-        return write_results(data, sys, flow_reporting)
-    end
+    data = PowerFlowData(pf, sys)
+    solve_power_flow!(data; linear_solver)
+    return write_results(data, sys, flow_reporting)
 end
 
 # MULTI PERIOD ###############################################################
