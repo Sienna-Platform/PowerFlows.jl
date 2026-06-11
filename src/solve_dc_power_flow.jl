@@ -55,10 +55,40 @@ function _make_dc_scratch(data::PowerFlowData)
     )
 end
 
+_convert_to_range(ix::Integer) = ix:ix
+_convert_to_range(::Colon) = Colon()
+
+# PERF: cache ref-to-bus-indices dict.
+"""
+    _shift_angles_to_stored_reference!(data, time_steps = :)
+
+The DC solve computes angles relative to 0 at each subnetwork's ref bus; if the
+subnetwork's ref bus has nonzero angle, shift the angles accordingly.
+"""
+function _shift_angles_to_stored_reference!(
+    data::Union{PTDFPowerFlowData, vPTDFPowerFlowData, ABAPowerFlowData, ACPowerFlowData},
+    time_steps::Union{Colon, Integer} = Colon(),
+)
+    # normalize a scalar index to a range: in-place broadcasting cannot assign
+    # through the zero-dimensional view that scalar indexing produces.
+    timestep_range = _convert_to_range(time_steps)
+    bus_lookup = get_bus_lookup(data)
+    for (ref_bus, ax) in subnetwork_axes(data)
+        ref_row = bus_lookup[ref_bus]
+        θ_ref = @view data.bus_angles[ref_row, timestep_range]
+        all(iszero, θ_ref) && continue
+        for bus in first(ax)
+            bus == ref_bus && continue
+            @views data.bus_angles[bus_lookup[bus], timestep_range] .+= θ_ref
+        end
+    end
+end
+
 """
     solve_power_flow!(data::PTDFPowerFlowData)
+
 Evaluates the PTDF power flow and writes the result to the fields of the
-[`PTDFPowerFlowData`](@ref) structure.
+[`PTDFPowerFlowData`](@ref) structure (a type alias of [`PowerFlowData`](@ref)).
 
 This function modifies the following fields of `data`, setting them to the computed values:
 - `data.bus_angles`: the bus angles for each bus in the system.
@@ -90,6 +120,7 @@ function solve_power_flow!(
     @views p_inj .= power_injections[valid_ix, :]
     solve!(solver_cache, p_inj)
     @views data.bus_angles[valid_ix, :] .= p_inj
+    _shift_angles_to_stored_reference!(data)
     mul!(data.arc_angle_differences, scratch.arc_bus_incidence, data.bus_angles)
     @. data.arc_active_power_losses = scratch.rs * data.arc_active_power_flow_from_to^2
     data.converged .= true
@@ -131,6 +162,7 @@ function solve_power_flow!(
     p_inj = power_injections[valid_ix, :]
     solve!(solver_cache, p_inj)
     data.bus_angles[valid_ix, :] .= p_inj
+    _shift_angles_to_stored_reference!(data)
     _compute_arc_angle_differences_from_data!(data)
     Rs = _get_arc_resistances(data)
     @. data.arc_active_power_losses = Rs * data.arc_active_power_flow_from_to^2
@@ -188,6 +220,7 @@ function solve_power_flow!(
     @views p_inj .= power_injections[valid_ix, :]
     solve!(solver_cache, p_inj)
     @views data.bus_angles[valid_ix, :] .= p_inj
+    _shift_angles_to_stored_reference!(data)
 
     if data.arc_lossy_admittance_from_to !== nothing
         # DC assumption: all bus voltage magnitudes are 1.0 p.u., so V = e^(jθ).
@@ -229,20 +262,17 @@ end
     solve_power_flow(
         pf::T,
         sys::PSY.System,
-        flow_reporting::FlowReporting
+        flow_reporting::FlowReporting = FlowReporting.ARC_FLOWS,
     ) where T <: AbstractDCPowerFlow
 
 
 Evaluates the provided DC power flow method `pf` on the [PowerSystems.System](@extref) `sys`,
 returning a dictionary of `DataFrame`s containing the calculated flows and bus angles.
-The `flow_reporting` input determines if flows are reported for arcs (`FlowReporting.ARC_FLOWS`)
-or for branches (`FlowReporting.BRANCH_FLOWS`).
+The `flow_reporting` input determines if flows are reported for arcs (`FlowReporting.ARC_FLOWS`,
+the default) or for branches (`FlowReporting.BRANCH_FLOWS`).
 
 Configuration options like `time_steps`, `time_step_names`, `network_reductions`, and
 `correct_bustypes` should be set on the power flow object (e.g., `DCPowerFlow(; time_steps=2)`).
-
-Provided for convenience: this interface bypasses the need to create a [`PowerFlowData`](@ref)
-struct, but that's still what's happening under the hood.
 
 # Example
 ```julia
@@ -256,7 +286,7 @@ display(d["1"]["bus_results"])
 function solve_power_flow(
     pf::T,
     sys::PSY.System,
-    flow_reporting::FlowReporting;
+    flow_reporting::FlowReporting = FlowReporting.ARC_FLOWS;
     linear_solver::Union{Nothing, AbstractString} = nothing,
 ) where {T <: AbstractDCPowerFlow}
     data = PowerFlowData(pf, sys)
@@ -290,7 +320,7 @@ or for branches (`FlowReporting.BRANCH_FLOWS`).
 - `flow_reporting::FlowReporting`:
         Format for reporting flows
 
-Note that `data` must have been created from the [System](@extref PowerSystems.System)
+Note that `data` must have been created from the [`PowerSystems.System`](@extref)
 `sys` using one of the [`PowerFlowData`](@ref) constructors.
 
 # Example

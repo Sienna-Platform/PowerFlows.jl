@@ -360,6 +360,7 @@ function _solve_series_interior_voltages(
     segment_sequence::PNM.BranchesSeries,
     equivalent_arc::Tuple{Int, Int},
     V_endpoints::Tuple{ComplexF64, ComplexF64},
+    nrd::PNM.NetworkReductionData,
 )
     chain_len = PNM.length(segment_sequence)
     nbuses = chain_len + 1
@@ -373,9 +374,9 @@ function _solve_series_interior_voltages(
         reversed = (segment_from != expected_from)
         @assert (!reversed) || (segment_to == expected_from)
         if !reversed
-            (y11, y12, y21, y22) = PNM.ybus_branch_entries(segment)
+            (y11, y12, y21, y22) = PNM.ybus_branch_entries(segment, nrd)
         else
-            (y11, y12, y21, y22) = reverse(PNM.ybus_branch_entries(segment))
+            (y11, y12, y21, y22) = reverse(PNM.ybus_branch_entries(segment, nrd))
             (segment_from, segment_to) = (segment_to, segment_from)
         end
         if i != 1 && i != chain_len
@@ -444,8 +445,14 @@ function _set_series_interior_voltages!(
     equivalent_arc::Tuple{Int, Int},
     V_endpoints::Tuple{ComplexF64, ComplexF64},
     temp_bus_map::Dict{Int, String},
+    nrd::PNM.NetworkReductionData,
 )
-    x = _solve_series_interior_voltages(segment_sequence, equivalent_arc, V_endpoints)
+    x = _solve_series_interior_voltages(
+        segment_sequence,
+        equivalent_arc,
+        V_endpoints,
+        nrd,
+    )
     prev_bus_no = equivalent_arc[1]
     for (i, segment) in enumerate(segment_sequence)
         (segment_from, segment_to) = PNM.get_arc_tuple(segment)
@@ -554,7 +561,8 @@ function _compute_segment_flows(
     time_step::Int,
 )
     V_endpoints = _get_arc_endpoint_voltages(data, arc, time_step)
-    x = _solve_series_interior_voltages(arc_entry, arc, V_endpoints)
+    nrd = get_network_reduction_data(data)
+    x = _solve_series_interior_voltages(arc_entry, arc, V_endpoints, nrd)
     entries = BranchFlowEntry[]
     prev_bus_no = arc[1]
     prev_V = V_endpoints[1]
@@ -724,6 +732,7 @@ function write_power_flow_solution!(
             equivalent_arc,
             V_endpoints,
             temp_bus_map,
+            nrd,
         )
         flow_entries = _compute_segment_flows(segments, data, equivalent_arc, time_step)
         _apply_flow_entries!(flow_entries, segments)
@@ -1365,7 +1374,7 @@ end
 """
      update_system!(sys::PSY.System, data::PowerFlowData; time_step = 1)
 
-Modify the values in the given [`System`](@extref PowerSystems.System) to correspond to the
+Modify the values in the given [`PowerSystems.System`](@extref) to correspond to the
 given `PowerFlowData` such that if a new `PowerFlowData` is constructed from the resulting
 system it is the same as `data`. See also [`write_power_flow_solution!`](@ref). NOTE this
 assumes that `data` was initialized from `sys` and then solved with no further

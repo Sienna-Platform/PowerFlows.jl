@@ -56,7 +56,7 @@ function _get_arc_branch_params(
             shifts[ix] = _branch_shift(branch)
         elseif haskey(parallel_map, arc) || haskey(series_map, arc)
             reduction = haskey(parallel_map, arc) ? parallel_map[arc] : series_map[arc]
-            eq = PNM.get_equivalent_physical_branch_parameters(reduction)
+            eq = PNM.get_equivalent_physical_branch_parameters(reduction, nrd)
             rs[ix] = PNM.get_equivalent_r(eq)
             xs[ix] = PNM.get_equivalent_x(eq)
             taps[ix] = PNM.get_equivalent_tap(eq)

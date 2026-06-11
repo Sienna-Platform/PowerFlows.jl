@@ -119,7 +119,9 @@ An evaluation model for a standard
 with the specified solver type.
 
 # Arguments
-- `ACSolver`: The type of AC power flow solver to use, which must be a subtype of [`ACPowerFlowSolverType`](@ref).
+- `ACSolver` (type parameter): The AC iterative solver tag, a subtype of [`ACPowerFlowSolverType`](@ref)
+    (for example [`NewtonRaphsonACPowerFlow`](@ref), [`TrustRegionACPowerFlow`](@ref),
+    [`LevenbergMarquardtACPowerFlow`](@ref), or [`RobustHomotopyPowerFlow`](@ref)).
     If not specified, defaults to [`NewtonRaphsonACPowerFlow`](@ref).
 - `check_reactive_power_limits::Bool`: Whether to check reactive power limits during the power flow solution.
     Default is `false`.
@@ -186,7 +188,8 @@ with the specified solver type.
 
 
 # Arguments
-- `ACSolver`: The type of AC power flow solver to use, which must be a subtype of [`ACPowerFlowSolverType`](@ref).
+- `ACSolver` (type parameter): The AC iterative solver tag, a subtype of [`ACPowerFlowSolverType`](@ref)
+    (for example [`NewtonRaphsonACPowerFlow`](@ref) or [`TrustRegionACPowerFlow`](@ref)).
     Default is [`NewtonRaphsonACPowerFlow`](@ref).
 - `check_reactive_power_limits::Bool`: Whether to check reactive power limits during the power flow solution.
     Default is `false`.

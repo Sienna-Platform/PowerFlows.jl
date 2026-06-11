@@ -2,19 +2,19 @@
 
 ## Implementations in PSSE
 
-In real-world operation, on-load tap changers (OLTCs) adjust transformer taps so that the converter reaches its minimum firing or extinction angle limits (α_min or γ_min). The objective is to reduce the firing/extinction angle to minimize reactive power (Q) demand.
+In real-world operation, on-load tap changers (OLTCs) adjust transformer taps so that the converter reaches its minimum firing or extinction angle limits (`α_min` or `γ_min`). The objective is to reduce the firing/extinction angle to minimize reactive power (Q) demand.
 
 As OLTCs operate typically over several seconds, the thyristor angles act as fast control. First, the thyristor angles respond to fast power flow changes. Afterwards, the OLTCs are adjusted to keep maintaining the power set point while also minimizing the thyristor angles.
 
-In PSSE, the control using OLTCs is ignored in power flow calculations. Instead, PSSE adjusts the thyristor angles to represent the fast control. 
-PSSE solves for the rectifier firing angle (α) such that `Idc = Iset`, and for the inverter extinction angle (γ) such that `Udc = Uset`.
-The solver adjusts α and γ automatically to satisfy these setpoints and only switches control mode if a limit is violated.
+In PSSE, the control using OLTCs is ignored in power flow calculations. Instead, PSSE adjusts the thyristor angles to represent the fast control.
+PSSE solves for the rectifier firing angle (`α`) such that `Idc = Iset`, and for the inverter extinction angle (`γ`) such that `Udc = Uset`.
+The solver adjusts `α` and `γ` automatically to satisfy these setpoints and only switches control mode if a limit is violated.
 
 OLTC actions are not represented in the load-flow process because they operate on a slower time scale (seconds). The rationale is to provide a starting point for dynamic simulations. The tap positions can be set manually.
 
-For safe operation and to avoid commutation failure, the rectifier should normally operate close to its minimum firing angle (α_min) with a small safety margin. Overly broad firing angle settings should be avoided. For example, setting max firing angle to 90° is too permissive. A narrower range encourages PSSE to adjust taps appropriately.
+For safe operation and to avoid commutation failure, the rectifier should normally operate close to its minimum firing angle (`α_min`) with a small safety margin. Overly broad firing angle settings should be avoided. For example, setting max firing angle to `90°` is too permissive. A narrower range encourages PSSE to adjust taps appropriately.
 
-In PSSE, the variable `VSched` (scheduled DC voltage) represents the DC voltage reference, not the AC-side voltage. If `VSched` is set too low, the inverter will use unnecessarily large extinction angles (γ) to transfer power.
+In PSSE, the variable `VSched` (scheduled DC voltage) represents the DC voltage reference, not the AC-side voltage. If `VSched` is set too low, the inverter will use unnecessarily large extinction angles (`γ`) to transfer power.
 
 Power flow calculation in PSSE often fails to converge with LCC. In this case, it can help to first run the Gauss-Seidel algorithm, then Newton will also converge in PSSE.
 
@@ -24,15 +24,23 @@ We implement the control logic of LCC based on the principle of maintaining the 
 
 The AC power flow calculation in Sienna is modified to directly solve for tap steps and thyristor angles of the LCC system. To this end, the state vector, the Jacobian matrix, the residuals are modified. The state vector is extended by 4 additional variables for each LCC system, namely 2 for tap positions and 2 for thyristor angles of the rectifier and inverter sides of the LCC system. The Jacobian matrix is extended by additional terms that represent the relevant partial derivatives. The residuals are extended by 4 terms per LCC system to match the additional state variables. The first two account for the active power set point and active power balance in the LCC system using the tap steps. The other two residual terms control for keeping the thyristor angles at their respective minimum limits. This approach follows the method in Panosyan, A. (2010). Modeling of Advanced Power Transmission System Controllers (PhD dissertation).
 
+LCC extensions are implemented for all three AC formulations —
+[`ACPolarPowerFlow`](@ref), [`ACRectangularPowerFlow`](@ref), and
+[`ACMixedPowerFlow`](@ref) — with the same true-`φ` derivation in each code path;
+see [Mixed Current-Power Balance Formulation](@ref) for mixed-formulation parity
+notes.
+
 The complex apparent power for a rectifier or inverter is calculated as $S = V t \frac{\sqrt{6}}{\pi} I_{dc} e^{j \phi}$, where $V$ is the magnitude of AC voltage at the terminal, $I_{dc}$ is the DC current in the LCC system (positive for flow direction rectifier to inverter, and vice versa), and $\phi$ is the angle between AC voltage and current.
 
 To allow for the Jacobian implementation, a simplified calculation of the angle between the AC current and voltage at the LCC terminals was used. The equation below represents the calculation used for the angle:
+
 ```math
 \phi = \arccos\left(\operatorname{sign}(I_{dc})\left(\cos(\alpha) - \frac{x I_{dc}}{\sqrt{2} t V}\right)\right)
 ```
+
 where, by convention, we flip the sign of $I_{dc}$ on the inverter side. The net effect of the flip is an overall negation of the $\arccos$ argument at the inverter, which is what produces the negative signs on the $\partial P_i/\partial\cdot$ rows and on $\partial Q_i/\partial\alpha_i$ in the Jacobian below. The $\operatorname{sign}(I_{dc})$ factor appears the same way in the derivative rows.
 
-In the equation above, the variable $\alpha$ represents the thyristor angle. The active and reactive powers for a converter station are 
+In the equation above, the variable $\alpha$ represents the thyristor angle. The active and reactive powers for a converter station are
 
 ```math
 \begin{aligned}

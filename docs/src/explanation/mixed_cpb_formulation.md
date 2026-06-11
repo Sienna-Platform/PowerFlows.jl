@@ -41,7 +41,7 @@ I^{i}_i &= \sum_k \left(B_{ik} e_k + G_{ik} f_k\right)
 \end{aligned}
 ```
 
-$P_i, Q_i$ denote the effective constant-power net injection (generation minus
+``P_i`` and ``Q_i`` denote the effective constant-power net injection (generation minus
 constant-power load). Constant-impedance ZIP load is folded into the
 admittance matrix diagonal; constant-current ZIP load is subtracted as
 $-\,\mathrm{const\_I}\cdot|V_i|$ — identical to the
@@ -87,10 +87,10 @@ whole subnetwork slack.
 
 ## Jacobian structure
 
-| Block | PQ rows | PV rows |
-|---|---|---|
-| Off-diagonal $(k\neq i)$ | constant $\equiv$ $Y_{bus}$ real 2×2 block (assembled once) | nonlinear $e_i G_{ik}+f_i B_{ik}$, $-e_i B_{ik}+f_i G_{ik}$ (refreshed each iteration) |
-| Diagonal | nonlinear divided-current partials + ZIP constant-current chain term | nonlinear power-balance partials; $\partial(|V|^2)/\partial(e,f)=(2e_i,2f_i)$ |
+| Block                    | PQ rows                                                              | PV rows                                                                                   |
+|:------------------------ |:-------------------------------------------------------------------- |:----------------------------------------------------------------------------------------- |
+| Off-diagonal $(k\neq i)$ | constant $\equiv$ $Y_{bus}$ real 2×2 block (assembled once)          | nonlinear $e_i G_{ik}+f_i B_{ik}$, $-e_i B_{ik}+f_i G_{ik}$ (refreshed each iteration)    |
+| Diagonal                 | nonlinear divided-current partials + ZIP constant-current chain term | nonlinear power-balance partials; $\partial(\lvert V \rvert^2)/\partial(e,f)=(2e_i,2f_i)$ |
 
 Only the PQ off-diagonal blocks are constant. They are written once at
 construction; every other state-dependent entry is refreshed in place each
