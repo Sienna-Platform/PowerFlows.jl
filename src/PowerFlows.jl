@@ -31,7 +31,7 @@ import Logging
 import DataFrames
 import DataFrames: Not
 import PowerSystems as PSY
-import PowerSystems: System, with_units_base
+import PowerSystems: System
 import LinearAlgebra
 import LinearAlgebra: norm, dot, ldiv!, mul!
 import LinearAlgebra: norm, dot

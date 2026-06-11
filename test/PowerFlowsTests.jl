@@ -6,6 +6,10 @@ using Logging
 using Dates
 using PowerSystems
 using PowerSystemCaseBuilder
+# FIXME: what's the canonical way to load a system from PSS(e) raw under PSY6?
+# or should we just switch to using a file format other than raw for those tests?
+import PowerSystemCaseBuilder: make_system
+const PFP = PowerSystemCaseBuilder.PowerFlowFileParser
 using PowerNetworkMatrices
 using InfrastructureSystems
 using LinearAlgebra

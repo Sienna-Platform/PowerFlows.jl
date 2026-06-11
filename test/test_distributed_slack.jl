@@ -158,9 +158,7 @@ end
                     sys,
                 ),
             )
-            with_units_base(sys, UnitSystem.NATURAL_UNITS) do
-                set_active_power!(g, 20.0)
-            end
+            set_active_power!(g, 20.0 * PSY.MW)
 
             pf = ACPowerFlow(; correct_bustypes = true)
             data = PowerFlowData(pf, sys)
@@ -312,9 +310,7 @@ end
                     sys,
                 ),
             )
-            with_units_base(sys, UnitSystem.NATURAL_UNITS) do
-                set_active_power!(g, 20.0)
-            end
+            set_active_power!(g, 20.0 * PSY.MW)
 
             pf = ACPowerFlow{ACSolver}(;
                 correct_bustypes = true,
@@ -388,25 +384,20 @@ end
                     sys,
                 ),
             )
-            with_units_base(sys, UnitSystem.NATURAL_UNITS) do
-                set_active_power!(ref_gen, 20.0)
-            end
+            set_active_power!(ref_gen, 20.0 * PSY.MW)
 
             # Record original generator powers and headroom (in natural units) before solving
-            original_gen_power = Float64[]
+            original_gen_power = [
+                get_active_power(g, PSY.NU) for
+                g in get_components(Union{Generator, Source}, sys)
+            ]
             original_gen_headroom = Dict{String, Float64}()
             original_gen_p = Dict{String, Float64}()
-            with_units_base(sys, UnitSystem.NATURAL_UNITS) do
-                original_gen_power = [
-                    get_active_power(g) for
-                    g in get_components(Union{Generator, Source}, sys)
-                ]
-                for g in get_components(ThermalStandard, sys)
-                    limits = get_active_power_limits(g)
-                    original_gen_headroom[get_name(g)] =
-                        limits.max - get_active_power(g)
-                    original_gen_p[get_name(g)] = get_active_power(g)
-                end
+            for g in get_components(ThermalStandard, sys)
+                limits = get_active_power_limits(g, PSY.NU)
+                original_gen_headroom[get_name(g)] =
+                    limits.max - get_active_power(g, PSY.NU)
+                original_gen_p[get_name(g)] = get_active_power(g, PSY.NU)
             end
 
             pf = ACPowerFlow{ACSolver}(;
@@ -447,17 +438,15 @@ end
 
             # The ratio (solved_P - original_P) / original_headroom should be the same
             # for all generators with positive headroom at the shared bus.
-            with_units_base(sys, UnitSystem.NATURAL_UNITS) do
-                ratios = Float64[]
-                for g in gens_at_bus
-                    h = original_gen_headroom[get_name(g)]
-                    h <= 0.0 && continue
-                    slack = get_active_power(g) - original_gen_p[get_name(g)]
-                    push!(ratios, slack / h)
-                end
-                @test length(ratios) >= 2
-                @test all(isapprox.(ratios, ratios[1]; atol = 1e-6, rtol = 0))
+            ratios = Float64[]
+            for g in gens_at_bus
+                h = original_gen_headroom[get_name(g)]
+                h <= 0.0 && continue
+                slack = get_active_power(g, PSY.NU) - original_gen_p[get_name(g)]
+                push!(ratios, slack / h)
             end
+            @test length(ratios) >= 2
+            @test all(isapprox.(ratios, ratios[1]; atol = 1e-6, rtol = 0))
 
             # --- Test 3: DataFrame P_gen matches system after solve_and_store ---
             _reset_gen_power!(sys, original_gen_power)
