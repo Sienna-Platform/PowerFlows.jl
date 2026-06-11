@@ -281,9 +281,7 @@ get_calculate_loss_factors(pf::ACPolarPowerFlow) = pf.calculate_loss_factors
 get_calculate_voltage_stability_factors(::AbstractACPowerFlow) = false
 get_calculate_voltage_stability_factors(pf::ACPolarPowerFlow) =
     pf.calculate_voltage_stability_factors
-# Available on every AC formulation: the per-iteration ‖F‖/κ̂(J)/λ_min diagnostic
-# needs only the Jacobian (1st derivatives), so it works for polar, rectangular-CI,
-# and mixed-CPB, with or without LCC.
+# Works on every AC formulation: the diagnostic needs only J (1st derivatives).
 get_log_solver_diagnostics(::PowerFlowEvaluationModel) = false
 get_log_solver_diagnostics(pf::AbstractACPowerFlow) = pf.log_solver_diagnostics
 
