@@ -652,15 +652,13 @@ function _run_power_flow_method(time_step::Int,
     validate_voltage_magnitudes::Bool = DEFAULT_VALIDATE_VOLTAGES,
     vm_validation_range::MinMax = DEFAULT_VALIDATION_RANGE,
     iwamoto::Bool = false,
-    bail_on_eig_sign_switch::Bool = false,
+    stop_at_fold::Bool = false,
     _ignored...,  # absorb unknown keys from caller without error
 )
     validate_vms = validate_voltage_magnitudes
     i, converged = 1, false
     consecutive_reverts = 0
-    monitor = get_log_solver_diagnostics(J.data)
-    eig_sign = EigvalSign.UNSEEN  # sign of real(λ_min) last iter, for the fold bail-out
-    prev_F::Float64 = NaN  # previous ‖F‖∞, for the contraction ratio
+    monitor, diag_state = setup_solver_diagnostics(J, stop_at_fold)
     while i < maxIterations && !converged
         if iwamoto
             made_progress = _iwamoto_step(
@@ -698,22 +696,13 @@ function _run_power_flow_method(time_step::Int,
             vm_validation_range,
             i,
         )
-        if monitor || bail_on_eig_sign_switch
-            # Refresh the factor on the current J (reuses the cached symbolic;
-            # no second matrix) so κ̂/λ_min match the reported residual. Shared by
-            # the diagnostic log line and the fold bail-out below.
-            numeric_refactor!(linSolveCache, J.Jv)
-        end
-        if monitor
-            prev_F = _log_solver_diagnostics(
-                "NR iter $i", residual, J.data, time_step,
-                linSolveCache, size(J.Jv, 1), prev_F)
-        end
-        if bail_on_eig_sign_switch
-            switched, eig_sign = detect_eig_sign_switch(
-                eig_sign, "NR iter $i", J.data, time_step,
-                linSolveCache, size(J.Jv, 1))
-            switched && return false, i
+        if !isnothing(diag_state)
+            # After `_simple_step`, J.Jv and residual.Rv are at the same iterate, so
+            # one refactor feeds both the log line and the bail-out.
+            run_solver_diagnostics!(
+                diag_state, "NR iter $i", residual, J, time_step,
+                linSolveCache, monitor, stop_at_fold) &&
+                return false, i
         end
         converged = norm(residual.Rv, Inf) < tol
         if !converged
@@ -749,7 +738,7 @@ function _run_power_flow_method(time_step::Int,
     iwamoto_fallback::Bool = DEFAULT_IWAMOTO_FALLBACK,
     validate_voltage_magnitudes::Bool = DEFAULT_VALIDATE_VOLTAGES,
     vm_validation_range::MinMax = DEFAULT_VALIDATION_RANGE,
-    bail_on_eig_sign_switch::Bool = false,
+    stop_at_fold::Bool = false,
     _ignored...,  # absorb unknown keys from caller without error
 )
     validate_vms = validate_voltage_magnitudes
@@ -774,9 +763,7 @@ function _run_power_flow_method(time_step::Int,
     linf = norm(residual.Rv, Inf)
     @debug "initially: sum of squares $(siground(residualSize)), L ∞ norm $(siground(linf)), Δ $(siground(delta))"
 
-    monitor = get_log_solver_diagnostics(J.data)
-    eig_sign = EigvalSign.UNSEEN  # sign of real(λ_min) last iter, for the fold bail-out
-    prev_F::Float64 = NaN  # previous ‖F‖∞, for the contraction ratio
+    monitor, diag_state = setup_solver_diagnostics(J, stop_at_fold)
     while i < maxIterations && !converged
         delta = _trust_region_step(
             time_step,
@@ -796,22 +783,13 @@ function _run_power_flow_method(time_step::Int,
             vm_validation_range,
             i,
         )
-        if monitor || bail_on_eig_sign_switch
-            # Refresh the factor on the current J (reuses the cached symbolic;
-            # no second matrix) so κ̂/λ_min match the reported residual. Shared by
-            # the diagnostic log line and the fold bail-out below.
-            numeric_refactor!(linSolveCache, J.Jv)
-        end
-        if monitor
-            prev_F = _log_solver_diagnostics(
-                "TR iter $i", residual, J.data, time_step,
-                linSolveCache, size(J.Jv, 1), prev_F)
-        end
-        if bail_on_eig_sign_switch
-            switched, eig_sign = detect_eig_sign_switch(
-                eig_sign, "TR iter $i", J.data, time_step,
-                linSolveCache, size(J.Jv, 1))
-            switched && return false, i
+        if !isnothing(diag_state)
+            # After `_trust_region_step` (incl. reject and iwamoto-fallback), J.Jv and
+            # residual.Rv are at the same iterate, so one refactor feeds both.
+            run_solver_diagnostics!(
+                diag_state, "TR iter $i", residual, J, time_step,
+                linSolveCache, monitor, stop_at_fold) &&
+                return false, i
         end
         converged = norm(residual.Rv, Inf) < tol
         if !converged
@@ -902,7 +880,7 @@ function _newton_power_flow(
     autoscale::Bool = DEFAULT_AUTOSCALE,
     iwamoto_fallback::Bool = DEFAULT_IWAMOTO_FALLBACK,
     # NR and TR: fold / voltage-collapse bail-out (any backend; κ̂ is KLU-only)
-    bail_on_eig_sign_switch::Bool = false,
+    stop_at_fold::Bool = false,
     # initialize_power_flow_variables
     x0::Union{Vector{Float64}, Nothing} = nothing,
     # linear solver backend, resolved by `PNM.resolve_linear_solver`. Canonical names:
@@ -947,7 +925,7 @@ function _newton_power_flow(
             eta,
             autoscale,
             iwamoto_fallback,
-            bail_on_eig_sign_switch,
+            stop_at_fold,
         )
         x_final = stateVector.x
     end
