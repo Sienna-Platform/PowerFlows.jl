@@ -24,7 +24,8 @@ function _schur_eig_and_truth(pf, sys; time_step = 1, backend = PNM.KLUSolver())
     n_lcc = size(data.lcc.p_set, 1)
     n_bus = n_state - 4 * n_lcc
     op = PF.SchurInverseOperator(cache, n_bus, Vector{Float64}(undef, n_state))
-    λ = PF._schur_min_eigenvalue(op)
+    λ, converged = PF._schur_min_eigenvalue(op)
+    @test converged
 
     Jinv = inv(Matrix(jac.Jv))
     S = inv(Jinv[1:n_bus, 1:n_bus])
@@ -92,6 +93,10 @@ end
             @test occursin("κ̂(J) = ", line)
             @test occursin("λ_min(S) = ", line)
             @test occursin(r"at bus \d+", line)
+            # Under KLU, κ̂ must be a real number, never the n/a fallback — guards
+            # against the _diag_condest dispatch silently routing KLU to NaN.
+            @test occursin(r"κ̂\(J\) = [0-9]", line)
+            @test !occursin("κ̂(J) = n/a", line)
         end
         # The contraction ratio appears from the second logged iteration onward.
         @test any(l -> occursin("contraction = ", l), lines)
@@ -141,14 +146,14 @@ end
     end
 end
 
-@testset "bail_on_eig_sign_switch returns without erroring on a well-conditioned case" begin
+@testset "stop_at_fold returns without erroring on a well-conditioned case" begin
     # c_sys14 converges with a stable-sign Jacobian, so the bail-out never fires;
-    # this just exercises the plumbing (kwarg → loop → detect_eig_sign_switch).
+    # this just exercises the plumbing (kwarg → loop → run_solver_diagnostics!).
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14")
     for solver in (NewtonRaphsonACPowerFlow, TrustRegionACPowerFlow)
         pf = ACPowerFlow{solver}(; correct_bustypes = true,
             solver_settings = Dict{Symbol, Any}(
-                :linear_solver => "KLU", :bail_on_eig_sign_switch => true))
+                :linear_solver => "KLU", :stop_at_fold => true))
         data = PowerFlowData(pf, sys)
         @test solve_power_flow!(data)
     end
