@@ -1,34 +1,31 @@
 #=
-Per-iteration solver diagnostics, enabled by the `log_solver_diagnostics` flag.
-Each line reports the residual infinity norm ‖F‖∞ (and the bus/equation where it
-is attained), a condition estimate κ̂(J), the Jacobian eigenvalue closest to the
-origin, and the observed residual contraction ratio ‖Fₖ‖/‖Fₖ₋₁‖.
+Per-iteration solver diagnostics (`log_solver_diagnostics`) and a fold /
+voltage-collapse bail-out (`stop_at_fold`).
 
-The eigenvalue is computed on the bus-voltage Schur complement S = A − B·D⁻¹·C,
-where the Jacobian is blocked as J = [A B; C D] with the LCC tail (4·n_lcc rows
-and columns) in the trailing block. The (1,1) block of J⁻¹ is exactly S⁻¹, so the
-matvec v ↦ (J⁻¹·[v; 0])[1:nb] applies S⁻¹ using the *existing* factorization of
-the full J — no second matrix, no second factorization. When there are no LCCs,
-S = J and the matvec is a plain J⁻¹ back-solve.
+λ_min is taken on the bus-voltage Schur complement S = A − B·D⁻¹·C of the blocked
+Jacobian J = [A B; C D], whose LCC tail (4·n_lcc rows/cols) is the trailing block.
+The (1,1) block of J⁻¹ is exactly S⁻¹, so v ↦ (J⁻¹·[v; 0])[1:nb] applies S⁻¹ from
+the *existing* factorization of J — no second matrix or factorization. With no
+LCCs, S = J. The monitor line and the bail-out share one refactor and one
+eigensolve via `run_solver_diagnostics!`.
 =#
 
-"""Applies the bus-voltage Schur inverse `S⁻¹` to a vector by back-solving against
-an existing factorization of the full Jacobian `J`: it pads the input with zeros
-in the LCC-tail slots, applies `J⁻¹` in place via [`_apply_Jinv!`](@ref), and
-returns the leading `n_bus` block."""
+"""Round to 4 significant figures (one more digit than `siground`'s 3)."""
+_sf4(x) = round(x; sigdigits = 4)
+
+"""Applies S⁻¹ via a back-solve of the full `J`: pads `v` with zeros in the
+LCC-tail slots, applies `J⁻¹`, returns the leading `n_bus` block."""
 struct SchurInverseOperator{C}
-    cache::C                  # factorization of the full J; see _apply_Jinv!
-    n_bus::Int                # size of the leading bus-voltage block
-    buffer::Vector{Float64}   # length = full state; reused as the padded RHS
+    cache::C
+    n_bus::Int
+    buffer::Vector{Float64}   # padded RHS, length = full state
 end
 
-"""Apply `J⁻¹` to `b` in place by back-solving against the cached factorization."""
-_apply_Jinv!(cache::PFLinearSolverCache, b::Vector{Float64}) = solve!(cache, b)
-
-# PERF: LAPACK's dlacn2 would be the drop-in replacement, but Julia doesn't expose it.
-"""Condition estimate κ̂(J), or `NaN` when the backend doesn't expose one."""
+"""Condition estimate κ̂(J), or `NaN` when the backend exposes none. The NaN
+fallback is restricted to the non-KLU `PFLinearSolverCache` members so the concrete
+`KLULinSolveCache` doesn't shadow the KLU method onto the NaN path."""
 _diag_condest(cache::PNM.KLULinSolveCache) = condest!(cache)
-_diag_condest(::PFLinearSolverCache) = NaN
+_diag_condest(::Union{PNM.AAFactorCache, PardisoLinSolveCache}) = NaN
 
 function (op::SchurInverseOperator)(v::AbstractVector{Float64})
     b = op.buffer
@@ -36,36 +33,45 @@ function (op::SchurInverseOperator)(v::AbstractVector{Float64})
         copyto!(view(b, 1:(op.n_bus)), v)
         fill!(view(b, (op.n_bus + 1):length(b)), 0.0)
     end
-    _apply_Jinv!(op.cache, b)
+    solve!(op.cache, b)
     # KrylovKit stores each returned vector, so hand back a fresh copy of the
     # bus block rather than the reused buffer.
     return b[1:(op.n_bus)]
 end
 
-"""Smallest-magnitude eigenvalue of the bus-voltage Schur complement `S`, by
-inverse iteration: KrylovKit finds the largest-magnitude eigenvalue `μ` of `S⁻¹`
-(applied by `op`) and we return `1/μ`. `S` is non-symmetric, so the result may be
-complex."""
+"""Smallest-magnitude eigenvalue of the Schur complement `S` by inverse iteration:
+KrylovKit finds the largest-magnitude eigenvalue `μ` of `S⁻¹` and returns `1/μ`.
+`S` is non-symmetric, so the result may be complex. Returns `(λ_min, converged)`,
+with `converged = false` (and `λ_min = NaN ± NaN im`) on any failure."""
 function _schur_min_eigenvalue(
     op::SchurInverseOperator;
     tol::Float64 = 1e-6,
     maxiter::Int = 200,
     krylovdim::Int = 30,
-)
+)::Tuple{ComplexF64, Bool}
     n = op.n_bus
     v0 = fill(1.0 / sqrt(n), n)   # deterministic init for reproducible logs
-    vals, _, _ = KrylovKit.eigsolve(op, v0, 1, :LM; tol, maxiter, krylovdim)
-    return isempty(vals) ? complex(NaN, NaN) : inv(vals[1])
+    vals, _, info = KrylovKit.eigsolve(op, v0, 1, :LM; tol, maxiter, krylovdim)
+    if info.converged < 1 || isempty(vals)
+        return complex(NaN, NaN), false
+    end
+    μ = vals[1]
+    # A (near-)zero dominant eigenvalue of S⁻¹ makes 1/μ overflow; treat it as
+    # not-converged rather than reporting an Inf eigenvalue of S.
+    if abs(μ) <= eps(Float64)
+        return complex(NaN, NaN), false
+    end
+    return inv(ComplexF64(μ)), true
 end
 
 """Format a (possibly complex) eigenvalue to 4 significant figures as `a` or
 `a ± b im`."""
-function _fmt_eig(z::Number, sf)
+function _fmt_eig(z::Number)
     iz = imag(z)
     return if iz == 0
-        "$(sf(real(z)))"
+        "$(_sf4(real(z)))"
     else
-        "$(sf(real(z))) $(iz < 0 ? "-" : "+") $(sf(abs(iz)))im"
+        "$(_sf4(real(z))) $(iz < 0 ? "-" : "+") $(_sf4(abs(iz)))im"
     end
 end
 
@@ -142,86 +148,142 @@ function _describe_residual_entry(
     return _describe_lcc_residual_entry(data, ix - r.total_bus_state)
 end
 
-"""Compute and `@info`-log one per-iteration diagnostic line. `cache` must hold
-the current factorization of the Jacobian `J`. Reports ‖F‖∞ and where it is attained,
-κ̂(J) [or n/a], λ_min of the bus-voltage Schur complement, and the contraction ratio
-relative to `prev_F_inf`. Returns the current ‖F‖∞ so the caller can carry it forward.
-All numerics are rounded to 4 significant figures."""
-function _log_solver_diagnostics(
-    label::AbstractString,
-    residual,
-    data::ACPowerFlowData,
-    time_step::Int,
-    cache::PFLinearSolverCache,
-    n_state::Int,
-    prev_F_inf::Float64,
-)
-    n_lcc = size(data.lcc.p_set, 1)
-    n_bus = n_state - 4 * n_lcc
-    abs_max, ix = findmax(abs, residual.Rv)
-
-    κ = _diag_condest(cache)
-    op = SchurInverseOperator(cache, n_bus, Vector{Float64}(undef, n_state))
-    λ_min = _schur_min_eigenvalue(op)
-
-    sf(x) = round(x; sigdigits = 4)
-    parts = [
-        "‖F‖_∞ = $(sf(abs_max)) at " *
-        "$(_describe_residual_entry(residual, data, time_step, ix))",
-        "κ̂(J) = $(isnan(κ) ? "n/a (KLU-only)" : string(sf(κ)))",
-        "λ_min(S) = $(_fmt_eig(λ_min, sf)) (|λ_min| = $(sf(abs(λ_min))))",
-    ]
-    if !isnan(prev_F_inf) && prev_F_inf > 0
-        push!(parts, "contraction = $(sf(abs_max / prev_F_inf))")
-    end
-    @info "$label: " * join(parts, ", ")
-    return abs_max
-end
-
 # ---------------------------------------------------------------------------
-# Fold / voltage-collapse bail-out: stop the search when the Jacobian's
-# eigenvalue closest to the origin switches sign across an iteration.
+# Fold / voltage-collapse bail-out state and the shared per-iteration hook.
 # ---------------------------------------------------------------------------
 
-# `UNSEEN` is the pre-first-observation state
-# zero real part (essentially never, in floating point) just keeps the prior sign.
+# UNSEEN = pre-first-observation. A non-finite/non-converged λ_min is deliberately
+# not a sign here; the bail decision treats it as a conservative abort.
 IS.@scoped_enum(EigvalSign, UNSEEN = 0, NEGATIVE = -1, POSITIVE = 1)
 
-"""
-    detect_eig_sign_switch(prev, label, data, time_step, cache, n_state)
-        -> (switched::Bool, current::EigvalSign)
+"""Per-solve scratch for [`run_solver_diagnostics!`](@ref): previous ‖F‖∞ (`prev_F`),
+last-seen sign of `real(λ_min)` (`eig_sign`), and a reusable padded RHS (`buffer`) so
+the Schur operator allocates nothing per iteration."""
+mutable struct SolverDiagnosticsState
+    prev_F::Float64
+    eig_sign::EigvalSign
+    buffer::Vector{Float64}
+end
 
-Given an up-to-date factorization `cache` of the Jacobian, compute `λ_min` of
-the bus-voltage Schur complement and decide whether the sign of its real part has
-flipped since the previous iteration's sign `prev`.
+SolverDiagnosticsState(n_state::Int) =
+    SolverDiagnosticsState(NaN, EigvalSign.UNSEEN, Vector{Float64}(undef, n_state))
 
-On a switch this logs a warning so the caller can abort the search. Returns
-`(switched, current_sign))`. Assumes `cache` has been numerically factored already."""
-function detect_eig_sign_switch(
-    prev::EigvalSign,
-    label::AbstractString,
-    data::ACPowerFlowData,
-    ::Int,
-    cache::PFLinearSolverCache,
-    n_state::Int,
+"""Set up a solver loop's diagnostics: returns `(monitor, diag_state)`, allocating
+the scratch only when a diagnostic or the bail-out is on so the default solve path
+allocates nothing. `diag_state` is `nothing` when neither is requested."""
+function setup_solver_diagnostics(
+    J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
+    bail::Bool,
 )
-    n_lcc = size(data.lcc.p_set, 1)
-    n_bus = n_state - 4 * n_lcc
-    op = SchurInverseOperator(cache, n_bus, Vector{Float64}(undef, n_state))
-    λ_min = _schur_min_eigenvalue(op)
+    monitor = get_log_solver_diagnostics(J.data)
+    diag_state = (monitor || bail) ? SolverDiagnosticsState(size(J.Jv, 1)) : nothing
+    return monitor, diag_state
+end
+
+"""Update `state.eig_sign` from `λ_min` and decide the fold bail-out. A non-converged
+or non-finite `real(λ_min)` is a conservative bail (warn + abort), never a silent
+no-op. An exact-zero real part keeps the prior sign. Returns `true` to abort."""
+function _decide_eig_sign_switch!(
+    state::SolverDiagnosticsState,
+    label::AbstractString,
+    λ_min::ComplexF64,
+    converged::Bool,
+)::Bool
     s = real(λ_min)
-    # exact 0: keep prior sign
+    if !converged || !isfinite(s)
+        @warn "$label: λ_min(S) is indeterminate " *
+              "(converged = $converged, λ_min = $(_fmt_eig(λ_min))); treating it as " *
+              "a fold / voltage-collapse signature and aborting the search."
+        return true
+    end
+    prev = state.eig_sign
     current = s > 0 ? EigvalSign.POSITIVE : (s < 0 ? EigvalSign.NEGATIVE : prev)
+    state.eig_sign = current
 
     # A switch needs a real, previously-seen sign that differs from the new one.
     switched = prev != EigvalSign.UNSEEN && current != prev
-    switched || return false, current
+    switched || return false
 
-    sf(x) = round(x; sigdigits = 4)
     @warn "$label: λ_min(S) real part switched sign " *
           "($(prev == EigvalSign.POSITIVE ? "+" : "−") → " *
           "$(current == EigvalSign.POSITIVE ? "+" : "−")), " *
-          "λ_min = $(_fmt_eig(λ_min, sf)). This is a fold / voltage-collapse " *
+          "λ_min = $(_fmt_eig(λ_min)). This is a fold / voltage-collapse " *
           "signature; aborting the search."
-    return true, current
+    return true
+end
+
+"""Run one iteration's diagnostics against the current `J`/residual. Does the
+*single* per-iteration refactor of `cache` on `J.Jv` (NR/TR pass `linSolveCache`, LM
+its own KLU `diag_cache`) and, on success, the *single* eigensolve shared by the
+monitor line (`monitor`) and the fold bail-out (`bail`). Returns `true` iff the
+caller should abort. A `SingularException` is itself a fold signature: under `bail`
+it aborts, under monitor-only it reports `singular` and continues; any other
+exception is rethrown."""
+function run_solver_diagnostics!(
+    state::SolverDiagnosticsState,
+    label::AbstractString,
+    residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
+    J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
+    time_step::Int,
+    cache::PFLinearSolverCache,
+    monitor::Bool,
+    bail::Bool,
+)::Bool
+    # KLU throws `SingularException` on a singular J; AppleAccelerate does not (it
+    # silently returns garbage but still factors), so only KLU reaches the catch.
+    singular = false
+    try
+        numeric_refactor!(cache, J.Jv)
+    catch e
+        e isa LinearAlgebra.SingularException || rethrow()
+        singular = true
+    end
+
+    data = J.data
+    if singular
+        if bail
+            @warn "$label: the Jacobian is singular; this is a fold / " *
+                  "voltage-collapse signature, aborting the search."
+            return true
+        end
+        # Monitor-only: report the singularity rather than crashing, and leave
+        # `state.prev_F` untouched so the next contraction ratio is meaningful.
+        abs_max, ix = findmax(abs, residual.Rv)
+        @info "$label: ‖F‖_∞ = $(_sf4(abs_max)) at " *
+              "$(_describe_residual_entry(residual, data, time_step, ix)), " *
+              "κ̂(J) = singular, λ_min(S) = singular"
+        return false
+    end
+
+    n_lcc = size(data.lcc.p_set, 1)
+    n_state = size(J.Jv, 1)
+    n_bus = n_state - 4 * n_lcc
+    op = SchurInverseOperator(cache, n_bus, state.buffer)
+    λ_min, converged = _schur_min_eigenvalue(op)
+
+    if monitor
+        abs_max, ix = findmax(abs, residual.Rv)
+        κ = _diag_condest(cache)
+        λ_str = if converged
+            "$(_fmt_eig(λ_min)) (|λ_min| = $(_sf4(abs(λ_min))))"
+        else
+            "not-converged"
+        end
+        parts = [
+            "‖F‖_∞ = $(_sf4(abs_max)) at " *
+            "$(_describe_residual_entry(residual, data, time_step, ix))",
+            "κ̂(J) = $(isnan(κ) ? "n/a (KLU-only)" : string(_sf4(κ)))",
+            "λ_min(S) = $λ_str",
+        ]
+        if !isnan(state.prev_F) && state.prev_F > 0
+            push!(parts, "contraction = $(_sf4(abs_max / state.prev_F))")
+        end
+        @info "$label: " * join(parts, ", ")
+        state.prev_F = abs_max
+    end
+
+    if bail
+        return _decide_eig_sign_switch!(state, label, λ_min, converged)
+    end
+    return false
 end

@@ -64,7 +64,7 @@ tsolve!(c::PNM.KLULinSolveCache, b::StridedVecOrMat{Float64}) = PNM.tsolve!(c, b
 
 """1-norm condition-number estimate of the cached factorization. KLU-only
 (libklu's `klu_condest`); AppleAccelerate exposes no condition estimate. Used by
-the per-iteration solver diagnostics ([`_log_solver_diagnostics`](@ref))."""
+the per-iteration solver diagnostics ([`run_solver_diagnostics!`](@ref))."""
 condest!(c::PNM.KLULinSolveCache) = PNM.condest!(c)
 
 # --- Backend resolution and construction ---
