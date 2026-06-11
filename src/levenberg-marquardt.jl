@@ -182,8 +182,24 @@ function _run_power_flow_method(
     resSize = dot(residual.Rv, residual.Rv)
     linf = norm(residual.Rv, Inf)
     @debug "initially: sum of squares $(siground(resSize)), L ∞ norm $(siground(linf)), λ = $λ"
+    monitor = get_log_solver_diagnostics(J.data)
+    prev_F::Float64 = NaN  # previous ‖F‖∞, for the contraction ratio
+    # LM factorizes the augmented [J; √λ·D], not J itself, so the diagnostic keeps
+    # its own factor of J (symbolic done once here, refreshed each iteration). Only
+    # allocated when diagnostics are on. LM exposes no linear-solver backend choice,
+    # so we use KLU here: it's available on every platform and yields κ̂ for free.
+    diag_cache = monitor ? make_linear_solver_cache(PNM.KLUSolver(), J.Jv) : nothing
+    if monitor
+        symbolic_factor!(diag_cache, J.Jv)
+    end
     while i < maxIterations && !converged && isfinite(λ) && μ < DEFAULT_μ_MAX
         λ, μ = update_damping_factor!(x, residual, J, μ, time_step, ws)
+        if monitor
+            numeric_refactor!(diag_cache, J.Jv)
+            prev_F = _log_solver_diagnostics(
+                "LM iter $i", residual, J.data, time_step,
+                diag_cache, size(J.Jv, 1), prev_F)
+        end
         converged = isfinite(λ) && norm(residual.Rv, Inf) < tol
         i += 1
     end
