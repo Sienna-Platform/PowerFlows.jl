@@ -24,11 +24,6 @@ Pardiso = "46dd5b70-b6fb-5a00-ae2d-e8fea33afaf2"
 [extensions]
 PowerFlowsPardisoExt = "Pardiso"
 
-# Until the condest!/rcond! re-export lands in a tagged PowerNetworkMatrices
-# release, pull it from the branch so the solver diagnostics resolve on CI.
-[sources]
-PowerNetworkMatrices = {url = "https://github.com/Sienna-Platform/PowerNetworkMatrices.jl", rev = "lk/expose-klu-condest"}
-
 [compat]
 DataFrames = "1"
 Pardiso = "1"
