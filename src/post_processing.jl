@@ -14,9 +14,14 @@ function _calculate_fixed_admittance_powers(
     nrd = PNM.get_network_reduction_data(get_power_network_matrix(data))
     bus_lookup = get_bus_lookup(data)
 
+    removed_buses = PNM.get_removed_buses(nrd)
     busIxToFAPower = Dict{Int64, Tuple{Float64, Float64}}()
     for l in PSY.get_available_components(PSY.FixedAdmittance, sys)
         b = PSY.get_bus(l)
+        # A DegreeTwoReduction may fold a purely-susceptive FixedAdmittance host
+        # into a series-equivalent branch; such buses have no result row and no
+        # parent in the reverse bus search map, so there is nothing to attribute.
+        PSY.get_number(b) in removed_buses && continue
         bus_ix = PNM.get_bus_index(PSY.get_number(b), bus_lookup, nrd)
         Vm_squared =
             if get_bus_type(data)[bus_ix, time_step] == PSY.ACBusTypes.PQ

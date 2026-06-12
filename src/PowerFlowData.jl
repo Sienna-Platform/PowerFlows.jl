@@ -238,6 +238,7 @@ get_computed_gspf(pfd::PowerFlowData) = pfd.computed_generator_slack_participati
 get_calculate_loss_factors(pfd::PowerFlowData) = get_calculate_loss_factors(pfd.pf)
 get_calculate_voltage_stability_factors(pfd::PowerFlowData) =
     get_calculate_voltage_stability_factors(pfd.pf)
+get_log_solver_diagnostics(pfd::PowerFlowData) = get_log_solver_diagnostics(pfd.pf)
 get_network_reductions(pfd::PowerFlowData) = get_network_reductions(pfd.pf)
 """
     get_time_steps(pfd::PowerFlowData)

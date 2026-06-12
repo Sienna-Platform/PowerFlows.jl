@@ -74,7 +74,13 @@ end
     pf = PF.ACPowerFlow{PF.TrustRegionACPowerFlow}(;
         skip_redistribution = true,
         correct_bustypes = true,
-        network_reductions = PNM.NetworkReduction[PNM.DegreeTwoReduction()],
+        # Protect reactive-injector hosts: with the default (true), PNM folds
+        # purely-susceptive FixedAdmittance buses into series equivalents and
+        # drops their shunts — an intentional approximation that breaks the
+        # flow-parity premise of this testset (visible at MW/MVAr scale).
+        network_reductions = PNM.NetworkReduction[
+            PNM.DegreeTwoReduction(; reduce_reactive_power_injectors = false),
+        ],
     )
     results_unreduced = solve_power_flow(pf_unreduced, sys, PF.FlowReporting.ARC_FLOWS)
     results_reduced = solve_power_flow(pf, sys, PF.FlowReporting.ARC_FLOWS)
