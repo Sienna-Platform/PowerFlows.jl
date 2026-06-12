@@ -71,6 +71,17 @@ Pages = [
 ]
 ```
 
+## Solver Diagnostics
+
+```@autodocs
+Modules = [PowerFlows]
+Public = true
+Private = true
+Pages = [
+    "residual_condition_diagnostics.jl",
+]
+```
+
 # Misc.
 
 ## PSSE Export
