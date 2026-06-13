@@ -1,6 +1,6 @@
 name = "PowerFlows"
 uuid = "94fada2c-fd9a-4e89-8d82-81405f5cb4f6"
-version = "0.21.0"
+version = "0.21.1"
 authors = ["Jose Daniel Lara", "Gabriel Konar-Steenberg", "Luke Kiernan"]
 
 [deps]
