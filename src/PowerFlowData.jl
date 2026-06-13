@@ -463,6 +463,23 @@ function _calculate_neighbors(
     return neighbors
 end
 
+# A DegreeTwoReduction that reduces reactive-power injectors folds away shunts and
+# synchronous condensers, discarding the reactive injections the AC solution depends
+# on; the default of `true` is only safe for DC power flow.
+_assert_ac_reduction_supported(::PNM.NetworkReduction) = nothing
+function _assert_ac_reduction_supported(nr::PNM.DegreeTwoReduction)
+    PNM.get_reduce_reactive_power_injectors(nr) || return nothing
+    throw(
+        IS.ConflictingInputsError(
+            "DegreeTwoReduction with `reduce_reactive_power_injectors = true` is not \
+             supported with AC power flow: reducing reactive-power injectors (e.g. a \
+             shunt FixedAdmittance or a SynchronousCondenser) discards reactive \
+             injections the AC solution depends on. Pass \
+             `DegreeTwoReduction(; reduce_reactive_power_injectors = false)` instead.",
+        ),
+    )
+end
+
 # NOTE: remove this once network reductions are fully implemented
 function network_reduction_message(
     nrs::Vector{PNM.NetworkReduction},
@@ -474,6 +491,9 @@ function network_reduction_message(
                 "Ward reduction with AC power flow is not supported yet.",
             ),
         )
+    end
+    if m isa ACPowerFlow
+        foreach(_assert_ac_reduction_supported, nrs)
     end
     if m isa AbstractDCPowerFlow && any(isa.(nrs, (PNM.WardReduction,)))
         @warn "Use Ward reduction with DC power flow with caution. Branch flows for branches in parallel with equivalent branches added by Ward reduction may be incorrect."
