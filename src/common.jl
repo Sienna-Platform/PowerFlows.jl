@@ -645,11 +645,28 @@ function _validate_squared_voltage_magnitudes(
 end
 
 """Weighted dot product of two vectors."""
-wdot(wx::Vector{Float64}, x::Vector{Float64}, wy::Vector{Float64}, y::Vector{Float64}) =
-    LinearAlgebra.dot(wx .* x, wy .* y)
+function wdot(
+    wx::Vector{Float64},
+    x::Vector{Float64},
+    wy::Vector{Float64},
+    y::Vector{Float64},
+)
+    acc = 0.0
+    @inbounds @simd for i in eachindex(x, y, wx, wy)
+        acc += wx[i] * x[i] * wy[i] * y[i]
+    end
+    return acc
+end
 
 """Weighted norm of two vectors."""
-wnorm(w::Vector{Float64}, x::Vector{Float64}) = norm(w .* x)
+function wnorm(w::Vector{Float64}, x::Vector{Float64})
+    acc = 0.0
+    # Plain sum-of-abs2; PF magnitudes are O(1)–O(1e2), so LinearAlgebra's overflow-rescaling is unnecessary.
+    @inbounds @simd for i in eachindex(w, x)
+        acc += abs2(w[i] * x[i])
+    end
+    return sqrt(acc)
+end
 """For pretty printing floats in debugging messages."""
 siground(x::Float64) = round(x; sigdigits = 3)
 
