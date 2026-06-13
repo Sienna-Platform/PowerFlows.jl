@@ -27,32 +27,27 @@ function _get_or_build_solver_cache!(
     M::SparseMatrixCSC{Float64},
 )
     entry = data.solver_cache[]
-    if entry !== nothing
-        cached_M, cached_backend, cache, scratch = entry
-        if cached_M === M && typeof(cached_backend) === typeof(backend)
-            return cache, scratch
-        end
+    if !isnothing(entry) &&
+       entry.matrix === M && typeof(entry.backend) === typeof(backend)
+        return entry.cache, entry
     end
     cache = make_linear_solver_cache(backend, M)
     full_factor!(cache, M)
-    scratch = _make_dc_scratch(data)
-    data.solver_cache[] = (M, backend, cache, scratch)
-    return cache, scratch
-end
-
-# Per-solve scratch buffers + network-fixed precomputes; built once with the cache. The signed
-# arc-bus incidence is built once at `PowerFlowData` construction via `PNM.IncidenceMatrix` (see
-# `_signed_arc_bus_incidence`) and reused here.
-function _make_dc_scratch(data::PowerFlowData)
     valid_ix = get_valid_ix(data)
-    # InvertedIndex has no `length`; size via a view.
+    # InvertedIndex has no `length`; size via a view. The signed arc-bus incidence is
+    # built once at `PowerFlowData` construction via `PNM.IncidenceMatrix` and reused.
     p_inj_dims = size(view(data.bus_active_power_injections, valid_ix, :))
-    return (
-        power_injections = similar(data.bus_active_power_injections),
-        p_inj = Matrix{Float64}(undef, p_inj_dims),
-        rs = _get_arc_resistances(data),
-        arc_bus_incidence = data.arc_bus_incidence,
+    entry = DCSolverCache(
+        M,
+        backend,
+        cache,
+        similar(data.bus_active_power_injections),
+        Matrix{Float64}(undef, p_inj_dims),
+        _get_arc_resistances(data),
+        data.arc_bus_incidence,
     )
+    data.solver_cache[] = entry
+    return cache, entry
 end
 
 _convert_to_range(ix::Integer) = ix:ix
@@ -222,7 +217,7 @@ function solve_power_flow!(
     @views data.bus_angles[valid_ix, :] .= p_inj
     _shift_angles_to_stored_reference!(data)
 
-    if data.arc_lossy_admittance_from_to !== nothing
+    if !isnothing(data.arc_lossy_admittance_from_to)
         # DC assumption: all bus voltage magnitudes are 1.0 p.u., so V = e^(jθ).
         V = @. exp(1im * data.bus_angles)
         arcs = get_arc_axis(data)
