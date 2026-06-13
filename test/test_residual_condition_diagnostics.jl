@@ -54,7 +54,10 @@ end
 @testset "Schur min-eigenvalue matches dense ground truth (LCC)" begin
     # On an LCC system the Schur complement projects out the converter states;
     # the matvec must still match the dense inv(inv(J)[1:nb, 1:nb]) eigenvalue.
-    sys = System(joinpath(TEST_DATA_DIR, "case5_2_lcc.raw"))
+    sys = make_system(
+        PFP.PowerModelsData(joinpath(TEST_DATA_DIR, "case5_2_lcc.raw"));
+        runchecks = false,
+    )
     pf = ACPowerFlow{NewtonRaphsonACPowerFlow}()
     λ, λ_true, n_lcc = _schur_eig_and_truth(pf, sys)
     @test n_lcc == 2
@@ -118,7 +121,10 @@ end
 end
 
 @testset "log_solver_diagnostics works on LCC systems" begin
-    sys = System(joinpath(TEST_DATA_DIR, "case5_2_lcc.raw"))
+    sys = make_system(
+        PFP.PowerModelsData(joinpath(TEST_DATA_DIR, "case5_2_lcc.raw"));
+        runchecks = false,
+    )
     pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(; log_solver_diagnostics = true,
         solver_settings = _KLU_SETTINGS)
     lines = _solver_diagnostic_lines(pf, sys)
