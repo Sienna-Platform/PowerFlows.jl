@@ -55,12 +55,12 @@ structure-invariant for the polar formulation across both loops (the J pattern i
 bus-type-agnostically — see `_create_jacobian_matrix_structure` — and the fill rewrites every
 structural nonzero each call), so they are built once and reused; only value paths re-run. `backend`
 is the linear-solver backend tag (its `typeof` keys reuse). See `_newton_workspace!`."""
-struct PolarNRCache
+struct PolarNRCache <: AbstractNRCache
     residual::ACPowerFlowResidual
     J::ACPowerFlowJacobian
     linSolveCache::PFLinearSolverCache
     stateVector::StateVectorCache
-    backend::Any
+    backend::PNM.LinearSolverType
 end
 
 """Recompute, in place, every per-time-step and bus-type-derived quantity of `residual` that the
@@ -216,7 +216,7 @@ function _set_Δx_nr!(stateVector::StateVectorCache,
         # values in place while the pattern holds (reusing the factorization); rebuild if it shifts.
         M_prev = stateVector.fallback_matrix[]
         cache_prev = stateVector.fallback_cache[]
-        if M_prev !== nothing && cache_prev !== nothing &&
+        if !isnothing(M_prev) && !isnothing(cache_prev) &&
            _refresh_singular_J_fallback!(M_prev, J.Jv, stateVector.x)
             M = M_prev
             cache = cache_prev

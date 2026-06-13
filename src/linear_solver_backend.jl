@@ -37,6 +37,30 @@ const PFLinearSolverCache =
         PardisoLinSolveCache,
     }
 
+"""Supertype for the polar NR/TR reuse cache (`PolarNRCache`, `power_flow_method.jl`).
+Exists so `PowerFlowData` can type its `polar_nr_cache` slot as a two-member union:
+the concrete type cannot be referenced there because of the construction cycle
+`PolarNRCache → ACPowerFlowResidual → PowerFlowData`."""
+abstract type AbstractNRCache end
+
+"""Lazily-built cache for the DC solves, stored in `data.solver_cache`. Reused across
+repeated solves on the same data (e.g. a PCM loop: fixed network, changing injections)
+so the network matrix is factored once and the solve/scratch buffers are not
+reallocated. `matrix` and `backend` exist only to invalidate the reuse — rebuild when
+the network-matrix object identity or the backend changes (see
+`_get_or_build_solver_cache!`). The remaining fields are the per-solve scratch:
+`power_injections`/`p_inj` solve buffers, arc resistances `rs`, and the signed arc-bus
+incidence (built once at `PowerFlowData` construction; `nothing` for vPTDF)."""
+struct DCSolverCache
+    matrix::SparseMatrixCSC{Float64, J_INDEX_TYPE}
+    backend::PNM.LinearSolverType
+    cache::PFLinearSolverCache
+    power_injections::Matrix{Float64}
+    p_inj::Matrix{Float64}
+    rs::Vector{Float64}
+    arc_bus_incidence::Union{SparseMatrixCSC{Int8, Int}, Nothing}
+end
+
 # --- Backend-agnostic operations (forward to the owning PNM namespace) ---
 
 symbolic_factor!(c::PNM.KLULinSolveCache, A::SparseMatrixCSC{Float64}) =
@@ -77,7 +101,7 @@ PNM's preference logic is used. Throws if AppleAccelerate is requested off an Ap
 platform, or if MKLPardiso is requested on a non-x86_64 architecture or without the
 `PowerFlowsPardisoExt` extension loaded (`import Pardiso`)."""
 function resolve_linear_solver_backend(override::Union{Nothing, AbstractString})
-    name = override === nothing ? PNM._default_linear_solver() : String(override)
+    name = isnothing(override) ? PNM._default_linear_solver() : String(override)
     tag = PNM.resolve_linear_solver(name)
     if tag isa PNM.AppleAccelerateLUSolver && !Sys.isapple()
         error("AppleAccelerate backend requested but not on an Apple platform.")

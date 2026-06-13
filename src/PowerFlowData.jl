@@ -137,17 +137,18 @@ struct PowerFlowData{
     lcc::LCCParameters
     arc_lossy_admittance_from_to::Union{SparseMatrixCSC{YBUS_ELTYPE, Int}, Nothing}
     arc_lossy_admittance_to_from::Union{SparseMatrixCSC{YBUS_ELTYPE, Int}, Nothing}
-    # Persistent linear-solver cache for the DC solves. Reused across repeated solves on
-    # the same data (e.g. a PCM loop: fixed network, changing injections) so the network
-    # matrix is factored once and the solve buffer is not reallocated. Despite the name it
-    # is not a `PFLinearSolverCache`: it holds a `(matrix, backend, cache, scratch)` tuple,
-    # where `matrix` and `backend` are kept only to invalidate the reuse (rebuild when either
-    # the network-matrix object or the backend changes — see `_get_or_build_solver_cache!`),
-    # `cache` is the actual `PFLinearSolverCache`, and `scratch` is the per-solve buffers.
-    # The `Base.Ref` allows lazy, in-place population on the first `solve_power_flow!` without
-    # reconstructing `data`. Typed `Any` because the concrete cache type is defined in a later
-    # include (`linear_solver_backend.jl`).
-    solver_cache::Base.RefValue{Any}
+    # Persistent linear-solver cache for the DC solves; see `DCSolverCache`. The `Base.Ref`
+    # allows lazy, in-place population on the first `solve_power_flow!` without reconstructing
+    # `data`.
+    solver_cache::Base.RefValue{Union{Nothing, DCSolverCache}}
+    # Persistent polar NR/TR reuse cache (a `PolarNRCache`, or `nothing`). Holds the residual,
+    # Jacobian, linear-solver cache (with its symbolic factorization), and state-vector buffers so
+    # the Q-limit retry loop and the multi-period time-step loop skip reconstructing these
+    # structure-invariant objects on every `_newton_power_flow` call. Typed as the
+    # `AbstractNRCache` forward supertype because the concrete `PolarNRCache` cannot be referenced
+    # here (construction cycle through `ACPowerFlowResidual`); the consumer's `isa PolarNRCache`
+    # check narrows it.
+    polar_nr_cache::Base.RefValue{Union{Nothing, AbstractNRCache}}
 end
 
 # aliases for specific type parameter combinations.
@@ -405,7 +406,8 @@ function PowerFlowData(
         lcc_parameters,
         arc_lossy_admittance_from_to,
         arc_lossy_admittance_to_from,
-        Base.RefValue{Any}(nothing), # solver_cache (lazily populated)
+        Base.RefValue{Union{Nothing, DCSolverCache}}(nothing), # lazily populated
+        Base.RefValue{Union{Nothing, AbstractNRCache}}(nothing), # lazily populated
     )
 end
 
