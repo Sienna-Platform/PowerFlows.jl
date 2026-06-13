@@ -7,6 +7,7 @@ export NewtonRaphsonACPowerFlow
 export TrustRegionACPowerFlow
 export LevenbergMarquardtACPowerFlow
 export RobustHomotopyPowerFlow
+export FastDecoupledACPowerFlow
 export ACPolarPowerFlow
 export ACRectangularPowerFlow
 export ACMixedPowerFlow
@@ -73,6 +74,8 @@ include("mixed_cpb_power_flow_jacobian.jl")
 include("solve_ac_power_flow.jl")
 include("power_flow_setup.jl")
 include("power_flow_method.jl")
+include("fast_decoupled_matrices.jl")
+include("fast_decoupled_method.jl")
 include("levenberg-marquardt.jl")
 include("gradient_descent_ac_power_flow.jl")
 include("post_processing.jl")

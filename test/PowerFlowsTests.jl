@@ -61,6 +61,7 @@ const AC_SOLVERS_TO_TEST = (
     TrustRegionACPowerFlow,
     LevenbergMarquardtACPowerFlow,
     RobustHomotopyPowerFlow,
+    FastDecoupledACPowerFlow,
 )
 
 for filename in readdir(joinpath(BASE_DIR, "test"))
