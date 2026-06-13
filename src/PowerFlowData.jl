@@ -137,21 +137,18 @@ struct PowerFlowData{
     lcc::LCCParameters
     arc_lossy_admittance_from_to::Union{SparseMatrixCSC{YBUS_ELTYPE, Int}, Nothing}
     arc_lossy_admittance_to_from::Union{SparseMatrixCSC{YBUS_ELTYPE, Int}, Nothing}
-    # Persistent solver cache, reused across repeated solves on the same data (e.g. a PCM loop:
-    # fixed network, changing injections) so factorizations are computed once and solve buffers
-    # are not reallocated. Lazily populated in place on the first solve (the `Base.Ref` avoids
-    # reconstructing `data`). Holds a [`SolverCache`](@ref) — an abstract supertype forward-declared
-    # in `power_flow_types.jl` so the field type resolves before the concrete subtypes are defined.
-    # Two TYPE-DISJOINT subtypes share this one slot:
-    #   * DC path (`ABA`/PTDF data): a [`DCSolverCache`](@ref) holding the factored network matrix +
-    #     backend (the invalidation key — rebuild when either changes, see
-    #     `_get_or_build_solver_cache!`), the `PFLinearSolverCache`, and the per-solve scratch.
-    #   * AC path, FastDecoupled solver (`ACPowerFlowData`): a `FastDecoupledCache` holding the
-    #     factored B′ (once per data/scheme/backend) and per-PQ-set factored B″ submatrices
-    #     (see `_get_or_build_fd_cache!`).
-    # Each getter dispatches on the cached subtype, so an empty slot or a cross-use fails loudly
-    # (a `MethodError`) instead of being silently mis-read — no sentinel tag needed.
-    solver_cache::Base.RefValue{Union{Nothing, SolverCache}}
+    # Persistent linear-solver cache for the DC solves; see `DCSolverCache`. The `Base.Ref`
+    # allows lazy, in-place population on the first `solve_power_flow!` without reconstructing
+    # `data`.
+    solver_cache::Base.RefValue{Union{Nothing, DCSolverCache}}
+    # Persistent polar NR/TR reuse cache (a `PolarNRCache`, or `nothing`). Holds the residual,
+    # Jacobian, linear-solver cache (with its symbolic factorization), and state-vector buffers so
+    # the Q-limit retry loop and the multi-period time-step loop skip reconstructing these
+    # structure-invariant objects on every `_newton_power_flow` call. Typed as the
+    # `AbstractNRCache` forward supertype because the concrete `PolarNRCache` cannot be referenced
+    # here (construction cycle through `ACPowerFlowResidual`); the consumer's `isa PolarNRCache`
+    # check narrows it.
+    polar_nr_cache::Base.RefValue{Union{Nothing, AbstractNRCache}}
 end
 
 # aliases for specific type parameter combinations.
@@ -409,7 +406,8 @@ function PowerFlowData(
         lcc_parameters,
         arc_lossy_admittance_from_to,
         arc_lossy_admittance_to_from,
-        Base.RefValue{Union{Nothing, SolverCache}}(nothing), # solver_cache (lazily populated)
+        Base.RefValue{Union{Nothing, DCSolverCache}}(nothing), # lazily populated
+        Base.RefValue{Union{Nothing, AbstractNRCache}}(nothing), # lazily populated
     )
 end
 
