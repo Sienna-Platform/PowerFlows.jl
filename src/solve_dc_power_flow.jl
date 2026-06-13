@@ -386,8 +386,8 @@ function dc_loss_factors(
 )
     Rs = _get_arc_resistances(data)
     ptdf_t = data.power_network_matrix.data
-    # PERF could be optimized: remove the Diagonal call.
-    return 2 * ptdf_t * LinearAlgebra.Diagonal(Rs) * ptdf_t' * P
+    # Right-associated to avoid forming a dense buses×buses intermediate.
+    return 2 .* (ptdf_t * (Rs .* (ptdf_t' * P)))
 end
 
 function dc_loss_factors(
