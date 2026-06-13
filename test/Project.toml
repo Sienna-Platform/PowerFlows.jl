@@ -30,7 +30,7 @@ TimeSeries = "9e3dc215-6440-5c97-bce1-76c03772f85e"
 InfrastructureSystems = {rev = "IS4", url = "https://github.com/Sienna-Platform/InfrastructureSystems.jl.git"}
 PowerSystemCaseBuilder = {rev = "psy6", url = "https://github.com/Sienna-Platform/PowerSystemCaseBuilder.jl.git"}
 PowerSystems = {rev = "psy6", url = "https://github.com/Sienna-Platform/PowerSystems.jl.git"}
-PowerFlowFileParser = {url = "https://github.com/Sienna-Platform/PowerFlowFileParser.jl.git", rev = "main"}
+PowerFlowFileParser = {url = "https://github.com/Sienna-Platform/PowerFlowFileParser.jl.git", rev = "psy6"}
 # Registry PNM v0.24 requires PSY ^5.11, which conflicts with the psy6 branch (5.10.0);
 # PNM's psy6 branch carries v0.24.0 (incl. condest!/rcond!) against the psy6/IS4 sources.
 PowerNetworkMatrices = {rev = "psy6", url = "https://github.com/Sienna-Platform/PowerNetworkMatrices.jl.git"}
