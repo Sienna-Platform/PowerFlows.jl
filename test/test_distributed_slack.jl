@@ -478,3 +478,53 @@ end
         end
     end
 end
+
+# T6 (FDNR WP3): Fast-decoupled solvers under distributed slack must match the Newton-Raphson
+# distributed-slack solution — both the polar :decoupled variant (whose per-iteration rank-1
+# slack sync in `_sync_explicit_state!` is the novel piece) and the :fixed_jacobian variant
+# (slack lives inside the frozen Jacobian). Decision recorded in WP3: KEEP the rank-1 sync —
+# FD :decoupled matches NR to ~1e-11 on bus voltages AND on the slack redistribution
+# (bus_active_power_injections), so it is stable, not restricted.
+@testset "FastDecoupled WP3: distributed slack parity (T6)" begin
+    build_c_sys14() =
+        PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+
+    # Equal generator participation factors (every ThermalStandard shares the imbalance).
+    equal_gspf(sys) = Dict(
+        (ThermalStandard, get_name(x)) => 1.0
+        for x in get_components(ThermalStandard, sys)
+    )
+
+    # Independent NR distributed-slack reference.
+    sys_nr = build_c_sys14()
+    pf_nr = ACPowerFlow(; generator_slack_participation_factors = equal_gspf(sys_nr))
+    data_nr = PowerFlowData(pf_nr, sys_nr)
+    @test solve_power_flow!(data_nr)
+    Vm_nr = data_nr.bus_magnitude[:, 1]
+    θ_nr = data_nr.bus_angles[:, 1]
+    P_nr = data_nr.bus_active_power_injections[:, 1]   # the redistributed slack
+
+    fd_cases = (
+        ("decoupled/XB", Dict{Symbol, Any}(:fd_variant => :decoupled, :fd_scheme => :XB)),
+        ("decoupled/BX", Dict{Symbol, Any}(:fd_variant => :decoupled, :fd_scheme => :BX)),
+        ("fixed_jacobian", Dict{Symbol, Any}(:fd_variant => :fixed_jacobian)),
+    )
+    for (label, settings) in fd_cases
+        @testset "$label" begin
+            sys_fd = build_c_sys14()
+            pf_fd = ACPowerFlow{PF.FastDecoupledACPowerFlow}(;
+                generator_slack_participation_factors = equal_gspf(sys_fd),
+                solver_settings = settings)
+            data_fd = PowerFlowData(pf_fd, sys_fd)
+            @test solve_power_flow!(data_fd)
+            # Voltages match NR.
+            @test isapprox(data_fd.bus_magnitude[:, 1], Vm_nr;
+                atol = TIGHT_TOLERANCE, rtol = 0)
+            @test isapprox(data_fd.bus_angles[:, 1], θ_nr;
+                atol = TIGHT_TOLERANCE, rtol = 0)
+            # Slack redistribution matches NR (the rank-1 slack sync is correct).
+            @test isapprox(data_fd.bus_active_power_injections[:, 1], P_nr;
+                atol = TIGHT_TOLERANCE, rtol = 0)
+        end
+    end
+end
