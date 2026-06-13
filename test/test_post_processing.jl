@@ -111,9 +111,12 @@ end
     pf = PF.ACPowerFlow{PF.TrustRegionACPowerFlow}(;
         skip_redistribution = true,
         correct_bustypes = true,
-        network_reductions = PNM.NetworkReduction[PNM.DegreeTwoReduction(;
-            reduce_reactive_power_injectors = false,
-        )],
+        # Same rationale as the arc-reporting testset below: protect
+        # reactive-injector hosts so the reduced network is physics-equivalent
+        # and flow parity at MW/MVAr-scale tolerances is meaningful.
+        network_reductions = PNM.NetworkReduction[
+            PNM.DegreeTwoReduction(; reduce_reactive_power_injectors = false),
+        ],
     )
     results_unreduced = solve_power_flow(pf_unreduced, sys, PF.FlowReporting.BRANCH_FLOWS)
     results_reduced = solve_power_flow(pf, sys, PF.FlowReporting.BRANCH_FLOWS)
