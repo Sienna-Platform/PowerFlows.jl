@@ -36,7 +36,7 @@ julia --project=docs docs/make.jl
 `ACRectangularPowerFlow{S}` (:315, Da Costa current injection), `ACMixedPowerFlow{S}` (:424,
 mixed current-power balance) — each parametrized by an orthogonal *solver*: NewtonRaphson,
 TrustRegion, LevenbergMarquardt, RobustHomotopy (polar-only), GradientDescent (polar-only),
-FastDecoupled (in progress, all formulations). Rect/mixed constructors reject polar-only solvers
+FastDecoupled (all formulations). Rect/mixed constructors reject polar-only solvers
 via `ArgumentError` (:351-364). DC models: `DCPowerFlow`, `PTDFDCPowerFlow`, `vPTDFDCPowerFlow`.
 
 **Dispatch chain (AC):** `solve_power_flow` / `solve_and_store_power_flow!`
@@ -90,6 +90,7 @@ have their own methods) → shared `_run_power_flow_method(time_step, ::StateVec
    - AC Power Flow using Newton-Raphson
    - AC Power Flow using Trust Region methods
    - AC Power Flow using Levenberg-Marquardt
+   - Fast/Fixed Decoupled AC Power Flow (constant approximate Jacobian, factored once)
    - Robust Homotopy methods for difficult-to-converge systems
    - PTDF-based DC Power Flow methods
 2. **Commercial Software Compatibility**: Export power flow results in formats compatible with
@@ -108,6 +109,9 @@ have their own methods) → shared `_run_power_flow_method(time_step, ::StateVec
 - **NewtonRaphsonACPowerFlow**: Standard method, fast convergence for well-conditioned systems
 - **TrustRegionACPowerFlow**: More robust than Newton-Raphson, handles ill-conditioned cases better
 - **LevenbergMarquardtACPowerFlow**: Robust nonlinear solver, good for difficult cases
+- **FastDecoupledACPowerFlow**: Constant approximate Jacobian factored once and reused across
+  iterations and time steps; very low per-iteration cost, ideal for repeated solves, contingency
+  screening, and as a cheap initializer (optional handoff to an exact Newton-family solver)
 - **RobustHomotopyPowerFlow**: Most robust method for hard-to-converge or non-convergent cases
 - **PTDFDCPowerFlow** / **vPTDFDCPowerFlow**: DC power flow with pre-computed PTDFs
 
@@ -218,26 +222,6 @@ file provides the integration layer.
 4. **Test**: Run tests with `]test PowerFlows` or specific test files
 5. **Document**: Add docstrings following Diataxis
 6. **Submit**: Create a pull request following `CONTRIBUTING.md`
-
-## Current effort: Fast/Fixed Decoupled Newton-Raphson (FDNR)
-
-Authoritative plan: **`FDNR_IMPLEMENTATION_PLAN.md`** (repo root). Read it before touching
-anything FD-related. Summary: add `FastDecoupledACPowerFlow` (PSS/E FDNS-equivalent) — polar
-`:decoupled` B′/B″ variant (XB/BX schemes), `:fixed_jacobian` frozen-J variant for all three
-formulations, opt-in handoff (`:handoff_solver`, default `nothing`) into the existing
-`_run_power_flow_method` for NR/TR refinement, factor-once caching across iterations/time steps.
-
-Non-negotiable rules for the multi-agent implementation:
-1. Follow the plan's work-package DAG (WP0 → WP1∥WP2 → WP3∥WP4 → WP5 → WP6; WP7 gated).
-   Interface contracts in plan §3–§4 are frozen; contract changes go through the integrator.
-2. **T1 first** (plan §6): the B′/B″-vs-exact-Jacobian unit test is the sign/value arbiter and
-   must pass before any iteration-loop work merges.
-3. Do NOT add `FastDecoupledACPowerFlow` to the rect/mixed constructor rejection unions.
-4. New defaults/constants go in `src/definitions.jl` as `DEFAULT_FD_*` (values in plan §3.2).
-5. Industry alignment is documented in plan §11 — primary source: PSS/E 36.1.0 POM §6.5–6.7
-   (FNSL/NSOL/FDNS), plus MATPOWER makeB/fdpf, PowerWorld FD→NR robust process, van Amerongen.
-   Safeguards (non-divergent backtracking, BLOWUP, DVLIM) are PSS/E-parity; §11 also lists five
-   *deliberate* divergences. Don't "fix" the divergences or "simplify" the safeguards.
 
 ## Dependencies & Resources
 
