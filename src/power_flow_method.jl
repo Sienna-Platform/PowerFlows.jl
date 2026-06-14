@@ -817,7 +817,7 @@ function _finalize_power_flow(
 end
 
 """Log the final residual size and convergence/non-convergence, returning `converged`. Shared by
-both [`_finalize_power_flow`](@ref) methods (Jacobian and Jacobian-free)."""
+both `_finalize_power_flow` methods (Jacobian and Jacobian-free)."""
 function _report_power_flow_convergence(
     converged::Bool,
     i::Int,

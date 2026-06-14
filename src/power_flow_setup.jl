@@ -289,7 +289,7 @@ end
         -> (residual, x0_computed)
 
 Build the polar residual and the (warm-started, validated) initial state vector WITHOUT
-constructing the formulation Jacobian. Shared by [`initialize_power_flow_variables`](@ref) (which
+constructing the formulation Jacobian. Shared by `initialize_power_flow_variables` (which
 adds the Jacobian) and by the fast-decoupled `:decoupled` driver, whose B′/B″ half-steps never use
 the formulation Jacobian — that driver only materializes `J` when a handoff solver or loss/voltage-
 stability factors are requested, so building it eagerly here would waste a full sparse-Jacobian
