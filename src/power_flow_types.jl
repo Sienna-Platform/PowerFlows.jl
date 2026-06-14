@@ -111,6 +111,39 @@ See also: [`ACPowerFlow`](@ref).
 struct RobustHomotopyPowerFlow <: ACPowerFlowSolverType end
 
 """
+    FastDecoupledACPowerFlow <: ACPowerFlowSolverType
+
+An [`ACPowerFlowSolverType`](@ref) implementing fixed-slope decoupled Newton-Raphson; the
+fast decoupled power flow of Stott & Alsac (1974) / van Amerongen (1989). Constant approximate
+Jacobian factor(s) are built once and reused across all iterations *and* time steps, while the
+exact mismatches are evaluated every iteration. This trades the quadratic convergence rate of
+Newton-Raphson for a linear rate at a fraction of the per-iteration cost — ideal for repeated
+solves, contingency screening, and as a cheap initializer for the exact-Newton family.
+
+Works with all three AC formulations ([`ACPolarPowerFlow`](@ref),
+[`ACRectangularPowerFlow`](@ref), [`ACMixedPowerFlow`](@ref)).
+
+# Settings (via `solver_settings` and/or call kwargs)
+- `fd_variant::Symbol`: `:decoupled` = classic B′/B″ half-iterations (polar only in v1);
+    `:fixed_jacobian` = frozen full-formulation Jacobian, factored once (all formulations).
+    Defaults to `:decoupled` for polar, `:fixed_jacobian` for rectangular/mixed.
+- `fd_scheme::Symbol`: B′/B″ scheme, `:XB` (Stott–Alsac; default) or `:BX`
+    (van Amerongen). Only meaningful for the polar `:decoupled` variant.
+- `handoff_solver`: `nothing` (pure FD; default) or [`NewtonRaphsonACPowerFlow`](@ref) /
+    [`TrustRegionACPowerFlow`](@ref) / [`LevenbergMarquardtACPowerFlow`](@ref) for final
+    refinement to `tol`.
+- `handoff_tol::Float64`: FD-stage exit ∞-norm when a handoff solver is configured.
+
+# References
+- B. Stott, O. Alsac, "Fast decoupled load flow", IEEE Trans. PAS-93(3), 1974.
+- R.A.M. van Amerongen, "A general-purpose version of the fast decoupled load flow",
+    IEEE Trans. Power Systems 4(2):760-770, 1989.
+
+See also: [`ACPowerFlow`](@ref), [`NewtonRaphsonACPowerFlow`](@ref).
+"""
+struct FastDecoupledACPowerFlow <: ACPowerFlowSolverType end
+
+"""
     ACPowerFlow{ACSolver}(; kwargs...) where {ACSolver <: ACPowerFlowSolverType}
     ACPowerFlow(; kwargs...)
 
