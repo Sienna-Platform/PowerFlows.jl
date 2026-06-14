@@ -284,14 +284,25 @@ function _dc_power_flow_fallback!(data::ACPowerFlowData, time_step::Int)
     _shift_angles_to_stored_reference!(data, time_step)
 end
 
-function initialize_power_flow_variables(pf::ACPolarPowerFlow{T},
+"""
+    _initialize_residual_x0(pf::ACPolarPowerFlow, data, time_step; kwargs...)
+        -> (residual, x0_computed)
+
+Build the polar residual and the (warm-started, validated) initial state vector WITHOUT
+constructing the formulation Jacobian. Shared by [`initialize_power_flow_variables`](@ref) (which
+adds the Jacobian) and by the fast-decoupled `:decoupled` driver, whose B′/B″ half-steps never use
+the formulation Jacobian — that driver only materializes `J` when a handoff solver or loss/voltage-
+stability factors are requested, so building it eagerly here would waste a full sparse-Jacobian
+allocation + evaluation per solve (and per time step in multi-period runs).
+"""
+function _initialize_residual_x0(pf::ACPolarPowerFlow,
     data::ACPowerFlowData,
     time_step::Int64;
     x0::Union{Vector{Float64}, Nothing} = nothing,
     validate_voltage_magnitudes::Bool = DEFAULT_VALIDATE_VOLTAGES,
     vm_validation_range::MinMax = DEFAULT_VALIDATION_RANGE,
     _ignored...,
-) where {T <: ACPowerFlowSolverType}
+)
     residual = ACPowerFlowResidual(data, time_step)
     if isnothing(x0)
         x0_computed = improve_x0(pf, data, residual, time_step)
@@ -302,15 +313,30 @@ function initialize_power_flow_variables(pf::ACPolarPowerFlow{T},
     end
     _log_initial_residual(residual)
 
-    J = ACPowerFlowJacobian(residual, time_step)
-    J(time_step)
-
     validate_voltage_magnitudes && PowerFlows.validate_voltage_magnitudes(
         x0_computed,
         residual.validate_indices,
         vm_validation_range,
         0,
     )
+    return residual, x0_computed
+end
+
+function initialize_power_flow_variables(pf::ACPolarPowerFlow{T},
+    data::ACPowerFlowData,
+    time_step::Int64;
+    x0::Union{Vector{Float64}, Nothing} = nothing,
+    validate_voltage_magnitudes::Bool = DEFAULT_VALIDATE_VOLTAGES,
+    vm_validation_range::MinMax = DEFAULT_VALIDATION_RANGE,
+    _ignored...,
+) where {T <: ACPowerFlowSolverType}
+    residual, x0_computed = _initialize_residual_x0(
+        pf, data, time_step; x0, validate_voltage_magnitudes, vm_validation_range,
+    )
+
+    J = ACPowerFlowJacobian(residual, time_step)
+    J(time_step)
+
     return residual, J, x0_computed
 end
 

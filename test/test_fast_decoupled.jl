@@ -1147,6 +1147,65 @@ end
     @test (@allocated PF.solve!(bpp.bpp_cache, rq)) < 256
 end
 
+@testset "FastDecoupled WP5b: :decoupled skips the formulation Jacobian (T11 lazy-J)" begin
+    # The :decoupled half-steps run on B′/B″ and never touch the formulation Jacobian; it is built
+    # ONLY for a handoff or loss/voltage-stability factors. With neither, the driver must skip the
+    # full sparse-Jacobian allocation + evaluation entirely — a per-solve, per-time-step saving.
+    sys = PSB.build_system(PSB.MatpowerTestSystems, "matpower_ACTIVSg2000_sys")
+    PSY.set_units_base_system!(sys, "SYSTEM_BASE")
+
+    # (a) Direct isolation: the residual/x0-only initializer the :decoupled driver uses must NOT
+    # allocate the Jacobian, so it allocates strictly less than the full initializer — by at least
+    # most of the omitted sparse-Jacobian footprint (≈3 MiB on this 2000-bus system).
+    pf = ACPowerFlow{PF.FastDecoupledACPowerFlow}(;
+        correct_bustypes = true,
+        solver_settings = Dict{Symbol, Any}(:fd_variant => :decoupled))
+    data = PowerFlowData(pf, sys)
+    kw = (; validate_voltage_magnitudes = false)
+    PF._initialize_residual_x0(pf, data, 1; kw...)             # warm (compile)
+    PF.initialize_power_flow_variables(pf, data, 1; kw...)     # warm (compile)
+    a_lazy = @allocated PF._initialize_residual_x0(pf, data, 1; kw...)
+    a_full = @allocated PF.initialize_power_flow_variables(pf, data, 1; kw...)
+    jac_bytes = Base.summarysize(
+        PF.ACPowerFlowJacobian(PF.ACPowerFlowResidual(data, 1), 1).Jv)
+    @test a_lazy < a_full
+    @test (a_full - a_lazy) > jac_bytes ÷ 2
+
+    # (b) Multi-period: a warm :decoupled re-solve must not rebuild a per-step Jacobian. The old
+    # eager path built one full formulation Jacobian PER time step (≥ time_steps·jac_alloc bytes);
+    # the lazy path builds none, so the whole warm multi-period re-solve stays well under that.
+    time_steps = 3
+    pf_mp = ACPowerFlow{PF.FastDecoupledACPowerFlow}(;
+        time_steps = time_steps,
+        correct_bustypes = true,
+        solver_settings = Dict{Symbol, Any}(:fd_variant => :decoupled))
+    data_mp = PowerFlowData(pf_mp, sys)
+    @test solve_power_flow!(data_mp)        # warm caches + factorizations
+    @test all(data_mp.converged)
+    cache = _fd_cache(data_mp)
+    @test cache !== nothing
+    @test cache.bp_factor_count == 1        # lazy-J change did not disturb factor-once
+
+    jac_alloc = @allocated (
+        let J = PF.ACPowerFlowJacobian(PF.ACPowerFlowResidual(data_mp, 1), 1)
+            J(1)
+        end
+    )
+    a_solve = @allocated solve_power_flow!(data_mp)
+    @test a_solve < time_steps * jac_alloc
+
+    # (c) Factors-on still works through the lazy gate: when loss factors ARE requested the driver
+    # builds + evaluates J at the solution, so finite loss factors are produced. (c_sys14: fast.)
+    sys14 = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    pf_lf = ACPowerFlow{PF.FastDecoupledACPowerFlow}(;
+        calculate_loss_factors = true,
+        solver_settings = Dict{Symbol, Any}(:fd_variant => :decoupled))
+    data_lf = PowerFlowData(pf_lf, sys14)
+    @test solve_power_flow!(data_lf)
+    @test PF.get_loss_factors(data_lf) !== nothing
+    @test all(isfinite, PF.get_loss_factors(data_lf))
+end
+
 # WP6 regression: degenerate islands make B′ and/or B″ a 0×0 submatrix, which errors in the
 # sparse backends (AppleAccelerate: "columnCount must be > 0") if factored. FD :decoupled must
 # skip the corresponding half-step. Covered indirectly by AC_SOLVERS_TO_TEST integration tests

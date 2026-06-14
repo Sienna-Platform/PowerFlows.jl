@@ -299,6 +299,11 @@ the real `tol`, else `tol` itself (pure FD)."""
 _fd_stage_tol(handoff_solver, tol, handoff_tol) =
     handoff_solver === nothing ? tol : handoff_tol
 
+# The `Jv` argument for `_finalize_power_flow`: the assembled Jacobian values when the :decoupled
+# driver built `J`, or `nothing` when it skipped it (no handoff, no loss/vstab factors).
+_fd_finalize_jv(::Nothing) = nothing
+_fd_finalize_jv(J) = J.Jv
+
 """
     _fd_maybe_handoff!(pf, sv, residual, J, time_step, handoff_solver, tol, linear_solver,
                        solver_name, fd_iters) -> (converged::Bool, handoff_iters::Int)
@@ -318,7 +323,7 @@ function _fd_maybe_handoff!(
     pf::AbstractACPowerFlow{FastDecoupledACPowerFlow},
     sv::StateVectorCache,
     residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
-    J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
+    J::Union{Nothing, ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
     time_step::Int64,
     handoff_solver,
     tol::Float64,
@@ -326,6 +331,8 @@ function _fd_maybe_handoff!(
     solver_name::String,
     fd_iters::Int,
 )
+    # `J === nothing` only when `handoff_solver === nothing` (the :decoupled driver builds `J`
+    # whenever a handoff is configured), so the early return below fires before any `J` deref.
     fd_met_tol = norm(residual.Rv, Inf) < tol
     if handoff_solver === nothing || fd_met_tol
         return (fd_met_tol, 0)
@@ -878,8 +885,21 @@ function _fd_decoupled_power_flow(
     else
         (; validate_voltage_magnitudes, vm_validation_range, x0)
     end
-    residual, J, x0_init =
-        initialize_power_flow_variables(pf, data, time_step; init_kwargs...)
+    # The :decoupled half-steps run on B′/B″ from the cache and never touch the formulation
+    # Jacobian. Build it ONLY when its sole consumers are active — a handoff solver, or loss/
+    # voltage-stability factors — otherwise skip the full sparse-Jacobian allocation + evaluation
+    # entirely (a per-solve, per-time-step saving; see `_initialize_residual_x0`).
+    need_jacobian =
+        handoff_solver !== nothing ||
+        get_calculate_loss_factors(data) ||
+        get_calculate_voltage_stability_factors(data)
+    if need_jacobian
+        residual, J, x0_init =
+            initialize_power_flow_variables(pf, data, time_step; init_kwargs...)
+    else
+        residual, x0_init = _initialize_residual_x0(pf, data, time_step; init_kwargs...)
+        J = nothing
+    end
 
     solver_name = "FastDecoupled(:decoupled,$(fd_scheme))"
 
@@ -1060,7 +1080,7 @@ function _fd_decoupled_power_flow(
     end
     _finalize_formulation!(pf, data, sv.x, residual, time_step)
     result = _finalize_power_flow(
-        converged, i, solver_name, residual, data, J.Jv, time_step,
+        converged, i, solver_name, residual, data, _fd_finalize_jv(J), time_step,
     )
     if _return_stage_iters
         return (result, i - handoff_iters, handoff_iters)
