@@ -657,7 +657,8 @@ B″ factorizations for testability (factor-once verification).
 - `theta_x_idx::Vector{Int}`: `x`-indices of the θ state at `pvpq` (`2i`).
 - `p_row_idx::Vector{Int}`: `Rv`-indices of the P-mismatch rows at `pvpq` (`2i-1`).
 - `rp::Vector{Float64}`: preallocated active half-step buffer (length `length(pvpq)`).
-- `pq_data::Dict{UInt, FDPQData}`: bus-type signature → per-PQ-set data.
+- `pq_data::Dict{Vector{PSY.ACBusTypes}, FDPQData}`: bus-type column → per-PQ-set data (the
+  materialized column is the key, so distinct PQ sets can never collide).
 - `bp_factor_count::Int`: number of B′ factorizations (must be 1 over the cache lifetime).
 - `bpp_factor_count::Int`: number of B″ factorizations (one per distinct PQ signature).
 """
@@ -670,7 +671,7 @@ mutable struct FastDecoupledCache
     theta_x_idx::Vector{Int}
     p_row_idx::Vector{Int}
     rp::Vector{Float64}
-    pq_data::Dict{UInt, FDPQData}
+    pq_data::Dict{Vector{PSY.ACBusTypes}, FDPQData}
     bp_factor_count::Int
     bpp_factor_count::Int
 end
@@ -736,7 +737,7 @@ function _get_or_build_fd_cache!(
         theta_x_idx,
         p_row_idx,
         rp,
-        Dict{UInt, FDPQData}(),
+        Dict{Vector{PSY.ACBusTypes}, FDPQData}(),
         1,   # bp_factor_count: build_fd_matrices factored B′ exactly once
         0,   # bpp_factor_count: bumped per distinct PQ signature in _get_pq_data!
     )
@@ -748,18 +749,19 @@ end
     _get_pq_data!(cache, data, time_step, linear_solver) -> FDPQData
 
 Fetch the [`FDPQData`](@ref) for `time_step`'s PQ set from `cache.pq_data`, or build it. The
-bus-type signature `hash(view(data.bus_type, :, time_step))` keys the dict: identical bus-type
-columns (across time steps or Q-limit retries returning to a previously-seen PQ set) hit the
-cache with NO refactorization. On a miss, `extract_bpp` factors the `[pq, pq]` B″ submatrix once
-(bumping `cache.bpp_factor_count`), the half-step buffers/index vectors are preallocated, and the
-result is stored."""
+materialized bus-type column `collect(view(data.bus_type, :, time_step))` keys the dict: identical
+bus-type columns (across time steps or Q-limit retries returning to a previously-seen PQ set) hit
+the cache with NO refactorization. Keying on the column itself (rather than a hash of it) makes the
+lookup collision-free — distinct PQ sets can never alias to the same entry. On a miss, `extract_bpp`
+factors the `[pq, pq]` B″ submatrix once (bumping `cache.bpp_factor_count`), the half-step
+buffers/index vectors are preallocated, and the result is stored."""
 function _get_pq_data!(
     cache::FastDecoupledCache,
     data::ACPowerFlowData,
     time_step::Int64,
     linear_solver::Union{Nothing, AbstractString},
 )
-    sig = hash(view(data.bus_type, :, time_step))
+    sig = collect(view(data.bus_type, :, time_step))
     existing = get(cache.pq_data, sig, nothing)
     existing === nothing || return existing
 
@@ -767,7 +769,7 @@ function _get_pq_data!(
     # B′ and the cached θ-index maps are keyed on the non-REF set, which is invariant under the
     # only supported within-data change (PV↔PQ Q-limit flips). If the REF/isolated set itself
     # drifted, the cached B′/pvpq would be applied to the wrong buses — fail loudly rather than
-    # silently mis-update. (A signature hit implies an already-validated bus-type column.)
+    # silently mis-update. (A key hit means the bus-type column matched exactly.)
     sort(vcat(pv, pq)) == cache.pvpq || error(
         "FastDecoupled: the non-REF bus set changed for an existing cache (REF/isolated buses " *
         "drifted); the cached B′ factorization is no longer valid. This is unsupported within a " *

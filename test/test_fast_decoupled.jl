@@ -202,6 +202,53 @@ end
     @test relerr <= 1e-4
 end
 
+# WP1 regression: a mostly-resistive branch whose reactance sits BELOW PNM's reactance floor but
+# whose resistance is non-negligible (so PNM, which floors x only when r==x==0, leaves it
+# untouched). The near-zero-x cap lives ONLY on the resistance-drop B-stamp path (`_fd_series`),
+# so the recovered `ys`/`b_c`/shunt and the restamp stay at their true values. Before the cap was
+# moved out of `_recover_arc_params`, this branch overwrote `ys`'s imaginary part with `-1/x_cap`,
+# injecting a ~1e6 susceptance into the restamp off-diagonal and the full-`ys` half of B′/B″.
+function _resistive_near_zero_x_system()
+    sys = PSY.System(100.0)
+    b1 = _add_simple_bus!(sys, 1, PSY.ACBusTypes.REF, 230.0, 1.0, 0.0)
+    b2 = _add_simple_bus!(sys, 2, PSY.ACBusTypes.PV, 230.0, 1.0, 0.0)
+    b3 = _add_simple_bus!(sys, 3, PSY.ACBusTypes.PQ, 230.0, 1.0, 0.0)
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    _add_simple_thermal_standard!(sys, b2, 0.3, 0.0)
+    _add_simple_load!(sys, b3, 15.0, 6.0)
+    _add_simple_line!(sys, b1, b2, 0.01, 0.10, 0.0)   # normal line keeps the network connected
+    # Mostly-resistive branch: |x| below PNM's ZERO_IMPEDANCE_X_EPSILON, r ≫ 0.
+    _add_simple_line!(sys, b2, b3, 0.05, 1e-8, 0.0)
+    return sys
+end
+
+@testset "FastDecoupled WP1: mostly-resistive near-zero-x branch (restamp invariant)" begin
+    sys = _resistive_near_zero_x_system()
+    pf = ACPowerFlow()
+    data = PowerFlowData(pf, sys)
+    time_step = 1
+
+    # The branch's reactance is below the cap threshold (1/FD_INV_X_CAP), so it exercises the
+    # resistance-drop cap path; the cap is locked to PNM's reactance floor.
+    @test PF.FD_INV_X_CAP == 1 / PNM.ZERO_IMPEDANCE_X_EPSILON
+
+    # Recovered params / restamp must stay at TRUE values (no 1e6 susceptance leak): the restamp
+    # reconstructs the original Ybus within ComplexF32 noise even for this branch.
+    Yb = ComplexF64.(Matrix(data.power_network_matrix.data))
+    Yrec = Matrix(PF._restamp_ybus(PF._recover_arc_params(data)))
+    relerr = norm(Yrec - Yb) / norm(Yb)
+    @test relerr <= 1e-4
+
+    # The resistance-drop stamp path must still be finite (a true x→0 there would be Inf/NaN
+    # without the cap); B′/B″ entries are all finite under both schemes.
+    ref, pv, pq = PF.bus_type_idx(data, time_step)
+    for scheme in (:XB, :BX)
+        fd = PF.build_fd_matrices(data, time_step, scheme)
+        @test all(isfinite, PF.get_bp_matrix(fd).nzval)
+        @test all(isfinite, PF.get_bpp_matrix(PF.extract_bpp(fd, sort(pq))).nzval)
+    end
+end
+
 # =====================================================================================
 # WP2 — Frozen-Jacobian (:fixed_jacobian) loop + shared safeguard helpers.
 # =====================================================================================

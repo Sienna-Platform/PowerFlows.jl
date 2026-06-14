@@ -33,11 +33,14 @@
 #
 # See also `src/fast_decoupled_method.jl` (WP2/WP3 drivers) which consume these matrices.
 
-# 1/x cap for near-zero-impedance series arcs (sign preserved for series capacitors), locked to
-# PowerNetworkMatrices' reactance floor: PNM substitutes x = ZERO_IMPEDANCE_X_EPSILON for an
+# 1/x cap for the resistance-neglecting B′/B″ stamp (sign preserved for series capacitors), locked
+# to PowerNetworkMatrices' reactance floor: PNM substitutes x = ZERO_IMPEDANCE_X_EPSILON for an
 # r=x=0 branch when building the Ybus this code reads, so 1/ZERO_IMPEDANCE_X_EPSILON is the
 # largest series susceptance that Ybus can contain. Deriving it here (rather than hard-coding)
-# keeps the FD near-zero-reactance threshold from drifting away from PNM's definition.
+# keeps the FD near-zero-reactance threshold from drifting away from PNM's definition. The cap is
+# applied ONLY in `_fd_series` (the `1/x` resistance-drop path, where a true x→0 would otherwise
+# blow up to Inf/NaN); the recovered `ys`/`b_c`/shunt and the restamp stay at their true values so
+# the restamp invariant holds exactly for every branch (incl. mostly-resistive near-zero-x ones).
 const FD_INV_X_CAP = 1 / PNM.ZERO_IMPEDANCE_X_EPSILON  # = 1e6
 const FD_TAU_FLOOR = 1e-8       # |τ| floor guarding the ytt/yff ratio
 
@@ -122,9 +125,9 @@ get_bpp_matrix(c::FDBppCache) = c.bpp
 
 Recover per-arc π-model parameters (`τ`, `ys`, `b_c`) and per-bus shunt admittances from the
 PowerNetworkMatrices arc-admittance matrices and the Ybus diagonal. See the file header for the
-stamp/recovery conventions. Guards `|τ| ≥ FD_TAU_FLOOR` and NaN/Inf; near-zero-impedance arcs
-have `1/x` capped at `FD_INV_X_CAP` (= `1/PNM.ZERO_IMPEDANCE_X_EPSILON`, matching the reactance
-floor PNM applies when building the Ybus; sign preserved for series capacitors).
+stamp/recovery conventions. Guards `|τ| ≥ FD_TAU_FLOOR` and NaN/Inf. Recovered `ys`/`b_c`/shunt
+are left at their true values (the near-zero-reactance cap lives in `_fd_series`, applied only on
+the resistance-drop stamp path), so the restamp invariant holds exactly for every branch.
 """
 function _recover_arc_params(data::ACPowerFlowData)
     Yb = data.power_network_matrix.data
@@ -163,13 +166,6 @@ function _recover_arc_params(data::ACPowerFlowData)
         if !isfinite(ys_a)
             @debug "FDNR arc recovery: non-finite ys on arc $a ($(first(arc))→$(last(arc)))"
             ys_a = ComplexF64(yff)
-        end
-        # Cap near-zero series impedance (|ys| explodes); preserve sign of x for series caps.
-        x_a = imag(1 / ys_a)
-        if abs(x_a) < 1 / FD_INV_X_CAP
-            @debug "FDNR arc recovery: near-zero reactance on arc $a; capping 1/x at $FD_INV_X_CAP"
-            x_capped = x_a == 0 ? 1 / FD_INV_X_CAP : sign(x_a) / FD_INV_X_CAP
-            ys_a = ComplexF64(real(ys_a), -1 / x_capped)
         end
         bc_a = 2 * imag(ytt - ys_a)
         isfinite(bc_a) || (bc_a = 0.0)
@@ -242,8 +238,19 @@ end
 # Series admittance for the B′/B″ stamp. When `drop_resistance` is set the branch resistance is
 # neglected (ys → 1/(j·x), x = imag(1/ys)), else the full ys is kept. The resistance-neglect side
 # differs by scheme: B′ drops it under XB, B″ drops it under BX (MATPOWER makeB).
-@inline _fd_series(ys::ComplexF64, drop_resistance::Bool) =
-    drop_resistance ? 1 / (im * imag(1 / ys)) : ys
+#
+# The cap lives here (not in `_recover_arc_params`) so it touches ONLY the resistance-drop path: a
+# branch with |x| below PNM's reactance floor (incl. a true x=0, where `1/(j·x)` would be Inf/NaN)
+# has its `1/x` clamped to `FD_INV_X_CAP`, sign preserved for series capacitors. The full-`ys`
+# branch and the recovered params/restamp are left untouched.
+@inline function _fd_series(ys::ComplexF64, drop_resistance::Bool)
+    drop_resistance || return ys
+    x = imag(1 / ys)
+    if abs(x) < 1 / FD_INV_X_CAP
+        x = ifelse(x == 0, one(x), sign(x)) / FD_INV_X_CAP
+    end
+    return 1 / (im * x)
+end
 
 """
     _assemble_bp_full(p::FDRecoveredParams, scheme::Symbol)
