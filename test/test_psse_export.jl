@@ -527,6 +527,79 @@ end
     @test occursin(", 0.0, 0.0, 0.0,", tap_winding1_record)
 end
 
+# Regression for issue #361: a programmatically-built Line has no RATE4..RATE12 keys in its
+# `ext` dict, which used to trigger a `MethodError: Cannot convert String to Float64` in the
+# v35 non-transformer branch writer. The missing extra ratings must export as numeric 0.0.
+@testset "PSSE Exporter issue #361: v35 Line with missing RATE4..RATE12 ext keys" begin
+    sys = System(100.0)
+    b1 = ACBus(; number = 1, name = "b1", available = true, bustype = ACBusTypes.REF,
+        angle = 0.0, magnitude = 1.0, voltage_limits = (0.0, 2.0), base_voltage = 138.0,
+    )
+    b2 = ACBus(; number = 2, name = "b2", available = true, bustype = ACBusTypes.PV,
+        angle = 0.0, magnitude = 1.0, voltage_limits = (0.0, 2.0), base_voltage = 138.0,
+    )
+    add_component!(sys, b1)
+    add_component!(sys, b2)
+    line = Line(; name = "L", available = true, active_power_flow = 0.0,
+        reactive_power_flow = 0.0, arc = Arc(; from = b1, to = b2), r = 0.01, x = 0.1,
+        b = (from = 0.0, to = 0.0), rating = 1.0,
+        angle_limits = (min = -pi / 2, max = pi / 2))
+    add_component!(sys, line)
+
+    # Precondition: the programmatic Line really is missing the extra rating keys.
+    @test !any(haskey(PSY.get_ext(line), "RATE$i") for i in 4:12)
+
+    export_location = joinpath(test_psse_export_dir, "v35", "issue361_missing_rate_keys")
+    exporter = PSSEExporter(sys, :v35, export_location; overwrite = true)
+    # The export must not throw (the regression was a MethodError during writing).
+    write_export(exporter, "missing_rate_keys"; overwrite = true)
+
+    raw_path, metadata_path =
+        get_psse_export_paths(joinpath(export_location, "missing_rate_keys"))
+    @test isfile(raw_path)
+
+    md = JSON3.read(metadata_path, Dict)
+    branch_name_mapping = md["branch_name_mapping"]
+    @test length(branch_name_mapping) == 1
+    bus_number_mapping = md["bus_number_mapping"]
+    I = bus_number_mapping["1"]
+    J = bus_number_mapping["2"]
+    raw_lines = readlines(raw_path)
+    line_record_idx = findfirst(l -> startswith(strip(l), "$I, $J,"), raw_lines)
+    @test !isnothing(line_record_idx)
+    isnothing(line_record_idx) && return
+    # All twelve rating fields (RATEA..RATE12) present and the missing ones written as 0.0.
+    @test occursin(
+        "0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0",
+        raw_lines[line_record_idx],
+    )
+end
+
+# Regression for issue #361 (related): a system with no non-transformer branches yields an
+# empty branch name-mapping whose key type inferred as `Tuple{Tuple{Int,Int,Vararg{Int}},
+# String}`, which matched no `serialize_component_ids` method. The export must succeed and
+# produce an empty branch mapping.
+@testset "PSSE Exporter issue #361: v35 system with no non-transformer branches" begin
+    sys = System(100.0)
+    b1 = ACBus(; number = 1, name = "b1", available = true, bustype = ACBusTypes.REF,
+        angle = 0.0, magnitude = 1.0, voltage_limits = (0.0, 2.0), base_voltage = 138.0,
+    )
+    add_component!(sys, b1)
+    @test isempty(PSY.get_components(PSY.ACBranch, sys))
+
+    export_location = joinpath(test_psse_export_dir, "v35", "issue361_no_branches")
+    exporter = PSSEExporter(sys, :v35, export_location; overwrite = true)
+    # The export must not throw (the regression was a serialize_component_ids MethodError).
+    write_export(exporter, "no_branches"; overwrite = true)
+
+    raw_path, metadata_path =
+        get_psse_export_paths(joinpath(export_location, "no_branches"))
+    @test isfile(raw_path)
+
+    md = JSON3.read(metadata_path, Dict)
+    @test isempty(md["branch_name_mapping"])
+end
+
 function test_psse_exporter_inner(
     ACSolver::Type{<:ACPowerFlowSolverType},
     folder_name::String,

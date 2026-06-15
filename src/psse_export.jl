@@ -1757,7 +1757,7 @@ sorts them by their bus numbers, and returns a vector of tuples (branch, bus_num
 - `exporter::PSSEExporter`: The exporter containing the system.
 
 # Returns
-- `Vector{Tuple{<:PSY.Branch, Tuple}}`: Each tuple contains a branch and its associated bus numbers.
+- `Vector{Tuple{PSY.ACBranch, Tuple{Int, Int}}}`: Each tuple contains a branch and its associated bus numbers.
 """
 function get_branches_with_numbers(exporter::PSSEExporter)
     lines = collect(PSY.get_components(PSY.Line, exporter.system))
@@ -1769,8 +1769,10 @@ function get_branches_with_numbers(exporter::PSSEExporter)
     branches = vcat(lines, mon_lines, discrete_ac_branches)
     # Sort branches by their bus numbers to order them at exporting
     sort!(branches; by = branch_to_bus_numbers)
-    # Pair each branch with its bus numbers
-    return [(branch, branch_to_bus_numbers(branch)) for branch in branches]
+    # Pair each branch with its bus numbers.
+    return Tuple{PSY.ACBranch, Tuple{Int, Int}}[
+        (branch, branch_to_bus_numbers(branch)) for branch in branches
+    ]
 end
 
 """Calculate the STAT field for a 3-winding transformer based on per-winding availability."""
