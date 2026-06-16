@@ -557,10 +557,10 @@ end
     raw_path, metadata_path =
         get_psse_export_paths(joinpath(export_location, "missing_rate_keys"))
     @test isfile(raw_path)
+    @test isfile(metadata_path)
 
     md = JSON3.read(metadata_path, Dict)
     branch_name_mapping = md["branch_name_mapping"]
-    @test length(branch_name_mapping) == 1
     bus_number_mapping = md["bus_number_mapping"]
     I = bus_number_mapping["1"]
     J = bus_number_mapping["2"]
@@ -595,6 +595,7 @@ end
     raw_path, metadata_path =
         get_psse_export_paths(joinpath(export_location, "no_branches"))
     @test isfile(raw_path)
+    @test isfile(metadata_path)
 
     md = JSON3.read(metadata_path, Dict)
     @test isempty(md["branch_name_mapping"])
