@@ -420,25 +420,21 @@ function _update_hessian_lcc_contributions!(
         F_t_r = F[idx_t_r]
         F_t_i = F[idx_t_i]
 
-        # Pre-existing inconsistency (not introduced here): the residual
-        # in _write_lcc_tail! sets F_{t_r} = -P_lcc_to - p_set when
-        # `setpoint_at_rectifier[i]` is false, but the Jacobian assembly
-        # in _lcc_jacobian_scalars unconditionally fills the F_{t_r} row
-        # with rectifier-side derivatives (∂P_lcc_from/∂·). This
-        # Hessian must mirror the Jacobian — anything else would give a
-        # Hessian-of-residual term that doesn't match J^T J's quadratic.
-        # Consequence: in reverse-flow cases (setpoint_at_rectifier =
-        # false), the LCC contribution to ∑ F_k ∇²F_k along the F_{t_r}
-        # row uses the wrong side. NR/TR/LM are affected too but
-        # generally still descend through it; RH is more sensitive to
-        # the mismatch, so test_lcc_ac_solver currently skips reverse
-        # flow for RH (see the comment in test/test_solve_power_flow.jl).
-        # The proper fix is to make `_lcc_jacobian_scalars` branch on
-        # `setpoint_at_rectifier` and have both J and H pick the right
-        # side; that's a separate, larger change.
-        coef_Pr = F_P_fb + F_t_r + F_t_i
+        # The P-setpoint tail row F_{t_r} carries +P_lcc_from when the
+        # setpoint is at the rectifier and -P_lcc_to otherwise (see
+        # `_write_lcc_tail!`). Its ∇²F therefore attaches to the rectifier
+        # curvature `d2P_r` in the first case and to the inverter curvature
+        # `d2P_i` (negated, since the residual carries -P_lcc_to) in the
+        # second. This mirrors the side-aware Jacobian assembly in
+        # `_lcc_jacobian_scalars`; the two must agree or the
+        # Hessian-of-residual term would not match J^T J's quadratic. The
+        # DC-line-balance row F_{t_i} = P_lcc_from + P_lcc_to - R·I_dc² and
+        # the bus-balance rows F_{P_fb}/F_{P_tb} depend on their own side
+        # unconditionally.
+        setpoint_at_rect = data.lcc.setpoint_at_rectifier[i]
+        coef_Pr = F_P_fb + F_t_i + (setpoint_at_rect ? F_t_r : 0.0)
         coef_Qr = F_Q_fb
-        coef_Pi = F_P_tb + F_t_i
+        coef_Pi = F_P_tb + F_t_i + (setpoint_at_rect ? 0.0 : -F_t_r)
         coef_Qi = F_Q_tb
 
         d2P_r = _d2P_lcc(V_fb, tap_r, α_r, I_dc, +1)

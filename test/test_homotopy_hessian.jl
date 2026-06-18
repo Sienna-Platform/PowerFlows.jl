@@ -104,6 +104,49 @@ end
     )
 end
 
+@testset "RH method: hessian on inverter-setpoint LCC (asymptotic check)" begin
+    # Same interior-point check as above, but with the P-setpoint metered at
+    # the inverter (`transfer_setpoint < 0` ⇒ `setpoint_at_rectifier = false`).
+    # Then the P-setpoint tail row F_t_r = -P_lcc_to - P_set carries inverter
+    # curvature, so the homotopy Hessian's LCC contribution must attach F_t_r's
+    # ∇²F to `d2P_i` (negated) instead of `d2P_r`. This regression would fail
+    # (max error O(0.05)) if `_update_hessian_lcc_contributions!` did not branch
+    # on `setpoint_at_rectifier`.
+    time_step = 1
+    sys, lcc = simple_lcc_system()
+    set_transfer_setpoint!(lcc, -abs(get_transfer_setpoint(lcc)))
+    pf = ACPowerFlow{NewtonRaphsonACPowerFlow}()
+    data = PowerFlowData(pf, sys)
+    solve_power_flow!(data; pf = pf)
+    @test all(.!data.lcc.setpoint_at_rectifier)
+
+    residual = PF.ACPowerFlowResidual(data, time_step)
+    J = PF.ACPowerFlowJacobian(residual, time_step)
+
+    x0 = copy(PF.calculate_x0(data, time_step))
+    Random.seed!(2)
+    x0[1:8] .+= 0.3 .* (rand(8) .- 0.5)
+    x0[end - 1] += 0.6   # α_r
+    x0[end] += 0.6       # α_i
+
+    residual(x0, time_step)
+    @test minimum(abs, residual.Rv) > 0.05
+    @test sin(data.lcc.rectifier.phi[1, time_step]) > 0.1
+    @test sin(data.lcc.inverter.phi[1, time_step]) > 0.1
+
+    hess = PF.HomotopyHessian(data, time_step)
+    hess(x0, 1.0, time_step)
+
+    grad_residual = _GradAsResidual(residual, J, similar(x0))
+    verify_jacobian_asymptotic(
+        grad_residual,
+        Matrix(hess.Hv),
+        x0,
+        time_step;
+        label = "homotopy Hessian on inverter-setpoint LCC (interior pt)",
+    )
+end
+
 @testset "RH method: sparse structure" begin
     # hessian's sparse structure shouldn't change.
     time_step = 1

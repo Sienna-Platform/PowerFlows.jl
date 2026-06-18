@@ -10,8 +10,14 @@
         sys,
         PF.FlowReporting.ARC_FLOWS,
     )
-    @test default_result["1"]["flow_results"].P_from_to ==
-          explicit_false["1"]["flow_results"].P_from_to
+    # Tight isapprox rather than exact `==`: the default and explicit-false
+    # paths are numerically equivalent but the sparse linear-algebra backend
+    # is not bit-deterministic across solves (~1e-13 noise).
+    @test isapprox(
+        default_result["1"]["flow_results"].P_from_to,
+        explicit_false["1"]["flow_results"].P_from_to;
+        atol = TIGHT_TOLERANCE,
+    )
 end
 
 @testset "Lossy DCLF: lossy_flows=true gives different and asymmetric flows" begin
