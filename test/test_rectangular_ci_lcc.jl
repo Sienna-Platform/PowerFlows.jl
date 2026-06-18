@@ -52,6 +52,26 @@ end
     _rect_lcc_verify(sys; label = "rect CI LCC nonzero-xc interior")
 end
 
+@testset "Rectangular CI LCC: asymptotic verification, inverter-side setpoint" begin
+    # Negative transfer setpoint → F_t_fb = −P_lcc_to − P_set, so the F_t_fb
+    # tail row depends on the inverter-side state (e_tb, f_tb, tap_i, α_i)
+    # rather than the rectifier side. Exercises the widened lcc_nz cache
+    # (rows 21–24) for the rect formulation.
+    sys = System(100.0)
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.1, 0.0)
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.PQ, 230, 1.1, 0.0)
+    b3 = _add_simple_bus!(sys, 3, ACBusTypes.PQ, 230, 1.1, 0.0)
+    _add_simple_load!(sys, b2, 10, 5)
+    _add_simple_load!(sys, b3, 60, 20)
+    _add_simple_line!(sys, b1, b2, 5e-3, 5e-3, 1e-3)
+    _add_simple_line!(sys, b1, b3, 5e-3, 5e-3, 1e-3)
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    lcc = _add_simple_lcc!(sys, b2, b3, 0.05, 0.05, 0.08)
+    PSY.set_inverter_extinction_angle!(lcc, 1.0)   # interior, off the ϕ clamp
+    PSY.set_transfer_setpoint!(lcc, -50.0)          # setpoint at inverter
+    _rect_lcc_verify(sys; label = "rect CI LCC inverter-side setpoint")
+end
+
 @testset "Rectangular CI LCC: asymptotic verification at inverter ϕ clamp" begin
     # Same fixture as the polar inverter-ϕ-clamp test: large x_t_i + small
     # extinction angle pushes raw_i < -1 and clamps ϕ_i at π. Exercises the

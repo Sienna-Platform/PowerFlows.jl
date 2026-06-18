@@ -119,7 +119,9 @@ An evaluation model for a standard
 with the specified solver type.
 
 # Arguments
-- `ACSolver`: The type of AC power flow solver to use, which must be a subtype of [`ACPowerFlowSolverType`](@ref).
+- `ACSolver` (type parameter): The AC iterative solver tag, a subtype of [`ACPowerFlowSolverType`](@ref)
+    (for example [`NewtonRaphsonACPowerFlow`](@ref), [`TrustRegionACPowerFlow`](@ref),
+    [`LevenbergMarquardtACPowerFlow`](@ref), or [`RobustHomotopyPowerFlow`](@ref)).
     If not specified, defaults to [`NewtonRaphsonACPowerFlow`](@ref).
 - `check_reactive_power_limits::Bool`: Whether to check reactive power limits during the power flow solution.
     Default is `false`.
@@ -152,6 +154,7 @@ struct ACPolarPowerFlow{ACSolver <: ACPowerFlowSolverType} <: AbstractACPowerFlo
     exporter::Union{Nothing, PowerFlowEvaluationModel}
     calculate_loss_factors::Bool
     calculate_voltage_stability_factors::Bool
+    log_solver_diagnostics::Bool
     generator_slack_participation_factors::Union{
         Nothing,
         Dict{Tuple{DataType, String}, Float64},
@@ -186,7 +189,8 @@ with the specified solver type.
 
 
 # Arguments
-- `ACSolver`: The type of AC power flow solver to use, which must be a subtype of [`ACPowerFlowSolverType`](@ref).
+- `ACSolver` (type parameter): The AC iterative solver tag, a subtype of [`ACPowerFlowSolverType`](@ref)
+    (for example [`NewtonRaphsonACPowerFlow`](@ref) or [`TrustRegionACPowerFlow`](@ref)).
     Default is [`NewtonRaphsonACPowerFlow`](@ref).
 - `check_reactive_power_limits::Bool`: Whether to check reactive power limits during the power flow solution.
     Default is `false`.
@@ -205,6 +209,7 @@ function ACPolarPowerFlow{ACSolver}(;
     exporter::Union{Nothing, PowerFlowEvaluationModel} = nothing,
     calculate_loss_factors::Bool = false,
     calculate_voltage_stability_factors::Bool = false,
+    log_solver_diagnostics::Bool = false,
     generator_slack_participation_factors::Union{
         Nothing,
         Dict{Tuple{DataType, String}, Float64},
@@ -234,6 +239,7 @@ function ACPolarPowerFlow{ACSolver}(;
         exporter,
         calculate_loss_factors,
         calculate_voltage_stability_factors,
+        log_solver_diagnostics,
         generator_slack_participation_factors,
         enhanced_flat_start,
         robust_power_flow,
@@ -275,6 +281,9 @@ get_calculate_loss_factors(pf::ACPolarPowerFlow) = pf.calculate_loss_factors
 get_calculate_voltage_stability_factors(::AbstractACPowerFlow) = false
 get_calculate_voltage_stability_factors(pf::ACPolarPowerFlow) =
     pf.calculate_voltage_stability_factors
+# Works on every AC formulation: the diagnostic needs only J (1st derivatives).
+get_log_solver_diagnostics(::PowerFlowEvaluationModel) = false
+get_log_solver_diagnostics(pf::AbstractACPowerFlow) = pf.log_solver_diagnostics
 
 """
     ACRectangularPowerFlow{ACSolver}(; kwargs...) where {ACSolver <: ACPowerFlowSolverType}
@@ -322,6 +331,7 @@ struct ACRectangularPowerFlow{ACSolver <: ACPowerFlowSolverType} <:
         Vector{Dict{Tuple{DataType, String}, Float64}},
     }
     enhanced_flat_start::Bool
+    log_solver_diagnostics::Bool
     skip_redistribution::Bool
     distribute_slack_proportional_to_headroom::Bool
     network_reductions::Vector{PNM.NetworkReduction}
@@ -340,6 +350,7 @@ function ACRectangularPowerFlow{ACSolver}(;
         Vector{Dict{Tuple{DataType, String}, Float64}},
     } = nothing,
     enhanced_flat_start::Bool = true,
+    log_solver_diagnostics::Bool = false,
     skip_redistribution::Bool = false,
     distribute_slack_proportional_to_headroom::Bool = false,
     network_reductions::Vector{PNM.NetworkReduction} = PNM.NetworkReduction[],
@@ -372,6 +383,7 @@ function ACRectangularPowerFlow{ACSolver}(;
         exporter,
         generator_slack_participation_factors,
         enhanced_flat_start,
+        log_solver_diagnostics,
         skip_redistribution,
         distribute_slack_proportional_to_headroom,
         network_reductions,
@@ -431,6 +443,7 @@ struct ACMixedPowerFlow{ACSolver <: ACPowerFlowSolverType} <:
         Vector{Dict{Tuple{DataType, String}, Float64}},
     }
     enhanced_flat_start::Bool
+    log_solver_diagnostics::Bool
     skip_redistribution::Bool
     distribute_slack_proportional_to_headroom::Bool
     network_reductions::Vector{PNM.NetworkReduction}
@@ -449,6 +462,7 @@ function ACMixedPowerFlow{ACSolver}(;
         Vector{Dict{Tuple{DataType, String}, Float64}},
     } = nothing,
     enhanced_flat_start::Bool = true,
+    log_solver_diagnostics::Bool = false,
     skip_redistribution::Bool = false,
     distribute_slack_proportional_to_headroom::Bool = false,
     network_reductions::Vector{PNM.NetworkReduction} = PNM.NetworkReduction[],
@@ -482,6 +496,7 @@ function ACMixedPowerFlow{ACSolver}(;
         exporter,
         generator_slack_participation_factors,
         enhanced_flat_start,
+        log_solver_diagnostics,
         skip_redistribution,
         distribute_slack_proportional_to_headroom,
         network_reductions,

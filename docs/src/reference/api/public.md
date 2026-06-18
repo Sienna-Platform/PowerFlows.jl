@@ -1,5 +1,4 @@
-# PowerFlows
-
+# Public API
 
 ```@meta
 CurrentModule = PowerFlows
@@ -9,17 +8,21 @@ end
 ```
 
 ## Power Flow Evaluation Models and AC Solvers
+
+For a conceptual overview, see
+[Evaluation Models vs. Solver Algorithms](@ref).
+
 ```@autodocs
 Modules = [PowerFlows]
 Public = true
 Private = false
 Pages = [
     "power_flow_types.jl",
-    "gradient_descent_ac_power_flow.jl",
 ]
 ```
 
 ## Solving Power Flows
+
 ```@autodocs
 Modules = [PowerFlows]
 Public = true
@@ -34,11 +37,13 @@ Pages = [
     "rectangular_ci_power_flow_residual.jl",
     "rectangular_ci_power_flow_jacobian.jl",
     "power_flow_method.jl",
+    "gradient_descent_ac_power_flow.jl",
     "post_processing.jl"
 ]
 ```
 
 ## PSSE Export
+
 ```@autodocs
 Modules = [PowerFlows]
 Public = true

@@ -28,11 +28,11 @@ the network reduction.\" Similarly, we use \"arcs\" instead of \"branches\" to d
 between network elements (post-reduction) and system objects (pre-reduction).
 
 Generally, do not construct this directly. Instead, use one of the later constructors to 
-pass in a `PowerFlowEvaluationModel` and a `PowerSystems.System`. 
+pass in a [`PowerFlowEvaluationModel`](@ref) and a [`PowerSystems.System`](@extref). 
 `aux\\_network\\_matrix` and `power\\_network\\_matrix` will then be set to the appropriate 
-matrices that are needed for computing that type of power flow. See also `ACPowerFlowData`,
-`ABAPowerFlowData`, `PTDFPowerFlowData`, and `vPTDFPowerFlowData`: 
-these are all aliases for `PowerFlowData{N, M}` with specific `N`,`M`, that are used for 
+matrices that are needed for computing that type of power flow. See also [`ACPowerFlowData`](@ref),
+[`ABAPowerFlowData`](@ref), [`PTDFPowerFlowData`](@ref), and [`vPTDFPowerFlowData`](@ref): 
+these are all aliases for [`PowerFlowData`](@ref)`{N, M}` with specific `N`,`M`, that are used for 
 the respective type of power flow evaluations.
 
 # Fields:
@@ -126,6 +126,9 @@ struct PowerFlowData{
     time_step_map::Dict{Int, String}
     power_network_matrix::M
     aux_network_matrix::N
+    # Signed arc-bus incidence (rows = arcs; +1 from-bus, -1 to-bus), built once from
+    # `PNM.IncidenceMatrix`. Used by DC solves for Δθ = A·θ; `nothing` for AC/vPTDF.
+    arc_bus_incidence::Union{SparseMatrixCSC{Int8, Int}, Nothing}
     neighbors::Vector{Set{Int}}
     converged::BitVector
     loss_factors::Union{Matrix{Float64}, Nothing}
@@ -134,6 +137,17 @@ struct PowerFlowData{
     lcc::LCCParameters
     arc_lossy_admittance_from_to::Union{SparseMatrixCSC{YBUS_ELTYPE, Int}, Nothing}
     arc_lossy_admittance_to_from::Union{SparseMatrixCSC{YBUS_ELTYPE, Int}, Nothing}
+    # Persistent linear-solver cache for the DC solves. Reused across repeated solves on
+    # the same data (e.g. a PCM loop: fixed network, changing injections) so the network
+    # matrix is factored once and the solve buffer is not reallocated. Despite the name it
+    # is not a `PFLinearSolverCache`: it holds a `(matrix, backend, cache, scratch)` tuple,
+    # where `matrix` and `backend` are kept only to invalidate the reuse (rebuild when either
+    # the network-matrix object or the backend changes — see `_get_or_build_solver_cache!`),
+    # `cache` is the actual `PFLinearSolverCache`, and `scratch` is the per-solve buffers.
+    # The `Base.Ref` allows lazy, in-place population on the first `solve_power_flow!` without
+    # reconstructing `data`. Typed `Any` because the concrete cache type is defined in a later
+    # include (`linear_solver_backend.jl`).
+    solver_cache::Base.RefValue{Any}
 end
 
 # aliases for specific type parameter combinations.
@@ -224,7 +238,13 @@ get_computed_gspf(pfd::PowerFlowData) = pfd.computed_generator_slack_participati
 get_calculate_loss_factors(pfd::PowerFlowData) = get_calculate_loss_factors(pfd.pf)
 get_calculate_voltage_stability_factors(pfd::PowerFlowData) =
     get_calculate_voltage_stability_factors(pfd.pf)
+get_log_solver_diagnostics(pfd::PowerFlowData) = get_log_solver_diagnostics(pfd.pf)
 get_network_reductions(pfd::PowerFlowData) = get_network_reductions(pfd.pf)
+"""
+    get_time_steps(pfd::PowerFlowData)
+
+Number of time steps configured on the embedded [`PowerFlowEvaluationModel`](@ref).
+"""
 get_time_steps(pfd::PowerFlowData) = get_time_steps(pfd.pf)
 get_time_step_names(pfd::PowerFlowData) = get_time_step_names(pfd.pf)
 get_correct_bustypes(pfd::PowerFlowData) = get_correct_bustypes(pfd.pf)
@@ -255,6 +275,14 @@ get_lcc_count(data::PowerFlowData) = length(data.lcc.rectifier.bus)
 
 # auxiliary getters for the fields of PowerNetworkMatrices we're storing:
 # most things we patch through to calls on the metadata matrix:
+"""
+    get_bus_lookup(pfd::PowerFlowData)
+
+Bus number → row index lookup for matrices stored in `pfd` (via the metadata
+[`PowerNetworkMatrices`](https://sienna-platform.github.io/PowerNetworkMatrices.jl/stable/)
+matrix). Use this when mapping device buses from a [`PowerSystems.System`](@extref)
+onto [`PowerFlowData`](@ref) injection and withdrawal arrays.
+"""
 get_bus_lookup(pfd::PowerFlowData) = PNM.get_bus_lookup(get_metadata_matrix(pfd))
 get_bus_axis(pfd::PowerFlowData) = PNM.get_bus_axis(get_metadata_matrix(pfd))
 get_arc_lookup(pfd::PowerFlowData) = PNM.get_arc_lookup(get_metadata_matrix(pfd))
@@ -268,6 +296,12 @@ get_arc_lookup(pfd::ACPowerFlowData) =
     PNM.get_arc_lookup(pfd.power_network_matrix.arc_admittance_from_to)
 get_arc_axis(pfd::ACPowerFlowData) =
     PNM.get_arc_axis(pfd.power_network_matrix.arc_admittance_from_to)
+
+# used for shifting angles relative to REF bus after DC solve.
+subnetwork_axes(data::PTDFPowerFlowData) = data.aux_network_matrix.subnetwork_axes
+subnetwork_axes(data::vPTDFPowerFlowData) = data.aux_network_matrix.subnetwork_axes
+subnetwork_axes(data::ABAPowerFlowData) = data.power_network_matrix.subnetwork_axes
+subnetwork_axes(data::ACPowerFlowData) = get_aux_network_matrix(data).subnetwork_axes
 
 # so we can initialize things to the correct size inside the below constructor.
 # No `PowerFlowData` instance, so can't call get_arc_axis or similar to get the size.
@@ -312,6 +346,7 @@ function PowerFlowData(
     neighbors = Vector{Set{Int}}(),
     arc_lossy_admittance_from_to::Union{SparseMatrixCSC{YBUS_ELTYPE, Int}, Nothing} = nothing,
     arc_lossy_admittance_to_from::Union{SparseMatrixCSC{YBUS_ELTYPE, Int}, Nothing} = nothing,
+    arc_bus_incidence::Union{SparseMatrixCSC{Int8, Int}, Nothing} = nothing,
 ) where {
     T <: PowerFlowEvaluationModel,
     M <: PNM.PowerNetworkMatrix,
@@ -361,6 +396,7 @@ function PowerFlowData(
         time_step_map,
         power_network_matrix,
         aux_network_matrix,
+        arc_bus_incidence,
         neighbors,
         falses(n_time_steps), # converged
         calculate_loss_factors ? zeros(n_buses, n_time_steps) : nothing, # loss_factors
@@ -369,6 +405,7 @@ function PowerFlowData(
         lcc_parameters,
         arc_lossy_admittance_from_to,
         arc_lossy_admittance_to_from,
+        Base.RefValue{Any}(nothing), # solver_cache (lazily populated)
     )
 end
 
@@ -426,6 +463,23 @@ function _calculate_neighbors(
     return neighbors
 end
 
+# A DegreeTwoReduction that reduces reactive-power injectors folds away shunts and
+# synchronous condensers, discarding the reactive injections the AC solution depends
+# on; the default of `true` is only safe for DC power flow.
+_assert_ac_reduction_supported(::PNM.NetworkReduction) = nothing
+function _assert_ac_reduction_supported(nr::PNM.DegreeTwoReduction)
+    PNM.get_reduce_reactive_power_injectors(nr) || return nothing
+    throw(
+        IS.ConflictingInputsError(
+            "DegreeTwoReduction with `reduce_reactive_power_injectors = true` is not \
+             supported with AC power flow: reducing reactive-power injectors (e.g. a \
+             shunt FixedAdmittance or a SynchronousCondenser) discards reactive \
+             injections the AC solution depends on. Pass \
+             `DegreeTwoReduction(; reduce_reactive_power_injectors = false)` instead.",
+        ),
+    )
+end
+
 # NOTE: remove this once network reductions are fully implemented
 function network_reduction_message(
     nrs::Vector{PNM.NetworkReduction},
@@ -437,6 +491,9 @@ function network_reduction_message(
                 "Ward reduction with AC power flow is not supported yet.",
             ),
         )
+    end
+    if m isa ACPowerFlow
+        foreach(_assert_ac_reduction_supported, nrs)
     end
     if m isa AbstractDCPowerFlow && any(isa.(nrs, (PNM.WardReduction,)))
         @warn "Use Ward reduction with DC power flow with caution. Branch flows for branches in parallel with equivalent branches added by Ward reduction may be incorrect."
@@ -455,6 +512,7 @@ function make_and_initialize_power_flow_data(
     neighbors = Vector{Set{Int}}(),
     arc_lossy_admittance_from_to::Union{SparseMatrixCSC{YBUS_ELTYPE, Int}, Nothing} = nothing,
     arc_lossy_admittance_to_from::Union{SparseMatrixCSC{YBUS_ELTYPE, Int}, Nothing} = nothing,
+    arc_bus_incidence::Union{SparseMatrixCSC{Int8, Int}, Nothing} = nothing,
 ) where {M <: PNM.PowerNetworkMatrix, N <: Union{PNM.PowerNetworkMatrix, Nothing}}
     check_unit_setting(sys)
     removed_buses =
@@ -472,10 +530,23 @@ function make_and_initialize_power_flow_data(
         neighbors = neighbors,
         arc_lossy_admittance_from_to = arc_lossy_admittance_from_to,
         arc_lossy_admittance_to_from = arc_lossy_admittance_to_from,
+        arc_bus_incidence = arc_bus_incidence,
     )
     @assert length(data.lcc.setpoint_at_rectifier) == n_lccs
     initialize_power_flow_data!(data, pf, sys; correct_bustypes = get_correct_bustypes(pf))
     return data
+end
+
+# Build the signed arc-bus incidence from PNM's `IncidenceMatrix`, permuted to align its rows/cols
+# with `metadata_matrix`'s axes (= `get_arc_axis(data)`/`get_bus_lookup(data)` at solve time);
+# the explicit permutation guards against PNM axis drift. `Int8` entries match PNM.
+function _signed_arc_bus_incidence(ybus::PNM.Ybus, metadata_matrix::PNM.PowerNetworkMatrix)
+    inc = PNM.IncidenceMatrix(ybus)
+    arc_lookup = PNM.get_arc_lookup(inc)
+    bus_lookup = PNM.get_bus_lookup(inc)
+    arc_perm = [arc_lookup[arc] for arc in PNM.get_arc_axis(metadata_matrix)]
+    bus_perm = [bus_lookup[bus] for bus in PNM.get_bus_axis(metadata_matrix)]
+    return inc.data[arc_perm, bus_perm]
 end
 
 """
@@ -485,7 +556,7 @@ end
     ) -> ACPowerFlowData{<:ACPowerFlowSolverType}
 
 Creates the structure for an AC power flow calculation, given the
-[`System`](@extref PowerSystems.System) `sys`. Configuration options like `time_steps`,
+[`PowerSystems.System`](@extref) `sys`. Configuration options like `time_steps`,
 `time_step_names`, `network_reductions`, and `correct_bustypes` are taken from the
 [`AbstractACPowerFlow`](@ref) object (either [`ACPolarPowerFlow`](@ref) or
 [`ACRectangularPowerFlow`](@ref)).
@@ -498,7 +569,7 @@ used to solve AC power flows and returns an [`ACPowerFlowData`](@ref) object.
         the settings for the AC power flow solver, including `time_steps`, `time_step_names`,
         `network_reductions`, and `correct_bustypes`.
 - `sys::PSY.System`:
-        A [`System`](@extref PowerSystems.System) object that represents the power
+        A [`PowerSystems.System`](@extref) object that represents the power
         grid under consideration.
 
 WARNING: functions for the evaluation of the multi-period AC PF still to be implemented.
@@ -541,7 +612,7 @@ end
     ) -> ABAPowerFlowData
 
 Creates a `PowerFlowData` structure configured for a standard DC power flow calculation,
-given the [`System`](@extref PowerSystems.System) `sys`. Configuration options like
+given the [`PowerSystems.System`](@extref) `sys`. Configuration options like
 `time_steps`, `time_step_names`, `network_reductions`, and `correct_bustypes` are taken
 from the [`DCPowerFlow`](@ref) object.
 
@@ -554,7 +625,7 @@ used to solve DC power flows, and returns an [`ABAPowerFlowData`](@ref) object.
         Run a DC power flow: internally, store the ABA matrix as `power_network_matrix` and
         the BA matrix as `aux_network_matrix`. Configuration options are taken from this object.
 - `sys::PSY.System`:
-        A [`System`](@extref PowerSystems.System) object that represents the power
+        A [`PowerSystems.System`](@extref) object that represents the power
         grid under consideration.
 """
 function PowerFlowData(
@@ -570,6 +641,8 @@ function PowerFlowData(
     )
     power_network_matrix = PNM.ABA_Matrix(ybus; factorize = true)
     aux_network_matrix = PNM.BA_Matrix(ybus)
+    # `get_arc_axis(data)`/`get_bus_lookup(data)` read the BA (metadata) matrix for this method.
+    arc_bus_incidence = _signed_arc_bus_incidence(ybus, aux_network_matrix)
 
     if pf.lossy_flows
         # Reorder rows of the arc admittance matrices to match the BA matrix arc
@@ -591,6 +664,7 @@ function PowerFlowData(
         aux_network_matrix;
         arc_lossy_admittance_from_to = arc_lossy_from_to,
         arc_lossy_admittance_to_from = arc_lossy_to_from,
+        arc_bus_incidence = arc_bus_incidence,
     )
 end
 
@@ -603,7 +677,7 @@ end
 
 Creates a `PowerFlowData` structure configured for a Partial Transfer
 Distribution Factor Matrix DC power flow calculation, given the
-[`System`](@extref PowerSystems.System) `sys`. Configuration options like
+[`PowerSystems.System`](@extref) `sys`. Configuration options like
 `time_steps`, `time_step_names`, `network_reductions`, and `correct_bustypes` are taken
 from the [`PTDFDCPowerFlow`](@ref) object.
 
@@ -618,7 +692,7 @@ returns a [`PTDFPowerFlowData`](@ref) object.
         as `power_network_matrix` and the ABA matrix as `aux_network_matrix`.
         Configuration options are taken from this object.
 - `sys::PSY.System`:
-        A [`System`](@extref PowerSystems.System) object that represents the power
+        A [`PowerSystems.System`](@extref) object that represents the power
         grid under consideration.
 """
 function PowerFlowData(
@@ -631,11 +705,14 @@ function PowerFlowData(
     ybus = PNM.Ybus(sys; network_reductions = network_reductions)
     power_network_matrix = PNM.PTDF(ybus)
     aux_network_matrix = PNM.ABA_Matrix(ybus; factorize = true)
+    # `get_arc_axis(data)`/`get_bus_lookup(data)` read the PTDF (metadata) matrix for this method.
+    arc_bus_incidence = _signed_arc_bus_incidence(ybus, power_network_matrix)
     return make_and_initialize_power_flow_data(
         pf,
         sys,
         power_network_matrix,
-        aux_network_matrix,
+        aux_network_matrix;
+        arc_bus_incidence = arc_bus_incidence,
     )
 end
 
@@ -648,7 +725,7 @@ end
 
 Creates a `PowerFlowData` structure configured for a virtual Partial Transfer
 Distribution Factor Matrix DC power flow calculation, given the
-[`System`](@extref PowerSystems.System) `sys`. Configuration options like
+[`PowerSystems.System`](@extref) `sys`. Configuration options like
 `time_steps`, `time_step_names`, `network_reductions`, and `correct_bustypes` are taken
 from the [`vPTDFDCPowerFlow`](@ref) object.
 
@@ -663,7 +740,7 @@ function returns a [`vPTDFPowerFlowData`](@ref) object.
         `power_network_matrix` and the ABA matrix as `aux_network_matrix`.
         Configuration options are taken from this object.
 - `sys::PSY.System`:
-        A [`System`](@extref PowerSystems.System) object that represents the power
+        A [`PowerSystems.System`](@extref) object that represents the power
         grid under consideration.
 """
 function PowerFlowData(
@@ -730,7 +807,7 @@ Configuration options like `time_steps`, `time_step_names`, `network_reductions`
 
 # Arguments:
 - `pfem::PowerFlowEvaluationModel`: power flow model to construct a container for (e.g., `DCPowerFlow()`)
-- `sys::PSY.System`: the [System](@extref PowerSystems.System) from which to initialize the
+- `sys::PSY.System`: the [PowerSystems.System](@extref) from which to initialize the
     power flow container
 """
 function make_power_flow_container end

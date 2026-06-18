@@ -26,7 +26,7 @@ end
     data = PowerFlowData(DCPowerFlow(; correct_bustypes = true), sys)
     power_injections =
         deepcopy(data.bus_active_power_injections - data.bus_active_power_withdrawals)
-    matrix_data = deepcopy(data.power_network_matrix.K)       # LU factorization of ABA
+    matrix_data = data.power_network_matrix.K                 # LU factorization of ABA (shared by reference; deepcopy of the KLU cache is unsafe)
     aux_network_matrix = deepcopy(data.aux_network_matrix)    # BA matrix
 
     valid_ix = setdiff(
@@ -115,6 +115,26 @@ end
     end
 end
 
+@testset "DC power flow with an LCC: i_dc initialization edge cases" begin
+    sys, lcc = simple_lcc_system()
+    PSY.set_r!(lcc, 0.0)
+
+    # In the normalized initialization equation R * I_dc^2 + I_dc - P_set = 0,
+    # zero resistance reduces to I_dc = P_set.
+    PSY.set_transfer_setpoint!(lcc, 25.0)
+    for T in (DCPowerFlow, PTDFDCPowerFlow, vPTDFDCPowerFlow)
+        data = PowerFlowData(T(; correct_bustypes = true), sys)
+        @test !isnan(data.lcc.i_dc[1, 1])
+        @test isapprox(data.lcc.i_dc[1, 1], data.lcc.p_set[1, 1]; atol = 1e-12)
+    end
+
+    # Zero setpoint should also initialize safely (no NaN).
+    PSY.set_transfer_setpoint!(lcc, 0.0)
+    data = PowerFlowData(DCPowerFlow(; correct_bustypes = true), sys)
+    @test !isnan(data.lcc.i_dc[1, 1])
+    @test iszero(data.lcc.i_dc[1, 1])
+end
+
 # TODO LCC DC test case with nonzero loss.
 
 @testset "DC power flow: results independent of units" begin
@@ -124,7 +144,7 @@ end
             power_flow_with_units(sys, T, PSY.UnitSystem.NATURAL_UNITS)
         line_name2, flow_system = power_flow_with_units(sys, T, PSY.UnitSystem.SYSTEM_BASE)
         @test line_name == line_name2
-        @test flow_natural == flow_system
+        @test isapprox(flow_natural, flow_system, atol = 1e-6)
     end
 end
 

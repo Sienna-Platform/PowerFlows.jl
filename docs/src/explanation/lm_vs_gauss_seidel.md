@@ -15,14 +15,14 @@ Gauss-Seidel-like characteristics.
 
 The two methods belong to different algorithm families:
 
-| Aspect | Gauss-Seidel | Levenberg-Marquardt |
-|---|---|---|
-| Principle | matrix-splitting fixed-point iteration on the nodal equations | damped Gauss-Newton minimization of $\tfrac{1}{2}\lVert F(x)\rVert_2^2$ |
-| State update | one bus at a time, reusing the newest values within a sweep | all states simultaneously, via a factorized linear solve |
-| Derivative use | none (no Jacobian) | Jacobian $J$, refactored each iteration |
-| Convergence order | linear (first-order) | between linear (heavily damped) and quadratic (Newton regime) |
-| Robustness | large convergence basin, hard to diverge | large basin when damped; Newton speed near the solution |
-| Tuning knob | acceleration factor | damping $\lambda$ (via `λ_0`), `marquardt_scaling` |
+| Aspect            | Gauss-Seidel                                                  | Levenberg-Marquardt                                                     |
+|:----------------- |:------------------------------------------------------------- |:----------------------------------------------------------------------- |
+| Principle         | matrix-splitting fixed-point iteration on the nodal equations | damped Gauss-Newton minimization of $\tfrac{1}{2}\lVert F(x)\rVert_2^2$ |
+| State update      | one bus at a time, reusing the newest values within a sweep   | all states simultaneously, via a factorized linear solve                |
+| Derivative use    | none (no Jacobian)                                            | Jacobian $J$, refactored each iteration                                 |
+| Convergence order | linear (first-order)                                          | between linear (heavily damped) and quadratic (Newton regime)           |
+| Robustness        | large convergence basin, hard to diverge                      | large basin when damped; Newton speed near the solution                 |
+| Tuning knob       | acceleration factor                                           | damping $\lambda$ (via `λ_0`), `marquardt_scaling`                      |
 
 LM minimizes $\tfrac{1}{2}\lVert F(x)\rVert_2^2$ with the damped normal-equation
 step
@@ -34,12 +34,9 @@ step
 where $D$ is the optional Marquardt column scaling (identity by default on the
 polar formulation). The damping $\lambda$ interpolates between two regimes:
 
-- $\lambda \to 0$: the step approaches the **Gauss-Newton / Newton** step —
-  fast (quadratic) but fragile far from the solution.
-- $\lambda \to \infty$: the step approaches
-  $\Delta x \approx -\tfrac{1}{\lambda} D^{-2} J^\top F(x)$ — a short, scaled
-  **steepest-descent** step: cautious, first-order, with a very large
-  convergence basin.
+  - When $\lambda \to 0$, the step approaches the **Gauss-Newton / Newton** step —
+    fast (quadratic) but fragile far from the solution.
+  - When $\lambda \to \infty$, the step approaches $\Delta x \approx -\tfrac{1}{\lambda} D^{-2} J^\top F(x)$ — a short, scaled **steepest-descent** step: cautious, first-order, with a very large convergence basin.
 
 The heavily-damped regime is first-order, robust, and slow — the same
 qualitative behaviour that makes Gauss-Seidel dependable on difficult or
@@ -63,25 +60,25 @@ that regime.
 
 All settings are passed through `solver_settings`.
 
-- **Large `λ_0`** (default `1e-5`; try `1e-1` to `1e1`). `λ_0` is the initial
-  damping factor $\mu$; the working damping is $\lambda = \mu\lVert F\rVert$.
-  A large value keeps LM in the heavily-damped, steepest-descent-like regime —
-  small, cautious steps and a broad basin, with no aggressive Newton jumps —
-  which is the closest analogue to a Gauss-Seidel sweep.
-- **`marquardt_scaling => true`.** Gauss-Seidel implicitly normalizes each bus
-  update by that bus's self-admittance $Y_{ii}$ (it solves the $i$-th nodal
-  equation for $V_i$, dividing by $Y_{ii}$). The Marquardt diagonal $D$ (column
-  2-norms of $J$, which scale with the bus admittance coupling) is LM's closest
-  structural echo of that per-bus diagonal normalization, so enabling it makes
-  the damped step's per-coordinate scaling resemble the GS diagonal scaling.
-  This is already the default for [`ACRectangularPowerFlow`](@ref); set it
-  explicitly when chasing GS-like behaviour on [`ACPolarPowerFlow`](@ref).
-- **Looser `tol`** (default `1e-9`; try `1e-4` to `1e-6`). Gauss-Seidel is
-  conventionally run to an engineering mismatch tolerance, not `1e-9`. A
-  heavily-damped first-order iteration converges linearly and crawls at the
-  tail, so a GS-typical tolerance keeps the iteration count realistic.
-- **Large `maxIterations`** (default `50`; try `200` to `1000`). First-order
-  convergence implies many iterations — exactly as with Gauss-Seidel.
+  - **Large `λ_0`** (default `1e-5`; try `1e-1` to `1e1`). `λ_0` is the initial
+    damping factor $\mu$; the working damping is $\lambda = \mu\lVert F\rVert$.
+    A large value keeps LM in the heavily-damped, steepest-descent-like regime —
+    small, cautious steps and a broad basin, with no aggressive Newton jumps —
+    which is the closest analogue to a Gauss-Seidel sweep.
+  - **`marquardt_scaling => true`.** Gauss-Seidel implicitly normalizes each bus
+    update by that bus's self-admittance $Y_{ii}$ (it solves the $i$-th nodal
+    equation for $V_i$, dividing by $Y_{ii}$). The Marquardt diagonal $D$ (column
+    2-norms of $J$, which scale with the bus admittance coupling) is LM's closest
+    structural echo of that per-bus diagonal normalization, so enabling it makes
+    the damped step's per-coordinate scaling resemble the GS diagonal scaling.
+    This is already the default for [`ACRectangularPowerFlow`](@ref); set it
+    explicitly when chasing GS-like behaviour on [`ACPolarPowerFlow`](@ref).
+  - **Looser `tol`** (default `1e-9`; try `1e-4` to `1e-6`). Gauss-Seidel is
+    conventionally run to an engineering mismatch tolerance, not `1e-9`. A
+    heavily-damped first-order iteration converges linearly and crawls at the
+    tail, so a GS-typical tolerance keeps the iteration count realistic.
+  - **Large `maxIterations`** (default `50`; try `200` to `1000`). First-order
+    convergence implies many iterations — exactly as with Gauss-Seidel.
 
 Example — polar formulation, Gauss-Seidel-like configuration:
 
@@ -96,6 +93,22 @@ pf = ACPolarPowerFlow{LevenbergMarquardtACPowerFlow}(;
 )
 solve_power_flow(pf, sys)
 ```
+
+## Formulation matters for LM
+
+LM's per-iteration cost and iteration count depend strongly on the AC
+formulation. On large systems (10k buses and above),
+[`ACRectangularPowerFlow`](@ref)`{LevenbergMarquardtACPowerFlow}` can require
+many more iterations than Newton or trust-region on the same formulation, while
+[`ACMixedPowerFlow`](@ref)`{LevenbergMarquardtACPowerFlow}` converges in a
+handful of iterations with the lowest LM median at every benchmark size.
+[`ACPolarPowerFlow`](@ref)`{LevenbergMarquardtACPowerFlow}` is a reasonable
+middle ground. See the benchmark tables in
+[How to choose an AC formulation and solver](@ref choose-ac-formulation-and-solver).
+
+`marquardt_scaling` defaults to `true` on rectangular and mixed formulations
+and `false` on polar; set it explicitly when chasing GS-like behaviour on polar
+(see above).
 
 ## A caveat on cost, and when to pick LM
 
@@ -119,4 +132,6 @@ ill-conditioned start, LM (optionally in the GS-like configuration above) is the
 method to try.
 
 See also: [`LevenbergMarquardtACPowerFlow`](@ref),
-[`TrustRegionACPowerFlow`](@ref), [`RobustHomotopyPowerFlow`](@ref).
+[`TrustRegionACPowerFlow`](@ref), [`RobustHomotopyPowerFlow`](@ref),
+[How to choose an AC formulation and solver](@ref choose-ac-formulation-and-solver),
+[Mixed Current-Power Balance Formulation](@ref).

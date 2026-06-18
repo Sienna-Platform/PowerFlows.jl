@@ -7,9 +7,13 @@ end
 using Dates
 
 pushed_to_args = false
-if length(ARGS) == 0 && !is_running_on_ci()
+if length(ARGS) == 0
     pushed_to_args = true
-    push!(ARGS, "Local Test at $(Dates.now())")
+    if is_running_on_ci()
+        push!(ARGS, "CI Test at $(Dates.now())")
+    else
+        push!(ARGS, "Local Test at $(Dates.now())")
+    end
 end
 
 open("precompile_time_$(ARGS[1]).txt", "w") do io
@@ -200,6 +204,53 @@ for (group, name) in systems
         catch e
             @error exception = (e, catch_backtrace())
             record_failure("$(name)-$(solver_label)")
+        end
+    end
+end
+
+# Large-scale validation system: synthetic Eastern Interconnect (~78k buses).
+# Only the memory-light solvers are exercised here. PTDF/vPTDF build dense
+# sensitivity matrices that exhaust RAM at this scale (~19 GB and >250 s for a
+# single solve), and the Hessian-based RobustHomotopy/Rectangular/Mixed variants
+# are likewise prohibitive; including them OOM-kills even a 34 GB machine. The
+# restricted set (DC + Newton-Raphson + Trust Region) peaks near 6 GB and runs
+# in about a minute. Set PF_PERF_SKIP_LARGE_SYSTEMS=true to skip on low-RAM
+# runners.
+large_systems = [
+    (PSSEParsingTestSystems, "Base_Eastern_Interconnect_515GW"),
+]
+large_dc_solvers = [(DCPowerFlow(; correct_bustypes = true), "DCPowerFlow")]
+large_ac_solvers = [PF.NewtonRaphsonACPowerFlow, PF.TrustRegionACPowerFlow]
+if get(ENV, "PF_PERF_SKIP_LARGE_SYSTEMS", "false") != "true"
+    for (group, name) in large_systems
+        sys = build_system(group, name)
+        for (dc_pf, solver_label) in large_dc_solvers
+            try
+                pf_data = PF.PowerFlowData(dc_pf, sys)
+                _, time_solve_1, _, _ = @timed PF.solve_power_flow!(pf_data)
+                record_time("$(name)-$(solver_label) First Solve", time_solve_1)
+                pf_data = PF.PowerFlowData(dc_pf, sys)
+                _, time_solve_2, _, _ = @timed PF.solve_power_flow!(pf_data)
+                record_time("$(name)-$(solver_label) Second Solve", time_solve_2)
+            catch e
+                @error exception = (e, catch_backtrace())
+                record_failure("$(name)-$(solver_label)")
+            end
+        end
+        for solver in large_ac_solvers
+            try
+                pf = ACPowerFlow{solver}(; correct_bustypes = true)
+                pf_data = PF.PowerFlowData(pf, sys)
+                _, time_solve_1, _, _ = @timed PF.solve_power_flow!(pf_data; pf = pf)
+                record_time("$(name)-$(solver) First Solve", time_solve_1)
+                pf = ACPowerFlow{solver}(; correct_bustypes = true)
+                pf_data = PF.PowerFlowData(pf, sys)
+                _, time_solve_2, _, _ = @timed PF.solve_power_flow!(pf_data; pf = pf)
+                record_time("$(name)-$(solver) Second Solve", time_solve_2)
+            catch e
+                @error exception = (e, catch_backtrace())
+                record_failure("$(name)-$(solver) Solve")
+            end
         end
     end
 end

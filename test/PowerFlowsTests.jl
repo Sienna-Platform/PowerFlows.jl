@@ -1,6 +1,7 @@
 module PowerFlowsTests
 
 using ReTest
+import Test  # for Test.TestLogger (ReTest re-exports macros but not the module)
 using PowerFlows
 using Logging
 using Dates

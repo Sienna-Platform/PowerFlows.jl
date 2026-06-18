@@ -144,6 +144,27 @@ end
     end
 end
 
+@testset "Singular Jacobian triggers backend-agnostic fallback" begin
+    # Zeroing voltage magnitudes makes the Newton Jacobian singular. KLU signals this
+    # by throwing SingularException; AppleAccelerate and MKLPardiso instead return a
+    # finite garbage solution. The backend-agnostic residual guard in `_set_Δx_nr!`
+    # must route every backend through the regularized fallback, which emits the
+    # "Jacobian is singular" warning. Pre-fix, the AppleAccelerate default skipped the
+    # fallback silently, so this test asserts the warning is actually produced.
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
+    pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+        enhanced_flat_start = false,
+        solver_settings = Dict{Symbol, Any}(:maxIterations => 3),
+    )
+    data = PowerFlowData(pf, sys)
+    data.bus_magnitude .= 0.0
+    @test_logs(
+        (:warn, r"Jacobian is singular"),
+        match_mode = :any,
+        solve_power_flow!(data),
+    )
+end
+
 @testset "Iwamoto early termination on stagnation" begin
     # Sabotage voltage magnitudes so that every Newton step worsens the residual,
     # triggering consecutive reverts and the early-termination break.

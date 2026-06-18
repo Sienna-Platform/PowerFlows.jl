@@ -36,11 +36,11 @@ import LinearAlgebra
 import LinearAlgebra: norm, dot, ldiv!, mul!
 import LinearAlgebra: norm, dot
 import JSON3
-import KLU
 import SparseArrays
 import InfrastructureSystems as IS
 import PowerNetworkMatrices as PNM
 import PowerNetworkMatrices: YBUS_ELTYPE
+import KrylovKit
 import SparseArrays:
     SparseMatrixCSC, SparseVector, sparse, sparsevec, AbstractSparseMatrix, spzeros
 import StaticArrays: MVector
@@ -59,8 +59,7 @@ include("lcc_utils.jl")
 include("common.jl")
 include("initialize_power_flow_data.jl")
 include("psse_export.jl")
-include("LinearSolverCache/linear_solver_cache.jl")
-include("LinearSolverCache/klu_linear_solver.jl")
+include("linear_solver_backend.jl")
 include("dcpf_loss_injection.jl")
 include("solve_dc_power_flow.jl")
 include("state_indexing_helpers.jl")
@@ -73,6 +72,7 @@ include("mixed_cpb_setup.jl")
 include("mixed_cpb_power_flow_residual.jl")
 include("mixed_cpb_power_flow_jacobian.jl")
 include("solve_ac_power_flow.jl")
+include("residual_condition_diagnostics.jl")
 include("power_flow_setup.jl")
 include("power_flow_method.jl")
 include("levenberg-marquardt.jl")
