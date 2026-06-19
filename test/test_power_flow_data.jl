@@ -159,6 +159,17 @@ end
     @test data.bus_magnitude[:, 2] == orig_mag_2
 end
 
+@testset "clear_injection_data! zeroes bus_hvdc_net_power" begin
+    # bus_hvdc_net_power is seeded at construction from native HVDC setpoints and is also
+    # written by PowerSimulations each solve, so clear_injection_data! must reset it to avoid
+    # double-counting the construction-time seed and accumulating across solves.
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    data = PowerFlowData(ACPowerFlow(; correct_bustypes = true, time_steps = 2), sys)
+    data.bus_hvdc_net_power .= 1.23
+    PF.clear_injection_data!(data)
+    @test all(iszero, data.bus_hvdc_net_power)
+end
+
 @testset "Wrong bus type" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
     buses = collect(PSY.get_components(PSY.ACBus, sys))

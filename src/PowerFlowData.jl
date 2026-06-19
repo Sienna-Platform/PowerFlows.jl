@@ -445,6 +445,7 @@ function clear_injection_data!(pfd::PowerFlowData)
     for col in eachcol(pfd.bus_magnitude)
         any(isnan, col) && (col .= 1.0)
     end
+    pfd.bus_hvdc_net_power .= 0.0
     return
 end
 
