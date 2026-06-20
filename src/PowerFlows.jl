@@ -8,6 +8,12 @@ export TrustRegionACPowerFlow
 export LevenbergMarquardtACPowerFlow
 export RobustHomotopyPowerFlow
 export FastDecoupledACPowerFlow
+export FDVariant
+export FDDecoupled
+export FDFixedJacobian
+export FDScheme
+export FDSchemeXB
+export FDSchemeBX
 export ACPolarPowerFlow
 export ACRectangularPowerFlow
 export ACMixedPowerFlow

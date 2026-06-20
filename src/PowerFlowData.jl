@@ -140,21 +140,18 @@ struct PowerFlowData{
     # Persistent solver cache, reused across repeated solves on the same data (e.g. a PCM loop:
     # fixed network, changing injections) so factorizations are computed once and solve buffers
     # are not reallocated. Lazily populated in place on the first solve (the `Base.Ref` avoids
-    # reconstructing `data`); typed `Any` because the concrete cache types are defined in later
-    # includes (`linear_solver_backend.jl`, `fast_decoupled_method.jl`). Two TYPE-DISJOINT uses
-    # share this one slot:
-    #   * DC path (`ABA`/PTDF data): a `(matrix, backend, cache, scratch)` tuple, where `matrix`
-    #     (a `SparseMatrixCSC`) and `backend` invalidate the reuse (rebuild when the network-matrix
-    #     object or backend changes — see `_get_or_build_solver_cache!`), `cache` is the actual
-    #     `PFLinearSolverCache`, and `scratch` is the per-solve buffers.
-    #   * AC path, FastDecoupled `:decoupled` solver (`ACPowerFlowData`): a tagged tuple
-    #     `(FD_CACHE_TAG, ::FastDecoupledCache)` holding the factored B′ (once per data/scheme/
-    #     backend) and per-PQ-set factored B″ submatrices (see `_get_or_build_fd_cache!`). The
-    #     `FD_CACHE_TAG` symbol marker keeps the two uses disjoint — the FD getter `error`s loudly
-    #     if it finds a non-FD value (e.g. the DC tuple), so a future cross-use fails fast.
-    # The DC and AC data types never reach each other's getter, so the slot is collision-free
-    # today; the tag is belt-and-suspenders against future drift.
-    solver_cache::Base.RefValue{Any}
+    # reconstructing `data`). Holds a [`SolverCache`](@ref) — an abstract supertype forward-declared
+    # in `power_flow_types.jl` so the field type resolves before the concrete subtypes are defined.
+    # Two TYPE-DISJOINT subtypes share this one slot:
+    #   * DC path (`ABA`/PTDF data): a [`DCSolverCache`](@ref) holding the factored network matrix +
+    #     backend (the invalidation key — rebuild when either changes, see
+    #     `_get_or_build_solver_cache!`), the `PFLinearSolverCache`, and the per-solve scratch.
+    #   * AC path, FastDecoupled solver (`ACPowerFlowData`): a `FastDecoupledCache` holding the
+    #     factored B′ (once per data/scheme/backend) and per-PQ-set factored B″ submatrices
+    #     (see `_get_or_build_fd_cache!`).
+    # Each getter dispatches on the cached subtype, so an empty slot or a cross-use fails loudly
+    # (a `MethodError`) instead of being silently mis-read — no sentinel tag needed.
+    solver_cache::Base.RefValue{Union{Nothing, SolverCache}}
 end
 
 # aliases for specific type parameter combinations.
@@ -412,7 +409,7 @@ function PowerFlowData(
         lcc_parameters,
         arc_lossy_admittance_from_to,
         arc_lossy_admittance_to_from,
-        Base.RefValue{Any}(nothing), # solver_cache (lazily populated)
+        Base.RefValue{Union{Nothing, SolverCache}}(nothing), # solver_cache (lazily populated)
     )
 end
 

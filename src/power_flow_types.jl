@@ -21,6 +21,13 @@ current-injection formulation is provided separately. The solver and the
 formulation are orthogonal."""
 abstract type AbstractACPowerFlow{S <: ACPowerFlowSolverType} <: PowerFlowEvaluationModel end
 
+"""An abstract supertype for the persistent per-solve caches stored in
+`PowerFlowData.solver_cache[]`. Concrete subtypes ([`DCSolverCache`](@ref) for the DC/PTDF path,
+`FastDecoupledCache` for the polar fast-decoupled solver) are type-disjoint, so the slot's
+type discriminates which path populated it — no sentinel tag is needed and a cross-use is a plain
+`MethodError` rather than a silent reuse."""
+abstract type SolverCache end
+
 # Centralized so the multi-line warning text can't drift between the two
 # formulation constructors.
 function _validate_slack_distribution_settings(
@@ -41,6 +48,29 @@ function _validate_slack_distribution_settings(
             "headroom (Pmax - Pset) is computed once from system data and applied " *
             "to all time steps. Time-varying active power limits and generator " *
             "setpoints are not supported.",
+        )
+    end
+    return
+end
+
+# The fast-decoupled `FDDecoupled` variant (classic B′/B″ half-iterations) is polar-only — its
+# half-steps don't span the rectangular/mixed state. Rejected at construction on the non-polar
+# formulations so the misconfiguration fails immediately with a descriptive message. `FDDecoupled`
+# and `FastDecoupledACPowerFlow` are defined later in this file; the reference resolves at call time.
+function _reject_fd_decoupled_on_nonpolar(
+    ::Type{ACSolver},
+    formulation::String,
+) where {
+    ACSolver <: ACPowerFlowSolverType,
+}
+    if ACSolver <: FastDecoupledACPowerFlow{FDDecoupled}
+        throw(
+            ArgumentError(
+                "$(ACSolver) is not supported by $(formulation): the FDDecoupled variant " *
+                "(classic B′/B″ half-iterations) is polar-only. Use " *
+                "FastDecoupledACPowerFlow{FDFixedJacobian, …} on this formulation, or run " *
+                "FDDecoupled on ACPolarPowerFlow.",
+            ),
         )
     end
     return
@@ -110,8 +140,35 @@ See also: [`ACPowerFlow`](@ref).
 """
 struct RobustHomotopyPowerFlow <: ACPowerFlowSolverType end
 
+"""Abstract supertype for the [`FastDecoupledACPowerFlow`](@ref) iteration variants
+([`FDDecoupled`](@ref), [`FDFixedJacobian`](@ref)). Carried as the first type parameter of the
+solver so the iteration scheme is selected by multiple dispatch rather than a runtime flag."""
+abstract type FDVariant end
+
+"""Classic fast-decoupled variant: constant B′/B″ half-iterations (Stott–Alsac / van Amerongen).
+Polar formulation only. See [`FDVariant`](@ref), [`FastDecoupledACPowerFlow`](@ref)."""
+struct FDDecoupled <: FDVariant end
+
+"""Frozen-Jacobian ("dishonest Newton") variant: the full per-formulation Jacobian is factored
+once at `x0` and reused every iteration. Works with all three AC formulations.
+See [`FDVariant`](@ref), [`FastDecoupledACPowerFlow`](@ref)."""
+struct FDFixedJacobian <: FDVariant end
+
+"""Abstract supertype for the B′/B″ construction scheme of the [`FDDecoupled`](@ref) variant
+([`FDSchemeXB`](@ref), [`FDSchemeBX`](@ref)). Carried as the second type parameter of
+[`FastDecoupledACPowerFlow`](@ref) and dispatched on during matrix assembly. Only meaningful for
+[`FDDecoupled`](@ref)."""
+abstract type FDScheme end
+
+"""Stott–Alsac `XB` scheme: B′ neglects branch resistance, B″ keeps it. See [`FDScheme`](@ref)."""
+struct FDSchemeXB <: FDScheme end
+
+"""van Amerongen `BX` scheme: B″ neglects branch resistance, B′ keeps it. See [`FDScheme`](@ref)."""
+struct FDSchemeBX <: FDScheme end
+
 """
-    FastDecoupledACPowerFlow <: ACPowerFlowSolverType
+    FastDecoupledACPowerFlow{V<:FDVariant, S<:FDScheme} <: ACPowerFlowSolverType
+    FastDecoupledACPowerFlow  (bare: per-formulation defaults)
 
 An [`ACPowerFlowSolverType`](@ref) implementing fixed-slope decoupled Newton-Raphson; the
 fast decoupled power flow of Stott & Alsac (1974) / van Amerongen (1989). Constant approximate
@@ -123,12 +180,21 @@ solves, contingency screening, and as a cheap initializer for the exact-Newton f
 Works with all three AC formulations ([`ACPolarPowerFlow`](@ref),
 [`ACRectangularPowerFlow`](@ref), [`ACMixedPowerFlow`](@ref)).
 
+# Type parameters (the iteration options)
+- `V <: FDVariant`: [`FDDecoupled`](@ref) (classic B′/B″ half-iterations; polar only) or
+    [`FDFixedJacobian`](@ref) (frozen full-formulation Jacobian; all formulations). When the bare
+    `FastDecoupledACPowerFlow` is used, the variant defaults per formulation: `FDDecoupled` for
+    polar, `FDFixedJacobian` for rectangular/mixed.
+- `S <: FDScheme`: B′/B″ scheme, [`FDSchemeXB`](@ref) (Stott–Alsac; default) or
+    [`FDSchemeBX`](@ref) (van Amerongen). Only meaningful for the [`FDDecoupled`](@ref) variant.
+
+```julia
+ACPowerFlow{FastDecoupledACPowerFlow}()                                   # per-formulation defaults
+ACPowerFlow{FastDecoupledACPowerFlow{FDDecoupled, FDSchemeBX}}()          # explicit variant + scheme
+ACRectangularPowerFlow{FastDecoupledACPowerFlow{FDFixedJacobian, FDSchemeXB}}()
+```
+
 # Settings (via `solver_settings` and/or call kwargs)
-- `fd_variant::Symbol`: `:decoupled` = classic B′/B″ half-iterations (polar only in v1);
-    `:fixed_jacobian` = frozen full-formulation Jacobian, factored once (all formulations).
-    Defaults to `:decoupled` for polar, `:fixed_jacobian` for rectangular/mixed.
-- `fd_scheme::Symbol`: B′/B″ scheme, `:XB` (Stott–Alsac; default) or `:BX`
-    (van Amerongen). Only meaningful for the polar `:decoupled` variant.
 - `handoff_solver`: `nothing` (pure FD; default) or [`NewtonRaphsonACPowerFlow`](@ref) /
     [`TrustRegionACPowerFlow`](@ref) / [`LevenbergMarquardtACPowerFlow`](@ref) for final
     refinement to `tol`.
@@ -141,7 +207,7 @@ Works with all three AC formulations ([`ACPolarPowerFlow`](@ref),
 
 See also: [`ACPowerFlow`](@ref), [`NewtonRaphsonACPowerFlow`](@ref).
 """
-struct FastDecoupledACPowerFlow <: ACPowerFlowSolverType end
+struct FastDecoupledACPowerFlow{V <: FDVariant, S <: FDScheme} <: ACPowerFlowSolverType end
 
 """
     ACPowerFlow{ACSolver}(; kwargs...) where {ACSolver <: ACPowerFlowSolverType}
@@ -406,6 +472,7 @@ function ACRectangularPowerFlow{ACSolver}(;
             ),
         )
     end
+    _reject_fd_decoupled_on_nonpolar(ACSolver, "ACRectangularPowerFlow")
     _validate_slack_distribution_settings(
         distribute_slack_proportional_to_headroom,
         generator_slack_participation_factors,
@@ -519,6 +586,7 @@ function ACMixedPowerFlow{ACSolver}(;
             ),
         )
     end
+    _reject_fd_decoupled_on_nonpolar(ACSolver, "ACMixedPowerFlow")
     _validate_slack_distribution_settings(
         distribute_slack_proportional_to_headroom,
         generator_slack_participation_factors,
