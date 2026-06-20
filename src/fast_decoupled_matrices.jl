@@ -70,12 +70,14 @@ struct FDRecoveredParams
 end
 
 """
-    FDMatrices
+    FDMatrices{S <: FDScheme}
 
-Container for the constant fast-decoupled matrices for one `(data, scheme)`.
+Container for the constant fast-decoupled matrices for one `(data, scheme)`. Parametrized on the
+scheme type `S` so `scheme` is a concretely-typed field.
 
 # Fields
-- `scheme::FDScheme`: [`FDSchemeXB`](@ref) (Stott–Alsac) or [`FDSchemeBX`](@ref) (van Amerongen).
+- `scheme::S`: the B′/B″ scheme instance, [`FDSchemeXB`](@ref) (Stott–Alsac) or [`FDSchemeBX`](@ref)
+  (van Amerongen).
 - `recovered::FDRecoveredParams`: cached arc/shunt recovery (shared by B′ and B″_full).
 - `pvpq::Vector{Int}`: non-REF bus indices (rows/cols of B′), sorted.
 - `bp::SparseMatrixCSC{Float64, J_INDEX_TYPE}`: B′ over `pvpq` (assembled; symmetric except with
@@ -84,8 +86,8 @@ Container for the constant fast-decoupled matrices for one `(data, scheme)`.
 - `bpp_full::SparseMatrixCSC{Float64, J_INDEX_TYPE}`: B″ assembled over ALL buses; the `[pq, pq]`
   submatrix is extracted per driver invocation via [`extract_bpp`](@ref).
 """
-struct FDMatrices
-    scheme::FDScheme
+struct FDMatrices{S <: FDScheme}
+    scheme::S
     recovered::FDRecoveredParams
     pvpq::Vector{Int}
     bp::SparseMatrixCSC{Float64, J_INDEX_TYPE}

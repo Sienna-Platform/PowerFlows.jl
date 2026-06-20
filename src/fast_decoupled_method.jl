@@ -607,21 +607,22 @@ const FD_EXPLICIT_SYNC_SIGN = -1.0
 # =====================================================================================
 
 """
-    FDCacheKey
+    FDCacheKey{S <: FDScheme}
 
 Invalidation key for a [`FastDecoupledCache`](@ref): the cached B′/B″ are valid only while the
 network identity, the B′/B″ scheme, and the linear-solver backend are unchanged. Bundled into one
 value so the cache-hit test is a single `==` (`==` falls back to field-wise `===` for this
-immutable struct).
+immutable struct). Parametrized on the scheme type `S` so `scheme` is a concretely-typed field;
+keys with different schemes are different concrete types, so a scheme change never compares equal.
 
 # Fields
 - `ybus_id::UInt`: `objectid(data.power_network_matrix)` — network identity.
-- `scheme::FDScheme`: [`FDSchemeXB`](@ref)/[`FDSchemeBX`](@ref).
+- `scheme::S`: the scheme instance, [`FDSchemeXB`](@ref)/[`FDSchemeBX`](@ref).
 - `backend_id::DataType`: `typeof(resolve_linear_solver_backend(linear_solver))`.
 """
-struct FDCacheKey
+struct FDCacheKey{S <: FDScheme}
     ybus_id::UInt
-    scheme::FDScheme
+    scheme::S
     backend_id::DataType
 end
 
@@ -651,7 +652,7 @@ mutable struct FDPQData
 end
 
 """
-    FastDecoupledCache
+    FastDecoupledCache{S <: FDScheme}
 
 Factor-once cache for the polar :decoupled FD loop, stored in `data.solver_cache[]` (a
 [`SolverCache`](@ref) subtype, type-disjoint from the DC path's [`DCSolverCache`](@ref)). Holds the
@@ -659,11 +660,13 @@ Factor-once cache for the polar :decoupled FD loop, stored in `data.solver_cache
 factored B′ + assembled B″_full), the `pvpq`-invariant half-step buffers/index vectors (factored
 ONCE per `(data, scheme, backend)` lifetime), and a `Dict` of per-PQ-set [`FDPQData`](@ref) keyed on
 a bus-type signature. `bp_factor_count`/`bpp_factor_count` count B′ and B″ factorizations for
-testability (factor-once verification).
+testability (factor-once verification). Parametrized on the scheme type `S` (shared with `key`/`fd`)
+so all fields are concretely typed; every field the hot half-step loop reads is `S`-independent, so
+retrieval through the abstract `solver_cache` slot stays type-stable.
 
 # Fields
-- `key::FDCacheKey`: invalidation key (network identity, scheme, backend).
-- `fd::FDMatrices`: recovered params + factored B′ + B″_full.
+- `key::FDCacheKey{S}`: invalidation key (network identity, scheme, backend).
+- `fd::FDMatrices{S}`: recovered params + factored B′ + B″_full.
 - `pvpq::Vector{Int}`: non-REF bus indices (`== fd.pvpq`).
 - `theta_x_idx::Vector{Int}`: `x`-indices of the θ state at `pvpq` (`2i`).
 - `p_row_idx::Vector{Int}`: `Rv`-indices of the P-mismatch rows at `pvpq` (`2i-1`).
@@ -673,9 +676,9 @@ testability (factor-once verification).
 - `bp_factor_count::Int`: number of B′ factorizations (must be 1 over the cache lifetime).
 - `bpp_factor_count::Int`: number of B″ factorizations (one per distinct PQ signature).
 """
-mutable struct FastDecoupledCache <: SolverCache
-    key::FDCacheKey
-    fd::FDMatrices
+mutable struct FastDecoupledCache{S <: FDScheme} <: SolverCache
+    key::FDCacheKey{S}
+    fd::FDMatrices{S}
     pvpq::Vector{Int}
     theta_x_idx::Vector{Int}
     p_row_idx::Vector{Int}
