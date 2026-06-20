@@ -75,7 +75,7 @@ end
 Container for the constant fast-decoupled matrices for one `(data, scheme)`.
 
 # Fields
-- `scheme::Symbol`: `:XB` (Stott–Alsac) or `:BX` (van Amerongen).
+- `scheme::FDScheme`: [`FDSchemeXB`](@ref) (Stott–Alsac) or [`FDSchemeBX`](@ref) (van Amerongen).
 - `recovered::FDRecoveredParams`: cached arc/shunt recovery (shared by B′ and B″_full).
 - `pvpq::Vector{Int}`: non-REF bus indices (rows/cols of B′), sorted.
 - `bp::SparseMatrixCSC{Float64, J_INDEX_TYPE}`: B′ over `pvpq` (assembled; symmetric except with
@@ -85,7 +85,7 @@ Container for the constant fast-decoupled matrices for one `(data, scheme)`.
   submatrix is extracted per driver invocation via [`extract_bpp`](@ref).
 """
 struct FDMatrices
-    scheme::Symbol
+    scheme::FDScheme
     recovered::FDRecoveredParams
     pvpq::Vector{Int}
     bp::SparseMatrixCSC{Float64, J_INDEX_TYPE}
@@ -252,6 +252,13 @@ end
     return 1 / (im * x)
 end
 
+# Which side neglects branch resistance, by scheme (MATPOWER makeB): B′ drops it under XB, B″
+# under BX. Dispatched on the scheme type so the assembly carries no `:XB`/`:BX` value comparison.
+_bp_drops_resistance(::FDSchemeXB) = true
+_bp_drops_resistance(::FDSchemeBX) = false
+_bpp_drops_resistance(::FDSchemeXB) = false
+_bpp_drops_resistance(::FDSchemeBX) = true
+
 """
     _assemble_bp_full(p::FDRecoveredParams, scheme::Symbol)
         -> SparseMatrixCSC{Float64, J_INDEX_TYPE}
@@ -260,7 +267,7 @@ Assemble the full-bus B′ matrix `−imag(Ybus_temp)`, where `Ybus_temp` is sta
 bus shunts = 0, `|τ| = 1` (phase shift retained → mildly unsymmetric only with phase shifters).
 The REF rows/cols are removed later by the `pvpq` restriction.
 """
-function _assemble_bp_full(p::FDRecoveredParams, scheme::Symbol)
+function _assemble_bp_full(p::FDRecoveredParams, scheme::FDScheme)
     n = p.nbus
     I = J_INDEX_TYPE[]
     Jc = J_INDEX_TYPE[]
@@ -269,7 +276,7 @@ function _assemble_bp_full(p::FDRecoveredParams, scheme::Symbol)
     for a in eachindex(p.from)
         f = p.from[a]
         t = p.to[a]
-        ys = _fd_series(p.ys[a], scheme === :XB)   # B′: XB neglects resistance
+        ys = _fd_series(p.ys[a], _bp_drops_resistance(scheme))   # B′: XB neglects resistance
         phase = cis(angle(p.tau[a]))   # |τ| = 1, retain phase shift
         # b_c = 0, shunt = 0:  yff = ys, ytt = ys, yft = −ys/conj(phase), ytf = −ys/phase.
         b_ff = -imag(ys)
@@ -301,7 +308,7 @@ Assemble the full-bus B″ matrix `−imag(Ybus_temp)`, where `Ybus_temp` is sta
 shift = 0 (`|τ|` retained), and `b_c` + bus shunts INCLUDED. The `[pq, pq]` submatrix is
 extracted per driver invocation by [`extract_bpp`](@ref).
 """
-function _assemble_bpp_full(p::FDRecoveredParams, scheme::Symbol)
+function _assemble_bpp_full(p::FDRecoveredParams, scheme::FDScheme)
     n = p.nbus
     I = J_INDEX_TYPE[]
     Jc = J_INDEX_TYPE[]
@@ -310,7 +317,7 @@ function _assemble_bpp_full(p::FDRecoveredParams, scheme::Symbol)
     for a in eachindex(p.from)
         f = p.from[a]
         t = p.to[a]
-        ys = _fd_series(p.ys[a], scheme === :BX)   # B″: BX neglects resistance
+        ys = _fd_series(p.ys[a], _bpp_drops_resistance(scheme))   # B″: BX neglects resistance
         τmag = abs(p.tau[a])      # retain magnitude, drop phase shift
         half = im * p.bc[a] / 2
         # yff = (ys + j b_c/2)/|τ|², ytt = ys + j b_c/2, yft = ytf = −ys/|τ| (real tap, no phase).
@@ -343,9 +350,10 @@ end
 # -------------------------------------------------------------------------------------------
 
 """
-    build_fd_matrices(data::ACPowerFlowData, time_step::Int64, scheme::Symbol) -> FDMatrices
+    build_fd_matrices(data::ACPowerFlowData, time_step::Int64, scheme::FDScheme) -> FDMatrices
 
-Build the constant fast-decoupled matrices for the given `scheme` (`:XB` or `:BX`):
+Build the constant fast-decoupled matrices for the given `scheme` ([`FDSchemeXB`](@ref) or
+[`FDSchemeBX`](@ref)):
 
   * recover per-arc params + per-bus shunts (cached on the result),
   * assemble B′ over the non-REF (`pvpq`) buses for `time_step`'s bus types and factor it once,
@@ -358,11 +366,9 @@ across all iterations and time steps with the same `pvpq`.
 function build_fd_matrices(
     data::ACPowerFlowData,
     time_step::Int64,
-    scheme::Symbol;
+    scheme::FDScheme;
     linear_solver = nothing,
 )
-    scheme in (:XB, :BX) ||
-        throw(ArgumentError("FDNR scheme must be :XB or :BX, got $(scheme)."))
     recovered = _recover_arc_params(data)
     ref, pv, pq = bus_type_idx(data, time_step)
     pvpq = sort(vcat(pv, pq))

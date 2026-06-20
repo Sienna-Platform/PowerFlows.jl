@@ -5,56 +5,42 @@
 # B′/B″ assembly lives in fast_decoupled_matrices.jl.
 
 """
-    _default_fd_variant(pf::AbstractACPowerFlow) -> Symbol
+    _default_fd_variant(pf::AbstractACPowerFlow) -> FDVariant
 
-The default `fd_variant` for a [`FastDecoupledACPowerFlow`](@ref) on a given formulation:
-`:decoupled` (classic B′/B″) for the polar formulation, `:fixed_jacobian` (frozen Jacobian) for
-the rectangular current-injection and mixed current-power-balance formulations.
+The default [`FDVariant`](@ref) for a bare (unparametrized) [`FastDecoupledACPowerFlow`](@ref) on a
+given formulation: [`FDDecoupled`](@ref) (classic B′/B″) for the polar formulation,
+[`FDFixedJacobian`](@ref) (frozen Jacobian) for the rectangular current-injection and mixed
+current-power-balance formulations.
 """
-_default_fd_variant(::ACPolarPowerFlow) = :decoupled
-_default_fd_variant(::ACRectangularPowerFlow) = :fixed_jacobian
-_default_fd_variant(::ACMixedPowerFlow) = :fixed_jacobian
+_default_fd_variant(::ACPolarPowerFlow) = FDDecoupled()
+_default_fd_variant(::ACRectangularPowerFlow) = FDFixedJacobian()
+_default_fd_variant(::ACMixedPowerFlow) = FDFixedJacobian()
+
+# The variant/scheme carried as the FastDecoupledACPowerFlow type parameters, extracted by
+# dispatching on the solver TYPE (the formulation's first type parameter). A bare, unparametrized
+# `FastDecoupledACPowerFlow` falls back to the per-formulation variant default and the XB scheme.
+_fd_variant(pf::AbstractACPowerFlow{S}) where {S} = _fd_variant_from_solver(S, pf)
+_fd_variant_from_solver(::Type{<:FastDecoupledACPowerFlow{V}}, pf) where {V <: FDVariant} =
+    V()
+_fd_variant_from_solver(::Type{FastDecoupledACPowerFlow}, pf) = _default_fd_variant(pf)
+
+_fd_scheme(pf::AbstractACPowerFlow{S}) where {S} = _fd_scheme_from_solver(S)
+_fd_scheme_from_solver(
+    ::Type{<:FastDecoupledACPowerFlow{V, S}},
+) where {V <: FDVariant, S <: FDScheme} =
+    S()
+_fd_scheme_from_solver(::Type{FastDecoupledACPowerFlow}) = FDSchemeXB()
 
 """
-    _validate_fd_settings(pf, fd_variant, fd_scheme, handoff_solver)
+    _validate_fd_handoff_solver(handoff_solver)
 
-Data-free validation of the [`FastDecoupledACPowerFlow`](@ref) settings. Throws a descriptive
-`ArgumentError` on an invalid `fd_variant`/`fd_scheme`, on a `:decoupled` request against a
-non-polar formulation (decoupled is polar-only in v1; rectangular/mixed decoupled is the gated
-WP7), or on an unsupported `handoff_solver`. Returns `nothing` when the configuration is valid.
+Validate the [`FastDecoupledACPowerFlow`](@ref) `handoff_solver` setting. Throws a descriptive
+`ArgumentError` on an unsupported value. The `fd_variant`/`fd_scheme` choices are now carried as
+[`FastDecoupledACPowerFlow`](@ref) type parameters, so invalid values are unrepresentable (the type
+system rejects them) and the `FDDecoupled`-is-polar-only constraint is enforced at construction
+(see `_reject_fd_decoupled_on_nonpolar`). Returns `nothing` when valid.
 """
-function _validate_fd_settings(
-    pf::AbstractACPowerFlow{FastDecoupledACPowerFlow},
-    fd_variant::Symbol,
-    fd_scheme::Symbol,
-    handoff_solver,
-)
-    if !(fd_variant in (:decoupled, :fixed_jacobian))
-        throw(
-            ArgumentError(
-                "FastDecoupled: invalid fd_variant $(fd_variant). " *
-                "Must be :decoupled (classic B′/B″, polar only) or :fixed_jacobian " *
-                "(frozen Jacobian, all formulations).",
-            ),
-        )
-    end
-    if !(fd_scheme in (:XB, :BX))
-        throw(
-            ArgumentError(
-                "FastDecoupled: invalid fd_scheme $(fd_scheme). " *
-                "Must be :XB (Stott–Alsac) or :BX (van Amerongen).",
-            ),
-        )
-    end
-    if fd_variant == :decoupled && !(pf isa ACPolarPowerFlow)
-        throw(
-            ArgumentError(
-                "FastDecoupled fd_variant=:decoupled is only supported on the polar " *
-                "formulation (ACPolarPowerFlow/ACPowerFlow) in v1. For $(typeof(pf)), use " *
-                "fd_variant=:fixed_jacobian (rectangular/mixed decoupled is the gated WP7).",
-            ),
-        )
-    end
+function _validate_fd_handoff_solver(handoff_solver)
     if !(
         handoff_solver === nothing ||
         handoff_solver === NewtonRaphsonACPowerFlow ||
@@ -73,21 +59,19 @@ function _validate_fd_settings(
 end
 
 """
-    _newton_power_flow(pf::AbstractACPowerFlow{FastDecoupledACPowerFlow}, data, time_step; ...)
+    _newton_power_flow(pf::AbstractACPowerFlow{<:FastDecoupledACPowerFlow}, data, time_step; ...)
 
-Driver for the [`FastDecoupledACPowerFlow`](@ref) solver. Validates settings, applies the
-data-dependent LCC guard for the polar `:decoupled` variant, then dispatches to
-`_fd_decoupled_power_flow` (polar B′/B″ half-steps) or `_fd_fixed_jacobian_power_flow` (frozen
-Jacobian) per `fd_variant`. Returns `converged::Bool`.
+Driver for the [`FastDecoupledACPowerFlow`](@ref) solver. Reads the variant/scheme from the
+solver's type parameters (`_fd_variant`/`_fd_scheme`), validates the `handoff_solver`, then
+dispatches on the variant via [`_fd_run`](@ref) to `_fd_decoupled_power_flow` (polar B′/B″
+half-steps) or `_fd_fixed_jacobian_power_flow` (frozen Jacobian). Returns `converged::Bool`.
 """
 function _newton_power_flow(
-    pf::AbstractACPowerFlow{FastDecoupledACPowerFlow},
+    pf::AbstractACPowerFlow{<:FastDecoupledACPowerFlow},
     data::ACPowerFlowData,
     time_step::Int64;
     tol = DEFAULT_NR_TOL,
     maxIterations = DEFAULT_FD_MAX_ITER,
-    fd_variant = _default_fd_variant(pf),
-    fd_scheme = DEFAULT_FD_SCHEME,
     handoff_solver = nothing,
     handoff_tol = DEFAULT_FD_HANDOFF_TOL,
     refreeze_on_stall = DEFAULT_FD_REFREEZE_ON_STALL,
@@ -98,54 +82,62 @@ function _newton_power_flow(
     linear_solver = nothing,
     _ignored...,
 )
-    _validate_fd_settings(pf, fd_variant, fd_scheme, handoff_solver)
+    _validate_fd_handoff_solver(handoff_solver)
+    return _fd_run(
+        _fd_variant(pf), _fd_scheme(pf), pf, data, time_step;
+        tol,
+        maxIterations,
+        handoff_solver,
+        handoff_tol,
+        refreeze_on_stall,
+        fd_non_divergent,
+        validate_voltage_magnitudes,
+        vm_validation_range,
+        x0,
+        linear_solver,
+        _ignored...,
+    )
+end
 
-    # Data-dependent guard: polar :decoupled half-iterations don't span the 4 trailing LCC state
-    # entries per converter, so ‖Rv‖∞ can't converge with LCC present. Point users at the
-    # LCC-capable paths.
-    if fd_variant == :decoupled && get_lcc_count(data) > 0
+"""
+    _fd_run(variant::FDVariant, scheme::FDScheme, pf, data, time_step; kwargs...) -> Bool
+
+Variant dispatch for the FD driver. [`FDDecoupled`](@ref) applies the data-dependent LCC guard
+(its B′/B″ half-iterations don't span the LCC state) and runs the polar B′/B″ loop with `scheme`;
+[`FDFixedJacobian`](@ref) runs the frozen-Jacobian loop (scheme unused). Each inner loop absorbs
+any extra safeguard kwargs via its own `_ignored...`.
+"""
+function _fd_run(
+    ::FDDecoupled,
+    scheme::FDScheme,
+    pf::AbstractACPowerFlow{<:FastDecoupledACPowerFlow},
+    data::ACPowerFlowData,
+    time_step::Int64;
+    kwargs...,
+)
+    if get_lcc_count(data) > 0
         throw(
             ArgumentError(
-                "FastDecoupled fd_variant=:decoupled does not support LCC HVDC " *
+                "FastDecoupled FDDecoupled does not support LCC HVDC " *
                 "(get_lcc_count(data) = $(get_lcc_count(data))): the B′/B″ half-iterations " *
-                "do not span the LCC state variables. Use fd_variant=:fixed_jacobian, a " *
-                "rectangular/mixed FD formulation, or NewtonRaphsonACPowerFlow / " *
+                "do not span the LCC state variables. Use FastDecoupledACPowerFlow{FDFixedJacobian}, " *
+                "a rectangular/mixed FD formulation, or NewtonRaphsonACPowerFlow / " *
                 "TrustRegionACPowerFlow.",
             ),
         )
     end
+    return _fd_decoupled_power_flow(pf, data, time_step, scheme; kwargs...)
+end
 
-    if fd_variant == :decoupled
-        return _fd_decoupled_power_flow(
-            pf, data, time_step;
-            tol,
-            maxIterations,
-            fd_scheme,
-            fd_non_divergent,
-            handoff_solver,
-            handoff_tol,
-            validate_voltage_magnitudes,
-            vm_validation_range,
-            x0,
-            linear_solver,
-            _ignored...,
-        )
-    else
-        return _fd_fixed_jacobian_power_flow(
-            pf, data, time_step;
-            tol,
-            maxIterations,
-            refreeze_on_stall,
-            fd_non_divergent,
-            handoff_solver,
-            handoff_tol,
-            validate_voltage_magnitudes,
-            vm_validation_range,
-            x0,
-            linear_solver,
-            _ignored...,
-        )
-    end
+function _fd_run(
+    ::FDFixedJacobian,
+    ::FDScheme,
+    pf::AbstractACPowerFlow{<:FastDecoupledACPowerFlow},
+    data::ACPowerFlowData,
+    time_step::Int64;
+    kwargs...,
+)
+    return _fd_fixed_jacobian_power_flow(pf, data, time_step; kwargs...)
 end
 
 # =====================================================================================
@@ -320,7 +312,7 @@ caller's subsequent `J(time_step)` / `_finalize_*` see the refined solution. `fd
 `solver_name` are used only for the `@info` handoff log line.
 """
 function _fd_maybe_handoff!(
-    pf::AbstractACPowerFlow{FastDecoupledACPowerFlow},
+    pf::AbstractACPowerFlow{<:FastDecoupledACPowerFlow},
     sv::StateVectorCache,
     residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
     J::Union{Nothing, ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
@@ -369,7 +361,7 @@ across every iteration. Exact residual every iteration ⇒ converges to the same
 NR (linear rate). Shared safeguards (non-divergent backtracking with best-state restore,
 BLOWUP, DVLIM, V≈0 abort) protect against the documented FD failure modes."""
 function _fd_fixed_jacobian_power_flow(
-    pf::AbstractACPowerFlow{FastDecoupledACPowerFlow},
+    pf::AbstractACPowerFlow{<:FastDecoupledACPowerFlow},
     data::ACPowerFlowData,
     time_step::Int64;
     tol::Float64 = DEFAULT_NR_TOL,
@@ -425,7 +417,7 @@ function _fd_fixed_jacobian_power_flow(
         vm_view = view(data.bus_magnitude, :, time_step)
 
         residual(sv.x, time_step)
-        ss = sum(abs2, residual.Rv)
+        ss = dot(residual.Rv, residual.Rv)
         sg = FDSafeguardState(sv.x, ss)
         converged = norm(residual.Rv, Inf) < stage_tol
         refrozen = false
@@ -454,7 +446,7 @@ function _fd_fixed_jacobian_power_flow(
             # apply step, evaluate exact residual (syncs data: V/θ/P/Q)
             sv.x .+= sv.Δx_nr
             residual(sv.x, time_step)
-            ss = sum(abs2, residual.Rv)
+            ss = dot(residual.Rv, residual.Rv)
 
             # V≈0 abort.
             if _fd_vm_abort(vm_view, fd_vm_abort)
@@ -479,7 +471,7 @@ function _fd_fixed_jacobian_power_flow(
                     copyto!(sv.x, sg.cycle_x)
                     @inbounds @. sv.x += factor * sv.Δx_nr
                     residual(sv.x, time_step)
-                    ss = sum(abs2, residual.Rv)
+                    ss = dot(residual.Rv, residual.Rv)
                     _fd_update_best!(sg, sv.x, ss)
                     if ss < fd_ndvfct * sg.prev_ss &&
                        !_fd_vm_abort(vm_view, fd_vm_abort)
@@ -606,19 +598,32 @@ const FD_EXPLICIT_SYNC_SIGN = -1.0
 #     retries and across time steps. Factor B′ exactly ONCE per (data, scheme, backend) lifetime.
 #   * Only the B″ `[pq, pq]` submatrix changes when the PQ set changes. Factor it once per
 #     distinct PQ set (bus-type signature); reuse on repeat signatures.
-# The cache is stored in `data.solver_cache[]` as a TAGGED tuple `(FD_CACHE_TAG, cache)` so any
-# future cross-use of the DC-path slot fails loudly (the DC path stores a 4-tuple whose first
-# element is a SparseMatrixCSC, never `FD_CACHE_TAG`).
+# The cache is a [`FastDecoupledCache`](@ref) `<: SolverCache` stored in `data.solver_cache[]`; it
+# is type-disjoint from the DC path's [`DCSolverCache`](@ref), so `_get_or_build_fd_cache!`
+# dispatches on the slot's type and a cross-use fails loudly (a `MethodError`) — no sentinel needed.
 #
 # The :fixed_jacobian loop deliberately does NOT use this cache: its frozen Jacobian is
 # evaluated at x0 and x0 changes per time step (loads change), so it cannot be reused.
 # =====================================================================================
 
-"""Tag marking `data.solver_cache[]` as holding a [`FastDecoupledCache`](@ref) (polar
-:decoupled). The DC path stores a `(matrix, backend, cache, scratch)` tuple whose first element
-is a `SparseMatrixCSC`, never this symbol — so the tag makes the two uses type-disjoint and any
-collision fails loudly in [`_get_or_build_fd_cache!`](@ref)."""
-const FD_CACHE_TAG = :fdnr_cache
+"""
+    FDCacheKey
+
+Invalidation key for a [`FastDecoupledCache`](@ref): the cached B′/B″ are valid only while the
+network identity, the B′/B″ scheme, and the linear-solver backend are unchanged. Bundled into one
+value so the cache-hit test is a single `==` (`==` falls back to field-wise `===` for this
+immutable struct).
+
+# Fields
+- `ybus_id::UInt`: `objectid(data.power_network_matrix)` — network identity.
+- `scheme::FDScheme`: [`FDSchemeXB`](@ref)/[`FDSchemeBX`](@ref).
+- `backend_id::DataType`: `typeof(resolve_linear_solver_backend(linear_solver))`.
+"""
+struct FDCacheKey
+    ybus_id::UInt
+    scheme::FDScheme
+    backend_id::DataType
+end
 
 """
     FDPQData
@@ -648,17 +653,16 @@ end
 """
     FastDecoupledCache
 
-Factor-once cache for the polar :decoupled FD loop, stored in `data.solver_cache[]` as
-`(FD_CACHE_TAG, cache)`. Holds the invalidation key, the constant [`FDMatrices`](@ref) (recovered
-params + factored B′ + assembled B″_full), the `pvpq`-invariant half-step buffers/index vectors
-(factored ONCE per `(data, scheme, backend)` lifetime), and a `Dict` of per-PQ-set
-[`FDPQData`](@ref) keyed on a bus-type signature. `bp_factor_count`/`bpp_factor_count` count B′ and
-B″ factorizations for testability (factor-once verification).
+Factor-once cache for the polar :decoupled FD loop, stored in `data.solver_cache[]` (a
+[`SolverCache`](@ref) subtype, type-disjoint from the DC path's [`DCSolverCache`](@ref)). Holds the
+[`FDCacheKey`](@ref) invalidation key, the constant [`FDMatrices`](@ref) (recovered params +
+factored B′ + assembled B″_full), the `pvpq`-invariant half-step buffers/index vectors (factored
+ONCE per `(data, scheme, backend)` lifetime), and a `Dict` of per-PQ-set [`FDPQData`](@ref) keyed on
+a bus-type signature. `bp_factor_count`/`bpp_factor_count` count B′ and B″ factorizations for
+testability (factor-once verification).
 
 # Fields
-- `ybus_id::UInt`: `objectid(data.power_network_matrix)` — invalidation key (network identity).
-- `scheme::Symbol`: `:XB`/`:BX` — invalidation key.
-- `backend_id::DataType`: `typeof(resolve_linear_solver_backend(linear_solver))` — invalidation key.
+- `key::FDCacheKey`: invalidation key (network identity, scheme, backend).
 - `fd::FDMatrices`: recovered params + factored B′ + B″_full.
 - `pvpq::Vector{Int}`: non-REF bus indices (`== fd.pvpq`).
 - `theta_x_idx::Vector{Int}`: `x`-indices of the θ state at `pvpq` (`2i`).
@@ -669,10 +673,8 @@ B″ factorizations for testability (factor-once verification).
 - `bp_factor_count::Int`: number of B′ factorizations (must be 1 over the cache lifetime).
 - `bpp_factor_count::Int`: number of B″ factorizations (one per distinct PQ signature).
 """
-mutable struct FastDecoupledCache
-    ybus_id::UInt
-    scheme::Symbol
-    backend_id::DataType
+mutable struct FastDecoupledCache <: SolverCache
+    key::FDCacheKey
     fd::FDMatrices
     pvpq::Vector{Int}
     theta_x_idx::Vector{Int}
@@ -692,53 +694,41 @@ of the resolved linear-solver backend (e.g. `PNM.KLUSolver`). Matches the DC pat
 _fd_backend_id(linear_solver::Union{Nothing, AbstractString}) =
     typeof(resolve_linear_solver_backend(linear_solver))
 
+# Reuse on a matching key, else `nothing` to signal a rebuild. Dispatch on the slot's type: an
+# empty slot returns `nothing`; a stray non-FD `SolverCache` (cross-use with the DC path, impossible
+# today since the data types are disjoint) is a loud `MethodError` rather than a silent mis-read.
+_reuse_fd_cache(::Nothing, key::FDCacheKey) = nothing
+_reuse_fd_cache(cache::FastDecoupledCache, key::FDCacheKey) =
+    cache.key == key ? cache : nothing
+
 """
     _get_or_build_fd_cache!(data, time_step, scheme, backend_id, linear_solver)
         -> FastDecoupledCache
 
 Fetch the cached [`FastDecoupledCache`](@ref) from `data.solver_cache[]`, or build it. Reuse
-requires the slot to hold `(FD_CACHE_TAG, cache)` whose invalidation key (Ybus objectid, scheme,
-backend identity) matches — then B′ and any per-PQ-set B″ are reused with NO refactorization.
-If the slot holds a non-`nothing`, non-FD value (e.g. the DC path's tuple) this `error`s loudly
-(cache collision — the slot must stay type-disjoint). Otherwise builds via `build_fd_matrices`
-(B′ factored once ⇒ `bp_factor_count = 1`), precomputes the `pvpq`-invariant buffers, and stores
-the tagged cache."""
+requires the slot to hold a `FastDecoupledCache` whose [`FDCacheKey`](@ref) (Ybus objectid, scheme,
+backend identity) matches — then B′ and any per-PQ-set B″ are reused with NO refactorization. The
+reuse test (`_reuse_fd_cache`) dispatches on the slot's type, so an empty slot rebuilds and a stray
+non-FD `SolverCache` (cross-use, impossible today) is a loud `MethodError`. Otherwise builds via
+`build_fd_matrices` (B′ factored once ⇒ `bp_factor_count = 1`), precomputes the `pvpq`-invariant
+buffers, and stores the cache."""
 function _get_or_build_fd_cache!(
     data::ACPowerFlowData,
     time_step::Int64,
-    scheme::Symbol,
+    scheme::FDScheme,
     backend_id::DataType,
     linear_solver::Union{Nothing, AbstractString},
 )
-    ybus_id = objectid(data.power_network_matrix)
-    entry = data.solver_cache[]
-    if entry !== nothing
-        if entry isa Tuple{Symbol, FastDecoupledCache} && entry[1] === FD_CACHE_TAG
-            cache = entry[2]
-            if cache.ybus_id == ybus_id &&
-               cache.scheme === scheme &&
-               cache.backend_id === backend_id
-                return cache
-            end
-            # Same slot, different (network, scheme, backend): rebuild below.
-        else
-            error(
-                "FastDecoupled: data.solver_cache[] holds an unexpected value " *
-                "$(typeof(entry)); the AC/FD path expected either `nothing` or a " *
-                "`(FD_CACHE_TAG, FastDecoupledCache)` tuple. This indicates a cross-use " *
-                "collision with the DC-path solver cache — the slot must stay type-disjoint.",
-            )
-        end
-    end
+    key = FDCacheKey(objectid(data.power_network_matrix), scheme, backend_id)
+    reused = _reuse_fd_cache(data.solver_cache[], key)
+    reused === nothing || return reused
 
     fd = build_fd_matrices(data, time_step, scheme; linear_solver)   # B′ assembled + factored ONCE
     theta_x_idx = [2 * i for i in fd.pvpq]
     p_row_idx = [2 * i - 1 for i in fd.pvpq]
     rp = Vector{Float64}(undef, length(fd.pvpq))
     cache = FastDecoupledCache(
-        ybus_id,
-        scheme,
-        backend_id,
+        key,
         fd,
         copy(fd.pvpq),
         theta_x_idx,
@@ -748,7 +738,7 @@ function _get_or_build_fd_cache!(
         1,   # bp_factor_count: build_fd_matrices factored B′ exactly once
         0,   # bpp_factor_count: bumped per distinct PQ signature in _get_pq_data!
     )
-    data.solver_cache[] = (FD_CACHE_TAG, cache)
+    data.solver_cache[] = cache
     return cache
 end
 
@@ -855,12 +845,12 @@ count); when `_return_stage_iters = true` it returns `(converged, fd_iters, hand
 (used by T4 to assert the FD stage ran and the handoff was small/skipped).
 """
 function _fd_decoupled_power_flow(
-    pf::AbstractACPowerFlow{FastDecoupledACPowerFlow},
+    pf::AbstractACPowerFlow{<:FastDecoupledACPowerFlow},
     data::ACPowerFlowData,
-    time_step::Int64;
+    time_step::Int64,
+    scheme::FDScheme;
     tol::Float64 = DEFAULT_NR_TOL,
     maxIterations::Int = DEFAULT_FD_MAX_ITER,
-    fd_scheme::Symbol = DEFAULT_FD_SCHEME,
     fd_non_divergent::Bool = DEFAULT_FD_NON_DIVERGENT,
     fd_blowup::Float64 = DEFAULT_FD_BLOWUP,
     fd_dvlim::Float64 = DEFAULT_FD_DVLIM,
@@ -901,7 +891,7 @@ function _fd_decoupled_power_flow(
         J = nothing
     end
 
-    solver_name = "FastDecoupled(:decoupled,$(fd_scheme))"
+    solver_name = "FastDecoupled(FDDecoupled,$(nameof(typeof(scheme))))"
 
     # Factor-once cache (WP5b): B′ over fd.pvpq factored exactly once per (data, scheme, backend)
     # lifetime; the [pq, pq] B″ submatrix + half-step buffers factored once per distinct PQ set
@@ -910,7 +900,7 @@ function _fd_decoupled_power_flow(
     # build_fd_matrices/extract_bpp call, no per-iteration allocation). Behavior is identical to
     # building them inline — only WHERE they come from changes (T2/T6 arbitrate equivalence).
     backend_id = _fd_backend_id(linear_solver)
-    cache = _get_or_build_fd_cache!(data, time_step, fd_scheme, backend_id, linear_solver)
+    cache = _get_or_build_fd_cache!(data, time_step, scheme, backend_id, linear_solver)
     pqdata = _get_pq_data!(cache, data, time_step, linear_solver)
 
     fd = cache.fd
@@ -935,7 +925,7 @@ function _fd_decoupled_power_flow(
     # Sync explicit rows, then evaluate the residual so Rv / data reflect (V, θ, explicit P/Q).
     _sync_explicit_state!(sv, residual, time_step)
     residual(sv.x, time_step)
-    ss = sum(abs2, residual.Rv)
+    ss = dot(residual.Rv, residual.Rv)
     sg = FDSafeguardState(sv.x, ss)
     converged = norm(residual.Rv, Inf) < stage_tol
     i = 0
@@ -1002,7 +992,7 @@ function _fd_decoupled_power_flow(
             end
         end
 
-        ss = sum(abs2, residual.Rv)
+        ss = dot(residual.Rv, residual.Rv)
 
         # V≈0 abort.
         if _fd_vm_abort(Vm, fd_vm_abort)
@@ -1036,7 +1026,7 @@ function _fd_decoupled_power_flow(
                 @inbounds @. sv.x = sg.cycle_x + factor * Δcycle
                 _sync_explicit_state!(sv, residual, time_step)
                 residual(sv.x, time_step)
-                ss = sum(abs2, residual.Rv)
+                ss = dot(residual.Rv, residual.Rv)
                 _fd_update_best!(sg, sv.x, ss)
                 if ss < fd_ndvfct * sg.prev_ss && !_fd_vm_abort(Vm, fd_vm_abort)
                     accepted = true
