@@ -3,9 +3,9 @@
 [`FastDecoupledACPowerFlow`](@ref) is a *solver* (not a formulation): it
 replaces the per-iteration Jacobian refactorization of the Newton family with
 constant matrices that are factored **once** and reused across every iteration
-*and* every time step. It implements the fast decoupled power flow of Stott &
-Alsac (1974) and van Amerongen (1989) — the algorithm PSS/E exposes as its
-`FDNS` ("fixed-slope decoupled Newton-Raphson") activity. It works with all
+*and* every time step. It implements the classic fast decoupled power flow
+(fixed-slope decoupled Newton-Raphson), the algorithm most commercial
+power-flow tools provide. It works with all
 three AC formulations ([`ACPolarPowerFlow`](@ref),
 [`ACRectangularPowerFlow`](@ref), [`ACMixedPowerFlow`](@ref)).
 
@@ -89,7 +89,7 @@ unknown). Each iteration is a **pair of half-steps** — first the ``P``–``\th
 half-step with magnitudes held fixed, then the ``Q``–``V`` half-step with the
 just-updated angles held fixed — and the exact mismatch is re-evaluated after
 *each* half-step. This strict ``P\to Q`` alternation, with the mid-cycle
-refresh, is what van Amerongen (1989) showed prevents the convergence *cycling*
+refresh, is a well-established technique that prevents the convergence *cycling*
 seen on some systems; it is deliberately not "optimized" away.
 
 In this package, ``B'`` and ``B''`` are defined as constant approximations of
@@ -114,10 +114,10 @@ the two schemes differ only in *where the series resistance is neglected*:
 | Phase shift ``\angle\tau`` | retained (makes ``B'`` mildly unsymmetric) | **neglected** (set to 0) |
 | Series resistance ``r``    | **XB:** neglected here                     | **BX:** neglected here   |
 
-  - **[`FDSchemeXB`](@ref)** (Stott–Alsac, the PSS/E-like default): resistance is
+  - **[`FDSchemeXB`](@ref)** (the default): resistance is
     neglected in ``B'`` (each series admittance is replaced by ``1/(jx)``), kept
     in ``B''``.
-  - **[`FDSchemeBX`](@ref)** (van Amerongen): resistance is kept in ``B'``,
+  - **[`FDSchemeBX`](@ref)**: resistance is kept in ``B'``,
     neglected in ``B''``.
 
 On normal-``r/x`` systems the two schemes take essentially the same iteration
@@ -126,14 +126,13 @@ count; `:BX` tends to be more robust when problematic ``r/x`` ratios are present
 symmetric. Both are block-diagonal (and nonsingular per island) across a
 multi-island network, so a single factorization covers every island.
 
-These zeroing rules are rule-for-rule identical to MATPOWER's `makeB`/`fdpf`,
-and the mismatch normalization (``\Delta P/V``, ``\Delta Q/V``; ``P`` rows at
-PV ∪ PQ, ``Q`` rows at PQ; factor-once LU; negated updates) matches `fdpf.m`.
-The one deliberate divergence from MATPOWER is the convergence test: MATPOWER
-converges on the ``V``-normalized mismatches, while this package keeps the
-package-wide raw ``\lVert R_v \rVert_\infty`` criterion — which is the **PSS/E
-convention** (the POM's `TOLN` tests the largest raw MW/Mvar mismatch) and
-identical to MATPOWER's at ``\lvert V\rvert \approx 1`` pu.
+These zeroing rules follow the standard XB/BX stamping, and the mismatch
+normalization (``\Delta P/V``, ``\Delta Q/V``; ``P`` rows at PV ∪ PQ, ``Q`` rows
+at PQ; factor-once LU; negated updates) is the conventional fast-decoupled form.
+One deliberate choice: rather than converging on the ``V``-normalized mismatches,
+this package keeps the package-wide raw ``\lVert R_v \rVert_\infty`` criterion (a
+raw MW/MVAr mismatch test, as common commercial tools use); the two are identical
+at ``\lvert V\rvert \approx 1`` pu.
 
 ## The `:fixed_jacobian` variant
 
@@ -147,8 +146,8 @@ J(x_0)\, \Delta x = R_v(x_k), \qquad x_{k+1} = x_k - \Delta x ,
 ```
 
 with ``R_v(x_k)`` the **exact** residual at the current iterate but ``J`` frozen
-at ``x_0``. This is the literature-established constant-matrix Newton method
-(Moura & Moura, 2013), which is competitive with — and on high-``r/x`` systems
+at ``x_0``. This is the well-known constant-matrix ("dishonest") Newton method,
+which is competitive with — and on high-``r/x`` systems
 often better-iterating than — the XB/BX decoupled schemes.
 
 It is the natural default for the rectangular and mixed formulations because
@@ -157,15 +156,41 @@ entries (see [Mixed Current-Power Balance Formulation](@ref)); freezing the
 Jacobian then only affects the diagonal blocks. Because the LCC HVDC state
 variables and the distributed-slack column live inside the frozen Jacobian,
 **`:fixed_jacobian` supports LCC systems and distributed slack with no special
-handling** — unlike the polar `:decoupled` half-iterations, which cannot span
-the trailing LCC state variables and reject LCC systems at the driver entry. If
-the frozen-Jacobian iteration stalls, the solver may (by default) re-evaluate
-and re-factor the Jacobian once at the current iterate and continue — a single
-"refreeze" before giving up.
+handling** — it spans the trailing LCC state variables directly (the *unified*
+AC–DC approach). The polar `:decoupled` half-iterations cannot span those
+converter states in B′/B″, so they instead solve LCC by the *sequential* AC–DC
+method (see [Sequential AC–DC for LCC HVDC](@ref) below). If the frozen-Jacobian
+iteration stalls, the solver may (by default) re-evaluate and re-factor the
+Jacobian once at the current iterate and continue — a single "refreeze" before
+giving up.
+
+## Sequential AC–DC for LCC HVDC
+
+The polar `:decoupled` ``B'``/``B''`` half-steps span only the AC bus state, not
+the per-converter LCC control variables (rectifier/inverter tap and thyristor
+angle). Rather than reject LCC systems, the `:decoupled` variant solves them by
+the **sequential (alternating) AC–DC method**:
+
+ 1. **Converter sub-solve** — holding the AC terminal voltages fixed, each LCC's
+    control equations (P-setpoint, DC-line balance, the two α limits) are solved
+    by a small per-converter Newton step for its tap/angle state. This produces
+    the converter's equivalent injection at its AC terminals (the DC boundary
+    conditions).
+ 2. **AC half-steps** — the ``B'``/``B''`` cycle solves the AC network with those
+    converter injections in place.
+
+These two alternate every cycle, so a converged result satisfies both the AC
+mismatch and the converter control equations (both live in the global
+``\lVert R_v \rVert_\infty`` test). The same physics is solved *simultaneously*
+inside the frozen Jacobian by `:fixed_jacobian`; the sequential form just moves
+the converter solve into an outer loop so the cheap ``B'``/``B''`` factorization
+is preserved. Sequential convergence weakens when the AC–DC coupling is strong
+(low short-circuit ratio) or when a converter sits behind a very-low-reactance
+branch; use a `handoff_solver` or `:fixed_jacobian` for those cases.
 
 ## Caching across iterations and time steps
 
-This is the central performance contract, and it mirrors PSS/E's FDNS exactly.
+This is the central performance contract of fast decoupled power flow.
 The ``B'`` matrix depends only on the network, never on the bus voltages, so it
 is factored **once per (data, scheme, backend) lifetime** and reused across all
 iterations, all Q-limit retries, and all time steps. The ``B''`` matrix depends
@@ -224,14 +249,12 @@ pf = ACMixedPowerFlow{FastDecoupledACPowerFlow}()    # rect/mixed default to FDF
 results = solve_power_flow(pf, system)
 ```
 
-The `handoff_tol` default (`1e-3` pu) corresponds to PSS/E's default
-convergence tolerance (`TOLN` = 0.1 MW/MVAr on a 100 MVA base): the FD stage
-exits at commercial-tool tolerance and the refinement stage continues to the
-package's `1e-9`. If the FD stage already reaches `tol`, the handoff is skipped.
-This staging — FD as a conditioner, Newton as the closer — is standard
-commercial practice: PowerWorld's *Robust Solution Process* (controls off →
-fast decoupled → Newton-Raphson) and PSS/E's FDNS-then-FNSL activity sequencing
-are the same pattern.
+The `handoff_tol` default (`1e-3` pu ≈ 0.1 MW/MVAr on a 100 MVA base) is a
+typical engineering convergence tolerance: the FD stage exits there and the
+refinement stage continues to the package's `1e-9`. If the FD stage already
+reaches `tol`, the handoff is skipped. This staging — fast decoupled as a cheap
+conditioner, Newton as the closer — is standard practice in commercial
+power-flow tools.
 
 A cross-formulation composition (e.g. a polar FD solve warm-starting a
 rectangular Newton solve) already works without any dedicated API: the residual
@@ -241,21 +264,20 @@ sequence.
 
 ### Behavior matrix
 
-| Case                             | polar `:decoupled`                                                                                                                                          | `:fixed_jacobian` (any formulation)                                                   |
-|:-------------------------------- |:----------------------------------------------------------------------------------------------------------------------------------------------------------- |:------------------------------------------------------------------------------------- |
-| LCC HVDC present                 | `ArgumentError` at driver entry (half-iterations cannot span the LCC state variables) — message points to `:fixed_jacobian`, rectangular/mixed FD, or NR/TR | Supported (LCC rows live in the frozen Jacobian)                                      |
-| Distributed slack                | Supported via a per-iteration rank-1 slack redistribution                                                                                                   | Supported (slack column is in the frozen Jacobian)                                    |
-| Q-limit (PV→PQ) switching        | Supported; ``B''`` refactored via the cache, keyed on the PQ set; bus types switch only between driver invocations (the package-wide convention)            | Supported; the outer loop re-invokes the driver and re-freezes ``J`` at the new start |
-| Loss / voltage-stability factors | Supported; the driver refreshes ``J`` at the converged state before computing them                                                                          | Same                                                                                  |
-| Multiple islands                 | Supported (block-diagonal ``B'``/``B''``)                                                                                                                   | Supported                                                                             |
+| Case                             | polar `:decoupled`                                                                                                                                                    | `:fixed_jacobian` (any formulation)                                                   |
+|:-------------------------------- |:--------------------------------------------------------------------------------------------------------------------------------------------------------------------- |:------------------------------------------------------------------------------------- |
+| LCC HVDC present                 | Supported via the sequential AC–DC method (per-LCC converter sub-solve refreshes the DC boundary conditions each cycle); stiff converters may need a `handoff_solver` | Supported (LCC rows live in the frozen Jacobian, unified)                             |
+| Distributed slack                | Supported via a per-iteration rank-1 slack redistribution                                                                                                             | Supported (slack column is in the frozen Jacobian)                                    |
+| Q-limit (PV→PQ) switching        | Supported; ``B''`` refactored via the cache, keyed on the PQ set; bus types switch only between driver invocations (the package-wide convention)                      | Supported; the outer loop re-invokes the driver and re-freezes ``J`` at the new start |
+| Loss / voltage-stability factors | Supported; the driver refreshes ``J`` at the converged state before computing them                                                                                    | Same                                                                                  |
+| Multiple islands                 | Supported (block-diagonal ``B'``/``B''``)                                                                                                                             | Supported                                                                             |
 
 ## Safeguards on stressed systems
 
 Fast decoupled divergence on high-``r/x`` or heavily-stressed cases is *expected
-algorithm behavior*, not a bug — the PSS/E POM documents it for the NSOL/FDNS
-family ("the iteration usually reaches some mismatch level and then begins to
-diverge, usually slowly"). The solver ships the PSS/E-parity safeguards rather
-than a promise of unconditional convergence:
+algorithm behavior*, not a bug: the iteration typically reaches some mismatch
+level and then stalls or slowly diverges. The solver ships the usual safeguards
+rather than a promise of unconditional convergence:
 
   - **Non-divergent backtracking** (default on): each cycle, if the
     sum-of-squared mismatches fails to improve, the step is halved and re-tried
@@ -279,13 +301,13 @@ Newton solver.
 
 ## When to use which solver
 
-| Solver                                  | Convergence                       | Per-iteration cost                                 | Use when                                                                                                                  |
-|:--------------------------------------- |:--------------------------------- |:-------------------------------------------------- |:------------------------------------------------------------------------------------------------------------------------- |
-| [`FastDecoupledACPowerFlow`](@ref)      | Linear (more, cheaper iterations) | Lowest — factor once, reuse                        | Repeated solves (multi-period, contingency screening); a cheap warm start for Newton; commercial-tool parity (PSS/E FDNS) |
-| [`NewtonRaphsonACPowerFlow`](@ref)      | Quadratic                         | Refactor every iteration                           | The well-conditioned default for a single solve                                                                           |
-| [`TrustRegionACPowerFlow`](@ref)        | Quadratic, globalized             | Refactor every iteration                           | Poor start, ill-conditioned, or high-impedance — more robust than NR at ≈ the same median cost                            |
-| [`LevenbergMarquardtACPowerFlow`](@ref) | Robust least-squares              | Refactors an augmented system every step (slowest) | A fallback when NR/TR stall                                                                                               |
-| [`RobustHomotopyPowerFlow`](@ref)       | Continuation                      | Highest (Hessian solves)                           | The most robust last resort for hard or non-convergent cases (polar only)                                                 |
+| Solver                                  | Convergence                       | Per-iteration cost                                 | Use when                                                                                                                         |
+|:--------------------------------------- |:--------------------------------- |:-------------------------------------------------- |:-------------------------------------------------------------------------------------------------------------------------------- |
+| [`FastDecoupledACPowerFlow`](@ref)      | Linear (more, cheaper iterations) | Lowest — factor once, reuse                        | Repeated solves (multi-period, contingency screening); a cheap warm start for Newton; parity with commercial-tool fast decoupled |
+| [`NewtonRaphsonACPowerFlow`](@ref)      | Quadratic                         | Refactor every iteration                           | The well-conditioned default for a single solve                                                                                  |
+| [`TrustRegionACPowerFlow`](@ref)        | Quadratic, globalized             | Refactor every iteration                           | Poor start, ill-conditioned, or high-impedance — more robust than NR at ≈ the same median cost                                   |
+| [`LevenbergMarquardtACPowerFlow`](@ref) | Robust least-squares              | Refactors an augmented system every step (slowest) | A fallback when NR/TR stall                                                                                                      |
+| [`RobustHomotopyPowerFlow`](@ref)       | Continuation                      | Highest (Hessian solves)                           | The most robust last resort for hard or non-convergent cases (polar only)                                                        |
 
 Rules of thumb:
 
@@ -297,8 +319,9 @@ Rules of thumb:
     fast or faster (its quadratic rate needs only a handful of refactorizations).
   - For a **stressed or high-``r/x``** system, prefer `:BX`, `:fixed_jacobian`,
     a handoff to Trust Region, or one of the robust solvers directly.
-  - **LCC HVDC or distributed slack under fast decoupled:** use
-    `:fixed_jacobian` (the polar `:decoupled` variant rejects LCC systems).
+  - **LCC HVDC under fast decoupled:** `:fixed_jacobian` solves it unified; the
+    polar `:decoupled` variant solves it by the sequential AC–DC method and may
+    need a `handoff_solver` on stiff converters.
 
 See also [How to choose an AC formulation and solver](@ref
 choose-ac-formulation-and-solver) and
@@ -306,31 +329,21 @@ choose-ac-formulation-and-solver) and
 
 ## Scope
 
-Commercial FDNS bundles automatic tap, switched-shunt, and area-interchange
-adjustment loops, and remote/droop voltage control. These are out of scope for
-this solver — as they are for every other solver in the package — and are listed
-here as future work. Optimized FDNS for contingency analysis (reusing the
-base-case ``B'`` across contingencies with compensation correction vectors) is
-likewise future work that this implementation enables.
+Commercial fast-decoupled implementations bundle automatic tap, switched-shunt,
+and area-interchange adjustment loops, and remote/droop voltage control. These
+are out of scope for this solver — as they are for every other solver in the
+package — and are listed here as future work. Optimized fast decoupled for
+contingency analysis (reusing the base-case ``B'`` across contingencies with
+compensation correction vectors) is likewise future work that this
+implementation enables.
 
-## References
+## Background
 
-  - B. Stott, O. Alsac, "Fast decoupled load flow", *IEEE Trans. Power
-    Apparatus and Systems* PAS-93(3), 1974 — the XB scheme.
-  - R. A. M. van Amerongen, "A general-purpose version of the fast decoupled
-    load flow", *IEEE Trans. Power Systems* 4(2):760–770, 1989 — the BX scheme
-    and the strict ``P\to Q`` alternation argument.
-  - Siemens PTI, *PSS®E Program Operation Manual*, §6.5–6.7 (activities `FNSL`,
-    `NSOL`, `FDNS`) — the fixed-slope decoupled Newton-Raphson algorithm, its
-    half-iteration accounting, the fixed-``B'``/switching-``B''`` cache
-    contract, and the non-divergent/BLOWUP/DVLIM safeguards.
-  - MATPOWER, `makeB.m` and `fdpf.m` — the reference XB/BX stamping rules and
-    factor-once iteration this implementation mirrors.
-  - A. M. Moura, A. P. Moura, "Newton–Raphson power flow with constant
-    matrices: a comparison with decoupled power flow methods", *Int. J.
-    Electrical Power & Energy Systems* 46:108–115, 2013 — the constant-matrix
-    (`:fixed_jacobian`) method.
-  - C. C. de Oliveira, A. Bonini Neto, D. A. Alves, C. R. Minussi, C. A. Castro,
-    "Alternative Current Injection Newton and Fast Decoupled Power Flow",
-    *Energies* 16(6):2548, 2023 — the experimental decoupled current-injection
-    variant (gated, not the default).
+Fast decoupled power flow (the XB and BX schemes), the constant-matrix
+("dishonest") Newton method behind the `:fixed_jacobian` variant, the
+fixed-``B'``/switching-``B''`` caching contract, the standard
+non-divergent/BLOWUP/DVLIM safeguards, and the sequential AC–DC handling of LCC
+HVDC are all long-established, widely-documented power-system algorithms; this
+implementation follows the conventional formulations. The XB/BX stamping and the
+factor-once iteration match the open-source MATPOWER reference (`makeB.m`,
+`fdpf.m`).
