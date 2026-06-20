@@ -9,13 +9,19 @@ Alsac (1974) and van Amerongen (1989) — the algorithm PSS/E exposes as its
 three AC formulations ([`ACPolarPowerFlow`](@ref),
 [`ACRectangularPowerFlow`](@ref), [`ACMixedPowerFlow`](@ref)).
 
-The solver has two variants:
+The variant and the ``B'``/``B''`` scheme are **type parameters** of the solver —
+`FastDecoupledACPowerFlow{V<:FDVariant, S<:FDScheme}` — so they are selected by
+multiple dispatch rather than runtime flags. The two variants are:
 
-  - **`:decoupled`** (polar only, the default for [`ACPolarPowerFlow`](@ref)):
-    the classic ``B'``/``B''`` half-iteration scheme.
-  - **`:fixed_jacobian`** (default for the rectangular and mixed formulations,
-    also available on polar): a frozen full Jacobian — the "constant-matrix" or
-    "dishonest" Newton method.
+  - **[`FDDecoupled`](@ref)** (polar only, the default for
+    [`ACPolarPowerFlow`](@ref)): the classic ``B'``/``B''`` half-iteration scheme.
+  - **[`FDFixedJacobian`](@ref)** (default for the rectangular and mixed
+    formulations, also available on polar): a frozen full Jacobian — the
+    "constant-matrix" or "dishonest" Newton method.
+
+The bare `FastDecoupledACPowerFlow` (no type parameters) picks these
+per-formulation defaults; write `FastDecoupledACPowerFlow{FDDecoupled, FDSchemeBX}`
+to choose explicitly.
 
 ## The exactness-of-fixed-point argument
 
@@ -108,10 +114,11 @@ the two schemes differ only in *where the series resistance is neglected*:
 | Phase shift ``\angle\tau`` | retained (makes ``B'`` mildly unsymmetric) | **neglected** (set to 0) |
 | Series resistance ``r``    | **XB:** neglected here                     | **BX:** neglected here   |
 
-  - **`:XB`** (Stott–Alsac, the PSS/E-like default): resistance is neglected in
-    ``B'`` (each series admittance is replaced by ``1/(jx)``), kept in ``B''``.
-  - **`:BX`** (van Amerongen): resistance is kept in ``B'``, neglected in
-    ``B''``.
+  - **[`FDSchemeXB`](@ref)** (Stott–Alsac, the PSS/E-like default): resistance is
+    neglected in ``B'`` (each series admittance is replaced by ``1/(jx)``), kept
+    in ``B''``.
+  - **[`FDSchemeBX`](@ref)** (van Amerongen): resistance is kept in ``B'``,
+    neglected in ``B''``.
 
 On normal-``r/x`` systems the two schemes take essentially the same iteration
 count; `:BX` tends to be more robust when problematic ``r/x`` ratios are present.
@@ -204,17 +211,16 @@ pf = ACPowerFlow{FastDecoupledACPowerFlow}(;
 )
 results = solve_power_flow(pf, system)
 
-# BX scheme, hand off to Trust Region:
-pf = ACPowerFlow{FastDecoupledACPowerFlow}(;
+# BX scheme (a solver type parameter), hand off to Trust Region:
+pf = ACPowerFlow{FastDecoupledACPowerFlow{FDDecoupled, FDSchemeBX}}(;
     solver_settings = Dict(
-        :fd_scheme => :BX,
         :handoff_solver => TrustRegionACPowerFlow,
     ),
 )
 results = solve_power_flow(pf, system)
 
 # Fixed-slope (frozen-Jacobian) on the mixed formulation — supports LCC, distributed slack:
-pf = ACMixedPowerFlow{FastDecoupledACPowerFlow}()
+pf = ACMixedPowerFlow{FastDecoupledACPowerFlow}()    # rect/mixed default to FDFixedJacobian
 results = solve_power_flow(pf, system)
 ```
 
