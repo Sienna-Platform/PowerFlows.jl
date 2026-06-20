@@ -74,7 +74,9 @@ end
     pf = PF.ACPowerFlow{PF.TrustRegionACPowerFlow}(;
         skip_redistribution = true,
         correct_bustypes = true,
-        network_reductions = PNM.NetworkReduction[PNM.DegreeTwoReduction()],
+        network_reductions = PNM.NetworkReduction[PNM.DegreeTwoReduction(;
+            reduce_reactive_power_injectors = false,
+        )],
     )
     results_unreduced = solve_power_flow(pf_unreduced, sys, PF.FlowReporting.ARC_FLOWS)
     results_reduced = solve_power_flow(pf, sys, PF.FlowReporting.ARC_FLOWS)
@@ -109,7 +111,9 @@ end
     pf = PF.ACPowerFlow{PF.TrustRegionACPowerFlow}(;
         skip_redistribution = true,
         correct_bustypes = true,
-        network_reductions = PNM.NetworkReduction[PNM.DegreeTwoReduction()],
+        network_reductions = PNM.NetworkReduction[PNM.DegreeTwoReduction(;
+            reduce_reactive_power_injectors = false,
+        )],
     )
     results_unreduced = solve_power_flow(pf_unreduced, sys, PF.FlowReporting.BRANCH_FLOWS)
     results_reduced = solve_power_flow(pf, sys, PF.FlowReporting.BRANCH_FLOWS)
@@ -129,7 +133,9 @@ end
     pf = PF.ACPowerFlow{PF.TrustRegionACPowerFlow}(;
         correct_bustypes = true,
         skip_redistribution = true,
-        network_reductions = PNM.NetworkReduction[PNM.DegreeTwoReduction()],
+        network_reductions = PNM.NetworkReduction[PNM.DegreeTwoReduction(;
+            reduce_reactive_power_injectors = false,
+        )],
     )
 
     # Get DataFrame results with BRANCH_FLOWS reporting
@@ -141,14 +147,21 @@ end
     pf2 = PF.ACPowerFlow{PF.TrustRegionACPowerFlow}(;
         correct_bustypes = true,
         skip_redistribution = true,
-        network_reductions = PNM.NetworkReduction[PNM.DegreeTwoReduction()],
+        network_reductions = PNM.NetworkReduction[PNM.DegreeTwoReduction(;
+            reduce_reactive_power_injectors = false,
+        )],
     )
     solve_and_store_power_flow!(pf2, sys2)
     base_power = PSY.get_base_power(sys2)
 
     # For every series branch segment, verify that DataFrame flow matches system object.
     nrd = PNM.get_network_reduction_data(
-        PNM.Ybus(sys2; network_reductions = PNM.NetworkReduction[PNM.DegreeTwoReduction()]),
+        PNM.Ybus(
+            sys2;
+            network_reductions = PNM.NetworkReduction[PNM.DegreeTwoReduction(;
+                reduce_reactive_power_injectors = false,
+            )],
+        ),
     )
     n_series_segments = 0
     n_parallel_in_series = 0
@@ -192,7 +205,9 @@ end
     sys = build_system(MatpowerTestSystems, "matpower_ACTIVSg2000_sys")
     pf = PF.ACPowerFlow{PF.TrustRegionACPowerFlow}(;
         correct_bustypes = true,
-        network_reductions = PNM.NetworkReduction[PNM.DegreeTwoReduction()],
+        network_reductions = PNM.NetworkReduction[PNM.DegreeTwoReduction(;
+            reduce_reactive_power_injectors = false,
+        )],
     )
     data = PF.PowerFlowData(pf, sys)
     PF.solve_power_flow!(data)
@@ -256,7 +271,9 @@ end
     sys = build_system(MatpowerTestSystems, "matpower_ACTIVSg2000_sys")
     pf = PF.ACPowerFlow{PF.TrustRegionACPowerFlow}(;
         correct_bustypes = true,
-        network_reductions = PNM.NetworkReduction[PNM.DegreeTwoReduction()],
+        network_reductions = PNM.NetworkReduction[PNM.DegreeTwoReduction(;
+            reduce_reactive_power_injectors = false,
+        )],
     )
     data = PF.PowerFlowData(pf, sys)
     PF.solve_power_flow!(data)

@@ -133,6 +133,7 @@ function _newton_power_flow(
     λ_0::Float64 = DEFAULT_λ_0,
     marquardt_scaling::Union{Bool, Nothing} = nothing,
     x0::Union{Vector{Float64}, Nothing} = nothing,
+    stop_at_fold::Bool = false,
     _ignored...,
 )
     init_kwargs = if isnothing(x0)
@@ -153,7 +154,7 @@ function _newton_power_flow(
             residual,
             J,
             ws;
-            tol, maxIterations, λ_0,
+            tol, maxIterations, λ_0, stop_at_fold,
         )
     end
     # x0 was mutated in place to the converged state by _run_power_flow_method
@@ -173,6 +174,7 @@ function _run_power_flow_method(
     maxIterations::Int = DEFAULT_NR_MAX_ITER,
     tol::Float64 = DEFAULT_NR_TOL,
     λ_0::Float64 = DEFAULT_λ_0,
+    stop_at_fold::Bool = false,
     _ignored...,
 )
     μ::Float64 = λ_0
@@ -182,8 +184,24 @@ function _run_power_flow_method(
     resSize = dot(residual.Rv, residual.Rv)
     linf = norm(residual.Rv, Inf)
     @debug "initially: sum of squares $(siground(resSize)), L ∞ norm $(siground(linf)), λ = $λ"
+    monitor, diag_state = setup_solver_diagnostics(J, stop_at_fold)
+    # LM factorizes the augmented [J; √λ·D], not J, so the diagnostic keeps its own
+    # KLU factor of J (symbolic once here, refreshed each iteration by the hook).
+    diag_cache =
+        isnothing(diag_state) ? nothing :
+        make_linear_solver_cache(PNM.KLUSolver(), J.Jv)
+    isnothing(diag_state) || symbolic_factor!(diag_cache, J.Jv)
     while i < maxIterations && !converged && isfinite(λ) && μ < DEFAULT_μ_MAX
         λ, μ = update_damping_factor!(x, residual, J, μ, time_step, ws)
+        if !isnothing(diag_state)
+            # One-iterate lag: update_damping_factor! evaluated J at the pre-step
+            # iterate but residual.Rv is already post-step, so κ̂/λ_min describe the
+            # linearization J while the reported ‖F‖∞ is after the step. Not realigned.
+            run_solver_diagnostics!(
+                diag_state, "LM iter $i", residual, J, time_step,
+                diag_cache, monitor, stop_at_fold) &&
+                return false, i
+        end
         converged = isfinite(λ) && norm(residual.Rv, Inf) < tol
         i += 1
     end

@@ -14,9 +14,14 @@ const NOT_EQUIVALENT =
 ac_reduction_types = Dict{String, Vector{PNM.NetworkReduction}}(
     "default" => PNM.NetworkReduction[],
     "radial" => PNM.NetworkReduction[PNM.RadialReduction()],
-    "degree 2" => PNM.NetworkReduction[PNM.DegreeTwoReduction()],
+    "degree 2" => PNM.NetworkReduction[PNM.DegreeTwoReduction(;
+        reduce_reactive_power_injectors = false,
+    )],
     "radial + degree 2" =>
-        PNM.NetworkReduction[PNM.RadialReduction(), PNM.DegreeTwoReduction()],
+        PNM.NetworkReduction[
+            PNM.RadialReduction(),
+            PNM.DegreeTwoReduction(; reduce_reactive_power_injectors = false),
+        ],
 )
 @testset "AC power flow on 2k bus system: validate reduce-then-solve" begin
     sys = build_system(MatpowerTestSystems, "matpower_ACTIVSg2000_sys")
@@ -196,12 +201,19 @@ end
     pf = PF.ACPowerFlow{PF.TrustRegionACPowerFlow}(;
         skip_redistribution = true,
         correct_bustypes = true,
-        network_reductions = PNM.NetworkReduction[PNM.DegreeTwoReduction()],
+        network_reductions = PNM.NetworkReduction[PNM.DegreeTwoReduction(;
+            reduce_reactive_power_injectors = false,
+        )],
     )
     PF.solve_power_flow!(unreduced)
     PF.solve_and_store_power_flow!(pf, sys)
     temp_ybus =
-        PNM.Ybus(sys; network_reductions = PNM.NetworkReduction[PNM.DegreeTwoReduction()])
+        PNM.Ybus(
+            sys;
+            network_reductions = PNM.NetworkReduction[PNM.DegreeTwoReduction(;
+                reduce_reactive_power_injectors = false,
+            )],
+        )
     nrd = PNM.get_network_reduction_data(temp_ybus)
     temp_bus_map = Dict{Int, String}(
         PSY.get_number(b) => PSY.get_name(b) for b in PSY.get_components(PSY.ACBus, sys)
@@ -243,12 +255,19 @@ end
     pf = PF.ACPowerFlow{PF.TrustRegionACPowerFlow}(;
         skip_redistribution = true,
         correct_bustypes = true,
-        network_reductions = PNM.NetworkReduction[PNM.DegreeTwoReduction()],
+        network_reductions = PNM.NetworkReduction[PNM.DegreeTwoReduction(;
+            reduce_reactive_power_injectors = false,
+        )],
     )
     PF.solve_power_flow!(unreduced)
     PF.solve_and_store_power_flow!(pf, sys)
     temp_ybus =
-        PNM.Ybus(sys; network_reductions = PNM.NetworkReduction[PNM.DegreeTwoReduction()])
+        PNM.Ybus(
+            sys;
+            network_reductions = PNM.NetworkReduction[PNM.DegreeTwoReduction(;
+                reduce_reactive_power_injectors = false,
+            )],
+        )
     nrd = PNM.get_network_reduction_data(temp_ybus)
     temp_bus_map = Dict{Int, String}(
         PSY.get_number(b) => PSY.get_name(b) for b in PSY.get_components(PSY.ACBus, sys)
