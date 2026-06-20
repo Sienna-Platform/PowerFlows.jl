@@ -736,9 +736,8 @@ function test_lcc_ac_solver(ACSolver)
     # :fixed_jacobian variant, which freezes the full Jacobian (LCC rows included). Dedicated FD
     # LCC parity lives in test_fast_decoupled.jl ("FastDecoupled WP5: :fixed_jacobian + LCC HVDC").
     pf = if ACSolver === FastDecoupledACPowerFlow
-        ACPowerFlow{ACSolver}(;
+        ACPowerFlow{FastDecoupledACPowerFlow{FDFixedJacobian, FDSchemeXB}}(;
             correct_bustypes = true,
-            solver_settings = Dict{Symbol, Any}(:fd_variant => :fixed_jacobian),
         )
     else
         ACPowerFlow{ACSolver}(; correct_bustypes = true)

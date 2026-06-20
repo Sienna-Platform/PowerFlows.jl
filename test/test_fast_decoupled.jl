@@ -1,3 +1,14 @@
+# ---------------------------------------------------------------------------------------------
+# Bridge the variant SYMBOLS used in the parametrized loops below to the FastDecoupledACPowerFlow
+# type parameters — the variant/scheme are now solver TYPE PARAMETERS, not solver_settings kwargs.
+# ---------------------------------------------------------------------------------------------
+_fd_variant_type(::Val{:decoupled}) = PF.FDDecoupled
+_fd_variant_type(::Val{:fixed_jacobian}) = PF.FDFixedJacobian
+# The FD solver TYPE (the ACSolver type parameter) for a variant symbol; scheme defaults to XB
+# (the variant-parametrized loops below do not vary the scheme).
+_fd_solver(variant::Symbol) =
+    PF.FastDecoupledACPowerFlow{_fd_variant_type(Val(variant)), PF.FDSchemeXB}
+
 @testset "FastDecoupled WP0: construction" begin
     # FD must construct for ALL THREE formulations (polar, rectangular, mixed).
     @test_nowarn ACPowerFlow{PF.FastDecoupledACPowerFlow}()
@@ -14,58 +25,50 @@ end
 
 @testset "FastDecoupled WP0: default variant" begin
     @test PF._default_fd_variant(ACPowerFlow{PF.FastDecoupledACPowerFlow}()) ==
-          :decoupled
+          PF.FDDecoupled()
     @test PF._default_fd_variant(ACRectangularPowerFlow{PF.FastDecoupledACPowerFlow}()) ==
-          :fixed_jacobian
+          PF.FDFixedJacobian()
     @test PF._default_fd_variant(ACMixedPowerFlow{PF.FastDecoupledACPowerFlow}()) ==
-          :fixed_jacobian
+          PF.FDFixedJacobian()
+
+    # Bare (unparametrized) solver resolves the per-formulation default; an explicit type
+    # parameter is read back verbatim by `_fd_variant`/`_fd_scheme`.
+    @test PF._fd_variant(ACPowerFlow{PF.FastDecoupledACPowerFlow}()) == PF.FDDecoupled()
+    @test PF._fd_scheme(ACPowerFlow{PF.FastDecoupledACPowerFlow}()) == PF.FDSchemeXB()
+    polar_bx = ACPowerFlow{PF.FastDecoupledACPowerFlow{PF.FDDecoupled, PF.FDSchemeBX}}()
+    @test PF._fd_variant(polar_bx) == PF.FDDecoupled()
+    @test PF._fd_scheme(polar_bx) == PF.FDSchemeBX()
 end
 
 @testset "FastDecoupled WP0: settings validation" begin
-    polar = ACPowerFlow{PF.FastDecoupledACPowerFlow}()
-    rect = ACRectangularPowerFlow{PF.FastDecoupledACPowerFlow}()
-    mixed = ACMixedPowerFlow{PF.FastDecoupledACPowerFlow}()
+    # The variant/scheme are now FastDecoupledACPowerFlow type parameters, so invalid values are
+    # unrepresentable. Only the handoff solver still needs runtime validation.
+    @test PF._validate_fd_handoff_solver(nothing) === nothing
+    @test PF._validate_fd_handoff_solver(NewtonRaphsonACPowerFlow) === nothing
+    @test PF._validate_fd_handoff_solver(TrustRegionACPowerFlow) === nothing
+    @test PF._validate_fd_handoff_solver(LevenbergMarquardtACPowerFlow) === nothing
+    @test_throws ArgumentError PF._validate_fd_handoff_solver(RobustHomotopyPowerFlow)
 
-    # Invalid fd_variant.
-    @test_throws ArgumentError PF._validate_fd_settings(
-        polar, :nonsense, :XB, nothing)
+    # FDDecoupled is polar-only: requesting it on rectangular/mixed is rejected at construction.
+    @test_throws ArgumentError ACRectangularPowerFlow{
+        PF.FastDecoupledACPowerFlow{PF.FDDecoupled, PF.FDSchemeXB}}()
+    @test_throws ArgumentError ACMixedPowerFlow{
+        PF.FastDecoupledACPowerFlow{PF.FDDecoupled, PF.FDSchemeXB}}()
 
-    # Invalid fd_scheme.
-    @test_throws ArgumentError PF._validate_fd_settings(
-        polar, :decoupled, :ZZ, nothing)
-
-    # :decoupled is polar-only in v1: rect/mixed must error.
-    @test_throws ArgumentError PF._validate_fd_settings(
-        rect, :decoupled, :XB, nothing)
-    @test_throws ArgumentError PF._validate_fd_settings(
-        mixed, :decoupled, :XB, nothing)
-
-    # Unsupported handoff solver (only nothing / NR / TR / LM are accepted).
-    @test_throws ArgumentError PF._validate_fd_settings(
-        polar, :decoupled, :XB, RobustHomotopyPowerFlow)
-
-    # Valid configurations must pass (no throw), including all supported handoff solvers.
-    @test PF._validate_fd_settings(polar, :decoupled, :XB, nothing) === nothing
-    @test PF._validate_fd_settings(polar, :decoupled, :BX, NewtonRaphsonACPowerFlow) ===
-          nothing
-    @test PF._validate_fd_settings(
-        polar, :fixed_jacobian, :XB, TrustRegionACPowerFlow) === nothing
-    @test PF._validate_fd_settings(
-        polar, :decoupled, :XB, LevenbergMarquardtACPowerFlow) === nothing
-    @test PF._validate_fd_settings(rect, :fixed_jacobian, :XB, nothing) === nothing
-    @test PF._validate_fd_settings(mixed, :fixed_jacobian, :BX, nothing) === nothing
+    # FDFixedJacobian is allowed on all formulations.
+    @test_nowarn ACRectangularPowerFlow{
+        PF.FastDecoupledACPowerFlow{PF.FDFixedJacobian, PF.FDSchemeXB}}()
+    @test_nowarn ACMixedPowerFlow{
+        PF.FastDecoupledACPowerFlow{PF.FDFixedJacobian, PF.FDSchemeXB}}()
 end
 
 @testset "FastDecoupled WP0: driver dispatches & errors" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys5"; add_forecasts = false)
-    # Rectangular + :decoupled is unsupported (decoupled is polar-only in v1): the FD driver
-    # must validate and throw through the public solve path — proving the FD solver dispatches
-    # to the new `_newton_power_flow` method and its settings validation is wired in. (The
-    # polar :decoupled and :fixed_jacobian paths are now implemented in WP1–WP3 and no longer
-    # throw, so the obsolete "not yet implemented" assertion was repointed here.)
-    pf = ACRectangularPowerFlow{PF.FastDecoupledACPowerFlow}(;
-        solver_settings = Dict{Symbol, Any}(:fd_variant => :decoupled))
-    @test_throws ArgumentError solve_power_flow(pf, sys)
+    # FD on LCC-free polar dispatches through the public solve path and converges (proving the
+    # FD solver dispatches to the new `_newton_power_flow` method). Rectangular + FDDecoupled is
+    # rejected at construction (covered in the settings-validation testset above).
+    pf = ACPowerFlow{PF.FastDecoupledACPowerFlow}()
+    @test solve_power_flow(pf, sys) isa AbstractDict
 end
 
 # =====================================================================================
@@ -142,7 +145,7 @@ end
     Bp_exact = _exact_Bp_block(Jv, pvpq, Vm)
     Bpp_exact = _exact_Bpp_block(Jv, pq, Vm)
 
-    for scheme in (:XB, :BX)
+    for scheme in (PF.FDSchemeXB(), PF.FDSchemeBX())
         fd = PF.build_fd_matrices(data, time_step, scheme)
         # B′ over pvpq.
         Bp = Matrix(PF.get_bp_matrix(fd))
@@ -156,8 +159,8 @@ end
     end
 
     # On a lossless, shunt-free, nominal-tap network XB == BX exactly.
-    fd_xb = PF.build_fd_matrices(data, time_step, :XB)
-    fd_bx = PF.build_fd_matrices(data, time_step, :BX)
+    fd_xb = PF.build_fd_matrices(data, time_step, PF.FDSchemeXB())
+    fd_bx = PF.build_fd_matrices(data, time_step, PF.FDSchemeBX())
     @test isapprox(Matrix(PF.get_bp_matrix(fd_xb)), Matrix(PF.get_bp_matrix(fd_bx));
         atol = 1e-9, rtol = 0)
     @test isapprox(
@@ -176,7 +179,7 @@ end
     @test isapprox(Yrec, Yb; atol = 1e-4, rtol = 0)
 
     # B″ symmetric; B′ symmetric here (c_sys14 has no phase shifters).
-    fd = PF.build_fd_matrices(data, time_step, :XB)
+    fd = PF.build_fd_matrices(data, time_step, PF.FDSchemeXB())
     Bp = Matrix(PF.get_bp_matrix(fd))
     @test isapprox(Bp, transpose(Bp); atol = 1e-6, rtol = 0)
     ref, pv, pq = PF.bus_type_idx(data, time_step)
@@ -242,7 +245,7 @@ end
     # The resistance-drop stamp path must still be finite (a true x→0 there would be Inf/NaN
     # without the cap); B′/B″ entries are all finite under both schemes.
     ref, pv, pq = PF.bus_type_idx(data, time_step)
-    for scheme in (:XB, :BX)
+    for scheme in (PF.FDSchemeXB(), PF.FDSchemeBX())
         fd = PF.build_fd_matrices(data, time_step, scheme)
         @test all(isfinite, PF.get_bp_matrix(fd).nzval)
         @test all(isfinite, PF.get_bpp_matrix(PF.extract_bpp(fd, sort(pq))).nzval)
@@ -255,14 +258,14 @@ end
 
 # Per-formulation frozen-Jacobian FD power flow constructor by name.
 _fd_fixed_jacobian_pf(::Type{<:PF.ACPolarPowerFlow}; kwargs...) =
-    ACPowerFlow{PF.FastDecoupledACPowerFlow}(;
-        solver_settings = Dict{Symbol, Any}(:fd_variant => :fixed_jacobian, kwargs...))
+    ACPowerFlow{_fd_solver(:fixed_jacobian)}(;
+        solver_settings = Dict{Symbol, Any}(kwargs...))
 _fd_fixed_jacobian_pf(::Type{<:PF.ACRectangularPowerFlow}; kwargs...) =
-    ACRectangularPowerFlow{PF.FastDecoupledACPowerFlow}(;
-        solver_settings = Dict{Symbol, Any}(:fd_variant => :fixed_jacobian, kwargs...))
+    ACRectangularPowerFlow{_fd_solver(:fixed_jacobian)}(;
+        solver_settings = Dict{Symbol, Any}(kwargs...))
 _fd_fixed_jacobian_pf(::Type{<:PF.ACMixedPowerFlow}; kwargs...) =
-    ACMixedPowerFlow{PF.FastDecoupledACPowerFlow}(;
-        solver_settings = Dict{Symbol, Any}(:fd_variant => :fixed_jacobian, kwargs...))
+    ACMixedPowerFlow{_fd_solver(:fixed_jacobian)}(;
+        solver_settings = Dict{Symbol, Any}(kwargs...))
 
 # Plain (non-FD) formulation constructor parametrized by a solver type, for NR-parity refs.
 _plain_pf(::Type{<:PF.ACPolarPowerFlow}, ::Type{S}) where {S} = ACPowerFlow{S}()
@@ -329,9 +332,8 @@ end
 
     sys_fd = PSB.build_system(PSB.MatpowerTestSystems, "matpower_ACTIVSg2000_sys")
     PSY.set_units_base_system!(sys_fd, "SYSTEM_BASE")
-    pf_fd = ACPowerFlow{PF.FastDecoupledACPowerFlow}(;
-        correct_bustypes = true,
-        solver_settings = Dict{Symbol, Any}(:fd_variant => :fixed_jacobian))
+    pf_fd = ACPowerFlow{_fd_solver(:fixed_jacobian)}(;
+        correct_bustypes = true)
     data_fd = PowerFlowData(pf_fd, sys_fd)
     # refreeze_on_stall is on by default; large stiff system may need it. Report iters.
     converged = solve_power_flow!(data_fd)
@@ -374,7 +376,7 @@ end
     # equals the smallest residual seen, and is strictly better than the flat start.
     @testset "non-divergent backtracking restores best state" begin
         sys = _stressed_high_rx_system(; load_scale = 6.0)
-        pf = ACPowerFlow{PF.FastDecoupledACPowerFlow}()
+        pf = ACPowerFlow{_fd_solver(:fixed_jacobian)}()
         data = PowerFlowData(pf, sys)
 
         # Flat-start residual (fresh residual on freshly-initialized data).
@@ -389,7 +391,6 @@ end
         converged = nothing
         @test_logs (:error, r"failed to converge") match_mode = :any begin
             converged = _drive_fd_directly(pf, data;
-                fd_variant = :fixed_jacobian,
                 fd_non_divergent = true,
                 refreeze_on_stall = false,
                 maxIterations = 8,
@@ -416,12 +417,11 @@ end
     # assert the abort happened (a BLOWUP warning is emitted) and `data` stays finite.
     @testset "BLOWUP aborts step (fd_non_divergent=false)" begin
         sys = _stressed_high_rx_system(; load_scale = 10.0)
-        pf = ACPowerFlow{PF.FastDecoupledACPowerFlow}()
+        pf = ACPowerFlow{_fd_solver(:fixed_jacobian)}()
         data = PowerFlowData(pf, sys)
         converged = nothing
         @test_logs (:warn, r"BLOWUP") match_mode = :any begin
             converged = _drive_fd_directly(pf, data;
-                fd_variant = :fixed_jacobian,
                 fd_non_divergent = false,
                 refreeze_on_stall = false,
                 maxIterations = 50,
@@ -460,9 +460,8 @@ end
         @test solve_power_flow!(data_nr)
 
         sys_fd = PSB.build_system(PSB.PSITestSystems, "c_sys5"; add_forecasts = false)
-        pf = ACPowerFlow{PF.FastDecoupledACPowerFlow}(;
+        pf = ACPowerFlow{_fd_solver(:fixed_jacobian)}(;
             solver_settings = Dict{Symbol, Any}(
-                :fd_variant => :fixed_jacobian,
                 :fd_dvlim => 0.005,   # tiny DVLIM forces the clamp to engage repeatedly
                 :maxIterations => 150,
             ))
@@ -548,12 +547,12 @@ end
     ref, pv, pq = PF.bus_type_idx(data, time_step)
 
     # BX: B′ asymmetric due to the retained phase shift acting on a resistive ys.
-    fd_bx = PF.build_fd_matrices(data, time_step, :BX)
+    fd_bx = PF.build_fd_matrices(data, time_step, PF.FDSchemeBX())
     Bp_bx = Matrix(PF.get_bp_matrix(fd_bx))
     @test !isapprox(Bp_bx, transpose(Bp_bx); atol = 1e-6, rtol = 0)
 
     # XB: B′ symmetric (resistance neglected → phase rotation is symmetric under −imag).
-    fd_xb = PF.build_fd_matrices(data, time_step, :XB)
+    fd_xb = PF.build_fd_matrices(data, time_step, PF.FDSchemeXB())
     Bp_xb = Matrix(PF.get_bp_matrix(fd_xb))
     @test isapprox(Bp_xb, transpose(Bp_xb); atol = 1e-6, rtol = 0)
 
@@ -565,9 +564,9 @@ end
 end
 
 # Polar :decoupled FD constructor with arbitrary settings.
-_fd_decoupled_pf(; kwargs...) =
-    ACPowerFlow{PF.FastDecoupledACPowerFlow}(;
-        solver_settings = Dict{Symbol, Any}(:fd_variant => :decoupled, kwargs...))
+_fd_decoupled_pf(; scheme::PF.FDScheme = PF.FDSchemeXB(), kwargs...) =
+    ACPowerFlow{PF.FastDecoupledACPowerFlow{PF.FDDecoupled, typeof(scheme)}}(;
+        solver_settings = Dict{Symbol, Any}(kwargs...))
 
 # T2 — Polar FDNR solution parity. For each scheme and system, the pure FD :decoupled
 # solve must (1) converge to tol=1e-9 within DEFAULT_FD_MAX_ITER, (2) match an INDEPENDENT
@@ -586,7 +585,7 @@ _fd_decoupled_pf(; kwargs...) =
         ("matpower_case5",
             () -> PSB.build_system(PSB.MatpowerTestSystems, "matpower_case5_sys")),
     )
-    for scheme in (:XB, :BX), (sysname, build) in systems
+    for scheme in (PF.FDSchemeXB(), PF.FDSchemeBX()), (sysname, build) in systems
         @testset "$sysname / $scheme" begin
             # Independent NR reference on a fresh system state; capture iteration count.
             sys_nr = build()
@@ -597,7 +596,7 @@ _fd_decoupled_pf(; kwargs...) =
 
             # Pure FD :decoupled solve on its OWN fresh system state.
             sys_fd = build()
-            pf_fd = _fd_decoupled_pf(; fd_scheme = scheme)
+            pf_fd = _fd_decoupled_pf(; scheme = scheme)
             data_fd = PowerFlowData(pf_fd, sys_fd)
             @test solve_power_flow!(data_fd)
             x_fd = _calc_x(data_fd, 1)
@@ -626,8 +625,8 @@ _fd_decoupled_pf(; kwargs...) =
 
             data_fd2 = PowerFlowData(pf_fd, build())
             conv_fd, it_fd_val = PF._fd_decoupled_power_flow(
-                pf_fd, data_fd2, 1;
-                tol = 1e-9, fd_scheme = scheme,
+                pf_fd, data_fd2, 1, scheme;
+                tol = 1e-9,
                 maxIterations = PF.DEFAULT_FD_MAX_ITER,
                 validate_voltage_magnitudes = false,
                 _return_iters = true)
@@ -652,19 +651,19 @@ end
 
 # Build an ACPowerFlow{FastDecoupled} (polar) with handoff settings for a given variant.
 _fd_handoff_pf(variant, handoff; extra...) =
-    ACPowerFlow{PF.FastDecoupledACPowerFlow}(;
+    ACPowerFlow{_fd_solver(variant)}(;
         solver_settings = Dict{Symbol, Any}(
-            :fd_variant => variant,
             :handoff_solver => handoff,
             extra...,
         ))
 
 # Direct-drive entry point for the per-variant FD loop (so we can pass `_return_stage_iters`
-# and read FD-stage vs handoff iteration counts the public solver hides).
-_fd_loop(::Val{:decoupled}, args...; kwargs...) =
-    PF._fd_decoupled_power_flow(args...; kwargs...)
-_fd_loop(::Val{:fixed_jacobian}, args...; kwargs...) =
-    PF._fd_fixed_jacobian_power_flow(args...; kwargs...)
+# and read FD-stage vs handoff iteration counts the public solver hides). The decoupled loop
+# takes the scheme positionally (read off the solver type parameter via `_fd_scheme`).
+_fd_loop(::Val{:decoupled}, pf, data, ts; kwargs...) =
+    PF._fd_decoupled_power_flow(pf, data, ts, PF._fd_scheme(pf); kwargs...)
+_fd_loop(::Val{:fixed_jacobian}, pf, data, ts; kwargs...) =
+    PF._fd_fixed_jacobian_power_flow(pf, data, ts; kwargs...)
 
 @testset "FastDecoupled WP4: handoff NR-parity (c_sys14)" begin
     for variant in (:decoupled, :fixed_jacobian)
@@ -801,10 +800,9 @@ end
     for variant in (:decoupled, :fixed_jacobian)
         @testset "$variant" begin
             sys_fd = _build_sys14_qlim()
-            pf_fd = ACPowerFlow{PF.FastDecoupledACPowerFlow}(;
+            pf_fd = ACPowerFlow{_fd_solver(variant)}(;
                 check_reactive_power_limits = true,
-                correct_bustypes = true,
-                solver_settings = Dict{Symbol, Any}(:fd_variant => variant))
+                correct_bustypes = true)
             data_fd = PowerFlowData(pf_fd, sys_fd)
             @test solve_power_flow!(data_fd)
             x_fd = _calc_x(data_fd, 1)
@@ -850,9 +848,8 @@ end
         data_nr = PF.PowerFlowData(pf_nr, System(lcc_raw))
         @test solve_power_flow!(data_nr)
 
-        pf_fd = ACRectangularPowerFlow{PF.FastDecoupledACPowerFlow}(;
+        pf_fd = ACRectangularPowerFlow{_fd_solver(:fixed_jacobian)}(;
             solver_settings = Dict{Symbol, Any}(
-                :fd_variant => :fixed_jacobian,
                 :validate_voltage_magnitudes => false))
         data_fd = PF.PowerFlowData(pf_fd, System(lcc_raw))
         @test PF.get_lcc_count(data_fd) > 0
@@ -869,9 +866,8 @@ end
         data_nr = PF.PowerFlowData(pf_nr, System(lcc_raw))
         @test solve_power_flow!(data_nr)
 
-        pf_fd = ACMixedPowerFlow{PF.FastDecoupledACPowerFlow}(;
+        pf_fd = ACMixedPowerFlow{_fd_solver(:fixed_jacobian)}(;
             solver_settings = Dict{Symbol, Any}(
-                :fd_variant => :fixed_jacobian,
                 :validate_voltage_magnitudes => false))
         data_fd = PF.PowerFlowData(pf_fd, System(lcc_raw))
         @test PF.get_lcc_count(data_fd) > 0
@@ -887,8 +883,7 @@ end
         data_nr = PF.PowerFlowData(pf_nr, System(lcc_raw))
         @test solve_power_flow!(data_nr)
 
-        pf_fd = ACPowerFlow{PF.FastDecoupledACPowerFlow}(;
-            solver_settings = Dict{Symbol, Any}(:fd_variant => :fixed_jacobian))
+        pf_fd = ACPowerFlow{_fd_solver(:fixed_jacobian)}()
         data_fd = PF.PowerFlowData(pf_fd, System(lcc_raw))
         @test PF.get_lcc_count(data_fd) > 0
         @test solve_power_flow!(data_fd)
@@ -902,8 +897,7 @@ end
         # The B′/B″ half-iterations do not span the LCC state, so the FD method's
         # data-dependent guard must reject this through the public solve path.
         sys_lcc, _ = simple_lcc_system()
-        pf = ACPowerFlow{PF.FastDecoupledACPowerFlow}(;
-            solver_settings = Dict{Symbol, Any}(:fd_variant => :decoupled))
+        pf = ACPowerFlow{_fd_solver(:decoupled)}()
         data = PF.PowerFlowData(pf, sys_lcc)
         @test PF.get_lcc_count(data) > 0
         @test_throws ArgumentError solve_power_flow!(data)
@@ -931,10 +925,9 @@ end
     for variant in (:decoupled, :fixed_jacobian)
         @testset "$variant" begin
             sys_fd = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
-            pf_fd = ACPowerFlow{PF.FastDecoupledACPowerFlow}(;
+            pf_fd = ACPowerFlow{_fd_solver(variant)}(;
                 calculate_loss_factors = true,
-                calculate_voltage_stability_factors = true,
-                solver_settings = Dict{Symbol, Any}(:fd_variant => variant))
+                calculate_voltage_stability_factors = true)
             data_fd = PowerFlowData(pf_fd, sys_fd)
             @test solve_power_flow!(data_fd)
 
@@ -967,17 +960,16 @@ end
 # The polar :decoupled loop must factor B′ EXACTLY ONCE
 # per (data, scheme, backend) lifetime and B″ once per DISTINCT PQ set (bus-type signature),
 # reusing the factorizations on repeat signatures. The cache lives in
-# `data.solver_cache[]` as `(PF.FD_CACHE_TAG, ::FastDecoupledCache)`; its `bp_factor_count`
+# `data.solver_cache[]` as a `FastDecoupledCache <: SolverCache`; its `bp_factor_count`
 # / `bpp_factor_count` counters are the factor-once arbiters.
 # =====================================================================================
 
-# Pull the live FastDecoupledCache out of data.solver_cache[] (the tagged tuple), or `nothing`
-# if the :decoupled loop has not run on this data yet.
+# Pull the live FastDecoupledCache out of data.solver_cache[], or `nothing` if the :decoupled
+# loop has not run on this data yet.
 function _fd_cache(data)
     entry = data.solver_cache[]
-    (entry isa Tuple && length(entry) == 2 && entry[1] === PF.FD_CACHE_TAG) ||
-        return nothing
-    return entry[2]
+    entry isa PF.FastDecoupledCache || return nothing
+    return entry
 end
 
 @testset "FastDecoupled WP5b: multi-period caching (T7)" begin
@@ -987,9 +979,8 @@ end
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
     time_steps = 24
 
-    pf_fd = ACPowerFlow{PF.FastDecoupledACPowerFlow}(;
-        time_steps = time_steps,
-        solver_settings = Dict{Symbol, Any}(:fd_variant => :decoupled))
+    pf_fd = ACPowerFlow{_fd_solver(:decoupled)}(;
+        time_steps = time_steps)
     data_fd = PowerFlowData(pf_fd, sys)
     prepare_ts_data!(data_fd, time_steps)
     @test solve_power_flow!(data_fd)
@@ -1028,10 +1019,9 @@ end
     # PQ), so B″ is factored once per distinct PQ signature (the pre- and post-switch sets).
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
     set_units_base_system!(sys, UnitSystem.SYSTEM_BASE)
-    pf_fd = ACPowerFlow{PF.FastDecoupledACPowerFlow}(;
+    pf_fd = ACPowerFlow{_fd_solver(:decoupled)}(;
         check_reactive_power_limits = true,
-        correct_bustypes = true,
-        solver_settings = Dict{Symbol, Any}(:fd_variant => :decoupled))
+        correct_bustypes = true)
     data_fd = PowerFlowData(pf_fd, sys)
     @test solve_power_flow!(data_fd)
 
@@ -1047,17 +1037,16 @@ end
 
 @testset "FastDecoupled WP5b: cache invalidation & loud collision" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
-    pf_fd = ACPowerFlow{PF.FastDecoupledACPowerFlow}(;
-        solver_settings = Dict{Symbol, Any}(:fd_variant => :decoupled))
+    pf_fd = ACPowerFlow{_fd_solver(:decoupled)}()
     data = PowerFlowData(pf_fd, sys)
     @test solve_power_flow!(data)
     cache = _fd_cache(data)
     @test cache !== nothing
 
     # Invalidation key matches Ybus identity / scheme / backend.
-    @test cache.ybus_id == objectid(data.power_network_matrix)
-    @test cache.scheme === :XB
-    @test cache.backend_id === PF._fd_backend_id(nothing)
+    @test cache.key.ybus_id == objectid(data.power_network_matrix)
+    @test cache.key.scheme == PF.FDSchemeXB()
+    @test cache.key.backend_id === PF._fd_backend_id(nothing)
 
     # Reuse: a second :decoupled solve on the SAME data with the SAME scheme/backend must NOT
     # rebuild B′ (count stays 1) nor refactor B″ for the already-seen PQ set.
@@ -1069,10 +1058,13 @@ end
     @test cache.bp_factor_count == bp_before
     @test cache.bpp_factor_count == bpp_before
 
-    # Loud collision: a non-FD value in the slot (e.g. the DC-path tuple shape) must `error`.
-    data.solver_cache[] = (SparseArrays.spzeros(2, 2), PF.PNM.KLUSolver(), nothing, nothing)
-    @test_throws ErrorException PF._get_or_build_fd_cache!(
-        data, 1, :XB, PF._fd_backend_id(nothing), nothing)
+    # Loud collision: a non-FD SolverCache in the slot (the DC path's DCSolverCache) has no
+    # `_reuse_fd_cache` method, so the FD getter fails loudly with a MethodError rather than a
+    # silent mis-read.
+    data.solver_cache[] =
+        PF.DCSolverCache(SparseArrays.spzeros(2, 2), PF.PNM.KLUSolver(), nothing, nothing)
+    @test_throws MethodError PF._get_or_build_fd_cache!(
+        data, 1, PF.FDSchemeXB(), PF._fd_backend_id(nothing), nothing)
 end
 
 @testset "FastDecoupled WP5b: allocations (T10)" begin
@@ -1082,9 +1074,8 @@ end
     # half-step buffer fills + solves reuse preallocated cache buffers.
     sys = PSB.build_system(PSB.MatpowerTestSystems, "matpower_ACTIVSg2000_sys")
     PSY.set_units_base_system!(sys, "SYSTEM_BASE")
-    pf = ACPowerFlow{PF.FastDecoupledACPowerFlow}(;
-        correct_bustypes = true,
-        solver_settings = Dict{Symbol, Any}(:fd_variant => :decoupled))
+    pf = ACPowerFlow{_fd_solver(:decoupled)}(;
+        correct_bustypes = true)
     data = PowerFlowData(pf, sys)
     @test solve_power_flow!(data)   # warm the FastDecoupledCache
 
@@ -1157,9 +1148,8 @@ end
     # (a) Direct isolation: the residual/x0-only initializer the :decoupled driver uses must NOT
     # allocate the Jacobian, so it allocates strictly less than the full initializer — by at least
     # most of the omitted sparse-Jacobian footprint (≈3 MiB on this 2000-bus system).
-    pf = ACPowerFlow{PF.FastDecoupledACPowerFlow}(;
-        correct_bustypes = true,
-        solver_settings = Dict{Symbol, Any}(:fd_variant => :decoupled))
+    pf = ACPowerFlow{_fd_solver(:decoupled)}(;
+        correct_bustypes = true)
     data = PowerFlowData(pf, sys)
     kw = (; validate_voltage_magnitudes = false)
     PF._initialize_residual_x0(pf, data, 1; kw...)             # warm (compile)
@@ -1175,10 +1165,9 @@ end
     # eager path built one full formulation Jacobian PER time step (≥ time_steps·jac_alloc bytes);
     # the lazy path builds none, so the whole warm multi-period re-solve stays well under that.
     time_steps = 3
-    pf_mp = ACPowerFlow{PF.FastDecoupledACPowerFlow}(;
+    pf_mp = ACPowerFlow{_fd_solver(:decoupled)}(;
         time_steps = time_steps,
-        correct_bustypes = true,
-        solver_settings = Dict{Symbol, Any}(:fd_variant => :decoupled))
+        correct_bustypes = true)
     data_mp = PowerFlowData(pf_mp, sys)
     @test solve_power_flow!(data_mp)        # warm caches + factorizations
     @test all(data_mp.converged)
@@ -1197,9 +1186,8 @@ end
     # (c) Factors-on still works through the lazy gate: when loss factors ARE requested the driver
     # builds + evaluates J at the solution, so finite loss factors are produced. (c_sys14: fast.)
     sys14 = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
-    pf_lf = ACPowerFlow{PF.FastDecoupledACPowerFlow}(;
-        calculate_loss_factors = true,
-        solver_settings = Dict{Symbol, Any}(:fd_variant => :decoupled))
+    pf_lf = ACPowerFlow{_fd_solver(:decoupled)}(;
+        calculate_loss_factors = true)
     data_lf = PowerFlowData(pf_lf, sys14)
     @test solve_power_flow!(data_lf)
     @test PF.get_loss_factors(data_lf) !== nothing
@@ -1254,7 +1242,6 @@ end
         converged = nothing
         @test_logs (:error, r"failed to converge") match_mode = :any begin
             converged = _drive_fd_directly(pf, data;
-                fd_variant = :decoupled,
                 fd_non_divergent = true,
                 maxIterations = 8,
                 validate_voltage_magnitudes = false)
@@ -1277,9 +1264,8 @@ end
         @test solve_power_flow!(data_nr)
 
         sys_fd = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
-        pf = ACPowerFlow{PF.FastDecoupledACPowerFlow}(;
+        pf = ACPowerFlow{_fd_solver(variant)}(;
             solver_settings = Dict{Symbol, Any}(
-                :fd_variant => variant,
                 :handoff_solver => TrustRegionACPowerFlow,
                 :maxIterations => 1))   # forces an unconverged FD stage → handoff
         data_fd = PowerFlowData(pf, sys_fd)
@@ -1300,12 +1286,8 @@ end
 
         sys_fd = PSB.build_system(PSB.MatpowerTestSystems, "matpower_ACTIVSg2000_sys")
         PSY.set_units_base_system!(sys_fd, "SYSTEM_BASE")
-        pf_fd = ACPowerFlow{PF.FastDecoupledACPowerFlow}(;
-            correct_bustypes = true,
-            solver_settings = Dict{Symbol, Any}(
-                :fd_variant => :decoupled,
-                :fd_scheme => :XB,
-            ))
+        pf_fd = ACPowerFlow{_fd_solver(:decoupled)}(;
+            correct_bustypes = true)
         data_fd = PowerFlowData(pf_fd, sys_fd)
         @test solve_power_flow!(data_fd)
         @test isapprox(data_fd.bus_magnitude[:, 1], data_nr.bus_magnitude[:, 1];

@@ -505,16 +505,15 @@ end
     P_nr = data_nr.bus_active_power_injections[:, 1]   # the redistributed slack
 
     fd_cases = (
-        ("decoupled/XB", Dict{Symbol, Any}(:fd_variant => :decoupled, :fd_scheme => :XB)),
-        ("decoupled/BX", Dict{Symbol, Any}(:fd_variant => :decoupled, :fd_scheme => :BX)),
-        ("fixed_jacobian", Dict{Symbol, Any}(:fd_variant => :fixed_jacobian)),
+        ("decoupled/XB", PF.FastDecoupledACPowerFlow{PF.FDDecoupled, PF.FDSchemeXB}),
+        ("decoupled/BX", PF.FastDecoupledACPowerFlow{PF.FDDecoupled, PF.FDSchemeBX}),
+        ("fixed_jacobian", PF.FastDecoupledACPowerFlow{PF.FDFixedJacobian, PF.FDSchemeXB}),
     )
-    for (label, settings) in fd_cases
+    for (label, solver) in fd_cases
         @testset "$label" begin
             sys_fd = build_c_sys14()
-            pf_fd = ACPowerFlow{PF.FastDecoupledACPowerFlow}(;
-                generator_slack_participation_factors = equal_gspf(sys_fd),
-                solver_settings = settings)
+            pf_fd = ACPowerFlow{solver}(;
+                generator_slack_participation_factors = equal_gspf(sys_fd))
             data_fd = PowerFlowData(pf_fd, sys_fd)
             @test solve_power_flow!(data_fd)
             # Voltages match NR.

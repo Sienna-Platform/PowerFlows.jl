@@ -64,12 +64,15 @@ end
 
 const CASES = [
     ("NewtonRaphson", PF.NewtonRaphsonACPowerFlow, Dict{Symbol, Any}()),
-    ("FastDecoupled(:decoupled,:XB)", PF.FastDecoupledACPowerFlow,
-        Dict{Symbol, Any}(:fd_variant => :decoupled, :fd_scheme => :XB)),
-    ("FastDecoupled(:decoupled,:BX)", PF.FastDecoupledACPowerFlow,
-        Dict{Symbol, Any}(:fd_variant => :decoupled, :fd_scheme => :BX)),
-    ("FastDecoupled(:fixed_jacobian)", PF.FastDecoupledACPowerFlow,
-        Dict{Symbol, Any}(:fd_variant => :fixed_jacobian)),
+    ("FastDecoupled(FDDecoupled,XB)",
+        PF.FastDecoupledACPowerFlow{PF.FDDecoupled, PF.FDSchemeXB}, Dict{Symbol, Any}(),
+    ),
+    ("FastDecoupled(FDDecoupled,BX)",
+        PF.FastDecoupledACPowerFlow{PF.FDDecoupled, PF.FDSchemeBX}, Dict{Symbol, Any}(),
+    ),
+    ("FastDecoupled(FDFixedJacobian)",
+        PF.FastDecoupledACPowerFlow{PF.FDFixedJacobian, PF.FDSchemeXB},
+        Dict{Symbol, Any}()),
 ]
 
 _try(f) =
