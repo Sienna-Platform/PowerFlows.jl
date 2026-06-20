@@ -43,7 +43,15 @@ function record_failure(label)
     end
 end
 
-solvers = [PF.NewtonRaphsonACPowerFlow, PF.RobustHomotopyPowerFlow]
+# Both FastDecoupled variants (:decoupled B′/B″ and :fixed_jacobian) are only exercised on the
+# largest systems (here and the Eastern Interconnect below): the factor-once advantage is only
+# relevant at scale, so small systems aren't worth timing.
+solvers = [
+    PF.NewtonRaphsonACPowerFlow,
+    PF.RobustHomotopyPowerFlow,
+    PF.FastDecoupledXB,
+    PF.FastDecoupledFixed,
+]
 for (group, name) in systems
     for solver in solvers
         sys = build_system(group, name)
@@ -220,7 +228,18 @@ large_systems = [
     (PSSEParsingTestSystems, "Base_Eastern_Interconnect_515GW"),
 ]
 large_dc_solvers = [(DCPowerFlow(; correct_bustypes = true), "DCPowerFlow")]
-large_ac_solvers = [PF.NewtonRaphsonACPowerFlow, PF.TrustRegionACPowerFlow]
+# EI AC solvers, as (label, solver, settings). FastDecoupledXB (decoupled B′/B″) solves the EI's
+# LCC via the sequential AC–DC method, but the EI's super-low-reactance branches (|x| ~ 4e-6 pu)
+# make the decoupling ill-conditioned, so pure decoupled crawls toward the default 1e-9 tolerance.
+# Relax its tolerance here so it records a meaningful timing; the robust FD→Newton handoff is the
+# production path for tight tolerance (see the FastDecoupled explanation docs). NR/TR/Fixed keep the
+# default tolerance.
+large_ac_solvers = [
+    ("NewtonRaphsonACPowerFlow", PF.NewtonRaphsonACPowerFlow, Dict{Symbol, Any}()),
+    ("TrustRegionACPowerFlow", PF.TrustRegionACPowerFlow, Dict{Symbol, Any}()),
+    ("FastDecoupledFixed", PF.FastDecoupledFixed, Dict{Symbol, Any}()),
+    ("FastDecoupledXB(tol=1e-5)", PF.FastDecoupledXB, Dict{Symbol, Any}(:tol => 1e-5)),
+]
 if get(ENV, "PF_PERF_SKIP_LARGE_SYSTEMS", "false") != "true"
     for (group, name) in large_systems
         sys = build_system(group, name)
@@ -237,19 +256,21 @@ if get(ENV, "PF_PERF_SKIP_LARGE_SYSTEMS", "false") != "true"
                 record_failure("$(name)-$(solver_label)")
             end
         end
-        for solver in large_ac_solvers
+        for (solver_label, solver, extra_settings) in large_ac_solvers
             try
-                pf = ACPowerFlow{solver}(; correct_bustypes = true)
+                pf = ACPowerFlow{solver}(;
+                    correct_bustypes = true, solver_settings = extra_settings)
                 pf_data = PF.PowerFlowData(pf, sys)
                 _, time_solve_1, _, _ = @timed PF.solve_power_flow!(pf_data; pf = pf)
-                record_time("$(name)-$(solver) First Solve", time_solve_1)
-                pf = ACPowerFlow{solver}(; correct_bustypes = true)
+                record_time("$(name)-$(solver_label) First Solve", time_solve_1)
+                pf = ACPowerFlow{solver}(;
+                    correct_bustypes = true, solver_settings = extra_settings)
                 pf_data = PF.PowerFlowData(pf, sys)
                 _, time_solve_2, _, _ = @timed PF.solve_power_flow!(pf_data; pf = pf)
-                record_time("$(name)-$(solver) Second Solve", time_solve_2)
+                record_time("$(name)-$(solver_label) Second Solve", time_solve_2)
             catch e
                 @error exception = (e, catch_backtrace())
-                record_failure("$(name)-$(solver) Solve")
+                record_failure("$(name)-$(solver_label) Solve")
             end
         end
     end

@@ -893,14 +893,117 @@ end
             atol = TIGHT_TOLERANCE, rtol = 0)
     end
 
-    @testset "polar :decoupled + LCC throws (WP0 guard)" begin
-        # The B′/B″ half-iterations do not span the LCC state, so the FD method's
-        # data-dependent guard must reject this through the public solve path.
+    @testset "polar :decoupled + LCC converges (sequential AC-DC)" begin
+        # Previously the B′/B″ decoupled variant threw on LCC. It now solves LCC via the
+        # sequential AC-DC method (converter sub-solve refreshes the DC boundary conditions each
+        # cycle), so this must converge through the public solve path.
         sys_lcc, _ = simple_lcc_system()
         pf = ACPowerFlow{_fd_solver(:decoupled)}()
         data = PF.PowerFlowData(pf, sys_lcc)
         @test PF.get_lcc_count(data) > 0
-        @test_throws ArgumentError solve_power_flow!(data)
+        @test solve_power_flow!(data)
+    end
+end
+
+# =====================================================================================
+# WP-LCC — sequential AC-DC fast decoupled for LCC HVDC (PSS/E FDNS parity).
+# The polar :decoupled variant no longer rejects LCC: the B′/B″ half-steps solve the AC network
+# while a per-LCC converter sub-solve (Newton on the 4 tail control equations, given the AC
+# voltages) refreshes the DC boundary conditions each cycle. Validated against the unified
+# :fixed_jacobian result and an independent NewtonRaphson solve.
+# =====================================================================================
+
+@testset "FastDecoupled WP-LCC: tail Jacobian block (finite-diff)" begin
+    sys, _ = simple_lcc_system()
+    data = PF.PowerFlowData(ACPowerFlow{NewtonRaphsonACPowerFlow}(), sys)
+    @test PF.get_lcc_count(data) > 0
+    @test solve_power_flow!(data)
+    t = 1
+    i = 1
+    (fb, tb) = data.lcc.bus_indices[i]
+    Vm_fb = data.bus_magnitude[fb, t]
+    Vm_tb = data.bus_magnitude[tb, t]
+    PF._update_ybus_lcc!(data, t)
+    J = PF._lcc_tail_jacobian_block(data, i, t, Vm_fb, Vm_tb)
+    F0 = zeros(4)
+    PF._write_lcc_tail!(F0, data, 0, t, i, fb, tb, Vm_fb, Vm_tb)
+    fields = [
+        (data.lcc.rectifier, :tap),
+        (data.lcc.inverter, :tap),
+        (data.lcc.rectifier, :thyristor_angle),
+        (data.lcc.inverter, :thyristor_angle),
+    ]
+    h = 1e-7
+    for k in 1:4
+        side, fld = fields[k]
+        base = getfield(side, fld)[i, t]
+        getfield(side, fld)[i, t] = base + h
+        PF._update_ybus_lcc!(data, t)
+        Fp = zeros(4)
+        PF._write_lcc_tail!(Fp, data, 0, t, i, fb, tb, Vm_fb, Vm_tb)
+        getfield(side, fld)[i, t] = base
+        PF._update_ybus_lcc!(data, t)
+        @test isapprox((Fp .- F0) ./ h, J[:, k]; atol = 1e-3, rtol = 1e-3)
+    end
+end
+
+@testset "FastDecoupled WP-LCC: converter sub-solve recovers state at fixed V" begin
+    sys, _ = simple_lcc_system()
+    data = PF.PowerFlowData(ACPowerFlow{NewtonRaphsonACPowerFlow}(), sys)
+    @test solve_power_flow!(data)
+    t = 1
+    tap_r_nr = copy(data.lcc.rectifier.tap[:, t])
+    tap_i_nr = copy(data.lcc.inverter.tap[:, t])
+    # Perturb converter states; AC voltages stay at the NR solution.
+    data.lcc.rectifier.tap[:, t] .*= 1.05
+    data.lcc.inverter.tap[:, t] .*= 0.95
+    resid = PF._fd_converter_substep!(data, t)
+    @test resid < 1e-9
+    @test isapprox(data.lcc.rectifier.tap[:, t], tap_r_nr; atol = 1e-6)
+    @test isapprox(data.lcc.inverter.tap[:, t], tap_i_nr; atol = 1e-6)
+end
+
+@testset "FastDecoupled WP-LCC: decoupled + LCC NR-parity (simple_lcc)" begin
+    sys_nr, _ = simple_lcc_system()
+    data_nr = PF.PowerFlowData(ACPowerFlow{NewtonRaphsonACPowerFlow}(), sys_nr)
+    @test solve_power_flow!(data_nr)
+
+    sys_fd, _ = simple_lcc_system()
+    data_fd = PF.PowerFlowData(ACPowerFlow{_fd_solver(:decoupled)}(), sys_fd)
+    @test PF.get_lcc_count(data_fd) > 0
+    @test solve_power_flow!(data_fd)
+    @test isapprox(data_fd.bus_magnitude[:, 1], data_nr.bus_magnitude[:, 1];
+        atol = TIGHT_TOLERANCE, rtol = 0)
+    @test isapprox(data_fd.bus_angles[:, 1], data_nr.bus_angles[:, 1];
+        atol = TIGHT_TOLERANCE, rtol = 0)
+end
+
+@testset "FastDecoupled WP-LCC: decoupled + LCC parity vs fixed_jacobian + NR (case5_2_lcc)" begin
+    lcc_raw = joinpath(TEST_DATA_DIR, "case5_2_lcc.raw")
+
+    data_nr = PF.PowerFlowData(ACPowerFlow{NewtonRaphsonACPowerFlow}(), System(lcc_raw))
+    @test solve_power_flow!(data_nr)
+
+    data_fj = PF.PowerFlowData(ACPowerFlow{_fd_solver(:fixed_jacobian)}(), System(lcc_raw))
+    @test solve_power_flow!(data_fj)
+
+    # case5_2_lcc carries a very-low-reactance transformer (x = 1e-4), which makes the B′/B″
+    # decoupling ill-conditioned — pure decoupled converges only at a slow linear rate (the
+    # documented stiff-system limitation; emits the low-reactance warning). Use the robust path
+    # (FD stage → NR handoff) for parity, which converges quickly to the same solution.
+    pf_fd = ACPowerFlow{_fd_solver(:decoupled)}(;
+        solver_settings = Dict{Symbol, Any}(
+            :handoff_solver => NewtonRaphsonACPowerFlow,
+        ))
+    data_fd = PF.PowerFlowData(pf_fd, System(lcc_raw))
+    @test PF.get_lcc_count(data_fd) > 0
+    @test solve_power_flow!(data_fd)
+
+    for ref in (data_nr, data_fj)
+        @test isapprox(data_fd.bus_magnitude[:, 1], ref.bus_magnitude[:, 1];
+            atol = TIGHT_TOLERANCE, rtol = 0)
+        @test isapprox(data_fd.bus_angles[:, 1], ref.bus_angles[:, 1];
+            atol = TIGHT_TOLERANCE, rtol = 0)
     end
 end
 
