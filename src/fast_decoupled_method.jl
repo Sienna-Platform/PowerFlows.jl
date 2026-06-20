@@ -721,7 +721,7 @@ function _get_or_build_fd_cache!(
 )
     key = FDCacheKey(objectid(data.power_network_matrix), scheme, backend_id)
     reused = _reuse_fd_cache(data.solver_cache[], key)
-    reused === nothing || return reused
+    isnothing(reused) || return reused
 
     fd = build_fd_matrices(data, time_step, scheme; linear_solver)   # B′ assembled + factored ONCE
     theta_x_idx = [2 * i for i in fd.pvpq]

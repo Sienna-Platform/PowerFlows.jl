@@ -50,7 +50,7 @@ function _get_or_build_solver_cache!(
     M::SparseMatrixCSC{Float64},
 )
     reused = _reuse_dc_cache(data.solver_cache[], M, backend)
-    reused === nothing || return reused
+    isnothing(reused) || return reused
     cache = make_linear_solver_cache(backend, M)
     full_factor!(cache, M)
     scratch = _make_dc_scratch(data)
