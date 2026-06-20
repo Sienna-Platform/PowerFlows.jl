@@ -102,10 +102,11 @@ end
 """
     _fd_run(variant::FDVariant, scheme::FDScheme, pf, data, time_step; kwargs...) -> Bool
 
-Variant dispatch for the FD driver. [`FDDecoupled`](@ref) applies the data-dependent LCC guard
-(its B′/B″ half-iterations don't span the LCC state) and runs the polar B′/B″ loop with `scheme`;
-[`FDFixedJacobian`](@ref) runs the frozen-Jacobian loop (scheme unused). Each inner loop absorbs
-any extra safeguard kwargs via its own `_ignored...`.
+Variant dispatch for the FD driver. [`FDDecoupled`](@ref) runs the polar B′/B″ loop with `scheme`;
+when LCC HVDC is present it uses the sequential AC–DC method (the B′/B″ half-steps solve the AC
+network while a per-LCC converter sub-solve refreshes the DC boundary conditions each cycle — see
+[`_fd_converter_substep!`](@ref)). [`FDFixedJacobian`](@ref) runs the frozen-Jacobian loop (scheme
+unused). Each inner loop absorbs any extra safeguard kwargs via its own `_ignored...`.
 """
 function _fd_run(
     ::FDDecoupled,
@@ -115,17 +116,6 @@ function _fd_run(
     time_step::Int64;
     kwargs...,
 )
-    if get_lcc_count(data) > 0
-        throw(
-            ArgumentError(
-                "FastDecoupled FDDecoupled does not support LCC HVDC " *
-                "(get_lcc_count(data) = $(get_lcc_count(data))): the B′/B″ half-iterations " *
-                "do not span the LCC state variables. Use FastDecoupledACPowerFlow{FDFixedJacobian}, " *
-                "a rectangular/mixed FD formulation, or NewtonRaphsonACPowerFlow / " *
-                "TrustRegionACPowerFlow.",
-            ),
-        )
-    end
     return _fd_decoupled_power_flow(pf, data, time_step, scheme; kwargs...)
 end
 
@@ -567,7 +557,7 @@ end
 # =====================================================================================
 # Polar :decoupled (B′/B″ half-iteration) loop — WP3.
 #
-# Classic Stott–Alsac / van Amerongen fast decoupled power flow: solve the active-power
+# Classic fast decoupled power flow: solve the active-power
 # mismatch against the constant B′ (P-θ half-step), re-evaluate the residual, then the
 # reactive-power mismatch against the constant B″ (Q-V half-step), re-evaluate again. The
 # REF/PV "explicit" residual rows (slack P, REF Q, PV Q) are closed-form given (V, θ) and are
@@ -828,12 +818,34 @@ function _sync_explicit_state!(
 end
 
 """
+    _fd_lcc_substep!(sv, residual, data, time_step)
+
+Sequential AC–DC step for the polar `:decoupled` loop when LCC HVDC is present: solve each LCC's
+converter control equations for the current AC voltages ([`_fd_converter_substep!`](@ref)), write
+the converged converter states back into the trailing `4·n_lcc` slots of `sv.x`
+([`_write_lcc_state_to_x!`](@ref)), then re-sync explicit rows and re-evaluate the residual so `Rv`
+(AC rows + LCC tail rows) reflects the refreshed DC boundary conditions.
+"""
+function _fd_lcc_substep!(
+    sv::StateVectorCache,
+    residual::ACPowerFlowResidual,
+    data::ACPowerFlowData,
+    time_step::Int64,
+)
+    _fd_converter_substep!(data, time_step)
+    _write_lcc_state_to_x!(sv.x, data, time_step)
+    _sync_explicit_state!(sv, residual, time_step)
+    residual(sv.x, time_step)
+    return
+end
+
+"""
     _fd_decoupled_power_flow(pf, data, time_step; ...) -> (converged::Bool, iters::Int)
 
 Polar classic fast-decoupled (B′/B″ half-iteration) FD loop. Builds the constant B′/B″ matrices
 once (factor-once via `build_fd_matrices`/`extract_bpp`), then iterates strict P-θ → Q-V
-half-steps with an exact residual re-evaluation after EACH half-step (van Amerongen: the
-mid-cycle refresh prevents convergence cycling — do NOT skip it). Shared WP2 safeguards
+half-steps with an exact residual re-evaluation after EACH half-step (the mid-cycle refresh
+prevents convergence cycling — do NOT skip it). Shared WP2 safeguards
 (non-divergent backtracking with best-state restore, BLOWUP, DVLIM, V≈0 abort) protect the
 documented FD failure modes. The FD stage converges on `‖Rv‖∞ < stage_tol`, where `stage_tol`
 is the real `tol` for pure FD (`handoff_solver === nothing`) or the loose `handoff_tol` when an
@@ -924,10 +936,17 @@ function _fd_decoupled_power_flow(
     vm_pq = view(Vm, bpp.pq)
 
     sv = StateVectorCache(x0_init, residual.Rv)
+    # Sequential AC–DC method: with LCC present the B′/B″ half-steps solve the AC network while a
+    # per-LCC converter sub-solve refreshes the DC boundary conditions each cycle.
+    # `n_lcc == 0` ⇒ the sub-solve is never invoked (pure-AC path unchanged).
+    n_lcc = get_lcc_count(data)
 
     # Sync explicit rows, then evaluate the residual so Rv / data reflect (V, θ, explicit P/Q).
     _sync_explicit_state!(sv, residual, time_step)
     residual(sv.x, time_step)
+    # Make the converter state consistent with the start voltages so the LCC tail residuals enter
+    # the loop already small (they are refreshed each cycle after the Q half-step).
+    n_lcc > 0 && _fd_lcc_substep!(sv, residual, data, time_step)
     ss = dot(residual.Rv, residual.Rv)
     sg = FDSafeguardState(sv.x, ss)
     converged = norm(residual.Rv, Inf) < stage_tol
@@ -995,6 +1014,13 @@ function _fd_decoupled_power_flow(
             end
         end
 
+        # Sequential AC–DC converter sub-solve: refresh the DC boundary conditions for the just
+        # updated voltages and re-evaluate the residual before the convergence / backtracking checks
+        # (so `ss` and `‖Rv‖∞` see the converged converter tail rows).
+        if !diverged && n_lcc > 0
+            _fd_lcc_substep!(sv, residual, data, time_step)
+        end
+
         ss = dot(residual.Rv, residual.Rv)
 
         # V≈0 abort.
@@ -1029,6 +1055,12 @@ function _fd_decoupled_power_flow(
                 @inbounds @. sv.x = sg.cycle_x + factor * Δcycle
                 _sync_explicit_state!(sv, residual, time_step)
                 residual(sv.x, time_step)
+                # Re-solve the LCC converters at the rescaled voltages so the tail rows stay zeroed
+                # during backtracking — otherwise the halved step un-solves the converter state and
+                # the tail mismatch dominates `ss`, defeating the line search.
+                if n_lcc > 0
+                    _fd_lcc_substep!(sv, residual, data, time_step)
+                end
                 ss = dot(residual.Rv, residual.Rv)
                 _fd_update_best!(sg, sv.x, ss)
                 if ss < fd_ndvfct * sg.prev_ss && !_fd_vm_abort(Vm, fd_vm_abort)

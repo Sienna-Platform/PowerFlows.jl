@@ -145,7 +145,7 @@ struct RobustHomotopyPowerFlow <: ACPowerFlowSolverType end
 solver so the iteration scheme is selected by multiple dispatch rather than a runtime flag."""
 abstract type FDVariant end
 
-"""Classic fast-decoupled variant: constant B′/B″ half-iterations (Stott–Alsac / van Amerongen).
+"""Classic fast-decoupled variant: constant B′/B″ half-iterations.
 Polar formulation only. See [`FDVariant`](@ref), [`FastDecoupledACPowerFlow`](@ref)."""
 struct FDDecoupled <: FDVariant end
 
@@ -160,18 +160,18 @@ struct FDFixedJacobian <: FDVariant end
 [`FDDecoupled`](@ref)."""
 abstract type FDScheme end
 
-"""Stott–Alsac `XB` scheme: B′ neglects branch resistance, B″ keeps it. See [`FDScheme`](@ref)."""
+"""`XB` scheme: B′ neglects branch resistance, B″ keeps it. See [`FDScheme`](@ref)."""
 struct FDSchemeXB <: FDScheme end
 
-"""van Amerongen `BX` scheme: B″ neglects branch resistance, B′ keeps it. See [`FDScheme`](@ref)."""
+"""`BX` scheme: B″ neglects branch resistance, B′ keeps it. See [`FDScheme`](@ref)."""
 struct FDSchemeBX <: FDScheme end
 
 """
     FastDecoupledACPowerFlow{V<:FDVariant, S<:FDScheme} <: ACPowerFlowSolverType
     FastDecoupledACPowerFlow  (bare: per-formulation defaults)
 
-An [`ACPowerFlowSolverType`](@ref) implementing fixed-slope decoupled Newton-Raphson; the
-fast decoupled power flow of Stott & Alsac (1974) / van Amerongen (1989). Constant approximate
+An [`ACPowerFlowSolverType`](@ref) implementing fixed-slope decoupled Newton-Raphson (the classic
+fast decoupled power flow). Constant approximate
 Jacobian factor(s) are built once and reused across all iterations *and* time steps, while the
 exact mismatches are evaluated every iteration. This trades the quadratic convergence rate of
 Newton-Raphson for a linear rate at a fraction of the per-iteration cost — ideal for repeated
@@ -185,8 +185,8 @@ Works with all three AC formulations ([`ACPolarPowerFlow`](@ref),
     [`FDFixedJacobian`](@ref) (frozen full-formulation Jacobian; all formulations). When the bare
     `FastDecoupledACPowerFlow` is used, the variant defaults per formulation: `FDDecoupled` for
     polar, `FDFixedJacobian` for rectangular/mixed.
-- `S <: FDScheme`: B′/B″ scheme, [`FDSchemeXB`](@ref) (Stott–Alsac; default) or
-    [`FDSchemeBX`](@ref) (van Amerongen). Only meaningful for the [`FDDecoupled`](@ref) variant.
+- `S <: FDScheme`: B′/B″ scheme, [`FDSchemeXB`](@ref) (default) or [`FDSchemeBX`](@ref). Only
+    meaningful for the [`FDDecoupled`](@ref) variant.
 
 ```julia
 ACPowerFlow{FastDecoupledACPowerFlow}()                                   # per-formulation defaults
@@ -200,14 +200,20 @@ ACRectangularPowerFlow{FastDecoupledACPowerFlow{FDFixedJacobian, FDSchemeXB}}()
     refinement to `tol`.
 - `handoff_tol::Float64`: FD-stage exit ∞-norm when a handoff solver is configured.
 
-# References
-- B. Stott, O. Alsac, "Fast decoupled load flow", IEEE Trans. PAS-93(3), 1974.
-- R.A.M. van Amerongen, "A general-purpose version of the fast decoupled load flow",
-    IEEE Trans. Power Systems 4(2):760-770, 1989.
-
 See also: [`ACPowerFlow`](@ref), [`NewtonRaphsonACPowerFlow`](@ref).
 """
 struct FastDecoupledACPowerFlow{V <: FDVariant, S <: FDScheme} <: ACPowerFlowSolverType end
+
+"""Alias for the classic decoupled fast power flow with the XB scheme,
+[`FastDecoupledACPowerFlow`](@ref)`{`[`FDDecoupled`](@ref)`, `[`FDSchemeXB`](@ref)`}`. Use as a
+solver type parameter, e.g. `ACPowerFlow{FastDecoupledXB}()`."""
+const FastDecoupledXB = FastDecoupledACPowerFlow{FDDecoupled, FDSchemeXB}
+
+"""Alias for the frozen-Jacobian fast decoupled power flow,
+[`FastDecoupledACPowerFlow`](@ref)`{`[`FDFixedJacobian`](@ref)`, `[`FDSchemeXB`](@ref)`}` (the
+scheme is nominal — the fixed-Jacobian variant builds no B′/B″). Works on all three formulations,
+e.g. `ACRectangularPowerFlow{FastDecoupledFixed}()`."""
+const FastDecoupledFixed = FastDecoupledACPowerFlow{FDFixedJacobian, FDSchemeXB}
 
 """
     ACPowerFlow{ACSolver}(; kwargs...) where {ACSolver <: ACPowerFlowSolverType}

@@ -14,6 +14,8 @@ export FDFixedJacobian
 export FDScheme
 export FDSchemeXB
 export FDSchemeBX
+export FastDecoupledXB
+export FastDecoupledFixed
 export ACPolarPowerFlow
 export ACRectangularPowerFlow
 export ACMixedPowerFlow

@@ -76,8 +76,7 @@ Container for the constant fast-decoupled matrices for one `(data, scheme)`. Par
 scheme type `S` so `scheme` is a concretely-typed field.
 
 # Fields
-- `scheme::S`: the B′/B″ scheme instance, [`FDSchemeXB`](@ref) (Stott–Alsac) or [`FDSchemeBX`](@ref)
-  (van Amerongen).
+- `scheme::S`: the B′/B″ scheme instance, [`FDSchemeXB`](@ref) or [`FDSchemeBX`](@ref).
 - `recovered::FDRecoveredParams`: cached arc/shunt recovery (shared by B′ and B″_full).
 - `pvpq::Vector{Int}`: non-REF bus indices (rows/cols of B′), sorted.
 - `bp::SparseMatrixCSC{Float64, J_INDEX_TYPE}`: B′ over `pvpq` (assembled; symmetric except with
@@ -352,6 +351,31 @@ end
 # -------------------------------------------------------------------------------------------
 
 """
+    _warn_low_reactance(p::FDRecoveredParams)
+
+Warn (once) if any recovered branch reactance `|x| = |imag(1/ys)|` is below
+[`FD_LOW_REACTANCE_WARNING`](@ref): such super-low reactances make the B′/B″ decoupling
+ill-conditioned, so the `:decoupled` variant converges only at a slow linear rate. The
+`:fixed_jacobian` variant and the Newton family are unaffected.
+"""
+function _warn_low_reactance(p::FDRecoveredParams)
+    min_x = Inf
+    @inbounds for ys in p.ys
+        x = abs(imag(1 / ys))
+        x < min_x && (min_x = x)
+    end
+    if min_x < FD_LOW_REACTANCE_WARNING
+        @warn "FastDecoupled: smallest branch reactance |x| = $(min_x) pu is below " *
+              "$(FD_LOW_REACTANCE_WARNING) pu. Super-low reactances make the B′/B″ decoupling " *
+              "ill-conditioned, so the :decoupled variant may converge slowly or hit the " *
+              "iteration cap. Use a handoff_solver (NewtonRaphsonACPowerFlow / " *
+              "TrustRegionACPowerFlow / LevenbergMarquardtACPowerFlow) or " *
+              "FastDecoupledACPowerFlow{FDFixedJacobian}." maxlog = 1
+    end
+    return
+end
+
+"""
     build_fd_matrices(data::ACPowerFlowData, time_step::Int64, scheme::FDScheme) -> FDMatrices
 
 Build the constant fast-decoupled matrices for the given `scheme` ([`FDSchemeXB`](@ref) or
@@ -372,6 +396,7 @@ function build_fd_matrices(
     linear_solver = nothing,
 )
     recovered = _recover_arc_params(data)
+    _warn_low_reactance(recovered)
     ref, pv, pq = bus_type_idx(data, time_step)
     pvpq = sort(vcat(pv, pq))
 
