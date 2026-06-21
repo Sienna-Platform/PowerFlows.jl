@@ -813,6 +813,7 @@ function _finalize_power_flow(
     @info("Final residual size: $(norm(residual.Rv, 2)) L2, $(norm(residual.Rv, Inf)) L∞.")
     if converged
         @info("The $solver_name solver converged after $i iterations.")
+        _warn_small_lcc_angles(data, time_step)
         if get_calculate_loss_factors(data)
             _calculate_loss_factors(data, Jv, time_step)
         end
@@ -823,6 +824,44 @@ function _finalize_power_flow(
     end
     @error("The $solver_name solver failed to converge after $i iterations.")
     return false
+end
+
+"""Warn if any LCC's converged thyristor angle lies outside the physical
+operating window `(LCC_SMALL_ANGLE_THRESHOLD, π/2 − LCC_SMALL_ANGLE_THRESHOLD)`
+(≈ 5° to 85° by default). Real PSS/E LCCs operate well inside this range
+(rectifier α_r ≈ 10-20°, inverter γ_i ≈ 14-18°). Either extreme sits near
+an `arccos` clamp boundary where `Q_s`'s second derivatives are singular
+(`1/sin³ϕ`): low α puts the rectifier-side `u_r → +1` or the inverter-side
+`u_i → −1`; high α (approaching π/2) puts them on the other boundary, and
+beyond π/2 the converter's rectifying/inverting role would reverse.
+Hessian-based solvers (LM, RobustHomotopy) degrade in either regime, and
+even direct Newton hitting one of these bounds is a sign the input data
+is non-physical."""
+function _warn_small_lcc_angles(data::ACPowerFlowData, time_step::Int)
+    n_lcc = size(data.lcc.p_set, 1)
+    n_lcc == 0 && return
+    lo = LCC_SMALL_ANGLE_THRESHOLD
+    hi = π / 2 - LCC_SMALL_ANGLE_THRESHOLD
+    for i in 1:n_lcc
+        α_r = data.lcc.rectifier.thyristor_angle[i, time_step]
+        α_i = data.lcc.inverter.thyristor_angle[i, time_step]
+        out_of_range = α_r < lo || α_r > hi || α_i < lo || α_i > hi
+        if out_of_range
+            (fb, tb) = data.lcc.arcs[i]
+            @warn(
+                "LCC $i (arc $(fb) → $(tb)): converged thyristor angles " *
+                "α_r = $(rad2deg(α_r))°, α_i = $(rad2deg(α_i))° — one or " *
+                "both outside the physical-realism window " *
+                "($(rad2deg(lo))°, $(rad2deg(hi))°). Typical PSS/E LCCs " *
+                "operate at α_r ≈ 10-20° and γ_i ≈ 14-18°. Values near " *
+                "0° or π/2 sit at the LCC arccos clamp boundary " *
+                "(singular Q_s Hessian). Check the configured " *
+                "rectifier_delay_angle_limits and " *
+                "inverter_extinction_angle_limits.", maxlog = PF_MAX_LOG,
+            )
+        end
+    end
+    return
 end
 
 """Formulation-specific post-Newton step. Polar needs nothing; the rectangular

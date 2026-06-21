@@ -213,6 +213,88 @@ function _calculate_dQ_dα_lcc(
 end
 
 """
+    _d2P_lcc(V, t, α, I_dc, σ) -> NamedTuple
+
+Second partials of the LCC active-power contribution `P_s` (rectifier or
+inverter side) with respect to its three state variables `(V_s, t_s,
+α_s)`. `σ = +1` for the rectifier, `σ = -1` for the inverter; this
+encodes the side convention `P_r = K·I·(V t cos α − β)` vs `P_i = −K·I·(V t
+cos α + β)`. `I_dc` is the positive DC current magnitude.
+
+`P_s` is linear in the bilinear coordinate `V_s t_s` with an `α_s`-dependent
+coefficient, so four of the six second partials are simple trig and two
+are identically zero. The closed forms hold across both the interior and
+clamp regimes (no `sin ϕ` denominators appear).
+"""
+function _d2P_lcc(
+    V::Float64,
+    t::Float64,
+    α::Float64,
+    I_dc::Float64,
+    σ::Int,
+)
+    KI = SQRT6_DIV_PI * I_dc
+    cα = cos(α)
+    sα = sin(α)
+    return (
+        VV = 0.0,
+        tt = 0.0,
+        Vt = σ * KI * cα,
+        Vα = -σ * KI * t * sα,
+        tα = -σ * KI * V * sα,
+        αα = -σ * KI * V * t * cα,
+    )
+end
+
+"""
+    _d2Q_lcc(V, t, α, x_t, I_dc, ϕ, σ) -> NamedTuple
+
+Second partials of the LCC reactive-power contribution `Q_s = V t K I sin ϕ_s`
+with respect to `(V_s, t_s, α_s)`. `σ = +1` for the rectifier, `σ = -1`
+for the inverter. `I_dc > 0`, `x_t > 0`, and `ϕ` is the side-specific
+phase angle (so `cos ϕ_s` already carries the side sign).
+
+Uses the `sin ϕ → 0` clamp guard: when `sin ϕ` falls below
+`LCC_sinϕ_TOLERANCE`, returns all-zero second partials, mirroring the
+existing `_calculate_dQ_*_lcc` helpers. In that regime `Q_s ≈ 0` and the
+analytic formulas (which contain `1/sin³ϕ` factors) are singular but the
+residual sees no `Q_s` dependence locally.
+"""
+function _d2Q_lcc(
+    V::Float64,
+    t::Float64,
+    α::Float64,
+    x_t::Float64,
+    I_dc::Float64,
+    ϕ::Float64,
+    σ::Int,
+)
+    S = sin(ϕ)
+    if S < LCC_sinϕ_TOLERANCE
+        return (VV = 0.0, tt = 0.0, Vt = 0.0, Vα = 0.0, tα = 0.0, αα = 0.0)
+    end
+    KI = SQRT6_DIV_PI * I_dc
+    β = x_t * I_dc / sqrt(2)
+    β² = β * β
+    C = cos(ϕ)
+    S² = S * S
+    S³ = S² * S
+    sα = sin(α)
+    cα = cos(α)
+    V² = V * V
+    t² = t * t
+    Vt = V * t
+    return (
+        VV = -KI * β² / (V² * V * t * S³),
+        tt = -KI * β² / (V * t² * t * S³),
+        Vt = KI * (S - C * β / (Vt * S) - β² / (V² * t² * S³)),
+        Vα = σ * KI * sα * (t * C / S + β / (V * S³)),
+        tα = σ * KI * sα * (V * C / S + β / (t * S³)),
+        αα = -KI * Vt * sα * sα / S³ + σ * KI * Vt * C * cα / S,
+    )
+end
+
+"""
     _update_ybus_lcc!(data, time_step)
 
 Recompute `data.lcc.rectifier.phi`, `data.lcc.inverter.phi`, and
