@@ -1114,6 +1114,61 @@ end
     @test length(cache.pq_data) == distinct_sigs
 end
 
+@testset "FastDecoupled WP5b: multi-period :fixed_jacobian (T7 fixed)" begin
+    # Multi-period correctness for the frozen-Jacobian variant (mirrors the :decoupled T7 above).
+    # The fixed-Jacobian path factors the frozen J per driver invocation (it does not populate the
+    # B′/B″ FastDecoupledCache), so this asserts the solve — every step converges and matches NR —
+    # rather than the decoupled cache counters.
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    time_steps = 24
+
+    pf_fd = ACPowerFlow{_fd_solver(:fixed_jacobian)}(; time_steps = time_steps)
+    data_fd = PowerFlowData(pf_fd, sys)
+    prepare_ts_data!(data_fd, time_steps)
+    @test solve_power_flow!(data_fd)
+    @test all(data_fd.converged)
+
+    # NR reference (same network) to validate the fixed-Jacobian solution per step.
+    pf_nr = ACPowerFlow{NewtonRaphsonACPowerFlow}(; time_steps = time_steps)
+    data_nr = PowerFlowData(pf_nr, sys)
+    prepare_ts_data!(data_nr, time_steps)
+    @test solve_power_flow!(data_nr)
+    @test isapprox(data_fd.bus_magnitude, data_nr.bus_magnitude; atol = TIGHT_TOLERANCE)
+    @test isapprox(data_fd.bus_angles, data_nr.bus_angles; atol = TIGHT_TOLERANCE)
+end
+
+@testset "FastDecoupled WP5b: multi-period BX scheme" begin
+    # Same 24-step c_sys14 as the :decoupled (XB) T7 above, but with the BX scheme — confirms the
+    # factor-once multi-period caching is scheme-agnostic and BX matches NR across all steps.
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    time_steps = 24
+    bx_solver = PF.FastDecoupledACPowerFlow{PF.FDDecoupled, PF.FDSchemeBX}
+
+    pf_fd = ACPowerFlow{bx_solver}(; time_steps = time_steps)
+    data_fd = PowerFlowData(pf_fd, sys)
+    prepare_ts_data!(data_fd, time_steps)
+    @test solve_power_flow!(data_fd)
+    @test all(data_fd.converged)
+
+    pf_nr = ACPowerFlow{NewtonRaphsonACPowerFlow}(; time_steps = time_steps)
+    data_nr = PowerFlowData(pf_nr, sys)
+    prepare_ts_data!(data_nr, time_steps)
+    @test solve_power_flow!(data_nr)
+    @test isapprox(data_fd.bus_magnitude, data_nr.bus_magnitude; atol = TIGHT_TOLERANCE)
+    @test isapprox(data_fd.bus_angles, data_nr.bus_angles; atol = TIGHT_TOLERANCE)
+
+    # Factor-once caching holds for the BX scheme too; the cache key records the BX scheme.
+    cache = _fd_cache(data_fd)
+    @test cache !== nothing
+    @test cache.key.scheme == PF.FDSchemeBX()
+    @test cache.bp_factor_count == 1
+    distinct_sigs =
+        length(unique(hash(view(data_fd.bus_type, :, t)) for t in 1:time_steps))
+    @test distinct_sigs == 1
+    @test cache.bpp_factor_count == distinct_sigs
+    @test length(cache.pq_data) == distinct_sigs
+end
+
 @testset "FastDecoupled WP5b: Q-limit retries reuse B′ (T5 caching)" begin
     # c_sys14 with PV→PQ Q-limit switching: the `_ac_power_flow` outer loop re-invokes the FD
     # driver from scratch after switching Bus8 PV→PQ. B′ is restricted to the non-REF set
@@ -1136,6 +1191,48 @@ end
     # PQ signature seen, and the dict holds exactly that many entries (no redundant refactor).
     @test cache.bpp_factor_count >= 1
     @test cache.bpp_factor_count == length(cache.pq_data)
+end
+
+@testset "FastDecoupled WP5b: multi-period varying PQ signatures (multiple B″ refactors)" begin
+    # 24-step c_sys14 with Q-limit enforcement and time-varying active load: the binding generator
+    # hits its reactive limit in some steps but not others, so the PQ set — and thus the B″
+    # signature — varies across the horizon. Exercises the cache's multi-signature path end-to-end.
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    set_units_base_system!(sys, UnitSystem.SYSTEM_BASE)
+    time_steps = 24
+
+    pf_fd = ACPowerFlow{_fd_solver(:decoupled)}(;
+        time_steps = time_steps,
+        check_reactive_power_limits = true,
+        correct_bustypes = true)
+    data_fd = PowerFlowData(pf_fd, sys)
+    prepare_ts_data!(data_fd, time_steps)
+    @test solve_power_flow!(data_fd)
+    @test all(data_fd.converged)
+
+    # NR reference: same multi-period setup, same limit enforcement.
+    pf_nr = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+        time_steps = time_steps,
+        check_reactive_power_limits = true,
+        correct_bustypes = true)
+    data_nr = PowerFlowData(pf_nr, sys)
+    prepare_ts_data!(data_nr, time_steps)
+    @test solve_power_flow!(data_nr)
+    @test isapprox(data_fd.bus_magnitude, data_nr.bus_magnitude; atol = TIGHT_TOLERANCE)
+    @test isapprox(data_fd.bus_angles, data_nr.bus_angles; atol = TIGHT_TOLERANCE)
+
+    cache = _fd_cache(data_fd)
+    @test cache !== nothing
+    # The horizon really spans more than one PQ signature (the limit binds in some steps only).
+    distinct_sigs =
+        length(unique(hash(view(data_fd.bus_type, :, t)) for t in 1:time_steps))
+    @test distinct_sigs >= 2
+    # B′ is invariant to PV↔PQ switching (pvpq = all non-REF) ⇒ factored exactly once.
+    @test cache.bp_factor_count == 1
+    # B″ is factored once per DISTINCT signature seen (including intermediate switching states),
+    # every one cached (no redundant refactor), and ≥2 B″ factorizations actually occur.
+    @test cache.bpp_factor_count == length(cache.pq_data)
+    @test cache.bpp_factor_count >= 2
 end
 
 @testset "FastDecoupled WP5b: cache invalidation & loud collision" begin
