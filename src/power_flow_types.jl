@@ -246,7 +246,9 @@ with the specified solver type.
     Default is `false`.
 - `skip_redistribution::Bool`: Whether to skip slack redistribution. Default is `false`.
 - `network_reductions::Vector{PNM.NetworkReduction}`: Network reductions to apply.
-    Default is an empty vector.
+    Default is an empty vector. A `PNM.ZeroImpedanceBranchReduction` placed here is routed to
+    PNM's dedicated zero-impedance step; set its `resistance_tolerance` to also merge
+    near-zero-impedance branches that carry a tiny nonzero resistance (PSS/E-style).
 - `time_steps::Int`: Number of time steps to solve. Default is `1`.
 - `time_step_names::Vector{String}`: Names for each time step. Default is an empty vector.
 - `correct_bustypes::Bool`: Whether to automatically correct bus types based on available generation.
@@ -650,7 +652,9 @@ or section 4 of the [MATPOWER docs](https://matpower.org/docs/MATPOWER-manual-4.
 - `exporter::Union{Nothing, PowerFlowEvaluationModel}`: An optional exporter for the power flow results.
     If not `nothing`, it should be a [`PSSEExportPowerFlow`](@ref). Default is `nothing`.
 - `network_reductions::Vector{PNM.NetworkReduction}`: Network reductions to apply.
-    Default is an empty vector.
+    Default is an empty vector. A `PNM.ZeroImpedanceBranchReduction` placed here is routed to
+    PNM's dedicated zero-impedance step; set its `resistance_tolerance` to also merge
+    near-zero-impedance branches that carry a tiny nonzero resistance (PSS/E-style).
 - `time_steps::Int`: Number of time steps to solve. Default is `1`.
 - `time_step_names::Vector{String}`: Names for each time step. Default is an empty vector.
 - `correct_bustypes::Bool`: Whether to automatically correct bus types based on available generation.
@@ -689,7 +693,9 @@ for details.
 - `calculate_loss_factors::Bool`: Whether to calculate DC loss factors after solving.
     Uses the approximation `∂Loss/∂P = 2 · PTDFᵀ · diag(R) · PTDF · P`. Default is `false`.
 - `network_reductions::Vector{PNM.NetworkReduction}`: Network reductions to apply.
-    Default is an empty vector.
+    Default is an empty vector. A `PNM.ZeroImpedanceBranchReduction` placed here is routed to
+    PNM's dedicated zero-impedance step; set its `resistance_tolerance` to also merge
+    near-zero-impedance branches that carry a tiny nonzero resistance (PSS/E-style).
 - `time_steps::Int`: Number of time steps to solve. Default is `1`.
 - `time_step_names::Vector{String}`: Names for each time step. Default is an empty vector.
 - `correct_bustypes::Bool`: Whether to automatically correct bus types based on available generation.
@@ -720,7 +726,9 @@ where creating and storing the full PTDF matrix would be infeasible or slow. See
 - `calculate_loss_factors::Bool`: Whether to calculate DC loss factors after solving.
     Uses the approximation `∂Loss/∂P = 2 · PTDFᵀ · diag(R) · PTDF · P`. Default is `false`.
 - `network_reductions::Vector{PNM.NetworkReduction}`: Network reductions to apply.
-    Default is an empty vector.
+    Default is an empty vector. A `PNM.ZeroImpedanceBranchReduction` placed here is routed to
+    PNM's dedicated zero-impedance step; set its `resistance_tolerance` to also merge
+    near-zero-impedance branches that carry a tiny nonzero resistance (PSS/E-style).
 - `time_steps::Int`: Number of time steps to solve. Default is `1`.
 - `time_step_names::Vector{String}`: Names for each time step. Default is an empty vector.
 - `correct_bustypes::Bool`: Whether to automatically correct bus types based on available generation.

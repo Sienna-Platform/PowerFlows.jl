@@ -553,6 +553,25 @@ function _signed_arc_bus_incidence(ybus::PNM.Ybus, metadata_matrix::PNM.PowerNet
     return inc.data[arc_perm, bus_perm]
 end
 
+# PNM applies the zero-impedance branch reduction through a dedicated `zero_impedance_reduction`
+# kwarg (and rejects one passed in `network_reductions`). A `ZeroImpedanceBranchReduction` is still a
+# `NetworkReduction`, so PowerFlows lets users put it in the usual `network_reductions` field and
+# routes it to that kwarg here. Dispatch (not `isa`) classifies the entry.
+_is_zero_impedance_reduction(::PNM.ZeroImpedanceBranchReduction) = true
+_is_zero_impedance_reduction(::PNM.NetworkReduction) = false
+
+# Split the user's reductions into (everything else, the zero-impedance reduction). When the user
+# supplied none, return PNM's default `ZeroImpedanceBranchReduction()` so the always-applied
+# zero-impedance step keeps its default parameters.
+function _route_zero_impedance_reduction(reductions::Vector{PNM.NetworkReduction})
+    idx = findfirst(_is_zero_impedance_reduction, reductions)
+    isnothing(idx) && return reductions, PNM.ZeroImpedanceBranchReduction()
+    others = PNM.NetworkReduction[
+        r for r in reductions if !_is_zero_impedance_reduction(r)
+    ]
+    return others, reductions[idx]
+end
+
 """
     PowerFlowData(
         pf::AbstractACPowerFlow{<:ACPowerFlowSolverType},
@@ -584,11 +603,14 @@ function PowerFlowData(
 )
     network_reductions = get_network_reductions(pf)
     network_reduction_message(network_reductions, pf)
+    reductions, zero_impedance_reduction =
+        _route_zero_impedance_reduction(network_reductions)
     power_network_matrix = PNM.Ybus(
         sys;
-        network_reductions = network_reductions,
+        network_reductions = reductions,
         make_arc_admittance_matrices = true,
         include_constant_impedance_loads = false,
+        zero_impedance_reduction = zero_impedance_reduction,
     )
     neighbors = _calculate_neighbors(power_network_matrix)
 
@@ -638,10 +660,13 @@ function PowerFlowData(
 )
     network_reductions = get_network_reductions(pf)
     network_reduction_message(network_reductions, pf)
+    reductions, zero_impedance_reduction =
+        _route_zero_impedance_reduction(network_reductions)
     ybus = PNM.Ybus(
         sys;
-        network_reductions = network_reductions,
+        network_reductions = reductions,
         make_arc_admittance_matrices = pf.lossy_flows,
+        zero_impedance_reduction = zero_impedance_reduction,
     )
     power_network_matrix = PNM.ABA_Matrix(ybus; factorize = true)
     aux_network_matrix = PNM.BA_Matrix(ybus)
@@ -705,8 +730,12 @@ function PowerFlowData(
 )
     network_reductions = get_network_reductions(pf)
     network_reduction_message(network_reductions, pf)
+    reductions, zero_impedance_reduction =
+        _route_zero_impedance_reduction(network_reductions)
     # get the network matrices
-    ybus = PNM.Ybus(sys; network_reductions = network_reductions)
+    ybus = PNM.Ybus(sys;
+        network_reductions = reductions,
+        zero_impedance_reduction = zero_impedance_reduction)
     power_network_matrix = PNM.PTDF(ybus)
     aux_network_matrix = PNM.ABA_Matrix(ybus; factorize = true)
     # `get_arc_axis(data)`/`get_bus_lookup(data)` read the PTDF (metadata) matrix for this method.
@@ -753,9 +782,13 @@ function PowerFlowData(
 )
     network_reductions = get_network_reductions(pf)
     network_reduction_message(network_reductions, pf)
+    reductions, zero_impedance_reduction =
+        _route_zero_impedance_reduction(network_reductions)
 
     # get the network matrices
-    ybus = PNM.Ybus(sys; network_reductions = network_reductions)
+    ybus = PNM.Ybus(sys;
+        network_reductions = reductions,
+        zero_impedance_reduction = zero_impedance_reduction)
     power_network_matrix = PNM.VirtualPTDF(ybus) # evaluates an empty virtual PTDF
     aux_network_matrix = PNM.ABA_Matrix(ybus; factorize = true)
 
