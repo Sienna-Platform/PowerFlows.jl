@@ -19,10 +19,14 @@ function adjust_power_injections_for_lccs!(power_injections::Matrix{Float64},
     return
 end
 
-# DC/PTDF persistent cache stored in `data.solver_cache[]`. The factored network matrix `matrix`
-# and the `backend` form the invalidation key (rebuild when either changes); `cache` is the actual
-# factorization and `scratch` the per-solve buffers. Subtypes `SolverCache` so it is type-disjoint
-# from the AC `FastDecoupledCache` that shares the same slot (no sentinel tag needed).
+"""
+    DCSolverCache{M, B, C, S} <: SolverCache
+
+DC/PTDF persistent cache stored in `data.solver_cache[]`. The factored network matrix `matrix`
+and the `backend` form the invalidation key (rebuild when either changes); `cache` is the actual
+factorization and `scratch` the per-solve buffers. Subtypes [`SolverCache`](@ref) so it is
+type-disjoint from the AC `FastDecoupledCache` that shares the same slot (no sentinel tag needed).
+"""
 struct DCSolverCache{M, B, C, S} <: SolverCache
     matrix::M
     backend::B
