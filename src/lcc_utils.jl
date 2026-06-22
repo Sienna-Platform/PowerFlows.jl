@@ -345,6 +345,12 @@ function _set_lcc_tail_residuals!(
     return
 end
 
+"""
+    _write_lcc_tail!(F, data, base_offset, time_step, i, fb, tb, Vm_fb, Vm_tb)
+
+Write LCC `i`'s four tail residual rows (P-setpoint, DC-line balance, rectifier α-limit,
+inverter α-limit) into `F`.
+"""
 @inline function _write_lcc_tail!(
     F::AbstractVector{Float64},
     data::PowerFlowData,

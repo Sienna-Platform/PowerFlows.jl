@@ -55,6 +55,9 @@ const DEFAULT_FD_MAX_STEP_HALVINGS = 10 # ≤10 inner mismatch calculations (ste
 const DEFAULT_FD_BLOWUP = 5.0 # largest unscaled per-half-step |Δθ| (rad) / |ΔV/V| abort threshold
 const DEFAULT_FD_DVLIM = 0.99 # uniform ΔV-vector scale-down so largest applied |ΔV| ≤ this, + ΔV/V ≤ −1 guard
 const DEFAULT_FD_VM_ABORT = 0.01 # abort if any bus |V| driven to ≈0
+"""
+Warn-once threshold for branch reactance `|x|` in the fast/fixed-decoupled methods.
+"""
 const FD_LOW_REACTANCE_WARNING = 1e-3 # warn: a branch |x| (pu) below this makes B′/B″ ill-conditioned ⇒ slow :decoupled convergence
 
 const DEFAULT_Δt_k = 0.2
