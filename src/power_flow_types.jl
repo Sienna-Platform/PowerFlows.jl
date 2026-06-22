@@ -21,6 +21,13 @@ current-injection formulation is provided separately. The solver and the
 formulation are orthogonal."""
 abstract type AbstractACPowerFlow{S <: ACPowerFlowSolverType} <: PowerFlowEvaluationModel end
 
+"""An abstract supertype for the persistent per-solve caches stored in
+`PowerFlowData.solver_cache[]`. Concrete subtypes ([`DCSolverCache`](@ref) for the DC/PTDF path,
+`FastDecoupledCache` for the polar fast-decoupled solver) are type-disjoint, so the slot's
+type discriminates which path populated it — no sentinel tag is needed and a cross-use is a plain
+`MethodError` rather than a silent reuse."""
+abstract type SolverCache end
+
 # Centralized so the multi-line warning text can't drift between the two
 # formulation constructors.
 function _validate_slack_distribution_settings(
@@ -41,6 +48,29 @@ function _validate_slack_distribution_settings(
             "headroom (Pmax - Pset) is computed once from system data and applied " *
             "to all time steps. Time-varying active power limits and generator " *
             "setpoints are not supported.",
+        )
+    end
+    return
+end
+
+# The fast-decoupled `FDDecoupled` variant (classic B′/B″ half-iterations) is polar-only — its
+# half-steps don't span the rectangular/mixed state. Rejected at construction on the non-polar
+# formulations so the misconfiguration fails immediately with a descriptive message. `FDDecoupled`
+# and `FastDecoupledACPowerFlow` are defined later in this file; the reference resolves at call time.
+function _reject_fd_decoupled_on_nonpolar(
+    ::Type{ACSolver},
+    formulation::String,
+) where {
+    ACSolver <: ACPowerFlowSolverType,
+}
+    if ACSolver <: FastDecoupledACPowerFlow{FDDecoupled}
+        throw(
+            ArgumentError(
+                "$(ACSolver) is not supported by $(formulation): the FDDecoupled variant " *
+                "(classic B′/B″ half-iterations) is polar-only. Use " *
+                "FastDecoupledACPowerFlow{FDFixedJacobian, …} on this formulation, or run " *
+                "FDDecoupled on ACPolarPowerFlow.",
+            ),
         )
     end
     return
@@ -110,6 +140,81 @@ See also: [`ACPowerFlow`](@ref).
 """
 struct RobustHomotopyPowerFlow <: ACPowerFlowSolverType end
 
+"""Abstract supertype for the [`FastDecoupledACPowerFlow`](@ref) iteration variants
+([`FDDecoupled`](@ref), [`FDFixedJacobian`](@ref)). Carried as the first type parameter of the
+solver so the iteration scheme is selected by multiple dispatch rather than a runtime flag."""
+abstract type FDVariant end
+
+"""Classic fast-decoupled variant: constant B′/B″ half-iterations.
+Polar formulation only. See [`FDVariant`](@ref), [`FastDecoupledACPowerFlow`](@ref)."""
+struct FDDecoupled <: FDVariant end
+
+"""Frozen-Jacobian ("dishonest Newton") variant: the full per-formulation Jacobian is factored
+once at `x0` and reused every iteration. Works with all three AC formulations.
+See [`FDVariant`](@ref), [`FastDecoupledACPowerFlow`](@ref)."""
+struct FDFixedJacobian <: FDVariant end
+
+"""Abstract supertype for the B′/B″ construction scheme of the [`FDDecoupled`](@ref) variant
+([`FDSchemeXB`](@ref), [`FDSchemeBX`](@ref)). Carried as the second type parameter of
+[`FastDecoupledACPowerFlow`](@ref) and dispatched on during matrix assembly. Only meaningful for
+[`FDDecoupled`](@ref)."""
+abstract type FDScheme end
+
+"""`XB` scheme: B′ neglects branch resistance, B″ keeps it. See [`FDScheme`](@ref)."""
+struct FDSchemeXB <: FDScheme end
+
+"""`BX` scheme: B″ neglects branch resistance, B′ keeps it. See [`FDScheme`](@ref)."""
+struct FDSchemeBX <: FDScheme end
+
+"""
+    FastDecoupledACPowerFlow{V<:FDVariant, S<:FDScheme} <: ACPowerFlowSolverType
+    FastDecoupledACPowerFlow  (bare: per-formulation defaults)
+
+An [`ACPowerFlowSolverType`](@ref) implementing fixed-slope decoupled Newton-Raphson (the classic
+fast decoupled power flow). Constant approximate
+Jacobian factor(s) are built once and reused across all iterations *and* time steps, while the
+exact mismatches are evaluated every iteration. This trades the quadratic convergence rate of
+Newton-Raphson for a linear rate at a fraction of the per-iteration cost — ideal for repeated
+solves, contingency screening, and as a cheap initializer for the exact-Newton family.
+
+Works with all three AC formulations ([`ACPolarPowerFlow`](@ref),
+[`ACRectangularPowerFlow`](@ref), [`ACMixedPowerFlow`](@ref)).
+
+# Type parameters (the iteration options)
+- `V <: FDVariant`: [`FDDecoupled`](@ref) (classic B′/B″ half-iterations; polar only) or
+    [`FDFixedJacobian`](@ref) (frozen full-formulation Jacobian; all formulations). When the bare
+    `FastDecoupledACPowerFlow` is used, the variant defaults per formulation: `FDDecoupled` for
+    polar, `FDFixedJacobian` for rectangular/mixed.
+- `S <: FDScheme`: B′/B″ scheme, [`FDSchemeXB`](@ref) (default) or [`FDSchemeBX`](@ref). Only
+    meaningful for the [`FDDecoupled`](@ref) variant.
+
+```julia
+ACPowerFlow{FastDecoupledACPowerFlow}()                                   # per-formulation defaults
+ACPowerFlow{FastDecoupledACPowerFlow{FDDecoupled, FDSchemeBX}}()          # explicit variant + scheme
+ACRectangularPowerFlow{FastDecoupledACPowerFlow{FDFixedJacobian, FDSchemeXB}}()
+```
+
+# Settings (via `solver_settings` and/or call kwargs)
+- `handoff_solver`: `nothing` (pure FD; default) or [`NewtonRaphsonACPowerFlow`](@ref) /
+    [`TrustRegionACPowerFlow`](@ref) / [`LevenbergMarquardtACPowerFlow`](@ref) for final
+    refinement to `tol`.
+- `handoff_tol::Float64`: FD-stage exit ∞-norm when a handoff solver is configured.
+
+See also: [`ACPowerFlow`](@ref), [`NewtonRaphsonACPowerFlow`](@ref).
+"""
+struct FastDecoupledACPowerFlow{V <: FDVariant, S <: FDScheme} <: ACPowerFlowSolverType end
+
+"""Alias for the classic decoupled fast power flow with the XB scheme,
+[`FastDecoupledACPowerFlow`](@ref)`{`[`FDDecoupled`](@ref)`, `[`FDSchemeXB`](@ref)`}`. Use as a
+solver type parameter, e.g. `ACPowerFlow{FastDecoupledXB}()`."""
+const FastDecoupledXB = FastDecoupledACPowerFlow{FDDecoupled, FDSchemeXB}
+
+"""Alias for the frozen-Jacobian fast decoupled power flow,
+[`FastDecoupledACPowerFlow`](@ref)`{`[`FDFixedJacobian`](@ref)`, `[`FDSchemeXB`](@ref)`}` (the
+scheme is nominal — the fixed-Jacobian variant builds no B′/B″). Works on all three formulations,
+e.g. `ACRectangularPowerFlow{FastDecoupledFixed}()`."""
+const FastDecoupledFixed = FastDecoupledACPowerFlow{FDFixedJacobian, FDSchemeXB}
+
 """
     ACPowerFlow{ACSolver}(; kwargs...) where {ACSolver <: ACPowerFlowSolverType}
     ACPowerFlow(; kwargs...)
@@ -141,7 +246,9 @@ with the specified solver type.
     Default is `false`.
 - `skip_redistribution::Bool`: Whether to skip slack redistribution. Default is `false`.
 - `network_reductions::Vector{PNM.NetworkReduction}`: Network reductions to apply.
-    Default is an empty vector.
+    Default is an empty vector. A `PNM.ZeroImpedanceBranchReduction` placed here is routed to
+    PNM's dedicated zero-impedance step; set its `resistance_tolerance` to also merge
+    near-zero-impedance branches that carry a tiny nonzero resistance (PSS/E-style).
 - `time_steps::Int`: Number of time steps to solve. Default is `1`.
 - `time_step_names::Vector{String}`: Names for each time step. Default is an empty vector.
 - `correct_bustypes::Bool`: Whether to automatically correct bus types based on available generation.
@@ -373,6 +480,7 @@ function ACRectangularPowerFlow{ACSolver}(;
             ),
         )
     end
+    _reject_fd_decoupled_on_nonpolar(ACSolver, "ACRectangularPowerFlow")
     _validate_slack_distribution_settings(
         distribute_slack_proportional_to_headroom,
         generator_slack_participation_factors,
@@ -486,6 +594,7 @@ function ACMixedPowerFlow{ACSolver}(;
             ),
         )
     end
+    _reject_fd_decoupled_on_nonpolar(ACSolver, "ACMixedPowerFlow")
     _validate_slack_distribution_settings(
         distribute_slack_proportional_to_headroom,
         generator_slack_participation_factors,
@@ -543,7 +652,9 @@ or section 4 of the [MATPOWER docs](https://matpower.org/docs/MATPOWER-manual-4.
 - `exporter::Union{Nothing, PowerFlowEvaluationModel}`: An optional exporter for the power flow results.
     If not `nothing`, it should be a [`PSSEExportPowerFlow`](@ref). Default is `nothing`.
 - `network_reductions::Vector{PNM.NetworkReduction}`: Network reductions to apply.
-    Default is an empty vector.
+    Default is an empty vector. A `PNM.ZeroImpedanceBranchReduction` placed here is routed to
+    PNM's dedicated zero-impedance step; set its `resistance_tolerance` to also merge
+    near-zero-impedance branches that carry a tiny nonzero resistance (PSS/E-style).
 - `time_steps::Int`: Number of time steps to solve. Default is `1`.
 - `time_step_names::Vector{String}`: Names for each time step. Default is an empty vector.
 - `correct_bustypes::Bool`: Whether to automatically correct bus types based on available generation.
@@ -582,7 +693,9 @@ for details.
 - `calculate_loss_factors::Bool`: Whether to calculate DC loss factors after solving.
     Uses the approximation `∂Loss/∂P = 2 · PTDFᵀ · diag(R) · PTDF · P`. Default is `false`.
 - `network_reductions::Vector{PNM.NetworkReduction}`: Network reductions to apply.
-    Default is an empty vector.
+    Default is an empty vector. A `PNM.ZeroImpedanceBranchReduction` placed here is routed to
+    PNM's dedicated zero-impedance step; set its `resistance_tolerance` to also merge
+    near-zero-impedance branches that carry a tiny nonzero resistance (PSS/E-style).
 - `time_steps::Int`: Number of time steps to solve. Default is `1`.
 - `time_step_names::Vector{String}`: Names for each time step. Default is an empty vector.
 - `correct_bustypes::Bool`: Whether to automatically correct bus types based on available generation.
@@ -613,7 +726,9 @@ where creating and storing the full PTDF matrix would be infeasible or slow. See
 - `calculate_loss_factors::Bool`: Whether to calculate DC loss factors after solving.
     Uses the approximation `∂Loss/∂P = 2 · PTDFᵀ · diag(R) · PTDF · P`. Default is `false`.
 - `network_reductions::Vector{PNM.NetworkReduction}`: Network reductions to apply.
-    Default is an empty vector.
+    Default is an empty vector. A `PNM.ZeroImpedanceBranchReduction` placed here is routed to
+    PNM's dedicated zero-impedance step; set its `resistance_tolerance` to also merge
+    near-zero-impedance branches that carry a tiny nonzero resistance (PSS/E-style).
 - `time_steps::Int`: Number of time steps to solve. Default is `1`.
 - `time_step_names::Vector{String}`: Names for each time step. Default is an empty vector.
 - `correct_bustypes::Bool`: Whether to automatically correct bus types based on available generation.

@@ -137,17 +137,21 @@ struct PowerFlowData{
     lcc::LCCParameters
     arc_lossy_admittance_from_to::Union{SparseMatrixCSC{YBUS_ELTYPE, Int}, Nothing}
     arc_lossy_admittance_to_from::Union{SparseMatrixCSC{YBUS_ELTYPE, Int}, Nothing}
-    # Persistent linear-solver cache for the DC solves. Reused across repeated solves on
-    # the same data (e.g. a PCM loop: fixed network, changing injections) so the network
-    # matrix is factored once and the solve buffer is not reallocated. Despite the name it
-    # is not a `PFLinearSolverCache`: it holds a `(matrix, backend, cache, scratch)` tuple,
-    # where `matrix` and `backend` are kept only to invalidate the reuse (rebuild when either
-    # the network-matrix object or the backend changes — see `_get_or_build_solver_cache!`),
-    # `cache` is the actual `PFLinearSolverCache`, and `scratch` is the per-solve buffers.
-    # The `Base.Ref` allows lazy, in-place population on the first `solve_power_flow!` without
-    # reconstructing `data`. Typed `Any` because the concrete cache type is defined in a later
-    # include (`linear_solver_backend.jl`).
-    solver_cache::Base.RefValue{Any}
+    # Persistent solver cache, reused across repeated solves on the same data (e.g. a PCM loop:
+    # fixed network, changing injections) so factorizations are computed once and solve buffers
+    # are not reallocated. Lazily populated in place on the first solve (the `Base.Ref` avoids
+    # reconstructing `data`). Holds a [`SolverCache`](@ref) — an abstract supertype forward-declared
+    # in `power_flow_types.jl` so the field type resolves before the concrete subtypes are defined.
+    # Two TYPE-DISJOINT subtypes share this one slot:
+    #   * DC path (`ABA`/PTDF data): a [`DCSolverCache`](@ref) holding the factored network matrix +
+    #     backend (the invalidation key — rebuild when either changes, see
+    #     `_get_or_build_solver_cache!`), the `PFLinearSolverCache`, and the per-solve scratch.
+    #   * AC path, FastDecoupled solver (`ACPowerFlowData`): a `FastDecoupledCache` holding the
+    #     factored B′ (once per data/scheme/backend) and per-PQ-set factored B″ submatrices
+    #     (see `_get_or_build_fd_cache!`).
+    # Each getter dispatches on the cached subtype, so an empty slot or a cross-use fails loudly
+    # (a `MethodError`) instead of being silently mis-read — no sentinel tag needed.
+    solver_cache::Base.RefValue{Union{Nothing, SolverCache}}
 end
 
 # aliases for specific type parameter combinations.
@@ -405,7 +409,7 @@ function PowerFlowData(
         lcc_parameters,
         arc_lossy_admittance_from_to,
         arc_lossy_admittance_to_from,
-        Base.RefValue{Any}(nothing), # solver_cache (lazily populated)
+        Base.RefValue{Union{Nothing, SolverCache}}(nothing), # solver_cache (lazily populated)
     )
 end
 
@@ -549,6 +553,25 @@ function _signed_arc_bus_incidence(ybus::PNM.Ybus, metadata_matrix::PNM.PowerNet
     return inc.data[arc_perm, bus_perm]
 end
 
+# PNM applies the zero-impedance branch reduction through a dedicated `zero_impedance_reduction`
+# kwarg (and rejects one passed in `network_reductions`). A `ZeroImpedanceBranchReduction` is still a
+# `NetworkReduction`, so PowerFlows lets users put it in the usual `network_reductions` field and
+# routes it to that kwarg here. Dispatch (not `isa`) classifies the entry.
+_is_zero_impedance_reduction(::PNM.ZeroImpedanceBranchReduction) = true
+_is_zero_impedance_reduction(::PNM.NetworkReduction) = false
+
+# Split the user's reductions into (everything else, the zero-impedance reduction). When the user
+# supplied none, return PNM's default `ZeroImpedanceBranchReduction()` so the always-applied
+# zero-impedance step keeps its default parameters.
+function _route_zero_impedance_reduction(reductions::Vector{PNM.NetworkReduction})
+    idx = findfirst(_is_zero_impedance_reduction, reductions)
+    isnothing(idx) && return reductions, PNM.ZeroImpedanceBranchReduction()
+    others = PNM.NetworkReduction[
+        r for r in reductions if !_is_zero_impedance_reduction(r)
+    ]
+    return others, reductions[idx]
+end
+
 """
     PowerFlowData(
         pf::AbstractACPowerFlow{<:ACPowerFlowSolverType},
@@ -580,11 +603,14 @@ function PowerFlowData(
 )
     network_reductions = get_network_reductions(pf)
     network_reduction_message(network_reductions, pf)
+    reductions, zero_impedance_reduction =
+        _route_zero_impedance_reduction(network_reductions)
     power_network_matrix = PNM.Ybus(
         sys;
-        network_reductions = network_reductions,
+        network_reductions = reductions,
         make_arc_admittance_matrices = true,
         include_constant_impedance_loads = false,
+        zero_impedance_reduction = zero_impedance_reduction,
     )
     neighbors = _calculate_neighbors(power_network_matrix)
 
@@ -634,10 +660,13 @@ function PowerFlowData(
 )
     network_reductions = get_network_reductions(pf)
     network_reduction_message(network_reductions, pf)
+    reductions, zero_impedance_reduction =
+        _route_zero_impedance_reduction(network_reductions)
     ybus = PNM.Ybus(
         sys;
-        network_reductions = network_reductions,
+        network_reductions = reductions,
         make_arc_admittance_matrices = pf.lossy_flows,
+        zero_impedance_reduction = zero_impedance_reduction,
     )
     power_network_matrix = PNM.ABA_Matrix(ybus; factorize = true)
     aux_network_matrix = PNM.BA_Matrix(ybus)
@@ -701,8 +730,12 @@ function PowerFlowData(
 )
     network_reductions = get_network_reductions(pf)
     network_reduction_message(network_reductions, pf)
+    reductions, zero_impedance_reduction =
+        _route_zero_impedance_reduction(network_reductions)
     # get the network matrices
-    ybus = PNM.Ybus(sys; network_reductions = network_reductions)
+    ybus = PNM.Ybus(sys;
+        network_reductions = reductions,
+        zero_impedance_reduction = zero_impedance_reduction)
     power_network_matrix = PNM.PTDF(ybus)
     aux_network_matrix = PNM.ABA_Matrix(ybus; factorize = true)
     # `get_arc_axis(data)`/`get_bus_lookup(data)` read the PTDF (metadata) matrix for this method.
@@ -749,9 +782,13 @@ function PowerFlowData(
 )
     network_reductions = get_network_reductions(pf)
     network_reduction_message(network_reductions, pf)
+    reductions, zero_impedance_reduction =
+        _route_zero_impedance_reduction(network_reductions)
 
     # get the network matrices
-    ybus = PNM.Ybus(sys; network_reductions = network_reductions)
+    ybus = PNM.Ybus(sys;
+        network_reductions = reductions,
+        zero_impedance_reduction = zero_impedance_reduction)
     power_network_matrix = PNM.VirtualPTDF(ybus) # evaluates an empty virtual PTDF
     aux_network_matrix = PNM.ABA_Matrix(ybus; factorize = true)
 

@@ -138,9 +138,15 @@ println("  branches = ", length(PSY.get_components(PSY.ACBranch, SYS)))
 println("  backends = ", join(available_backends(), ", "))
 println()
 
+# (label, solver type, extra solver_settings merged into the pf). The FD entries exercise both
+# the polar :decoupled B′/B″ loop and the formulation-agnostic :fixed_jacobian (frozen J) loop.
 const AC_SOLVERS = [
-    ("AC-NewtonRaphson", PF.NewtonRaphsonACPowerFlow),
-    ("AC-TrustRegion", PF.TrustRegionACPowerFlow),
+    ("AC-NewtonRaphson", PF.NewtonRaphsonACPowerFlow, Dict{Symbol, Any}()),
+    ("AC-TrustRegion", PF.TrustRegionACPowerFlow, Dict{Symbol, Any}()),
+    ("AC-FastDecoupled-decoupled", PF.FastDecoupledACPowerFlow,
+        Dict{Symbol, Any}(:fd_variant => :decoupled)),
+    ("AC-FastDecoupled-fixedjac", PF.FastDecoupledACPowerFlow,
+        Dict{Symbol, Any}(:fd_variant => :fixed_jacobian)),
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -160,14 +166,15 @@ end
 # ─────────────────────────────────────────────────────────────────────────────
 # AC phase + component timing for one (solver, backend)
 # ─────────────────────────────────────────────────────────────────────────────
-function profile_ac(label, solver, backend)
+function profile_ac(label, solver, backend, extra_settings = Dict{Symbol, Any}())
     # Keep enhanced_flat_start (the default) so the flat guess is realistically
     # improved and the solve converges; resetting to flat below still forces many
     # more Newton iterations than the system's near-solution warm start, without
     # manufacturing a divergence.
+    settings = merge(Dict{Symbol, Any}(:linear_solver => backend), extra_settings)
     pf = ACPowerFlow{solver}(;
         correct_bustypes = true,
-        solver_settings = Dict{Symbol, Any}(:linear_solver => backend),
+        solver_settings = settings,
     )
 
     # Build data ONCE and reuse it across (re-flat-started) solves, so the full-solve
@@ -283,8 +290,9 @@ solve_closures = Dict{String, Function}()
 println("=========================  PHASE / COMPONENT TIMING  ========================\n")
 for backend in BACKENDS
     solve_closures["DC|$backend"] = profile_dc(backend)
-    for (label, solver) in AC_SOLVERS
-        solve_closures["$label|$backend"] = profile_ac(label, solver, backend)
+    for (label, solver, extra_settings) in AC_SOLVERS
+        solve_closures["$label|$backend"] =
+            profile_ac(label, solver, backend, extra_settings)
     end
 end
 

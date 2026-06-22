@@ -801,6 +801,21 @@ end
 
 """Log final residual, report convergence, compute optional post-processing factors,
 and return `true`/`false`. Shared by all AC power flow drivers."""
+# `Jv === nothing`: the fast-decoupled :decoupled driver skipped the formulation Jacobian (neither
+# loss nor voltage-stability factors were requested), so there is nothing to compute — just report
+# convergence. Dispatch keeps this path free of the factor machinery entirely.
+function _finalize_power_flow(
+    converged::Bool,
+    i::Int,
+    solver_name::String,
+    residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
+    data::ACPowerFlowData,
+    ::Nothing,
+    time_step::Int64,
+)
+    return _report_power_flow_convergence(converged, i, solver_name, residual)
+end
+
 function _finalize_power_flow(
     converged::Bool,
     i::Int,
@@ -810,15 +825,28 @@ function _finalize_power_flow(
     Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
     time_step::Int64,
 )
-    @info("Final residual size: $(norm(residual.Rv, 2)) L2, $(norm(residual.Rv, Inf)) L∞.")
     if converged
-        @info("The $solver_name solver converged after $i iterations.")
         if get_calculate_loss_factors(data)
             _calculate_loss_factors(data, Jv, time_step)
         end
         if get_calculate_voltage_stability_factors(data)
             _calculate_voltage_stability_factors(data, Jv, time_step)
         end
+    end
+    return _report_power_flow_convergence(converged, i, solver_name, residual)
+end
+
+"""Log the final residual size and convergence/non-convergence, returning `converged`. Shared by
+both `_finalize_power_flow` methods (Jacobian and Jacobian-free)."""
+function _report_power_flow_convergence(
+    converged::Bool,
+    i::Int,
+    solver_name::String,
+    residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
+)
+    @info("Final residual size: $(norm(residual.Rv, 2)) L2, $(norm(residual.Rv, Inf)) L∞.")
+    if converged
+        @info("The $solver_name solver converged after $i iterations.")
         return true
     end
     @error("The $solver_name solver failed to converge after $i iterations.")

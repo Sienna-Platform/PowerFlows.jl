@@ -44,6 +44,22 @@ const DEFAULT_λ_0 = 1e-5
 # hitting this cap is a divergence signal — the solver aborts with an error.
 const DEFAULT_μ_MAX = 1e8
 
+# Fast/Fixed Decoupled Newton-Raphson (FDNR) defaults.
+const DEFAULT_FD_MAX_ITER = 150 # FD-stage iteration cap (linear rate needs more, cheaper iterations than NR's 50)
+const DEFAULT_FD_HANDOFF_TOL = 1e-3 # FD-stage exit ∞-norm when handing off (≈0.1 MW/MVAr on 100 MVA base)
+const DEFAULT_FD_SCHEME = :XB # B′/B″ scheme: :XB (Stott–Alsac) default; :BX (van Amerongen)
+const DEFAULT_FD_REFREEZE_ON_STALL = true # :fixed_jacobian only: refactor frozen J once on stall, then continue
+const DEFAULT_FD_NON_DIVERGENT = true # non-divergent backtracking; on by default (pure-FD default mode)
+const DEFAULT_FD_NDVFCT = 0.99 # non-divergent improvement factor (accept a half-step only if it reduces the mismatch)
+const DEFAULT_FD_MAX_STEP_HALVINGS = 10 # ≤10 inner mismatch calculations (step factor down to ~0.002)
+const DEFAULT_FD_BLOWUP = 5.0 # largest unscaled per-half-step |Δθ| (rad) / |ΔV/V| abort threshold
+const DEFAULT_FD_DVLIM = 0.99 # uniform ΔV-vector scale-down so largest applied |ΔV| ≤ this, + ΔV/V ≤ −1 guard
+const DEFAULT_FD_VM_ABORT = 0.01 # abort if any bus |V| driven to ≈0
+"""
+Warn-once threshold for branch reactance `|x|` in the fast/fixed-decoupled methods.
+"""
+const FD_LOW_REACTANCE_WARNING = 1e-3 # warn: a branch |x| (pu) below this makes B′/B″ ill-conditioned ⇒ slow :decoupled convergence
+
 const DEFAULT_Δt_k = 0.2
 
 const AC_PF_KW = []

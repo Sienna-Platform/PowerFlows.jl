@@ -19,6 +19,18 @@ Pages = [
 ]
 ```
 
+## Fast/Fixed Decoupled Newton-Raphson
+
+```@autodocs
+Modules = [PowerFlows]
+Public = false
+Private = true
+Pages = [
+    "fast_decoupled_matrices.jl",
+    "fast_decoupled_method.jl",
+]
+```
+
 ## Robust Homotopy Method
 
 ```@autodocs

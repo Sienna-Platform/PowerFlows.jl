@@ -732,7 +732,16 @@ function test_lcc_ac_solver(ACSolver)
     # Skip the solvers that do not support LCCs
     ACSolver ∈ (RobustHomotopyPowerFlow,) && return
     sys, lcc = simple_lcc_system()
-    pf = ACPowerFlow{ACSolver}(; correct_bustypes = true)
+    # FastDecoupled :decoupled (the polar default) cannot span the LCC state variables; use its
+    # :fixed_jacobian variant, which freezes the full Jacobian (LCC rows included). Dedicated FD
+    # LCC parity lives in test_fast_decoupled.jl ("FastDecoupled WP5: :fixed_jacobian + LCC HVDC").
+    pf = if ACSolver === FastDecoupledACPowerFlow
+        ACPowerFlow{FastDecoupledACPowerFlow{FDFixedJacobian, FDSchemeXB}}(;
+            correct_bustypes = true,
+        )
+    else
+        ACPowerFlow{ACSolver}(; correct_bustypes = true)
+    end
     data = PowerFlowData(pf, sys)
     solve_power_flow!(data)
 

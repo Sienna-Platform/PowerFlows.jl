@@ -35,7 +35,7 @@ Exported solver-model types and functions (see `src/PowerFlows.jl`):
 - DC models: `DCPowerFlow`, `PTDFDCPowerFlow`, `vPTDFDCPowerFlow` (all `<: AbstractDCPowerFlow`).
 - AC formulation/solver types — **two-axis design**: a *formulation* type parameterized by an `S <: ACPowerFlowSolverType`:
   - Formulations: `ACPolarPowerFlow{S}`, `ACRectangularPowerFlow{S}`, `ACMixedPowerFlow{S}`, all `<: AbstractACPowerFlow{S}`. `const ACPowerFlow = ACPolarPowerFlow` (back-compat alias; PSI uses it).
-  - Solver types `S`: `NewtonRaphsonACPowerFlow`, `TrustRegionACPowerFlow`, `LevenbergMarquardtACPowerFlow`, `RobustHomotopyPowerFlow`, `GradientDescentACPowerFlow`.
+  - Solver types `S`: `NewtonRaphsonACPowerFlow`, `TrustRegionACPowerFlow`, `LevenbergMarquardtACPowerFlow`, `RobustHomotopyPowerFlow`, `GradientDescentACPowerFlow`, and `FastDecoupledACPowerFlow{V<:FDVariant,S<:FDScheme}` (the one *parametric* solver — variant/scheme are type params, not settings: `FDDecoupled`/`FDFixedJacobian` × `FDSchemeXB`/`FDSchemeBX`; bare `FastDecoupledACPowerFlow` picks per-formulation defaults).
   - Example: `ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}`. The solver is the type parameter — there is no `:step_strategy`/`:formulation` settings flag.
 - Export: `PSSEExportPowerFlow`, `PSSEExporter`, `update_exporter!`, `write_export`, `get_psse_export_paths`, `FlowReporting`.
 - `PowerFlowData` and aliases, plus `write_results`, are not exported but are PSI-stable; treat as protected interface.
@@ -61,7 +61,7 @@ Exported solver-model types and functions (see `src/PowerFlows.jl`):
 
 **LCC / network reduction.** PNM's zero-impedance reduction merges LCC-terminal buses; `data.lcc.arcs` stores REDUCED tuples. Post-processing (`get_lcc_names`, `arc_to_lcc`) must key with reduced tuples via `get_arc_tuple(PSY.get_arc(lcc), nrd)` where `nrd = PNM.get_network_reduction_data(data.power_network_matrix)` — keying with raw tuples is a KeyError. Degree-2 parity tests must build systems with `reduce_reactive_power_injectors=false` (the default drops susceptive-FA shunts).
 
-**Perf NR-cache reuse (polar).** `PolarNRCache` (slot `data.polar_nr_cache::RefValue{Union{Nothing,AbstractNRCache}}`) reuses residual/Jacobian/symbolic factorization across Q-limit retries and time steps; LCC or a changed subnetwork/slack forces a rebuild. DC has an analogous `data.solver_cache::RefValue{Union{Nothing,DCSolverCache}}`.
+**Perf NR-cache reuse (polar).** `PolarNRCache` (slot `data.polar_nr_cache::RefValue{Union{Nothing,AbstractNRCache}}`) reuses residual/Jacobian/symbolic factorization across Q-limit retries and time steps; LCC or a changed subnetwork/slack forces a rebuild. `data.solver_cache::RefValue{Union{Nothing,SolverCache}}` holds the analogous per-solve cache — `DCSolverCache` (DC/PTDF) or `FastDecoupledCache` (FDNR factor-once B′/B″); the getters dispatch on the concrete subtype, so a cross-use is a loud `MethodError`, not a silent mis-read (no sentinel tag).
 
 **Benchmark measurement trap.** Repeated `_ac_power_flow`/`solve_power_flow!` on the same `data` warm-starts to 0-iteration convergence (lazy early-return). Perturb injections per rep or you measure nothing. Use iteration count (not wall-clock) as the robust metric; the wall-clock timer is noisy. Background heavy compute (10k benchmark, full perf suite) — never block synchronously in a subagent.
 

@@ -87,6 +87,44 @@ ac_results["flow_results"]
 # `Q_from_to` and `Q_to_from` now show reactive power flows, and `P_from_to` differs from
 # `P_to_from` due to losses.
 
+# ## Fast Decoupled AC Power Flow
+# The solver is an independent type parameter of the AC power flow. [`ACPowerFlow`](@ref)`()`
+# above used the default [`NewtonRaphsonACPowerFlow`](@ref) solver, which refactorizes the
+# Jacobian every iteration. [`FastDecoupledACPowerFlow`](@ref) instead builds constant
+# approximate Jacobian matrices (``B'``/``B''``) **once** and reuses them across all iterations
+# and time steps — the fast decoupled power flow of Stott & Alsac, equivalent to PSS/E's `FDNS`.
+# It converges at a linear rate but at a fraction of the per-iteration cost, which makes it well
+# suited to repeated solves (multi-period dispatch, contingency screening). Select it as a
+# solver type parameter:
+
+pf_fd = ACPowerFlow{FastDecoupledACPowerFlow}()
+
+# Solve it the same way as any other AC solver:
+
+fd_results = solve_power_flow(pf_fd, sys)
+
+# The converged solution is identical to the Newton-Raphson result to tolerance: fast decoupled
+# evaluates the *exact* mismatches every iteration, so only the convergence *rate* differs, never
+# the solution. Compare the bus results:
+
+fd_results["bus_results"]
+
+# ### Handoff to Newton-Raphson
+# Because the fast decoupled state is a valid iterate of the exact residual, it is also a good
+# warm start for an exact-Newton solver. You can optionally run the cheap fast decoupled stage to
+# a looser tolerance, then hand off to [`NewtonRaphsonACPowerFlow`](@ref) for final refinement,
+# via `solver_settings`:
+
+pf_handoff = ACPowerFlow{FastDecoupledACPowerFlow}(;
+    solver_settings = Dict(:handoff_solver => NewtonRaphsonACPowerFlow),
+)
+handoff_results = solve_power_flow(pf_handoff, sys)
+
+# This staging — fast decoupled as a cheap conditioner, Newton-Raphson as the closer — mirrors
+# commercial practice. For the underlying math (``B'``/``B''``, the XB/BX schemes, the
+# fixed-Jacobian variant, and a solver guidance table), see
+# [Fast/Fixed Decoupled Power Flow](@ref).
+
 # ## When AC Power Flow Fails
 # Unlike DC power flow, AC power flow is iterative and not guaranteed to converge. Systems
 # with high impedance lines, poor initial voltage profiles, or insufficient reactive power
@@ -101,3 +139,5 @@ ac_results["flow_results"]
 #   evaluation models and iterative solvers (polar, rectangular, and mixed).
 # - For the mixed current–power balance formulation, see
 #   [Mixed Current-Power Balance Formulation](@ref).
+# - For the fast/fixed decoupled solver, see
+#   [Fast/Fixed Decoupled Power Flow](@ref).
