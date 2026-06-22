@@ -452,6 +452,7 @@ function _lcc_jacobian_scalars(
     dP_dt_fb = _calculate_dP_dt_lcc(tap_r, i_dc, xtr_r, Vm_fb, phi_r)
     dP_dt_tb = _calculate_dP_dt_lcc(tap_i, i_dc, xtr_i, Vm_tb, phi_i)
     dP_dα_fb = _calculate_dP_dα_lcc(tap_r, i_dc, Vm_fb, alpha_r, phi_r)
+    # Negated: inverter ϕ_i ≈ π − α_i flips ∂ϕ_i/∂α_i vs the helper's rectifier form (see above).
     dP_dα_tb = -_calculate_dP_dα_lcc(tap_i, i_dc, Vm_tb, alpha_i, phi_i)
     return (
         i_dc = i_dc,
@@ -519,15 +520,11 @@ function _lcc_tail_jacobian_block(
     Vm_fb::Float64,
     Vm_tb::Float64,
 )
-    J = zeros(Float64, 4, 4)
     if iszero(data.lcc.i_dc[i, time_step])
         # 0-current converter: F = [tap_r - setpoint, tap_i - setpoint, α_r - min, α_i - min].
-        J[1, 1] = 1.0
-        J[2, 2] = 1.0
-        J[3, 3] = 1.0
-        J[4, 4] = 1.0
-        return J
+        return Matrix{Float64}(LinearAlgebra.I, 4, 4)
     end
+    J = zeros(Float64, 4, 4)
     s = _lcc_jacobian_scalars(data, i, time_step, Vm_fb, Vm_tb)
     # Columns: 1 = tap_r, 2 = tap_i, 3 = α_r, 4 = α_i.
     # Row 1: P-setpoint (only the set-point side is non-zero; the scalars zero the inactive side).
