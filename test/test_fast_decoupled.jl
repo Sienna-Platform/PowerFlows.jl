@@ -192,9 +192,12 @@ end
         TEST_DATA_DIR,
         "WECC240_v04_DPV_RE20_v33_6302_xfmr_DPbuscode_PFadjusted_V32_noRemoteVctrl.raw",
     )
-    system = PSY.System(
-        file;
-        bus_name_formatter = x -> strip(string(x["name"])) * "-" * string(x["index"]),
+    system = make_system(
+        PFP.PowerModelsData(
+            file;
+            bus_name_formatter = x ->
+                strip(string(x["name"])) * "-" * string(x["index"]),
+        );
         runchecks = false,
     )
     pf = ACPowerFlow(; skip_redistribution = true, correct_bustypes = true)
@@ -793,9 +796,9 @@ end
     # lands at (or below) its upper reactive limit in the NR reference solve.
     solved_nr = deepcopy(_build_sys14_qlim())
     @test solve_and_store_power_flow!(pf_nr, solved_nr)
-    @test get_reactive_power(get_component(ThermalStandard, solved_nr, "Bus8")) <=
+    @test get_reactive_power(get_component(ThermalStandard, solved_nr, "Bus8"), PSY.SU) <=
           get_reactive_power_limits(
-        get_component(ThermalStandard, solved_nr, "Bus8")).max + 1e-6
+        get_component(ThermalStandard, solved_nr, "Bus8"), PSY.SU).max + 1e-6
 
     for variant in (:decoupled, :fixed_jacobian)
         @testset "$variant" begin
@@ -818,9 +821,9 @@ end
             solved_fd = deepcopy(_build_sys14_qlim())
             @test solve_and_store_power_flow!(pf_fd, solved_fd)
             @test get_reactive_power(
-                get_component(ThermalStandard, solved_fd, "Bus8")) <=
+                get_component(ThermalStandard, solved_fd, "Bus8"), PSY.SU) <=
                   get_reactive_power_limits(
-                get_component(ThermalStandard, solved_fd, "Bus8")).max + 1e-6
+                get_component(ThermalStandard, solved_fd, "Bus8"), PSY.SU).max + 1e-6
         end
     end
 end
@@ -838,20 +841,29 @@ end
 
     # Confirm the fixture really carries LCC state (the LCC predicate).
     let data_probe =
-            PF.PowerFlowData(ACPowerFlow{NewtonRaphsonACPowerFlow}(), System(lcc_raw))
+            PF.PowerFlowData(
+                ACPowerFlow{NewtonRaphsonACPowerFlow}(),
+                make_system(PFP.PowerModelsData(lcc_raw); runchecks = false),
+            )
         @test PF.get_lcc_count(data_probe) > 0
     end
 
     @testset "rectangular" begin
         pf_nr = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
             solver_settings = Dict{Symbol, Any}(:validate_voltage_magnitudes => false))
-        data_nr = PF.PowerFlowData(pf_nr, System(lcc_raw))
+        data_nr = PF.PowerFlowData(
+            pf_nr,
+            make_system(PFP.PowerModelsData(lcc_raw); runchecks = false),
+        )
         @test solve_power_flow!(data_nr)
 
         pf_fd = ACRectangularPowerFlow{_fd_solver(:fixed_jacobian)}(;
             solver_settings = Dict{Symbol, Any}(
                 :validate_voltage_magnitudes => false))
-        data_fd = PF.PowerFlowData(pf_fd, System(lcc_raw))
+        data_fd = PF.PowerFlowData(
+            pf_fd,
+            make_system(PFP.PowerModelsData(lcc_raw); runchecks = false),
+        )
         @test PF.get_lcc_count(data_fd) > 0
         @test solve_power_flow!(data_fd)
         @test isapprox(data_fd.bus_magnitude[:, 1], data_nr.bus_magnitude[:, 1];
@@ -863,13 +875,19 @@ end
     @testset "mixed" begin
         pf_nr = ACMixedPowerFlow{NewtonRaphsonACPowerFlow}(;
             solver_settings = Dict{Symbol, Any}(:validate_voltage_magnitudes => false))
-        data_nr = PF.PowerFlowData(pf_nr, System(lcc_raw))
+        data_nr = PF.PowerFlowData(
+            pf_nr,
+            make_system(PFP.PowerModelsData(lcc_raw); runchecks = false),
+        )
         @test solve_power_flow!(data_nr)
 
         pf_fd = ACMixedPowerFlow{_fd_solver(:fixed_jacobian)}(;
             solver_settings = Dict{Symbol, Any}(
                 :validate_voltage_magnitudes => false))
-        data_fd = PF.PowerFlowData(pf_fd, System(lcc_raw))
+        data_fd = PF.PowerFlowData(
+            pf_fd,
+            make_system(PFP.PowerModelsData(lcc_raw); runchecks = false),
+        )
         @test PF.get_lcc_count(data_fd) > 0
         @test solve_power_flow!(data_fd)
         @test isapprox(data_fd.bus_magnitude[:, 1], data_nr.bus_magnitude[:, 1];
@@ -880,11 +898,17 @@ end
 
     @testset "polar :fixed_jacobian" begin
         pf_nr = ACPowerFlow{NewtonRaphsonACPowerFlow}()
-        data_nr = PF.PowerFlowData(pf_nr, System(lcc_raw))
+        data_nr = PF.PowerFlowData(
+            pf_nr,
+            make_system(PFP.PowerModelsData(lcc_raw); runchecks = false),
+        )
         @test solve_power_flow!(data_nr)
 
         pf_fd = ACPowerFlow{_fd_solver(:fixed_jacobian)}()
-        data_fd = PF.PowerFlowData(pf_fd, System(lcc_raw))
+        data_fd = PF.PowerFlowData(
+            pf_fd,
+            make_system(PFP.PowerModelsData(lcc_raw); runchecks = false),
+        )
         @test PF.get_lcc_count(data_fd) > 0
         @test solve_power_flow!(data_fd)
         @test isapprox(data_fd.bus_magnitude[:, 1], data_nr.bus_magnitude[:, 1];
@@ -981,10 +1005,16 @@ end
 @testset "FastDecoupled WP-LCC: decoupled + LCC parity vs fixed_jacobian + NR (case5_2_lcc)" begin
     lcc_raw = joinpath(TEST_DATA_DIR, "case5_2_lcc.raw")
 
-    data_nr = PF.PowerFlowData(ACPowerFlow{NewtonRaphsonACPowerFlow}(), System(lcc_raw))
+    data_nr = PF.PowerFlowData(
+        ACPowerFlow{NewtonRaphsonACPowerFlow}(),
+        make_system(PFP.PowerModelsData(lcc_raw); runchecks = false),
+    )
     @test solve_power_flow!(data_nr)
 
-    data_fj = PF.PowerFlowData(ACPowerFlow{_fd_solver(:fixed_jacobian)}(), System(lcc_raw))
+    data_fj = PF.PowerFlowData(
+        ACPowerFlow{_fd_solver(:fixed_jacobian)}(),
+        make_system(PFP.PowerModelsData(lcc_raw); runchecks = false),
+    )
     @test solve_power_flow!(data_fj)
 
     # case5_2_lcc carries a very-low-reactance transformer (x = 1e-4), which makes the B′/B″
@@ -995,7 +1025,10 @@ end
         solver_settings = Dict{Symbol, Any}(
             :handoff_solver => NewtonRaphsonACPowerFlow,
         ))
-    data_fd = PF.PowerFlowData(pf_fd, System(lcc_raw))
+    data_fd = PF.PowerFlowData(
+        pf_fd,
+        make_system(PFP.PowerModelsData(lcc_raw); runchecks = false),
+    )
     @test PF.get_lcc_count(data_fd) > 0
     @test solve_power_flow!(data_fd)
 
@@ -1261,8 +1294,12 @@ end
     # Loud collision: a non-FD SolverCache in the slot (the DC path's DCSolverCache) has no
     # `_reuse_fd_cache` method, so the FD getter fails loudly with a MethodError rather than a
     # silent mis-read.
-    data.solver_cache[] =
-        PF.DCSolverCache(SparseArrays.spzeros(2, 2), PF.PNM.KLUSolver(), nothing, nothing)
+    let M = SparseArrays.spzeros(2, 2), backend = PF.PNM.KLUSolver()
+        data.solver_cache[] = PF.DCSolverCache(
+            M, backend, PF.make_linear_solver_cache(backend, M),
+            zeros(0, 0), zeros(0, 0), Float64[], nothing,
+        )
+    end
     @test_throws MethodError PF._get_or_build_fd_cache!(
         data, 1, PF.FDSchemeXB(), PF._fd_backend_id(nothing), nothing)
 end

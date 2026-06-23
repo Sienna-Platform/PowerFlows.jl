@@ -21,13 +21,6 @@ current-injection formulation is provided separately. The solver and the
 formulation are orthogonal."""
 abstract type AbstractACPowerFlow{S <: ACPowerFlowSolverType} <: PowerFlowEvaluationModel end
 
-"""An abstract supertype for the persistent per-solve caches stored in
-`PowerFlowData.solver_cache[]`. Concrete subtypes ([`DCSolverCache`](@ref) for the DC/PTDF path,
-`FastDecoupledCache` for the polar fast-decoupled solver) are type-disjoint, so the slot's
-type discriminates which path populated it — no sentinel tag is needed and a cross-use is a plain
-`MethodError` rather than a silent reuse."""
-abstract type SolverCache end
-
 # Centralized so the multi-line warning text can't drift between the two
 # formulation constructors.
 function _validate_slack_distribution_settings(

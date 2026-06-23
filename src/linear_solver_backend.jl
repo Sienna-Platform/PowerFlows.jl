@@ -43,6 +43,13 @@ the concrete type cannot be referenced there because of the construction cycle
 `PolarNRCache → ACPowerFlowResidual → PowerFlowData`."""
 abstract type AbstractNRCache end
 
+"""An abstract supertype for the persistent per-solve caches stored in
+`PowerFlowData.solver_cache[]`. Concrete subtypes ([`DCSolverCache`](@ref) for the DC/PTDF path,
+`FastDecoupledCache` for the polar fast-decoupled solver) are type-disjoint, so the slot's
+type discriminates which path populated it — no sentinel tag is needed and a cross-use is a plain
+`MethodError` rather than a silent reuse."""
+abstract type SolverCache end
+
 """Lazily-built cache for the DC solves, stored in `data.solver_cache`. Reused across
 repeated solves on the same data (e.g. a PCM loop: fixed network, changing injections)
 so the network matrix is factored once and the solve/scratch buffers are not
@@ -51,7 +58,7 @@ the network-matrix object identity or the backend changes (see
 `_get_or_build_solver_cache!`). The remaining fields are the per-solve scratch:
 `power_injections`/`p_inj` solve buffers, arc resistances `rs`, and the signed arc-bus
 incidence (built once at `PowerFlowData` construction; `nothing` for vPTDF)."""
-struct DCSolverCache
+struct DCSolverCache <: SolverCache
     matrix::SparseMatrixCSC{Float64, J_INDEX_TYPE}
     backend::PNM.LinearSolverType
     cache::PFLinearSolverCache
