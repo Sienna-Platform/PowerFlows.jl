@@ -24,9 +24,18 @@ Pardiso = "46dd5b70-b6fb-5a00-ae2d-e8fea33afaf2"
 [extensions]
 PowerFlowsPardisoExt = "Pardiso"
 
+# Pin the unreleased Sienna stack to the psy6/IS4 development branches so the package
+# environment resolves against them instead of the registry/main versions. Mirrors the
+# pins in test/Project.toml; remove before registering a release.
+[sources]
+InfrastructureSystems = {rev = "IS4", url = "https://github.com/Sienna-Platform/InfrastructureSystems.jl.git"}
+PowerSystems = {rev = "psy6", url = "https://github.com/Sienna-Platform/PowerSystems.jl.git"}
+# Registry PNM v0.24 requires PSY ^5.11, which conflicts with the psy6 branch (5.10.0);
+# PNM's psy6 branch carries v0.24.0 (incl. condest!/rcond!) against the psy6/IS4 sources.
+PowerNetworkMatrices = {rev = "psy6", url = "https://github.com/Sienna-Platform/PowerNetworkMatrices.jl.git"}
+
 [compat]
 DataFrames = "1"
-Pardiso = "1"
 DataStructures = "0.19"
 Dates = "1"
 InfrastructureSystems = "3"
@@ -35,6 +44,7 @@ KrylovKit = "0.9, 0.10"
 LineSearches = "7"
 LinearAlgebra = "1"
 Logging = "1"
+Pardiso = "1"
 PowerNetworkMatrices = "^0.24"
 PowerSystems = "^5.10"
 SparseArrays = "1"
