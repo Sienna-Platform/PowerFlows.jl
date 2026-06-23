@@ -49,7 +49,7 @@ function ACMixedCPBResidual(data::ACPowerFlowData, time_step::Int64)
 
     offsets, block_sizes, total_bus_state = compute_mixed_bus_state_offsets(bus_type)
     validate_offsets = _pqpv_validate_offsets(bus_type, offsets)
-    total_state = total_bus_state + 4 * n_lccs
+    total_state = total_bus_state + 4 * n_lccs + vsc_tail_length(get_dc_network(data))
 
     P_net_const = Vector{Float64}(undef, n_buses)
     Q_net_const = Vector{Float64}(undef, n_buses)
@@ -290,6 +290,18 @@ function _update_mixed_cpb_residual_values!(
         _set_lcc_tail_residuals!(
             F, data, total_bus_state, time_step, e_state, f_state,
         )
+    end
+
+    # 7) VSC / DC-network tail: current injection (imag-first PQ) + control/DC-KCL rows
+    #    (the tail rows are formulation-agnostic — shared with the rectangular path).
+    dcn = get_dc_network(data)
+    if has_dc_network(dcn)
+        vsc_off = total_bus_state + 4 * n_lccs
+        _read_vsc_state!(dcn, x, vsc_off, time_step)
+        _apply_vsc_bus_injections_mixed!(
+            F, dcn, e_state, f_state, bus_state_offset, bus_types, time_step,
+        )
+        _set_vsc_tail_residuals_rect!(F, dcn, e_state, f_state, vsc_off, time_step)
     end
     return
 end
