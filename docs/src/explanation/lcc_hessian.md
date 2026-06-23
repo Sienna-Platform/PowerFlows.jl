@@ -1,5 +1,9 @@
 # LCC Second Derivatives (Hessian Blocks)
 
+```@meta
+CurrentModule = PowerFlows
+```
+
 This page derives the second derivatives needed to extend the
 [`RobustHomotopyPowerFlow`](@ref) Hessian assembly (and the spectral-radius
 diagnostic) to systems with LCC HVDC lines. It is a companion to
@@ -12,8 +16,7 @@ H(x) = t_k \left( J(x)^\top J(x) + \sum_k F_k(x)\, \nabla^2 F_k(x) \right) + (1-
 ```
 
 The `J^\top J` term and the network-only `∑ F_k ∇² F_k` block are already
-handled by `_update_hessian_matrix_values!` in
-[homotopy_hessian.jl](../../../src/RobustHomotopy/homotopy_hessian.jl). The
+handled by [`_update_hessian_matrix_values!`](@ref) in `homotopy_hessian.jl`. The
 missing piece is the LCC contribution to `∑ F_k ∇² F_k`. This page enumerates
 those contributions.
 
@@ -322,9 +325,9 @@ slots.
 
 ## Clamp regime
 
-When `\sin\phi_s < `[LCC_sinϕ_TOLERANCE](../../../src/definitions.jl), the
+When `\sin\phi_s <` `LCC_sinϕ_TOLERANCE`, the
 residual treats `\phi_s` as locally pinned and the Jacobian helpers drop
-the chain term (see [lcc_utils.jl](../../../src/lcc_utils.jl)). The
+the chain term (see [`_dphi_dV_lcc`](@ref) and [`_dphi_dt_lcc`](@ref)). The
 corresponding Hessian behavior:
 
 - `P_s` becomes linear in `(V_s, t_s)` with no `α`-dependence (since
