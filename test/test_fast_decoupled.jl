@@ -1294,12 +1294,8 @@ end
     # Loud collision: a non-FD SolverCache in the slot (the DC path's DCSolverCache) has no
     # `_reuse_fd_cache` method, so the FD getter fails loudly with a MethodError rather than a
     # silent mis-read.
-    let M = SparseArrays.spzeros(2, 2), backend = PF.PNM.KLUSolver()
-        data.solver_cache[] = PF.DCSolverCache(
-            M, backend, PF.make_linear_solver_cache(backend, M),
-            zeros(0, 0), zeros(0, 0), Float64[], nothing,
-        )
-    end
+    data.solver_cache[] =
+        PF.DCSolverCache(SparseArrays.spzeros(2, 2), PF.PNM.KLUSolver(), nothing, nothing)
     @test_throws MethodError PF._get_or_build_fd_cache!(
         data, 1, PF.FDSchemeXB(), PF._fd_backend_id(nothing), nothing)
 end

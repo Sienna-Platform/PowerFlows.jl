@@ -19,6 +19,33 @@ function adjust_power_injections_for_lccs!(power_injections::Matrix{Float64},
     return
 end
 
+"""
+    DCSolverCache{M, B, C, S} <: SolverCache
+
+DC/PTDF persistent cache stored in `data.solver_cache[]`. The factored network matrix `matrix`
+and the `backend` form the invalidation key (rebuild when either changes); `cache` is the actual
+factorization and `scratch` the per-solve buffers. Subtypes [`SolverCache`](@ref) so it is
+type-disjoint from the AC `FastDecoupledCache` that shares the same slot (no sentinel tag needed).
+"""
+struct DCSolverCache{M, B, C, S} <: SolverCache
+    matrix::M
+    backend::B
+    cache::C
+    scratch::S
+end
+
+# Reuse on a matching key, else `nothing` to signal a rebuild. Dispatch on the cached entry's type
+# rather than an `isa`/sentinel check: an empty slot returns `nothing`; a stray non-DC `SolverCache`
+# (cross-use with the AC path, impossible today since the data types are disjoint) is a loud
+# `MethodError` instead of a silent mis-read.
+_reuse_dc_cache(::Nothing, M, backend) = nothing
+_reuse_dc_cache(e::DCSolverCache, M, backend) =
+    if (e.matrix === M && typeof(e.backend) === typeof(backend))
+        (e.cache, e.scratch)
+    else
+        nothing
+    end
+
 # Reuse a cached factorization of `M` while the matrix object and backend are unchanged;
 # rebuild otherwise. Assumes the network matrix is not mutated in place.
 function _get_or_build_solver_cache!(
@@ -26,28 +53,28 @@ function _get_or_build_solver_cache!(
     backend,
     M::SparseMatrixCSC{Float64},
 )
-    entry = data.solver_cache[]
-    if !isnothing(entry) &&
-       entry.matrix === M && typeof(entry.backend) === typeof(backend)
-        return entry.cache, entry
-    end
+    reused = _reuse_dc_cache(data.solver_cache[], M, backend)
+    isnothing(reused) || return reused
     cache = make_linear_solver_cache(backend, M)
     full_factor!(cache, M)
+    scratch = _make_dc_scratch(data)
+    data.solver_cache[] = DCSolverCache(M, backend, cache, scratch)
+    return cache, scratch
+end
+
+# Per-solve scratch buffers + network-fixed precomputes; built once with the cache. The signed
+# arc-bus incidence is built once at `PowerFlowData` construction via `PNM.IncidenceMatrix` and
+# reused here.
+function _make_dc_scratch(data::PowerFlowData)
     valid_ix = get_valid_ix(data)
-    # InvertedIndex has no `length`; size via a view. The signed arc-bus incidence is
-    # built once at `PowerFlowData` construction via `PNM.IncidenceMatrix` and reused.
+    # InvertedIndex has no `length`; size via a view.
     p_inj_dims = size(view(data.bus_active_power_injections, valid_ix, :))
-    entry = DCSolverCache(
-        M,
-        backend,
-        cache,
-        similar(data.bus_active_power_injections),
-        Matrix{Float64}(undef, p_inj_dims),
-        _get_arc_resistances(data),
-        data.arc_bus_incidence,
+    return (
+        power_injections = similar(data.bus_active_power_injections),
+        p_inj = Matrix{Float64}(undef, p_inj_dims),
+        rs = _get_arc_resistances(data),
+        arc_bus_incidence = data.arc_bus_incidence,
     )
-    data.solver_cache[] = entry
-    return cache, entry
 end
 
 _convert_to_range(ix::Integer) = ix:ix

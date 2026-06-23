@@ -58,7 +58,7 @@ import Dates
 import LineSearches: BackTracking
 
 include("definitions.jl")
-# Before PowerFlowData.jl: defines PFLinearSolverCache, DCSolverCache, and
+# Before PowerFlowData.jl: defines PFLinearSolverCache, SolverCache, and
 # AbstractNRCache, which type the lazily-populated cache slots on PowerFlowData.
 include("linear_solver_backend.jl")
 include("branch_flow_results.jl")
