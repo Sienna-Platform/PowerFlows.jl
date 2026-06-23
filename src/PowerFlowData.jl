@@ -135,6 +135,11 @@ struct PowerFlowData{
     voltage_stability_factors::Union{Matrix{Float64}, Nothing}
     arc_active_power_losses::Union{Matrix{Float64}, Nothing}
     lcc::LCCParameters
+    # All PSY DC components (point-to-point VSC, multi-terminal DC) lowered into one DC network and
+    # solved jointly with the AC buses. Held behind a `Ref` (like `solver_cache`) so the immutable
+    # struct can receive the fully-built network after the system is scanned in
+    # `initialize_DCNetwork!`. Empty `DCNetwork()` for systems with no DC components.
+    dc_network::Base.RefValue{DCNetwork}
     arc_lossy_admittance_from_to::Union{SparseMatrixCSC{YBUS_ELTYPE, Int}, Nothing}
     arc_lossy_admittance_to_from::Union{SparseMatrixCSC{YBUS_ELTYPE, Int}, Nothing}
     # Persistent solver cache, reused across repeated solves on the same data (e.g. a PCM loop:
@@ -274,6 +279,7 @@ get_lcc_rectifier_min_thyristor_angle(pfd::PowerFlowData) =
 get_lcc_inverter_min_thyristor_angle(pfd::PowerFlowData) =
     pfd.lcc.inverter.min_thyristor_angle
 get_lcc_i_dc(pfd::PowerFlowData) = pfd.lcc.i_dc
+get_dc_network(pfd::PowerFlowData) = pfd.dc_network[]
 # pseudo getter.
 get_lcc_count(data::PowerFlowData) = length(data.lcc.rectifier.bus)
 
@@ -407,6 +413,7 @@ function PowerFlowData(
         calculate_voltage_stability_factors ? zeros(n_buses, n_time_steps) : nothing, # voltage_stability_factors
         _make_arc_active_power_losses(pf, n_arcs, n_time_steps), # arc_active_power_losses
         lcc_parameters,
+        Base.RefValue{DCNetwork}(DCNetwork()), # dc_network (built in initialize_DCNetwork!)
         arc_lossy_admittance_from_to,
         arc_lossy_admittance_to_from,
         Base.RefValue{Union{Nothing, SolverCache}}(nothing), # solver_cache (lazily populated)
