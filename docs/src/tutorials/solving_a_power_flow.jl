@@ -3,19 +3,16 @@
 # solvers and compare their results.
 
 # ## Building a System
-# To get started, load the needed packages. We're using a standard test system and want to
-# keep output clean, so we adjust the logging settings to filter out a few precautionary warnings.
+# To get started, load the needed packages.
 
 using PowerSystemCaseBuilder
 using PowerFlows
 using PowerSystems
-using Logging
 
-disable_logging(Logging.Warn)
+# Create a [`PowerSystems.System`](@extref) from [`PowerSystemCaseBuilder.build_system`](@extref).
+# We build the test system with `runchecks = false` to reduce REPL output:
 
-# Create a [`System`](@extref PowerSystems.System) from [PowerSystemCaseBuilder.jl](https://github.com/sienna-platform/PowerSystemCaseBuilder.jl):
-
-sys = build_system(MatpowerTestSystems, "matpower_case5_sys")
+sys = build_system(MatpowerTestSystems, "matpower_case5_sys"; runchecks = false)
 
 # ## DC Power Flow
 # [`DCPowerFlow`](@ref) solves for bus voltage angles using the bus admittance matrix,
@@ -90,6 +87,44 @@ ac_results["flow_results"]
 # `Q_from_to` and `Q_to_from` now show reactive power flows, and `P_from_to` differs from
 # `P_to_from` due to losses.
 
+# ## Fast Decoupled AC Power Flow
+# The solver is an independent type parameter of the AC power flow. [`ACPowerFlow`](@ref)`()`
+# above used the default [`NewtonRaphsonACPowerFlow`](@ref) solver, which refactorizes the
+# Jacobian every iteration. [`FastDecoupledACPowerFlow`](@ref) instead builds constant
+# approximate Jacobian matrices (``B'``/``B''``) **once** and reuses them across all iterations
+# and time steps — the fast decoupled power flow of Stott & Alsac, equivalent to PSS/E's `FDNS`.
+# It converges at a linear rate but at a fraction of the per-iteration cost, which makes it well
+# suited to repeated solves (multi-period dispatch, contingency screening). Select it as a
+# solver type parameter:
+
+pf_fd = ACPowerFlow{FastDecoupledACPowerFlow}()
+
+# Solve it the same way as any other AC solver:
+
+fd_results = solve_power_flow(pf_fd, sys)
+
+# The converged solution is identical to the Newton-Raphson result to tolerance: fast decoupled
+# evaluates the *exact* mismatches every iteration, so only the convergence *rate* differs, never
+# the solution. Compare the bus results:
+
+fd_results["bus_results"]
+
+# ### Handoff to Newton-Raphson
+# Because the fast decoupled state is a valid iterate of the exact residual, it is also a good
+# warm start for an exact-Newton solver. You can optionally run the cheap fast decoupled stage to
+# a looser tolerance, then hand off to [`NewtonRaphsonACPowerFlow`](@ref) for final refinement,
+# via `solver_settings`:
+
+pf_handoff = ACPowerFlow{FastDecoupledACPowerFlow}(;
+    solver_settings = Dict(:handoff_solver => NewtonRaphsonACPowerFlow),
+)
+handoff_results = solve_power_flow(pf_handoff, sys)
+
+# This staging — fast decoupled as a cheap conditioner, Newton-Raphson as the closer — mirrors
+# commercial practice. For the underlying math (``B'``/``B''``, the XB/BX schemes, the
+# fixed-Jacobian variant, and a solver guidance table), see
+# [Fast/Fixed Decoupled Power Flow](@ref).
+
 # ## When AC Power Flow Fails
 # Unlike DC power flow, AC power flow is iterative and not guaranteed to converge. Systems
 # with high impedance lines, poor initial voltage profiles, or insufficient reactive power
@@ -97,69 +132,12 @@ ac_results["flow_results"]
 # `missing`: you'll also see a logged error. If you encounter convergence failures, consider
 # using a more robust solver such as [`TrustRegionACPowerFlow`](@ref) or [`RobustHomotopyPowerFlow`](@ref).
 
-# ## Choosing a Formulation and Solver
-# AC power flow has two independent choices: the **formulation** (how the
-# network equations are written) and the **solver** (the iterative algorithm).
-# Each is a type parameter: `ACPolarPowerFlow{S}` (power balance, polar state),
-# [`ACRectangularPowerFlow`](@ref)`{S}` (Da Costa current injection), and
-# [`ACMixedPowerFlow`](@ref)`{S}` (mixed current/power balance, the most compact
-# state) — each combined with [`NewtonRaphsonACPowerFlow`](@ref) (`NR`),
-# [`TrustRegionACPowerFlow`](@ref) (`TR`), or
-# [`LevenbergMarquardtACPowerFlow`](@ref) (`LM`). `ACPowerFlow()` is
-# `ACPolarPowerFlow{NewtonRaphsonACPowerFlow}` — a good default.
+# ## Next Steps
 #
-# Warm-solve timings: median of 10 runs after warm-up, with the `[min, max]`
-# range. Hardware-dependent — compare medians across cells, not absolutes.
-#
-# 2000-bus (`ACTIVSg2000`, tol `1e-9`):
-#
-# | Formulation \ Solver | NR | TR | LM |
-# |---|---|---|---|
-# | Polar       | 4 it, 0.032 s `[0.031, 0.045]` | 3 it, 0.032 s `[0.031, 0.250]` | 4 it, 0.104 s `[0.095, 0.348]` |
-# | Rectangular | 4 it, 0.028 s `[0.028, 0.044]` | 3 it, **0.029 s** `[0.028, 0.042]` | 7 it, 0.150 s `[0.136, 0.398]` |
-# | Mixed       | 5 it, 0.030 s `[0.029, 0.039]` | 4 it, 0.029 s `[0.029, 0.041]` | 3 it, 0.083 s `[0.075, 0.341]` |
-#
-# 10000-bus (`ACTIVSg10k`, tol `1e-9`):
-#
-# | Formulation \ Solver | NR | TR | LM |
-# |---|---|---|---|
-# | Polar       | 5 it, 0.214 s `[0.208, 0.447]` | 4 it, 0.223 s `[0.210, 0.433]` | 5 it, 0.614 s `[0.492, 0.792]` |
-# | Rectangular | 4 it, **0.183 s** `[0.178, 0.402]` | 3 it, 0.189 s `[0.180, 0.399]` | 56 it, 4.315 s `[4.15, 4.42]` |
-# | Mixed       | 5 it, 0.186 s `[0.182, 0.209]` | 4 it, 0.194 s `[0.182, 0.414]` | 5 it, 0.590 s `[0.451, 0.755]` |
-#
-# All nine combinations converge to the same solution. On small systems the
-# differences are negligible (every combination solves a 14-bus case in
-# 2–3 iterations in well under 1 ms median); the choice matters at scale.
-# The wide LM ranges reflect its per-iteration refactorization variance — the
-# median is the representative figure.
-#
-# Recommendations (based on the median):
-#
-# - **Default / general use:** `ACPowerFlow()` (Polar + NR). Well-trodden and
-#   the reference all other formulations are validated against.
-# - **Fastest at scale:** [`ACRectangularPowerFlow`](@ref)`{NewtonRaphsonACPowerFlow}`
-#   or `{TrustRegionACPowerFlow}`. The rectangular formulation's off-diagonal
-#   Jacobian blocks are the constant admittance matrix, so the sparse
-#   factorization is reused across iterations — consistently ~15% faster than
-#   Polar/NR by median (2000 and 10k bus alike); `ACMixedPowerFlow` with NR/TR
-#   is within a few percent of it.
-# - **Most robust (poor start, ill-conditioned, high-impedance):**
-#   [`TrustRegionACPowerFlow`](@ref) on any formulation — its median is on par
-#   with NR at every size while globalizing the step. For cases that still will
-#   not converge, [`RobustHomotopyPowerFlow`](@ref) (Polar only).
-# - **Smallest state / most predictable:** [`ACMixedPowerFlow`](@ref) — `2n`
-#   unknowns, the most compact of the three, and the tightest timing spread at
-#   every scale (Mixed/NR 10k `[0.182, 0.209]`).
-# - **Levenberg-Marquardt:** a robust least-squares fallback, the slowest per
-#   iteration (it refactorizes a sparse augmented system every step) and the
-#   highest variance — prefer NR/TR and reach for LM only when they stall. If
-#   you need LM, use **Mixed/LM** (the only LM that scales: 3–5 iterations and
-#   the lowest LM median at every size) or Polar/LM. **Avoid Rectangular/LM at
-#   scale**: its Marquardt scaling helps at ≤2000 buses (7 iters) but does not
-#   scale — 56 iterations / 4.3 s at 10k, ~20× Rectangular/NR. See
-#   [Levenberg-Marquardt in Place of Gauss-Seidel](@ref).
-#
-# See also the explanation pages
-# [Mixed Current-Power Balance Formulation](@ref) and
-# [Levenberg-Marquardt in Place of Gauss-Seidel](@ref) for the underlying
-# trade-offs.
+# - Compare AC formulations and solvers at scale in [How to choose an AC formulation and solver](@ref choose-ac-formulation-and-solver).
+# - Read [Evaluation Models vs. Solver Algorithms](@ref) for the distinction between
+#   evaluation models and iterative solvers (polar, rectangular, and mixed).
+# - For the mixed current–power balance formulation, see
+#   [Mixed Current-Power Balance Formulation](@ref).
+# - For the fast/fixed decoupled solver, see
+#   [Fast/Fixed Decoupled Power Flow](@ref).

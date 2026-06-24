@@ -24,15 +24,15 @@ simultaneously with bus voltages. PowerFlows.jl deliberately does **not** use
 that implicit embedding for the initial implementation. Instead it wraps the
 existing inner solvers in an **outer-loop λ-continuation**:
 
-- The inner solver ([`NewtonRaphsonACPowerFlow`](@ref),
-  [`TrustRegionACPowerFlow`](@ref)) is called without any modification.
-- Between outer iterations only `data` is mutated: Y-bus `nzval` entries for
-  tap devices; the reactive constant-impedance withdrawal matrix for shunt
-  devices.
-- The outer loop is **formulation-agnostic**: it works identically for
-  [`ACPolarPowerFlow`](@ref), [`ACRectangularPowerFlow`](@ref), and
-  [`ACMixedPowerFlow`](@ref) because it calls `_solve_with_q_limits!`, the
-  existing Q-limit loop, as a black box.
+  - The inner solver ([`NewtonRaphsonACPowerFlow`](@ref),
+    [`TrustRegionACPowerFlow`](@ref)) is called without any modification.
+  - Between outer iterations only `data` is mutated: Y-bus `nzval` entries for
+    tap devices; the reactive constant-impedance withdrawal matrix for shunt
+    devices.
+  - The outer loop is **formulation-agnostic**: it works identically for
+    [`ACPolarPowerFlow`](@ref), [`ACRectangularPowerFlow`](@ref), and
+    [`ACMixedPowerFlow`](@ref) because it calls `_solve_with_q_limits!`, the
+    existing Q-limit loop, as a black box.
 
 The dispatch point is `_ac_power_flow` in `solve_ac_power_flow.jl`: when
 `data.controlled_devices` is non-empty it delegates to
@@ -50,17 +50,16 @@ occupy the right dispatch slots but are not implemented.
 
 Two abstract families sit under `AbstractControlledDevice`:
 
-- `AbstractBranchControl` — devices that mutate the branch's 2×2 Y-bus block.
-  The only implemented leaf is `ControlledTap` (voltage-controlling
-  `TapTransformer`).
-- `AbstractShuntControl` — devices that mutate the bus reactive
-  constant-impedance withdrawal. The only implemented leaf is
-  `ControlledSwitchedShunt` (voltage-controlling `SwitchedAdmittance`).
+  - `AbstractBranchControl` — devices that mutate the branch's 2×2 Y-bus block.
+    The only implemented leaf is `ControlledTap` (voltage-controlling
+    `TapTransformer`).
+  - `AbstractShuntControl` — devices that mutate the bus reactive
+    constant-impedance withdrawal. The only implemented leaf is
+    `ControlledSwitchedShunt` (voltage-controlling `SwitchedAdmittance`).
 
 The runtime container is `ControlledDeviceSet`, which holds
 `Vector{ControlledTap}` and `Vector{ControlledSwitchedShunt}` as concretely
-typed fields. All outer-loop traversal iterates `for d in set.taps` and `for
-d in set.shunts`, so dispatch is monomorphic and the hot-path kernels are
+typed fields. All outer-loop traversal iterates `for d in set.taps` and `for d in set.shunts`, so dispatch is monomorphic and the hot-path kernels are
 allocation-free.
 
 For `ControlledTap`, `apply_parameter!` rewrites three of the four cached `nzval`
@@ -118,12 +117,12 @@ negative feedback regardless of device wiring.
 The outer loop `_control_continuation!` runs up to
 `MAX_CONTROL_OUTER_ITERATIONS = 100` passes. Each pass:
 
-1. Computes the sigmoid target $p^*$ for every device given the current
-   controlled-bus voltage and steepness $S$.
-2. Applies an **adaptive under-relaxation** step
-   $p \leftarrow p + \omega(p^* - p)$.
-3. Applies each update via `_continuation_to!`, the incremental robust
-   applicator.
+ 1. Computes the sigmoid target $p^*$ for every device given the current
+    controlled-bus voltage and steepness $S$.
+ 2. Applies an **adaptive under-relaxation** step
+    $p \leftarrow p + \omega(p^* - p)$.
+ 3. Applies each update via `_continuation_to!`, the incremental robust
+    applicator.
 
 **Under-relaxation.** The damped iteration $p \leftarrow p + \omega(p^* - p)$ has
 local slope $m = 1 + \omega(g' - 1)$, where $g' = \sigma'(|V|)\cdot\partial|V|/\partial p \le 0$
@@ -167,14 +166,14 @@ count.
 After the continuous outer loop converges (or reaches its iteration limit),
 `snap_and_restore!` discretizes every device:
 
-- **Tap.** The continuous parameter is snapped to the nearest value in the
-  pre-computed `levels` vector (a uniform grid of `NTP` tap positions from
-  `p_min` to `p_max`).
-- **Shunt.** The target susceptance is placed using a block-greedy algorithm:
-  blocks are processed largest-first; each block's step count is floored to
-  avoid overshooting; a single ±1 bounded refinement pass corrects
-  under-committed blocks. Both `block_order` and `block_n` are pre-allocated
-  fields, so `snap_to_discrete` makes no heap allocations.
+  - **Tap.** The continuous parameter is snapped to the nearest value in the
+    pre-computed `levels` vector (a uniform grid of `NTP` tap positions from
+    `p_min` to `p_max`).
+  - **Shunt.** The target susceptance is placed using a block-greedy algorithm:
+    blocks are processed largest-first; each block's step count is floored to
+    avoid overshooting; a single ±1 bounded refinement pass corrects
+    under-committed blocks. Both `block_order` and `block_n` are pre-allocated
+    fields, so `snap_to_discrete` makes no heap allocations.
 
 After snapping all devices, the inner solver is called on the discretized
 network. If it converges, the procedure is complete. If not, each device is
@@ -194,26 +193,26 @@ are absent.
 
 Only transformers with `get_control_objective(tx) == VOLTAGE` are included.
 
-| Parameter | `ext` key | Default |
-|---|---|---|
-| Controlled bus | `NREG` or `RMIDNT` (bus number) | transformer to-bus (secondary) |
-| Voltage setpoint | `VSET` | controlled bus `magnitude`, else `1.0` |
-| Tap ratio min | `RMI` | `DEFAULT_TAP_RATIO_MIN = 0.9` |
-| Tap ratio max | `RMA` | `DEFAULT_TAP_RATIO_MAX = 1.1` |
-| Tap positions | `NTP` | `DEFAULT_TAP_POSITIONS = 33` |
-| Controlled side | derived: controlled bus == from-bus → primary (eq. 46), else secondary (eq. 47) | — |
+| Parameter        | `ext` key                                                                       | Default                                |
+|:---------------- |:------------------------------------------------------------------------------- |:-------------------------------------- |
+| Controlled bus   | `NREG` or `RMIDNT` (bus number)                                                 | transformer to-bus (secondary)         |
+| Voltage setpoint | `VSET`                                                                          | controlled bus `magnitude`, else `1.0` |
+| Tap ratio min    | `RMI`                                                                           | `DEFAULT_TAP_RATIO_MIN = 0.9`          |
+| Tap ratio max    | `RMA`                                                                           | `DEFAULT_TAP_RATIO_MAX = 1.1`          |
+| Tap positions    | `NTP`                                                                           | `DEFAULT_TAP_POSITIONS = 33`           |
+| Controlled side  | derived: controlled bus == from-bus → primary (eq. 46), else secondary (eq. 47) | —                                      |
 
 The discrete tap levels are `range(p_min, p_max; length=NTP)`, collected once
 at construction.
 
 ### `SwitchedAdmittance` → `ControlledSwitchedShunt`
 
-| Parameter | Source |
-|---|---|
-| Controlled bus | `ext["NREG"]` or `ext["RMIDNT"]`, else own bus |
-| Voltage setpoint | midpoint of `get_admittance_limits` (VSWLO/VSWHI band) |
+| Parameter          | Source                                                                 |
+|:------------------ |:---------------------------------------------------------------------- |
+| Controlled bus     | `ext["NREG"]` or `ext["RMIDNT"]`, else own bus                         |
+| Voltage setpoint   | midpoint of `get_admittance_limits` (VSWLO/VSWHI band)                 |
 | Susceptance limits | `get_Y` base + Σ over blocks of `number_of_steps .* imag.(Y_increase)` |
-| Block structure | `get_number_of_steps`, `get_Y_increase`, `get_initial_status` |
+| Block structure    | `get_number_of_steps`, `get_Y_increase`, `get_initial_status`          |
 
 If the controlled bus number cannot be resolved to a network index,
 `build_controlled_device_set` raises an error immediately; there is no silent

@@ -1,6 +1,7 @@
 module PowerFlowsTests
 
 using ReTest
+import Test  # for Test.TestLogger (ReTest re-exports macros but not the module)
 using PowerFlows
 using Logging
 using Dates
@@ -61,6 +62,7 @@ const AC_SOLVERS_TO_TEST = (
     TrustRegionACPowerFlow,
     LevenbergMarquardtACPowerFlow,
     RobustHomotopyPowerFlow,
+    FastDecoupledACPowerFlow,
 )
 
 for filename in readdir(joinpath(BASE_DIR, "test"))

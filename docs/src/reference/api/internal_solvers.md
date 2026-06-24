@@ -19,6 +19,18 @@ Pages = [
 ]
 ```
 
+## Fast/Fixed Decoupled Newton-Raphson
+
+```@autodocs
+Modules = [PowerFlows]
+Public = false
+Private = true
+Pages = [
+    "fast_decoupled_matrices.jl",
+    "fast_decoupled_method.jl",
+]
+```
+
 ## Robust Homotopy Method
 
 ```@autodocs
@@ -58,6 +70,7 @@ Pages = [
 # Linear Algebra Backends
 
 ## Robust Homotopy
+
 ```@autodocs
 Modules = [PowerFlows]
 Public = true
@@ -71,6 +84,7 @@ Pages = [
 ```
 
 ## Newton-Raphson
+
 ```@autodocs
 Modules = [PowerFlows]
 Public = true
@@ -79,6 +93,17 @@ Pages = [
     "linear_solver_backend.jl",
     "LinearSolverCache/klu_linear_solver.jl",
     "LinearSolverCache/linear_solver_cache.jl",
+]
+```
+
+## Solver Diagnostics
+
+```@autodocs
+Modules = [PowerFlows]
+Public = true
+Private = true
+Pages = [
+    "residual_condition_diagnostics.jl",
 ]
 ```
 

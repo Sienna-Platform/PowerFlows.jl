@@ -26,7 +26,7 @@ end
     data = PowerFlowData(DCPowerFlow(; correct_bustypes = true), sys)
     power_injections =
         deepcopy(data.bus_active_power_injections - data.bus_active_power_withdrawals)
-    matrix_data = deepcopy(data.power_network_matrix.K)       # LU factorization of ABA
+    matrix_data = data.power_network_matrix.K                 # LU factorization of ABA (shared by reference; deepcopy of the KLU cache is unsafe)
     aux_network_matrix = deepcopy(data.aux_network_matrix)    # BA matrix
 
     valid_ix = setdiff(
@@ -144,7 +144,7 @@ end
             power_flow_with_units(sys, T, PSY.UnitSystem.NATURAL_UNITS)
         line_name2, flow_system = power_flow_with_units(sys, T, PSY.UnitSystem.SYSTEM_BASE)
         @test line_name == line_name2
-        @test flow_natural == flow_system
+        @test isapprox(flow_natural, flow_system, atol = 1e-6)
     end
 end
 

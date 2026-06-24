@@ -90,6 +90,27 @@ const PSSE_V35_EXTRA_GROUPS = [
 const PSSE_RAW_BUFFER_SIZEHINT = 1024
 const PSSE_MD_BUFFER_SIZEHINT = 1024
 
+# Default PSS/E v35 system-wide data block
+const PSSE_V35_DEFAULT_SYSTEM_WIDE_DATA = """GENERAL, THRSHZ=0.0001, PQBRAK=0.7, BLOWUP=5.0, MaxIsolLvls=4, CAMaxReptSln=20, ChkDupCntLbl=0
+GAUSS, ITMX=100, ACCP=1.6, ACCQ=1.6, ACCM=1.0, TOL=0.0001
+NEWTON, ITMXN=20, ACCN=1.0, TOLN=0.1, VCTOLQ=0.1, VCTOLV=0.00001, DVLIM=0.99, NDVFCT=0.99
+ADJUST, ADJTHR=0.005, ACCTAP=1.0, TAPLIM=0.05, SWVBND=100.0, MXTPSS=99, MXSWIM=10
+TYSL, ITMXTY=20, ACCTY=1.0, TOLTY=0.00001
+SOLVER,     , ACTAPS=0, AREAIN=0, PHSHFT=0, DCTAPS=0, SWSHNT=0, FLATST=0, VARLIM=0, NONDIV=0
+RATING, 1, "RATE1 ", "RATING SET 1                    "
+RATING, 2, "RATE2 ", "RATING SET 2                    "
+RATING, 3, "RATE3 ", "RATING SET 3                    "
+RATING, 4, "RATE4 ", "RATING SET 4                    "
+RATING, 5, "RATE5 ", "RATING SET 5                    "
+RATING, 6, "RATE6 ", "RATING SET 6                    "
+RATING, 7, "RATE7 ", "RATING SET 7                    "
+RATING, 8, "RATE8 ", "RATING SET 8                    "
+RATING, 9, "RATE9 ", "RATING SET 9                    "
+RATING,10, "RATE10", "RATING SET 10                   "
+RATING,11, "RATE11", "RATING SET 11                   "
+RATING,12, "RATE12", "RATING SET 12                   "
+"""
+
 # Header comments for v35 format (ordered by data section)
 const PSSE_V35_HEADERS = Dict{String, String}(
     "Case Identification Data" => "@!IC,SBASE,REV,XFRRAT,NXFRAT,BASFRQ",
@@ -174,7 +195,7 @@ end
 Structure to perform an export from a Sienna System, plus optional updates from
 `PowerFlowData`, to the PSS/E format.
 
-Construct this object from a [`System`](@extref PowerSystems.System) and a PSS/E version,
+Construct this object from a [`PowerSystems.System`](@extref) and a PSS/E version,
 update using `update_exporter` with any new data as relevant, and perform the export with
 `write_export`. Writes a `<name>.raw` file and a `<name>_export_metadata.json` file with
 transformations that had to be made to conform to PSS/E naming rules, which can be parsed by
@@ -279,7 +300,7 @@ Update the `PSSEExporter` with new `data`.
 # Arguments:
   - `exporter::PSSEExporter`: the exporter to update
   - `data::PSY.PowerFlowData`: the new data. Must correspond to the
-    [`System`](@extref PowerSystems.System) with which the exporter was constructed.
+    [`PowerSystems.System`](@extref) with which the exporter was constructed.
 """
 function update_exporter!(exporter::PSSEExporter, data::PowerFlowData)
     # NOTE this relies on exporter.system being a deepcopy of the original system so we're not changing that one here
@@ -300,7 +321,7 @@ Update the `PSSEExporter` with new `data`.
 # Arguments:
   - `exporter::PSSEExporter`: the exporter to update
   - `data::PSY.System`: system containing the new data. Must be fundamentally the same \
-  [`System`](@extref PowerSystems.System) as the one with which the exporter was
+  [`PowerSystems.System`](@extref) as the one with which the exporter was
     constructed, just with different values — this is the user's responsibility, we do not
     exhaustively verify it.
 """
@@ -505,7 +526,7 @@ reverses the operation done in the PSY parsing side, according to PSSE Manual.
 _fix_3w_transformer_rating(::AbstractString) = 0.0
 _fix_3w_transformer_rating(rate::Number) = rate >= INFINITE_BOUND ? 0.0 : rate
 
-"WRITTEN TO SPEC: PSS/E 33.3/35.4 POM 5.2.1 Case Identification Data"
+# WRITTEN TO SPEC: PSS/E 33.3/35.4 POM 5.2.1 Case Identification Data
 function write_to_buffers!(
     exporter::PSSEExporter,
     ::Val{Symbol("Case Identification Data")},
@@ -540,21 +561,30 @@ function write_to_buffers!(
         throw(ArgumentError("case_name may be up to 60 characters"))
     println(io, case_name)
 
-    # Record 3
-    line3 = md_string
-    @assert length(line3) <= 60
-    println(io, line3)
+    # Record 3 (v33 only; v35 has no third Case Identification record)
+    if exporter.psse_version == :v33
+        line3 = md_string
+        @assert length(line3) <= 60
+        println(io, line3)
+    end
+
+    # v35 requires a System-Wide Data block between Case Identification Data and Bus Data
+    if exporter.psse_version == :v35
+        println(io)  # blank line
+        print(io, PSSE_V35_DEFAULT_SYSTEM_WIDE_DATA)
+        println(io, "0 / END OF SYSTEM-WIDE DATA, BEGIN BUS DATA")
+    end
+
     exporter.md_valid || (md["record_groups"]["Case Identification Data"] = true)
 end
 
+# WRITTEN TO SPEC: PSS/E 33.3 POM 5.2.1 Bus Data
 """
 Given a vector of Sienna bus numbers, create a dictionary from Sienna bus number to
 PSS/E-compatible bus number. Assumes that the Sienna bus numbers are positive and unique.
 Guarantees determinism: if the input contains the same bus numbers in the same order, the
 output will. Guarantees minimal changes: that if an existing bus number is compliant, it
 will not be changed.
-
-WRITTEN TO SPEC: PSS/E 33.3 POM 5.2.1 Bus Data
 """
 function _psse_bus_numbers(buses::Vector{Int64})
     used_numbers = Set{Int64}()
@@ -600,11 +630,10 @@ function get_ext_key_or_default(
     return get(ext, key, default)
 end
 
+# WRITTEN TO SPEC: PSS/E 33.3 POM 5.2.1 Bus Data
 """
 Given a vector of Sienna bus names, create a dictionary from Sienna bus name to
 PSS/E-compatible bus name. Guarantees determinism and minimal changes.
-
-WRITTEN TO SPEC: PSS/E 33.3 POM 5.2.1 Bus Data
 """
 function _psse_bus_names(
     buses::Vector{String},
@@ -638,10 +667,8 @@ function _psse_bus_names(
     return mapping
 end
 
-"""
-WRITTEN TO SPEC: PSS/E 33.3/35.4 POM 5.2.1 Bus Data. Sienna voltage limits treated as PSS/E
-normal voltage limits; PSSE emergency voltage limits left as default.
-"""
+# WRITTEN TO SPEC: PSS/E 33.3/35.4 POM 5.2.1 Bus Data. Sienna voltage limits treated as PSS/E
+# normal voltage limits; PSSE emergency voltage limits left as default.
 function write_to_buffers!(
     exporter::PSSEExporter,
     ::Val{Symbol("Bus Data")},
@@ -1226,9 +1253,7 @@ _psse_get_load_data(exporter::PSSEExporter, load::PSY.StaticLoad) =
 _psse_interruptible(::PSY.ControllableLoad) = 1
 _psse_interruptible(::PSY.StaticLoad) = 0
 
-"""
-WRITTEN TO SPEC: PSS/E 33.3/35.4 POM 5.2.1 Load Data
-"""
+# WRITTEN TO SPEC: PSS/E 33.3/35.4 POM 5.2.1 Load Data
 function write_to_buffers!(
     exporter::PSSEExporter,
     ::Val{Symbol("Load Data")},
@@ -1291,9 +1316,7 @@ function write_to_buffers!(
         (md["load_name_mapping"] = serialize_component_ids(load_name_mapping))
 end
 
-"""
-WRITTEN TO SPEC: PSS/E 33.3/35.4 POM 5.2.1 Fixed Bus Shunt Data
-"""
+# WRITTEN TO SPEC: PSS/E 33.3/35.4 POM 5.2.1 Fixed Bus Shunt Data
 function write_to_buffers!(
     exporter::PSSEExporter,
     ::Val{Symbol("Fixed Shunt Data")},
@@ -1633,9 +1656,7 @@ function _build_generator_list(exporter::PSSEExporter, md::OrderedDict{String, A
     return temp_gens
 end
 
-"""
-WRITTEN TO SPEC: PSS/E 33.3/35.4 POM 5.2.1 Generator Data
-"""
+# WRITTEN TO SPEC: PSS/E 33.3/35.4 POM 5.2.1 Generator Data
 function write_to_buffers!(
     exporter::PSSEExporter,
     ::Val{Symbol("Generator Data")},
@@ -1767,7 +1788,7 @@ sorts them by their bus numbers, and returns a vector of tuples (branch, bus_num
 - `exporter::PSSEExporter`: The exporter containing the system.
 
 # Returns
-- `Vector{Tuple{<:PSY.Branch, Tuple}}`: Each tuple contains a branch and its associated bus numbers.
+- `Vector{Tuple{PSY.ACBranch, Tuple{Int, Int}}}`: Each tuple contains a branch and its associated bus numbers.
 """
 function get_branches_with_numbers(exporter::PSSEExporter)
     lines = collect(PSY.get_components(PSY.Line, exporter.system))
@@ -1779,8 +1800,10 @@ function get_branches_with_numbers(exporter::PSSEExporter)
     branches = vcat(lines, mon_lines, discrete_ac_branches)
     # Sort branches by their bus numbers to order them at exporting
     sort!(branches; by = branch_to_bus_numbers)
-    # Pair each branch with its bus numbers
-    return [(branch, branch_to_bus_numbers(branch)) for branch in branches]
+    # Pair each branch with its bus numbers.
+    return Tuple{PSY.ACBranch, Tuple{Int, Int}}[
+        (branch, branch_to_bus_numbers(branch)) for branch in branches
+    ]
 end
 
 """Calculate the STAT field for a 3-winding transformer based on per-winding availability."""
@@ -1903,9 +1926,7 @@ function _export_tap_transformer_as_branch(transformer::PSY.TapTransformer)
     ) && isapprox(PSY.get_tap(transformer), 1.0)
 end
 
-"""
-WRITTEN TO SPEC: PSS/E 33.3/35.4 POM 5.2.1 Non-Transformer Branch Data
-"""
+# WRITTEN TO SPEC: PSS/E 33.3/35.4 POM 5.2.1 Non-Transformer Branch Data
 function write_to_buffers!(
     exporter::PSSEExporter,
     ::Val{Symbol("Non-Transformer Branch Data")},
@@ -1990,9 +2011,7 @@ function write_to_buffers!(
         (md["branch_name_mapping"] = serialize_component_ids(branch_name_mapping))
 end
 
-"""
-WRITTEN TO SPEC: PSS/E 35.4 POM 5.2.1 System Switching Device Data
-"""
+# WRITTEN TO SPEC: PSS/E 35.4 POM 5.2.1 System Switching Device Data
 function write_to_buffers!(
     exporter::PSSEExporter,
     ::Val{Symbol("Switching Device Data")},
@@ -2077,11 +2096,10 @@ function write_to_buffers!(
         (md["switching_device_name_mapping"] = serialize_component_ids(branch_name_mapping))
 end
 
+# WRITTEN TO SPEC: PSS/E 33.3/35.4 POM 5.2.1 Transformer Data
 """
 Given a vector of Sienna transformer names, create a dictionary from Sienna transformer name
 to PSS/E-compatible transformer name. Guarantees determinism and minimal changes.
-
-WRITTEN TO SPEC: PSS/E 33.3/35.4 POM 5.2.1 Transformer Data
 """
 function _psse_transformer_names(
     transformers::Vector{String},
@@ -2259,9 +2277,7 @@ function _load_transformer_components_and_mappings(exporter::PSSEExporter)
         transformer_ckt_mapping, transformer_3w_ckt_mapping)
 end
 
-"""
-WRITTEN TO SPEC: PSS/E 33.3/35.4 POM 5.2.1 Transformer Data
-"""
+# WRITTEN TO SPEC: PSS/E 33.3/35.4 POM 5.2.1 Transformer Data
 function write_to_buffers!(
     exporter::PSSEExporter,
     ::Val{Symbol("Transformer Data")},
@@ -2479,9 +2495,7 @@ function _compute_dcline_inverter_fields(
     )
 end
 
-"""
-WRITTEN TO SPEC: PSS/E 33.3/35.4 POM 5.2.1 Two-Terminal DC Transmission Line Data
-"""
+# WRITTEN TO SPEC: PSS/E 33.3/35.4 POM 5.2.1 Two-Terminal DC Transmission Line Data
 function write_to_buffers!(
     exporter::PSSEExporter,
     ::Val{Symbol("Two-Terminal DC Transmission Line Data")},
@@ -2624,9 +2638,7 @@ function _compute_vsc_converter_fields(
     )
 end
 
-"""
-WRITTEN TO SPEC: PSS/E 33.3/35.4 POM 5.2.1 Voltage Source Converter (VSC) DC Transmission Line Data
-"""
+# WRITTEN TO SPEC: PSS/E 33.3/35.4 POM 5.2.1 Voltage Source Converter (VSC) DC Transmission Line Data
 function write_to_buffers!(
     exporter::PSSEExporter,
     ::Val{Symbol("Voltage Source Converter (VSC) DC Transmission Line Data")},
@@ -2791,9 +2803,7 @@ function _write_icd_v33_points!(io::IO, I, points)
     fastprintln(io, "")
 end
 
-"""
-WRITTEN TO SPEC: PSS/E 33.3/35.4 POM 5.2.1 Transformer Impedance Correction Tables
-"""
+# WRITTEN TO SPEC: PSS/E 33.3/35.4 POM 5.2.1 Transformer Impedance Correction Tables
 function write_to_buffers!(
     exporter::PSSEExporter,
     ::Val{Symbol("Transformer Impedance Correction Tables")},
@@ -2834,9 +2844,7 @@ function write_to_buffers!(
     end_group(io, md, exporter, "Transformer Impedance Correction Tables", true)
 end
 
-"""
-WRITTEN TO SPEC: PSS/E 33.3/35.4 POM 5.2.1 Zone Data
-"""
+# WRITTEN TO SPEC: PSS/E 33.3/35.4 POM 5.2.1 Zone Data
 function write_to_buffers!(
     exporter::PSSEExporter,
     ::Val{Symbol("Zone Data")},
@@ -2865,9 +2873,7 @@ function write_to_buffers!(
     end_group(io, md, exporter, "Zone Data", true)
 end
 
-"""
-WRITTEN TO SPEC: PSS/E 33.3/35.4 POM 5.2.1 FACTS Device Data
-"""
+# WRITTEN TO SPEC: PSS/E 33.3/35.4 POM 5.2.1 FACTS Device Data
 function write_to_buffers!(
     exporter::PSSEExporter,
     ::Val{Symbol("FACTS Device Data")},
@@ -2989,9 +2995,7 @@ function _build_switched_shunt_steps_v33(
     )
 end
 
-"""
-WRITTEN TO SPEC: PSS/E 33.3/35.4 POM 5.2.1 Switched Shunt Data
-"""
+# WRITTEN TO SPEC: PSS/E 33.3/35.4 POM 5.2.1 Switched Shunt Data
 function write_to_buffers!(
     exporter::PSSEExporter,
     ::Val{Symbol("Switched Shunt Data")},
@@ -3082,9 +3086,7 @@ function write_to_buffers!(
         )
 end
 
-"""
-WRITTEN TO SPEC: PSS/E 33.3 POM 5.2.1 Q Record
-"""
+# WRITTEN TO SPEC: PSS/E 33.3 POM 5.2.1 Q Record
 function write_to_buffers!(
     exporter::PSSEExporter,
     ::Val{Symbol("Q Record")},

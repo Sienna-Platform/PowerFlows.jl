@@ -346,21 +346,24 @@ function _update_residual_values!(
     # normal ybus.
     Yb_vals = SparseArrays.nonzeros(Yb)
     Yb_rowvals = SparseArrays.rowvals(Yb)
-    for bus_to in axes(Yb, 1)
+    @inbounds for bus_to in axes(Yb, 1)
+        Vm_to = Vm[bus_to]
+        θ_to = θ[bus_to]
         for j in SparseArrays.nzrange(Yb, bus_to)
             yb = Yb_vals[j]
             bus_from = Yb_rowvals[j]
             gb = real(yb)
             bb = imag(yb)
-            Δθ = θ[bus_from] - θ[bus_to]
+            vv = Vm[bus_from] * Vm_to
             if bus_from == bus_to
-                F[2 * bus_from - 1] += Vm[bus_from] * Vm[bus_to] * gb
-                F[2 * bus_from] += -Vm[bus_from] * Vm[bus_to] * bb
+                F[2 * bus_from - 1] += vv * gb
+                F[2 * bus_from] += -vv * bb
             else
-                F[2 * bus_from - 1] +=
-                    Vm[bus_from] * Vm[bus_to] * (gb * cos(Δθ) + bb * sin(Δθ))
-                F[2 * bus_from] +=
-                    Vm[bus_from] * Vm[bus_to] * (gb * sin(Δθ) - bb * cos(Δθ))
+                # `sincos` computes both at once (cheaper than separate `cos`/`sin`); the
+                # trig over every off-diagonal nonzero dominates the residual evaluation.
+                sinΔθ, cosΔθ = sincos(θ[bus_from] - θ_to)
+                F[2 * bus_from - 1] += vv * (gb * cosΔθ + bb * sinΔθ)
+                F[2 * bus_from] += vv * (gb * sinΔθ - bb * cosΔθ)
             end
         end
     end

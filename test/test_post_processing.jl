@@ -74,7 +74,9 @@ end
     pf = PF.ACPowerFlow{PF.TrustRegionACPowerFlow}(;
         skip_redistribution = true,
         correct_bustypes = true,
-        network_reductions = PNM.NetworkReduction[PNM.DegreeTwoReduction()],
+        network_reductions = PNM.NetworkReduction[PNM.DegreeTwoReduction(;
+            reduce_reactive_power_injectors = false,
+        )],
     )
     results_unreduced = solve_power_flow(pf_unreduced, sys, PF.FlowReporting.ARC_FLOWS)
     results_reduced = solve_power_flow(pf, sys, PF.FlowReporting.ARC_FLOWS)
@@ -109,7 +111,9 @@ end
     pf = PF.ACPowerFlow{PF.TrustRegionACPowerFlow}(;
         skip_redistribution = true,
         correct_bustypes = true,
-        network_reductions = PNM.NetworkReduction[PNM.DegreeTwoReduction()],
+        network_reductions = PNM.NetworkReduction[PNM.DegreeTwoReduction(;
+            reduce_reactive_power_injectors = false,
+        )],
     )
     results_unreduced = solve_power_flow(pf_unreduced, sys, PF.FlowReporting.BRANCH_FLOWS)
     results_reduced = solve_power_flow(pf, sys, PF.FlowReporting.BRANCH_FLOWS)
@@ -129,7 +133,9 @@ end
     pf = PF.ACPowerFlow{PF.TrustRegionACPowerFlow}(;
         correct_bustypes = true,
         skip_redistribution = true,
-        network_reductions = PNM.NetworkReduction[PNM.DegreeTwoReduction()],
+        network_reductions = PNM.NetworkReduction[PNM.DegreeTwoReduction(;
+            reduce_reactive_power_injectors = false,
+        )],
     )
 
     # Get DataFrame results with BRANCH_FLOWS reporting
@@ -141,14 +147,21 @@ end
     pf2 = PF.ACPowerFlow{PF.TrustRegionACPowerFlow}(;
         correct_bustypes = true,
         skip_redistribution = true,
-        network_reductions = PNM.NetworkReduction[PNM.DegreeTwoReduction()],
+        network_reductions = PNM.NetworkReduction[PNM.DegreeTwoReduction(;
+            reduce_reactive_power_injectors = false,
+        )],
     )
     solve_and_store_power_flow!(pf2, sys2)
     base_power = PSY.get_base_power(sys2)
 
     # For every series branch segment, verify that DataFrame flow matches system object.
     nrd = PNM.get_network_reduction_data(
-        PNM.Ybus(sys2; network_reductions = PNM.NetworkReduction[PNM.DegreeTwoReduction()]),
+        PNM.Ybus(
+            sys2;
+            network_reductions = PNM.NetworkReduction[PNM.DegreeTwoReduction(;
+                reduce_reactive_power_injectors = false,
+            )],
+        ),
     )
     n_series_segments = 0
     n_parallel_in_series = 0
@@ -192,7 +205,9 @@ end
     sys = build_system(MatpowerTestSystems, "matpower_ACTIVSg2000_sys")
     pf = PF.ACPowerFlow{PF.TrustRegionACPowerFlow}(;
         correct_bustypes = true,
-        network_reductions = PNM.NetworkReduction[PNM.DegreeTwoReduction()],
+        network_reductions = PNM.NetworkReduction[PNM.DegreeTwoReduction(;
+            reduce_reactive_power_injectors = false,
+        )],
     )
     data = PF.PowerFlowData(pf, sys)
     PF.solve_power_flow!(data)
@@ -205,7 +220,7 @@ end
         (ix_from, ix_to) = (bus_lookup[equivalent_arc[1]], bus_lookup[equivalent_arc[2]])
         V0 = data.bus_magnitude[ix_from, 1] * exp(im * data.bus_angles[ix_from, 1])
         Vn = data.bus_magnitude[ix_to, 1] * exp(im * data.bus_angles[ix_to, 1])
-        x = PF._solve_series_interior_voltages(segments, equivalent_arc, (V0, Vn))
+        x = PF._solve_series_interior_voltages(segments, equivalent_arc, (V0, Vn), nrd)
         all_V = vcat([V0], x, [Vn])
 
         # At each interior node k (1 <= k <= n-1), the total current must be zero:
@@ -219,9 +234,9 @@ end
             (sf_l, _) = PNM.get_arc_tuple(seg_left)
             rev_l = sf_l != expected_from
             (_, _, y21_l, y22_l) = if rev_l
-                reverse(PNM.ybus_branch_entries(seg_left))
+                reverse(PNM.ybus_branch_entries(seg_left, nrd))
             else
-                PNM.ybus_branch_entries(seg_left)
+                PNM.ybus_branch_entries(seg_left, nrd)
             end
             # Current into node k from the left segment (to-side of segment k)
             I_from_left = y21_l * all_V[k] + y22_l * all_V[k + 1]
@@ -232,9 +247,9 @@ end
             (sf_r, _) = PNM.get_arc_tuple(seg_right)
             rev_r = sf_r != next_from
             (y11_r, y12_r, _, _) = if rev_r
-                reverse(PNM.ybus_branch_entries(seg_right))
+                reverse(PNM.ybus_branch_entries(seg_right, nrd))
             else
-                PNM.ybus_branch_entries(seg_right)
+                PNM.ybus_branch_entries(seg_right, nrd)
             end
             # Current into node k from the right segment (from-side of segment k+1)
             I_from_right = y11_r * all_V[k + 1] + y12_r * all_V[k + 2]
@@ -256,7 +271,9 @@ end
     sys = build_system(MatpowerTestSystems, "matpower_ACTIVSg2000_sys")
     pf = PF.ACPowerFlow{PF.TrustRegionACPowerFlow}(;
         correct_bustypes = true,
-        network_reductions = PNM.NetworkReduction[PNM.DegreeTwoReduction()],
+        network_reductions = PNM.NetworkReduction[PNM.DegreeTwoReduction(;
+            reduce_reactive_power_injectors = false,
+        )],
     )
     data = PF.PowerFlowData(pf, sys)
     PF.solve_power_flow!(data)

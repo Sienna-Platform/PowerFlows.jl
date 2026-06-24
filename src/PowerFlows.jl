@@ -7,6 +7,15 @@ export NewtonRaphsonACPowerFlow
 export TrustRegionACPowerFlow
 export LevenbergMarquardtACPowerFlow
 export RobustHomotopyPowerFlow
+export FastDecoupledACPowerFlow
+export FDVariant
+export FDDecoupled
+export FDFixedJacobian
+export FDScheme
+export FDSchemeXB
+export FDSchemeBX
+export FastDecoupledXB
+export FastDecoupledFixed
 export ACPolarPowerFlow
 export ACRectangularPowerFlow
 export ACMixedPowerFlow
@@ -41,6 +50,7 @@ import SparseArrays
 import InfrastructureSystems as IS
 import PowerNetworkMatrices as PNM
 import PowerNetworkMatrices: YBUS_ELTYPE
+import KrylovKit
 import SparseArrays:
     SparseMatrixCSC, SparseVector, sparse, sparsevec, AbstractSparseMatrix, spzeros
 import StaticArrays: MVector
@@ -75,8 +85,11 @@ include("mixed_cpb_setup.jl")
 include("mixed_cpb_power_flow_residual.jl")
 include("mixed_cpb_power_flow_jacobian.jl")
 include("solve_ac_power_flow.jl")
+include("residual_condition_diagnostics.jl")
 include("power_flow_setup.jl")
 include("power_flow_method.jl")
+include("fast_decoupled_matrices.jl")
+include("fast_decoupled_method.jl")
 include("levenberg-marquardt.jl")
 include("gradient_descent_ac_power_flow.jl")
 include("post_processing.jl")
