@@ -115,6 +115,18 @@ J.Jv  # Access the Jacobian matrix stored internally in J.
 # `ACPowerFlowJacobian` owns a fresh mutable buffer (the Newton loop mutates it in place;
 # Q-limit/PCM hold several live instances). Every nzval entry is rewritten by
 # `J(time_step)`, so the cached template stays pristine.
+# Reuse the cached structure on a matching key (network-matrix identity + slack nonzero pattern),
+# else `nothing` to signal a rebuild. The cache lives in its own `data.ac_jacobian_structure_cache`
+# field ([`ACJacobianStructureCache`](@ref)), so it never collides with the FastDecoupled/DC caches
+# in `data.solver_cache[]` (both can be live in a single FD-handoff-to-NR solve).
+_reuse_ac_jac_structure(::Nothing, matrix, nzind) = nothing
+_reuse_ac_jac_structure(e::ACJacobianStructureCache, matrix, nzind) =
+    if e.matrix === matrix && e.nzind == nzind
+        copy(e.structure)
+    else
+        nothing
+    end
+
 function _get_or_build_jacobian_structure(
     data::ACPowerFlowData,
     slack_factors::SparseVector{Float64, Int},
@@ -122,17 +134,13 @@ function _get_or_build_jacobian_structure(
     time_step::Int64,
 )
     nzind = SparseArrays.nonzeroinds(slack_factors)
-    entry = data.solver_cache[]
-    if entry isa Tuple{Symbol, Any, Vector{Int}, SparseMatrixCSC{Float64, J_INDEX_TYPE}} &&
-       entry[1] === :ac_jac_structure &&
-       entry[2] === data.power_network_matrix &&
-       entry[3] == nzind
-        return copy(entry[4])
-    end
+    reused = _reuse_ac_jac_structure(
+        data.ac_jacobian_structure_cache[], data.power_network_matrix, nzind)
+    isnothing(reused) || return reused
     Jv0 = _create_jacobian_matrix_structure(data, slack_factors, subnetworks, time_step)
     # Cache a pristine copy; `Jv0` is about to be mutated by the Newton loop.
-    data.solver_cache[] =
-        (:ac_jac_structure, data.power_network_matrix, copy(nzind), copy(Jv0))
+    data.ac_jacobian_structure_cache[] =
+        ACJacobianStructureCache(data.power_network_matrix, copy(nzind), copy(Jv0))
     return Jv0
 end
 

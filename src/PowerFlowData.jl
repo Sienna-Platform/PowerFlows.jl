@@ -153,6 +153,10 @@ struct PowerFlowData{
     # Each getter dispatches on the cached subtype, so an empty slot or a cross-use fails loudly
     # (a `MethodError`) instead of being silently mis-read — no sentinel tag needed.
     solver_cache::Base.RefValue{Union{Nothing, SolverCache}}
+    # Memoized NR/TR AC-Jacobian sparse structure. Its OWN slot (not `solver_cache`) because the
+    # AC Jacobian and a `solver_cache` entry can both be live in one solve (FastDecoupled handing
+    # off to NR), so they must not contend. Lazily populated; see `_get_or_build_jacobian_structure`.
+    ac_jacobian_structure_cache::Base.RefValue{Union{Nothing, ACJacobianStructureCache}}
 end
 
 # aliases for specific type parameter combinations.
@@ -414,6 +418,7 @@ function PowerFlowData(
         arc_lossy_admittance_to_from,
         controlled_devices,
         Base.RefValue{Union{Nothing, SolverCache}}(nothing), # solver_cache (lazily populated)
+        Base.RefValue{Union{Nothing, ACJacobianStructureCache}}(nothing), # ac_jacobian_structure_cache
     )
 end
 
