@@ -38,13 +38,13 @@ function _build_vsc_system(; g = 50.0)
         active_power_limits_to = (min = -1.0, max = 1.0),
         g = g,
         # from converter: DC-voltage control (DC slack), no AC-voltage control
-        dc_voltage_control_from = true,
-        ac_voltage_control_from = false,
+        dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
+        ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
         dc_setpoint_from = 1.0,
         ac_setpoint_from = 1.0,
         # to converter: power control (P, Q)
-        dc_voltage_control_to = false,
-        ac_voltage_control_to = false,
+        dc_control_to = PSY.VSCDCControlModes.DC_POWER,
+        ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
         dc_setpoint_to = 0.5,
         ac_setpoint_to = 1.0,
     )
@@ -105,8 +105,10 @@ end
         active_power_limits_from = (min = -1.0, max = 1.0),
         active_power_limits_to = (min = -1.0, max = 1.0),
         g = 40.0,
+        dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE_DROOP,
         dc_voltage_droop_from = 0.05,
         dc_setpoint_from = 1.0,
+        dc_control_to = PSY.VSCDCControlModes.DC_VOLTAGE_DROOP,
         dc_voltage_droop_to = 0.05,
         dc_setpoint_to = 1.0,
     )
@@ -156,13 +158,13 @@ function _build_vsc_pq_system(;
         active_power_limits_to = (min = -2.0, max = 2.0),
         g = g,
         # from: DC-voltage control (slack), reactive setpoint
-        dc_voltage_control_from = true,
-        ac_voltage_control_from = false,
+        dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
+        ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
         dc_setpoint_from = vdc,
         reactive_power_from = q_set_from,
         # to: power control (P, Q)
-        dc_voltage_control_to = false,
-        ac_voltage_control_to = false,
+        dc_control_to = PSY.VSCDCControlModes.DC_POWER,
+        ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
         dc_setpoint_to = p_set,
         reactive_power_to = q_set,
     )
@@ -243,9 +245,11 @@ end
 @testset "VSC I2: DC-voltage droop — both converters follow V_dc = V_set − k·P_c" begin
     sys, _, _ = _vsc_system(;
         g = 50.0,
+        dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE_DROOP,
         dc_voltage_droop_from = 0.02,
         dc_setpoint_from = 1.04,
         reactive_power_from = 0.0,
+        dc_control_to = PSY.VSCDCControlModes.DC_VOLTAGE_DROOP,
         dc_voltage_droop_to = 0.03,
         dc_setpoint_to = 1.04,
         reactive_power_to = 0.0,
@@ -270,12 +274,12 @@ end
 @testset "VSC I2: AC-voltage control (Vdc+Vac from, P+Vac to) holds bus magnitudes" begin
     sys, from_no, to_no = _vsc_system(;
         g = 50.0,
-        dc_voltage_control_from = true,
-        ac_voltage_control_from = true,
+        dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
+        ac_control_from = PSY.VSCACControlModes.AC_VOLTAGE,
         dc_setpoint_from = 1.05,
         ac_setpoint_from = 1.01,
-        dc_voltage_control_to = false,
-        ac_voltage_control_to = true,
+        dc_control_to = PSY.VSCDCControlModes.DC_POWER,
+        ac_control_to = PSY.VSCACControlModes.AC_VOLTAGE,
         dc_setpoint_to = 0.25,
         ac_setpoint_to = 1.0,
     )
@@ -297,12 +301,12 @@ end
 @testset "VSC I2: lossy converter — analytic Jacobian matches finite differences" begin
     sys, _, _ = _vsc_system(;
         g = 45.0,
-        dc_voltage_control_from = true,
-        ac_voltage_control_from = false,
+        dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
+        ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
         dc_setpoint_from = 1.03,
         reactive_power_from = 0.0,
-        dc_voltage_control_to = false,
-        ac_voltage_control_to = false,
+        dc_control_to = PSY.VSCDCControlModes.DC_POWER,
+        ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
         dc_setpoint_to = 0.35,
         reactive_power_to = 0.05,
         converter_loss_to = PSY.QuadraticCurve(0.01, 0.02, 0.005),
@@ -369,12 +373,12 @@ end
 @testset "VSC I3: mixed Jacobian matches finite differences (incl. loss)" begin
     sys, _, _ = _vsc_system(;
         g = 45.0,
-        dc_voltage_control_from = true,
-        ac_voltage_control_from = false,
+        dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
+        ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
         dc_setpoint_from = 1.03,
         reactive_power_from = 0.0,
-        dc_voltage_control_to = false,
-        ac_voltage_control_to = false,
+        dc_control_to = PSY.VSCDCControlModes.DC_POWER,
+        ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
         dc_setpoint_to = 0.35,
         reactive_power_to = 0.05,
         converter_loss_to = PSY.QuadraticCurve(0.01, 0.02, 0.005),
@@ -391,12 +395,12 @@ end
 @testset "VSC I3: rectangular Jacobian matches finite differences (incl. loss)" begin
     sys, _, _ = _vsc_system(;
         g = 45.0,
-        dc_voltage_control_from = true,
-        ac_voltage_control_from = false,
+        dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
+        ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
         dc_setpoint_from = 1.03,
         reactive_power_from = 0.0,
-        dc_voltage_control_to = false,
-        ac_voltage_control_to = false,
+        dc_control_to = PSY.VSCDCControlModes.DC_POWER,
+        ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
         dc_setpoint_to = 0.35,
         reactive_power_to = 0.05,
         converter_loss_to = PSY.QuadraticCurve(0.01, 0.02, 0.005),
@@ -443,9 +447,9 @@ function _build_mtdc_system()
     end
     # converters: dc1 = Vdc slack (1.05), dc2/dc3 = power orders
     configs = (
-        (dc_voltage_control = true, dc_setpoint = 1.05),
-        (dc_voltage_control = false, dc_setpoint = 0.30),
-        (dc_voltage_control = false, dc_setpoint = 0.20),
+        (dc_control = PSY.VSCDCControlModes.DC_VOLTAGE, dc_setpoint = 1.05),
+        (dc_control = PSY.VSCDCControlModes.DC_POWER, dc_setpoint = 0.30),
+        (dc_control = PSY.VSCDCControlModes.DC_POWER, dc_setpoint = 0.20),
     )
     for k in 1:3
         ic = PSY.InterconnectingConverter(;
@@ -457,8 +461,8 @@ function _build_mtdc_system()
             rating = 3.0,
             active_power_limits = (min = -3.0, max = 3.0),
             base_power = 100.0,
-            dc_voltage_control = configs[k].dc_voltage_control,
-            ac_voltage_control = false,
+            dc_control = configs[k].dc_control,
+            ac_control = PSY.VSCACControlModes.AC_REACTIVE_POWER,
             dc_setpoint = configs[k].dc_setpoint,
         )
         PSY.add_component!(sys, ic)

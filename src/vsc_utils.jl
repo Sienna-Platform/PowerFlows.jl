@@ -20,19 +20,16 @@ function _loss_coefficients(curve::PSY.QuadraticCurve)
     )
 end
 
-# Map the PSY per-terminal control fields to a control mode. A nonzero droop gain selects droop;
-# otherwise the dc/ac voltage-control booleans select among the four base modes.
-function _vsc_control_mode(
-    dc_voltage_control::Bool,
-    ac_voltage_control::Bool,
-    droop::Float64,
-)
-    iszero(droop) || return ControlPVdcDroop
-    if dc_voltage_control && ac_voltage_control
+# Map the PSY per-terminal DC-side / AC-side control enums to a `DCNetwork` control mode.
+function _vsc_control_mode(dc_control, ac_control)
+    dc_control == PSY.VSCDCControlModes.DC_VOLTAGE_DROOP && return ControlPVdcDroop
+    is_dc_voltage = dc_control == PSY.VSCDCControlModes.DC_VOLTAGE
+    is_ac_voltage = ac_control == PSY.VSCACControlModes.AC_VOLTAGE
+    if is_dc_voltage && is_ac_voltage
         return ControlVdcQ
-    elseif dc_voltage_control
+    elseif is_dc_voltage
         return ControlVdc
-    elseif ac_voltage_control
+    elseif is_ac_voltage
         return ControlPVac
     end
     return ControlPQ
@@ -169,8 +166,8 @@ function _push_converter!(
     ac_bus_ix::Int,
     ac_bus_number::Int,
     dc_node_ix::Int,
-    dc_voltage_control::Bool,
-    ac_voltage_control::Bool,
+    dc_control,
+    ac_control,
     droop::Float64,
     loss_curve,
     s_max::Float64,
@@ -180,7 +177,7 @@ function _push_converter!(
     ac_set::Float64,
     q_set::Float64,
 )
-    mode = _vsc_control_mode(dc_voltage_control, ac_voltage_control, droop)
+    mode = _vsc_control_mode(dc_control, ac_control)
     push!(b.ac_bus_ix, ac_bus_ix)
     push!(b.dc_node_ix, dc_node_ix)
     push!(b.mode, mode)
@@ -221,7 +218,7 @@ function _lower_vsc_lines!(b::_DCNetworkBuilder, lines, bus_lookup, reverse_bus_
         nt = _new_dc_node!(b, -1)
         _push_converter!(
             b, from_ix, from_number, nf,
-            PSY.get_dc_voltage_control_from(line), PSY.get_ac_voltage_control_from(line),
+            PSY.get_dc_control_from(line), PSY.get_ac_control_from(line),
             PSY.get_dc_voltage_droop_from(line), PSY.get_converter_loss_from(line),
             PSY.get_rating_from(line), PSY.get_active_power_limits_from(line),
             PSY.get_reactive_power_limits_from(line), PSY.get_dc_setpoint_from(line),
@@ -229,7 +226,7 @@ function _lower_vsc_lines!(b::_DCNetworkBuilder, lines, bus_lookup, reverse_bus_
         )
         _push_converter!(
             b, to_ix, to_number, nt,
-            PSY.get_dc_voltage_control_to(line), PSY.get_ac_voltage_control_to(line),
+            PSY.get_dc_control_to(line), PSY.get_ac_control_to(line),
             PSY.get_dc_voltage_droop_to(line), PSY.get_converter_loss_to(line),
             PSY.get_rating_to(line), PSY.get_active_power_limits_to(line),
             PSY.get_reactive_power_limits_to(line), PSY.get_dc_setpoint_to(line),
@@ -258,7 +255,7 @@ function _lower_mtdc!(
         node = _dc_node!(b, PSY.get_dc_bus(ic))
         _push_converter!(
             b, ac_ix, bus_number, node,
-            PSY.get_dc_voltage_control(ic), PSY.get_ac_voltage_control(ic),
+            PSY.get_dc_control(ic), PSY.get_ac_control(ic),
             PSY.get_dc_voltage_droop(ic), PSY.get_loss_function(ic),
             PSY.get_rating(ic), PSY.get_active_power_limits(ic),
             PSY.get_reactive_power_limits(ic), PSY.get_dc_setpoint(ic),

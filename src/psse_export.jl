@@ -2582,7 +2582,8 @@ function _compute_vsc_converter_fields(
     TYPE = get_ext_key_or_default(vscline, "TYPE_$suffix", type_org)
 
     if side == :from
-        MODE = PSY.get_ac_voltage_control_from(vscline) ? 1 : 2
+        MODE =
+            PSY.get_ac_control_from(vscline) == PSY.VSCACControlModes.AC_VOLTAGE ? 1 : 2
         DCSET = PSY.get_dc_setpoint_from(vscline)
         ACSET = PSY.get_ac_setpoint_from(vscline)
         converter_loss = PSY.get_converter_loss_from(vscline)
@@ -2591,7 +2592,8 @@ function _compute_vsc_converter_fields(
         PWF = PSY.get_power_factor_weighting_fraction_from(vscline)
         q_limits = PSY.get_reactive_power_limits_from(vscline)
     else
-        MODE = PSY.get_ac_voltage_control_to(vscline) ? 1 : 2
+        MODE =
+            PSY.get_ac_control_to(vscline) == PSY.VSCACControlModes.AC_VOLTAGE ? 1 : 2
         DCSET = PSY.get_dc_setpoint_to(vscline)
         ACSET = PSY.get_ac_setpoint_to(vscline)
         converter_loss = PSY.get_converter_loss_to(vscline)
@@ -2676,8 +2678,11 @@ function write_to_buffers!(
         vsc_line_name = string(split(PSY.get_name(vscline), "_")[end])
         NAME = _psse_quote_string(vsc_line_name)
         MDC = PSY.get_available(vscline) ? 1 : 0
-        if PSY.get_dc_voltage_control_from(vscline) &&
-           !PSY.get_dc_voltage_control_to(vscline)
+        from_is_dc_voltage =
+            PSY.get_dc_control_from(vscline) == PSY.VSCDCControlModes.DC_VOLTAGE
+        to_is_dc_voltage =
+            PSY.get_dc_control_to(vscline) == PSY.VSCDCControlModes.DC_VOLTAGE
+        if from_is_dc_voltage && !to_is_dc_voltage
             base_voltage = PSY.get_dc_setpoint_from(vscline)
         else
             base_voltage = PSY.get_dc_setpoint_to(vscline)
@@ -2687,12 +2692,10 @@ function write_to_buffers!(
         RDC = get_ext_key_or_default(vscline, "RDC", RDC_org)
 
         # Determine converter types based on DC voltage control configuration
-        if PSY.get_dc_voltage_control_from(vscline) &&
-           !PSY.get_dc_voltage_control_to(vscline)
+        if from_is_dc_voltage && !to_is_dc_voltage
             type1_org = 1
             type2_org = 2
-        elseif !PSY.get_dc_voltage_control_from(vscline) &&
-               PSY.get_dc_voltage_control_to(vscline)
+        elseif !from_is_dc_voltage && to_is_dc_voltage
             type1_org = 2
             type2_org = 1
         else
