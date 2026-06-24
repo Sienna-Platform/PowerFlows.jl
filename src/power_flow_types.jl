@@ -23,10 +23,21 @@ abstract type AbstractACPowerFlow{S <: ACPowerFlowSolverType} <: PowerFlowEvalua
 
 """An abstract supertype for the persistent per-solve caches stored in
 `PowerFlowData.solver_cache[]`. Concrete subtypes ([`DCSolverCache`](@ref) for the DC/PTDF path,
-`FastDecoupledCache` for the polar fast-decoupled solver) are type-disjoint, so the slot's
-type discriminates which path populated it — no sentinel tag is needed and a cross-use is a plain
+`FastDecoupledCache` for the polar fast-decoupled solver) are type-disjoint, so the slot's type
+discriminates which path populated it — no sentinel tag is needed and a cross-use is a plain
 `MethodError` rather than a silent reuse."""
 abstract type SolverCache end
+
+"""Memoized AC-Jacobian sparse structure, stored in its OWN `PowerFlowData` field (not the shared
+`solver_cache` slot): the NR/TR AC Jacobian and a [`SolverCache`](@ref) can both be live in one
+solve — e.g. a FastDecoupled solve that hands off to NR uses a `FastDecoupledCache` *and* this
+structure — so the two must not contend for a single slot. Cache key is the network-matrix
+identity + slack nonzero pattern (`nzind`); see `_get_or_build_jacobian_structure`."""
+struct ACJacobianStructureCache
+    matrix::PNM.AC_Ybus_Matrix
+    nzind::Vector{Int}
+    structure::SparseMatrixCSC{Float64, J_INDEX_TYPE}
+end
 
 # Centralized so the multi-line warning text can't drift between the two
 # formulation constructors.
