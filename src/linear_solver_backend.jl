@@ -24,6 +24,7 @@ mutable struct PardisoLinSolveCache
     is_factored::Bool
     scratch::Vector{Float64}      # persistent vector solve buffer (resized lazily) → non-alloc vector solve!
     scratch_mat::Matrix{Float64}  # persistent multi-RHS solve buffer (resized on shape change) → non-alloc matrix solve!
+    released::Bool                # set once RELEASE_ALL has freed the native MKL handle (guards double-free)
 end
 
 """Union of the KLU, AppleAccelerate, and MKLPardiso solver caches. Every member is concrete so
