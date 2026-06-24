@@ -137,10 +137,12 @@ struct PowerFlowData{
     lcc::LCCParameters
     arc_lossy_admittance_from_to::Union{SparseMatrixCSC{YBUS_ELTYPE, Int}, Nothing}
     arc_lossy_admittance_to_from::Union{SparseMatrixCSC{YBUS_ELTYPE, Int}, Nothing}
-    # Persistent linear-solver cache for the DC solves; see `DCSolverCache`. The `Base.Ref`
-    # allows lazy, in-place population on the first `solve_power_flow!` without reconstructing
-    # `data`.
-    solver_cache::Base.RefValue{Union{Nothing, DCSolverCache}}
+    # Persistent per-solve cache, lazily populated in place on the first `solve_power_flow!`
+    # (the `Base.Ref` avoids reconstructing `data`). Holds a [`SolverCache`](@ref): the DC/PTDF
+    # path stores a [`DCSolverCache`](@ref); the polar fast-decoupled solver stores a
+    # `FastDecoupledCache`. The two subtypes are type-disjoint, so the slot's type discriminates
+    # which path populated it (a cross-use is a loud `MethodError`, not a silent mis-read).
+    solver_cache::Base.RefValue{Union{Nothing, SolverCache}}
     # Persistent polar NR/TR reuse cache (a `PolarNRCache`, or `nothing`). Holds the residual,
     # Jacobian, linear-solver cache (with its symbolic factorization), and state-vector buffers so
     # the Q-limit retry loop and the multi-period time-step loop skip reconstructing these
@@ -406,7 +408,7 @@ function PowerFlowData(
         lcc_parameters,
         arc_lossy_admittance_from_to,
         arc_lossy_admittance_to_from,
-        Base.RefValue{Union{Nothing, DCSolverCache}}(nothing), # lazily populated
+        Base.RefValue{Union{Nothing, SolverCache}}(nothing), # lazily populated
         Base.RefValue{Union{Nothing, AbstractNRCache}}(nothing), # lazily populated
     )
 end

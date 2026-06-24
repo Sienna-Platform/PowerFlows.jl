@@ -43,24 +43,6 @@ the concrete type cannot be referenced there because of the construction cycle
 `PolarNRCache → ACPowerFlowResidual → PowerFlowData`."""
 abstract type AbstractNRCache end
 
-"""Lazily-built cache for the DC solves, stored in `data.solver_cache`. Reused across
-repeated solves on the same data (e.g. a PCM loop: fixed network, changing injections)
-so the network matrix is factored once and the solve/scratch buffers are not
-reallocated. `matrix` and `backend` exist only to invalidate the reuse — rebuild when
-the network-matrix object identity or the backend changes (see
-`_get_or_build_solver_cache!`). The remaining fields are the per-solve scratch:
-`power_injections`/`p_inj` solve buffers, arc resistances `rs`, and the signed arc-bus
-incidence (built once at `PowerFlowData` construction; `nothing` for vPTDF)."""
-struct DCSolverCache
-    matrix::SparseMatrixCSC{Float64, J_INDEX_TYPE}
-    backend::PNM.LinearSolverType
-    cache::PFLinearSolverCache
-    power_injections::Matrix{Float64}
-    p_inj::Matrix{Float64}
-    rs::Vector{Float64}
-    arc_bus_incidence::Union{SparseMatrixCSC{Int8, Int}, Nothing}
-end
-
 # --- Backend-agnostic operations (forward to the owning PNM namespace) ---
 
 symbolic_factor!(c::PNM.KLULinSolveCache, A::SparseMatrixCSC{Float64}) =
