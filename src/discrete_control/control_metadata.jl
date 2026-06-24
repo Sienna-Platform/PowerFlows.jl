@@ -92,29 +92,31 @@ function build_controlled_device_set(
         fb = PSY.get_number(PSY.get_from(arc))
         tb = PSY.get_number(PSY.get_to(arc))
         ext = PSY.get_ext(tx)
-        cbus = _controlled_bus_number(ext, tb)
+        # Regulated bus: the first-class field wins; `0` (the documented "local" sentinel) defers
+        # to the legacy PSS/e ext keys (NREG/SWREM/RMIDNT), which fall back to the to-bus.
+        reg = PSY.get_regulated_bus_number(tx)
+        cbus = reg != 0 ? reg : _controlled_bus_number(ext, tb)
         haskey(bus_lookup, cbus) ||
             error("ControlledTap $(PSY.get_name(tx)): controlled bus $cbus not in network")
         fix = bus_lookup[fb]
         tix = bus_lookup[tb]
         cix = bus_lookup[cbus]
-        pmin = _ext_float(ext, "RMI", DEFAULT_TAP_RATIO_MIN)
-        pmax = _ext_float(ext, "RMA", DEFAULT_TAP_RATIO_MAX)
-        ntp = Int(_ext_float(ext, "NTP", Float64(DEFAULT_TAP_POSITIONS)))
+        # First-class controllability fields (PSY #1684). Legacy `ext` scrapes still override when
+        # present, so externally parsed systems keep working until their parsers populate the fields.
+        lims = PSY.get_tap_limits(tx)
+        pmin = haskey(ext, "RMI") ? _ext_float(ext, "RMI", lims.min) : lims.min
+        pmax = haskey(ext, "RMA") ? _ext_float(ext, "RMA", lims.max) : lims.max
+        ntp = if haskey(ext, "NTP")
+            Int(_ext_float(ext, "NTP", Float64(DEFAULT_TAP_POSITIONS)))
+        else
+            PSY.get_number_of_tap_positions(tx)
+        end
         ntp < 2 && (ntp = DEFAULT_TAP_POSITIONS)
         _validate_tap!(PSY.get_name(tx), pmin, pmax, ntp)
         vset = if haskey(ext, "VSET")
             _ext_float(ext, "VSET", DEFAULT_TAP_VSET)
         else
-            controlled_bus = if cbus == fb
-                PSY.get_from(arc)
-            elseif cbus == tb
-                PSY.get_to(arc)
-            else
-                PSY.get_bus(sys, cbus)
-            end
-            m = PSY.get_magnitude(controlled_bus)
-            m > 0.0 ? m : DEFAULT_TAP_VSET
+            PSY.get_voltage_setpoint(tx)
         end
         yt = 1.0 / (PSY.get_r(tx) + PSY.get_x(tx) * im)
         ysh = PSY.get_primary_shunt(tx)
@@ -202,5 +204,68 @@ function build_controlled_device_set(
         )
     end
 
-    return ControlledDeviceSet(taps, shunts)
+    facts = ControlledFACTS[]
+    base_mva = PSY.get_base_power(sys)
+    for fd in PSY.get_available_components(PSY.FACTSControlDevice, sys)
+        mode = PSY.get_control_mode(fd)
+        # OOS or no control mode ⇒ not a voltage-controlling shunt; not enrolled
+        # (matches PSY's own `_facts_is_active` semantics and the MODSW=0 shunt skip).
+        if mode === nothing || mode == PSY.FACTSOperationModes.OOS
+            @debug "ControlledFACTS $(PSY.get_name(fd)): control_mode=$(mode) is not \
+                voltage-controlling; not enrolled."
+            continue
+        end
+        bus = PSY.get_number(PSY.get_bus(fd))
+        haskey(bus_lookup, bus) ||
+            error("ControlledFACTS $(PSY.get_name(fd)): bus $bus not in network")
+        # `max_shunt_current` is MVA at unity voltage ⇒ a symmetric susceptance band in p.u.
+        # on system base (Q = b·|V|², so at |V|=1 the MVA rating is the p.u. susceptance bound).
+        b_max = PSY.get_max_shunt_current(fd) / base_mva
+        b_max > 0.0 ||
+            error("ControlledFACTS $(PSY.get_name(fd)): max_shunt_current must be positive")
+        push!(
+            facts,
+            ControlledFACTS(
+                PSY.get_name(fd),
+                bus_lookup[bus],
+                bus_lookup[bus],   # shunt regulates its own (sending) bus
+                PSY.get_voltage_setpoint(fd),
+                -b_max,
+                b_max,
+                0.0,               # start neutral; the controller drives b from 0
+            ),
+        )
+    end
+
+    phase_shifters = ControlledPhaseShifter[]
+    for ps in PSY.get_available_components(PSY.PhaseShiftingTransformer, sys)
+        PSY.get_control_objective(ps) ==
+        PSY.TransformerControlObjective.ACTIVE_POWER_FLOW || continue
+        arc = PSY.get_arc(ps)
+        fb = PSY.get_number(PSY.get_from(arc))
+        tb = PSY.get_number(PSY.get_to(arc))
+        (haskey(bus_lookup, fb) && haskey(bus_lookup, tb)) ||
+            error("ControlledPhaseShifter $(PSY.get_name(ps)): arc bus not in network")
+        fix = bus_lookup[fb]
+        tix = bus_lookup[tb]
+        lims = PSY.get_phase_angle_limits(ps)
+        yt = 1.0 / (PSY.get_r(ps) + PSY.get_x(ps) * im)
+        push!(
+            phase_shifters,
+            ControlledPhaseShifter(
+                PSY.get_name(ps),
+                fix,
+                tix,
+                PSY.get_active_power_flow(ps),   # flow setpoint (from→to)
+                yt,
+                PSY.get_tap(ps),
+                lims.min,
+                lims.max,
+                _ybus_block_offsets(ybus, fix, tix),
+                PSY.get_α(ps),                   # current phase angle
+            ),
+        )
+    end
+
+    return ControlledDeviceSet(taps, shunts, facts, phase_shifters)
 end

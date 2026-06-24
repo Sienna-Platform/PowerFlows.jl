@@ -615,6 +615,127 @@ function _make_solvable_tap_shunt_system()
     return sys
 end
 
+"""Build a 2-bus system with a weak PQ bus regulated by a `FACTSControlDevice` (SVC/STATCOM).
+
+REF(1) ─line(x=0.10)─ PQ(2); bus 2 carries a reactive load that pulls its voltage below
+1.0 p.u. The SVC at bus 2 (`voltage_setpoint=1.0`) injects reactive power to hold the bus.
+`max_shunt_current` (MVA at unity voltage) sets the reactive capability; a small value forces
+the SVC to saturate at its susceptance limit before reaching the setpoint."""
+function _make_svc_system(;
+    max_shunt_current::Float64 = 100.0,
+    control_mode = PSY.FACTSOperationModes.NML,
+    reactive_load::Float64 = 0.4,
+)
+    sys = System(100.0)
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.0, 0.0)
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.PQ, 230, 1.0, 0.0)
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    _add_simple_line!(sys, b1, b2, 0.01, 0.10, 0.0)
+    load2 = PowerLoad(;
+        name = "load_2",
+        available = true,
+        bus = b2,
+        active_power = 0.2,
+        reactive_power = reactive_load,
+        base_power = 100.0,
+        max_active_power = 100.0,
+        max_reactive_power = 100.0,
+    )
+    add_component!(sys, load2)
+    svc = FACTSControlDevice(;
+        name = "svc_2",
+        available = true,
+        bus = b2,
+        control_mode = control_mode,
+        voltage_setpoint = 1.0,
+        max_shunt_current = max_shunt_current,
+        reactive_power_required = 100.0,
+    )
+    add_component!(sys, svc)
+    return sys
+end
+
+"""Build a 3-bus system with one voltage-controlling `TapTransformer` whose controllability is set
+through the FIRST-CLASS PSY fields (`tap_limits`, `number_of_tap_positions`, `regulated_bus_number`,
+`voltage_setpoint`) — no `ext` scrape — to exercise the post-#1684 builder path. The tap (b1→b2)
+remotely regulates b3."""
+function _make_field_controlled_tap_system()
+    sys = System(100.0)
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.0, 0.0)
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.PQ, 230, 1.0, 0.0)
+    b3 = _add_simple_bus!(sys, 3, ACBusTypes.PQ, 230, 1.0, 0.0)
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    _add_simple_line!(sys, b2, b3, 1e-2, 1e-2, 0.0)
+    tx = TapTransformer(;
+        name = "tap_1_2",
+        available = true,
+        active_power_flow = 0.0,
+        reactive_power_flow = 0.0,
+        arc = Arc(; from = b1, to = b2),
+        r = 0.01,
+        x = 0.10,
+        primary_shunt = 0.0 + 0.0im,
+        tap = 1.0,
+        rating = 1.0,
+        base_power = 100.0,
+        tap_limits = (min = 0.85, max = 1.15),
+        number_of_tap_positions = 17,
+        regulated_bus_number = 3,
+        voltage_setpoint = 1.02,
+        control_objective = PSY.TransformerControlObjective.VOLTAGE,
+    )
+    add_component!(sys, tx)
+    return sys
+end
+
+"""Build a 2-bus loop where a `PhaseShiftingTransformer` (ACTIVE_POWER_FLOW control) shares the
+path to a load with a parallel `Line`. The phase angle redistributes flow between the two
+branches, so the PAR can regulate ITS OWN active-power flow toward `active_power_flow` (the
+setpoint). A tight `phase_angle_limits` band forces the angle to saturate before reaching a
+high target."""
+function _make_par_system(;
+    p_target::Float64 = 0.3,
+    angle_min::Float64 = -0.6,
+    angle_max::Float64 = 0.6,
+)
+    sys = System(100.0)
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.0, 0.0)
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.PQ, 230, 1.0, 0.0)
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    # Parallel path A: a plain line.
+    _add_simple_line!(sys, b1, b2, 0.01, 0.10, 0.0)
+    load2 = PowerLoad(;
+        name = "load_2",
+        available = true,
+        bus = b2,
+        active_power = 0.5,
+        reactive_power = 0.1,
+        base_power = 100.0,
+        max_active_power = 100.0,
+        max_reactive_power = 100.0,
+    )
+    add_component!(sys, load2)
+    # Parallel path B: the PAR. Its phase angle steers its share of the load flow.
+    pst = PhaseShiftingTransformer(;
+        name = "par_1_2",
+        available = true,
+        active_power_flow = p_target,
+        reactive_power_flow = 0.0,
+        arc = Arc(; from = b1, to = b2),
+        r = 0.01,
+        x = 0.10,
+        primary_shunt = 0.0 + 0.0im,
+        tap = 1.0,
+        α = 0.0,
+        rating = 1.0,
+        base_power = 100.0,
+        phase_angle_limits = (min = angle_min, max = angle_max),
+        control_objective = PSY.TransformerControlObjective.ACTIVE_POWER_FLOW,
+    )
+    add_component!(sys, pst)
+    return sys
+end
+
 """Build a 4-bus system where the TapTransformer's FROM bus is the controlled bus
 (`controlled_on_primary=true`), exercising the eq.46 orientation path.
 

@@ -497,3 +497,73 @@ end
     # All three formulations must agree on the regulated voltage.
     @test maximum(vmags) - minimum(vmags) < 1e-4
 end
+
+@testset "discrete control: SVC holds weak bus to setpoint (NR)" begin
+    # Ample reactive capability (100 MVA ⇒ b_max = 1.0 p.u.): the SVC must inject
+    # reactive power to drive the weak PQ bus up to its voltage_setpoint (1.0 p.u.).
+    sys = _make_svc_system(; max_shunt_current = 100.0)
+    pf = ACPolarPowerFlow(; control_discrete_devices = true)
+    data = PowerFlowData(pf, sys)
+    solve_power_flow!(data)
+    @test all(data.converged)
+    f = data.controlled_devices.facts[1]
+    @test abs(data.bus_magnitude[f.controlled_ix, 1] - f.vset) <= 5e-3
+    # Regulating, not saturated at a susceptance limit.
+    @test f.b_min < f.current < f.b_max
+end
+
+@testset "discrete control: SVC clamps at reactive limit (NR)" begin
+    # Tight reactive capability (5 MVA ⇒ b_max = 0.05 p.u.) cannot supply the
+    # bus's reactive deficit: the SVC saturates at b_max and the bus stays below
+    # setpoint — the homotopy equivalent of the PV→PQ Q-limit release.
+    sys = _make_svc_system(; max_shunt_current = 5.0)
+    pf = ACPolarPowerFlow(; control_discrete_devices = true)
+    data = PowerFlowData(pf, sys)
+    solve_power_flow!(data)
+    @test all(data.converged)
+    f = data.controlled_devices.facts[1]
+    @test data.bus_magnitude[f.controlled_ix, 1] < f.vset - 1e-3
+    @test isapprox(f.current, f.b_max; atol = 1e-3)
+end
+
+@testset "discrete control: PAR regulates branch flow to target (NR)" begin
+    # Two parallel paths (line ∥ PAR) feed a load; the PAR steers its own active-power
+    # flow to the setpoint by adjusting its phase angle within the (ample) band.
+    sys = _make_par_system(; p_target = 0.3)
+    pf = ACPolarPowerFlow(; control_discrete_devices = true)
+    data = PowerFlowData(pf, sys)
+    solve_power_flow!(data)
+    @test all(data.converged)
+    p = data.controlled_devices.phase_shifters[1]
+    @test abs(PowerFlows.measured_value(p, data, 1) - p.p_target) <= 5e-3
+    # Regulating, not pinned at a phase-angle limit.
+    @test p.angle_min < p.current < p.angle_max
+end
+
+@testset "discrete control: PAR clamps at angle limit (NR)" begin
+    # A 0.45 p.u. flow target needs ≈0.04 rad of phase boost, but the band is only ±0.01:
+    # the angle saturates at a limit and the regulated flow falls short of the setpoint.
+    sys = _make_par_system(; p_target = 0.45, angle_min = -0.01, angle_max = 0.01)
+    pf = ACPolarPowerFlow(; control_discrete_devices = true)
+    data = PowerFlowData(pf, sys)
+    solve_power_flow!(data)
+    @test all(data.converged)
+    p = data.controlled_devices.phase_shifters[1]
+    @test isapprox(p.current, p.angle_max; atol = 1e-3) ||
+          isapprox(p.current, p.angle_min; atol = 1e-3)
+    @test PowerFlows.measured_value(p, data, 1) < p.p_target - 1e-2
+end
+
+@testset "discrete control: tap reads first-class PSY fields (#1684)" begin
+    # Controllability set via the new PSY fields (no ext); the builder must read them.
+    sys = _make_field_controlled_tap_system()
+    pf = ACPolarPowerFlow(; control_discrete_devices = true)
+    data = PowerFlowData(pf, sys)
+    t = data.controlled_devices.taps[1]
+    @test t.p_min ≈ 0.85
+    @test t.p_max ≈ 1.15
+    @test length(t.levels) == 17
+    @test t.vset ≈ 1.02
+    # regulated_bus_number = 3 ⇒ remote controlled bus, not the to-bus.
+    @test t.controlled_ix == PNM.get_bus_lookup(data.power_network_matrix)[3]
+end
