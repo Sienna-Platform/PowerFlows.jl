@@ -5,8 +5,6 @@ const CONTROL_RELAXATION_MAX = 0.8
 # non-oscillatory). 0.5 trades settling speed for a 2× margin on the worst-case gain bound.
 const CONTROL_CONTRACTION = 0.5
 
-@inline _read_vmag(data, ix::Int, ts::Int) = data.bus_magnitude[ix, ts]
-
 # Snapshot / capture / restore the per-time-step bus voltage state. A failed solve leaves
 # the diverged iterate in `data`, so the backtracking applicators roll back to the last
 # converged columns before retrying with a smaller step.
@@ -23,25 +21,25 @@ end
     return nothing
 end
 
-# Sign-corrected sigmoid law: orientation comes from the MEASURED dV/dp (not the
-# device's primary/secondary wiring) so the closed-loop gain σ'(V)·dV/dp ≤ 0
-# (negative feedback) regardless of wiring. `_sigmoid(lo,hi,…)` decreases in V when hi>lo.
-@inline function _control_target(d, vmag::Float64, S::Float64, dVdp::Float64)
+# Sign-corrected sigmoid law: orientation comes from the MEASURED dy/dp (not the
+# device's primary/secondary wiring) so the closed-loop gain σ'(y)·dy/dp ≤ 0
+# (negative feedback) regardless of wiring. `_sigmoid(lo,hi,…)` decreases in y when hi>lo.
+# `y` is the regulated quantity — bus voltage for voltage devices, branch flow for the PAR.
+@inline function _control_target(d, y::Float64, S::Float64, dydp::Float64)
     lo, hi = parameter_limits(d)
-    return if dVdp > 0.0
-        clamp(_sigmoid(lo, hi, S, vmag, voltage_setpoint(d)), lo, hi)
+    return if dydp > 0.0
+        clamp(_sigmoid(lo, hi, S, y, control_setpoint(d)), lo, hi)
     else
-        clamp(_sigmoid(hi, lo, S, vmag, voltage_setpoint(d)), lo, hi)
+        clamp(_sigmoid(hi, lo, S, y, control_setpoint(d)), lo, hi)
     end
 end
 
-# Measure dV/dp at the controlled bus by a small parameter perturbation; restore
-# afterward. `reliable=false` (a probe solve failed) ⇒ orientation unknown, so the
-# caller freezes the device rather than stepping it with an unknown sign.
+# Measure dy/dp (sensitivity of the regulated quantity to the parameter) by a small parameter
+# perturbation; restore afterward. `reliable=false` (a probe solve failed) ⇒ orientation unknown,
+# so the caller freezes the device rather than stepping it with an unknown sign.
 function _plant_sign(d, data, ts::Int, pf; kwargs...)::Tuple{Float64, Bool}
     p0 = current_parameter(d)
-    cix = controlled_bus_ix(d)
-    V0 = _read_vmag(data, cix, ts)
+    y0 = measured_value(d, data, ts)
     snap = _snapshot_voltage(data, ts)   # rolled back below if the probe can't re-converge
     lo, hi = parameter_limits(d)
     δ = 1e-3 * (hi - lo)
@@ -51,11 +49,11 @@ function _plant_sign(d, data, ts::Int, pf; kwargs...)::Tuple{Float64, Bool}
     h = p1 - p0
     apply_parameter!(d, data, p1, ts)
     ok1 = _solve_with_q_limits!(pf, data, ts; kwargs...)
-    V1 = _read_vmag(data, cix, ts)
+    y1 = measured_value(d, data, ts)
     apply_parameter!(d, data, p0, ts)
     ok2 = _solve_with_q_limits!(pf, data, ts; kwargs...)
     reliable = ok1 && ok2 && h != 0.0
-    dVdp = reliable ? (V1 - V0) / h : 0.0
+    dVdp = reliable ? (y1 - y0) / h : 0.0
     # Parameter is already back at p0; restore the converged state when the probe failed.
     reliable || _restore_voltage!(data, ts, snap)
     return dVdp, reliable
@@ -132,12 +130,12 @@ function _step_device!(
         # Frozen: return Inf so the outer loop never counts this device as settled.
         return Inf
     end
-    Vc = _read_vmag(data, controlled_bus_ix(d), ts)
+    yc = measured_value(d, data, ts)
     p_now = current_parameter(d)
     lo, hi = parameter_limits(d)
     dv = dVdp[idx]
     ω = _relaxation(d, S, dv)
-    p_tgt = _control_target(d, Vc, S, dv)
+    p_tgt = _control_target(d, yc, S, dv)
     # Track sign reversals to detect oscillation.
     s = Int(sign(p_tgt - p_now))
     ps = prev_sign[idx]
@@ -158,6 +156,37 @@ function _step_device!(
     return abs(reached - p_now)
 end
 
+# Probe each device in one concrete vector for its plant sign (dV/dp) and write the result into
+# the shared per-device state at `offset + i`. A function barrier: the body specializes on the
+# concrete element type, so there is no dynamic dispatch over a heterogeneous device collection.
+# `offset` reproduces the global [taps; shunts; facts] indexing of `dVdp`/`frozen`.
+function _probe_device_signs!(
+    devices, offset::Int, dVdp::Vector{Float64}, frozen::Vector{Bool},
+    data, ts::Int, pf; kwargs...,
+)
+    for (i, d) in enumerate(devices)
+        s, reliable = _plant_sign(d, data, ts, pf; kwargs...)
+        reliable ? (dVdp[offset + i] = s) : (frozen[offset + i] = true)
+    end
+    return nothing
+end
+
+# One proportional update over a concrete device vector; returns `true` iff every device in it
+# settled (parameter change < CONTROL_PARAM_TOL). Same function-barrier + `offset` indexing.
+function _step_device_group!(
+    devices, offset::Int, data, ts::Int, S::Float64, pf,
+    frozen::Vector{Bool}, dVdp::Vector{Float64}, osc::Vector{Int},
+    prev_sign::Vector{Int}; kwargs...,
+)::Bool
+    settled = true
+    for (i, d) in enumerate(devices)
+        g = _step_device!(
+            d, offset + i, data, ts, S, pf, frozen, dVdp, osc, prev_sign; kwargs...)
+        g >= CONTROL_PARAM_TOL && (settled = false)
+    end
+    return settled
+end
+
 function _control_continuation!(
     pf,
     data,
@@ -169,29 +198,38 @@ function _control_continuation!(
     converged || return false
 
     n_taps = length(set.taps)
-    n_dev = n_taps + length(set.shunts)
-    # Per-device state indexed in parallel with [taps; shunts] (plain vectors, no
-    # per-iteration string hashing). dVdp is measured once from the converged base
+    n_shunts = length(set.shunts)
+    n_facts = length(set.facts)
+    n_volt = n_taps + n_shunts + n_facts   # offset of the phase-shifter block
+    n_dev = n_volt + length(set.phase_shifters)
+    # Per-device state indexed in parallel with [taps; shunts; facts; phase_shifters] (plain
+    # vectors, no per-iteration string hashing). dVdp is measured once from the converged base
     # point: its sign sets the negative-feedback orientation, its magnitude drives
     # under-relaxation. Unreliable-probe devices are frozen, not stepped.
     dVdp = zeros(n_dev)
     frozen = fill(false, n_dev)
     osc = zeros(Int, n_dev)
     prev_sign = zeros(Int, n_dev)
-    for (i, d) in enumerate(set.taps)
-        s, reliable = _plant_sign(d, data, ts, pf; kwargs...)
-        reliable ? (dVdp[i] = s) : (frozen[i] = true)
-    end
-    for (j, d) in enumerate(set.shunts)
-        s, reliable = _plant_sign(d, data, ts, pf; kwargs...)
-        reliable ? (dVdp[n_taps + j] = s) : (frozen[n_taps + j] = true)
-    end
+    _probe_device_signs!(set.taps, 0, dVdp, frozen, data, ts, pf; kwargs...)
+    _probe_device_signs!(set.shunts, n_taps, dVdp, frozen, data, ts, pf; kwargs...)
+    _probe_device_signs!(
+        set.facts, n_taps + n_shunts, dVdp, frozen, data, ts, pf; kwargs...)
+    _probe_device_signs!(
+        set.phase_shifters, n_volt, dVdp, frozen, data, ts, pf; kwargs...)
     if any(frozen)
         frozen_names = join(
             vcat(
                 [set.taps[i].name for i in 1:n_taps if frozen[i]],
                 [set.shunts[j].name
                     for j in eachindex(set.shunts) if frozen[n_taps + j]],
+                [
+                    set.facts[k].name
+                    for k in eachindex(set.facts) if frozen[n_taps + n_shunts + k]
+                ],
+                [
+                    set.phase_shifters[m].name
+                    for m in eachindex(set.phase_shifters) if frozen[n_volt + m]
+                ],
             ),
             ", ",
         )
@@ -203,18 +241,17 @@ function _control_continuation!(
     S = INITIAL_CONTROL_STEEPNESS
     regulation_complete = false
     for _ in 1:MAX_CONTROL_OUTER_ITERATIONS
-        settled = true
-        for (i, d) in enumerate(set.taps)
-            g = _step_device!(
-                d, i, data, ts, S, pf, frozen, dVdp, osc, prev_sign; kwargs...)
-            g >= CONTROL_PARAM_TOL && (settled = false)
-        end
-        for (j, d) in enumerate(set.shunts)
-            g = _step_device!(
-                d, n_taps + j, data, ts, S, pf, frozen, dVdp, osc, prev_sign;
-                kwargs...)
-            g >= CONTROL_PARAM_TOL && (settled = false)
-        end
+        settled = _step_device_group!(
+            set.taps, 0, data, ts, S, pf, frozen, dVdp, osc, prev_sign; kwargs...)
+        settled &= _step_device_group!(
+            set.shunts, n_taps, data, ts, S, pf, frozen, dVdp, osc, prev_sign; kwargs...,
+        )
+        settled &= _step_device_group!(
+            set.facts, n_taps + n_shunts, data, ts, S, pf, frozen, dVdp, osc, prev_sign;
+            kwargs...)
+        settled &= _step_device_group!(
+            set.phase_shifters, n_volt, data, ts, S, pf, frozen, dVdp, osc, prev_sign;
+            kwargs...)
         if settled
             if S >= MAX_CONTROL_STEEPNESS
                 regulation_complete = true
@@ -264,6 +301,28 @@ function _restore_one!(d, data, ts::Int, continuous::Float64, pf; kwargs...)::Bo
     return _solve_with_q_limits!(pf, data, ts; kwargs...)
 end
 
+# Snap a concrete device vector onto its discrete grid (continuous devices clamp), stashing the
+# pre-snap continuous value in `cont` for the restore path. Function barrier over the eltype.
+function _snap_device_group!(devices, data, ts::Int, cont::Dict{String, Float64})
+    for d in devices
+        cont[d.name] = d.current
+        apply_parameter!(d, data, snap_to_discrete(d, d.current), ts)
+    end
+    return nothing
+end
+
+# λ-restore a concrete device vector toward its stashed continuous value; returns `true` iff all
+# restored to a converged state.
+function _restore_device_group!(
+    devices, data, ts::Int, cont::Dict{String, Float64}, pf; kwargs...,
+)::Bool
+    ok = true
+    for d in devices
+        ok &= _restore_one!(d, data, ts, cont[d.name], pf; kwargs...)
+    end
+    return ok
+end
+
 function snap_and_restore!(
     pf,
     data,
@@ -272,25 +331,23 @@ function snap_and_restore!(
     kwargs...,
 )::Bool
     cont = Dict{String, Float64}()
-    for d in set.taps
-        cont[d.name] = d.current
-        apply_parameter!(d, data, snap_to_discrete(d, d.current), ts)
-    end
-    for d in set.shunts
-        cont[d.name] = d.current
-        apply_parameter!(d, data, snap_to_discrete(d, d.current), ts)
-    end
+    _snap_device_group!(set.taps, data, ts, cont)
+    _snap_device_group!(set.shunts, data, ts, cont)
+    _snap_device_group!(set.facts, data, ts, cont)
+    _snap_device_group!(set.phase_shifters, data, ts, cont)
     _solve_with_q_limits!(pf, data, ts; kwargs...) && return true
-    ok = true
-    for d in set.taps
-        ok &= _restore_one!(d, data, ts, cont[d.name], pf; kwargs...)
-    end
-    for d in set.shunts
-        ok &= _restore_one!(d, data, ts, cont[d.name], pf; kwargs...)
-    end
+    ok = _restore_device_group!(set.taps, data, ts, cont, pf; kwargs...)
+    ok &= _restore_device_group!(set.shunts, data, ts, cont, pf; kwargs...)
+    ok &= _restore_device_group!(set.facts, data, ts, cont, pf; kwargs...)
+    ok &= _restore_device_group!(set.phase_shifters, data, ts, cont, pf; kwargs...)
     if !ok
         names = join(
-            vcat([d.name for d in set.taps], [d.name for d in set.shunts]),
+            vcat(
+                [d.name for d in set.taps],
+                [d.name for d in set.shunts],
+                [d.name for d in set.facts],
+                [d.name for d in set.phase_shifters],
+            ),
             ", ",
         )
         @error "discrete control could not restore feasibility after \
