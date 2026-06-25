@@ -14,7 +14,6 @@ named after their roles.
 """
 struct ACMixedCPBResidual
     data::ACPowerFlowData
-    Rf!::Function
     Rv::Vector{Float64}
     Y_bus_eff::SparseMatrixCSC{ComplexF64, Int}
     P_net_const::Vector{Float64}
@@ -89,7 +88,6 @@ function ACMixedCPBResidual(data::ACPowerFlowData, time_step::Int64)
 
     return ACMixedCPBResidual(
         data,
-        _update_mixed_cpb_residual_values!,
         Vector{Float64}(undef, total_state),
         Y_bus_eff,
         P_net_const,
@@ -117,7 +115,7 @@ function (R::ACMixedCPBResidual)(
     x::Vector{Float64},
     time_step::Int64,
 )
-    R.Rf!(R.Rv, x, R.Y_bus_eff, R.P_net_const, R.Q_net_const,
+    _update_mixed_cpb_residual_values!(R.Rv, x, R.Y_bus_eff, R.P_net_const, R.Q_net_const,
         R.const_I_P, R.const_I_Q, R.P_net_set,
         R.bus_slack_participation_factors, R.subnetworks,
         R.bus_state_offset, R.bus_block_size, R.total_bus_state,
@@ -128,7 +126,7 @@ function (R::ACMixedCPBResidual)(
 end
 
 function (R::ACMixedCPBResidual)(x::Vector{Float64}, time_step::Int64)
-    R.Rf!(R.Rv, x, R.Y_bus_eff, R.P_net_const, R.Q_net_const,
+    _update_mixed_cpb_residual_values!(R.Rv, x, R.Y_bus_eff, R.P_net_const, R.Q_net_const,
         R.const_I_P, R.const_I_Q, R.P_net_set,
         R.bus_slack_participation_factors, R.subnetworks,
         R.bus_state_offset, R.bus_block_size, R.total_bus_state,

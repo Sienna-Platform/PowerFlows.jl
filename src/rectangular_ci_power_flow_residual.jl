@@ -8,7 +8,6 @@ PV blocks are 3 entries `(e, f, Q)`.
 
 # Fields
 - `data::ACPowerFlowData`
-- `Rf!::Function` — inplace residual update
 - `Rv::Vector{Float64}` — current residual values, length `total_bus_state + 4·n_LCC`
 - `Y_bus_eff::SparseMatrixCSC{ComplexF64, Int}` — Y_bus with ZIP constant-Z folded in
 - `P_net_const::Vector{Float64}` — constant-power net injection (no |V| dependence)
@@ -26,7 +25,6 @@ PV blocks are 3 entries `(e, f, Q)`.
 """
 struct ACRectangularCIResidual
     data::ACPowerFlowData
-    Rf!::Function
     Rv::Vector{Float64}
     Y_bus_eff::SparseMatrixCSC{ComplexF64, Int}
     P_net_const::Vector{Float64}
@@ -98,7 +96,6 @@ function ACRectangularCIResidual(data::ACPowerFlowData, time_step::Int64)
 
     return ACRectangularCIResidual(
         data,
-        _update_rect_ci_residual_values!,
         Vector{Float64}(undef, total_state),
         Y_bus_eff,
         P_net_const,
@@ -125,7 +122,7 @@ function (R::ACRectangularCIResidual)(
     x::Vector{Float64},
     time_step::Int64,
 )
-    R.Rf!(R.Rv, x, R.Y_bus_eff, R.P_net_const, R.Q_net_const,
+    _update_rect_ci_residual_values!(R.Rv, x, R.Y_bus_eff, R.P_net_const, R.Q_net_const,
         R.const_I_P, R.const_I_Q, R.P_net_set,
         R.bus_slack_participation_factors, R.subnetworks,
         R.bus_state_offset, R.bus_block_size, R.total_bus_state,
@@ -136,7 +133,7 @@ function (R::ACRectangularCIResidual)(
 end
 
 function (R::ACRectangularCIResidual)(x::Vector{Float64}, time_step::Int64)
-    R.Rf!(R.Rv, x, R.Y_bus_eff, R.P_net_const, R.Q_net_const,
+    _update_rect_ci_residual_values!(R.Rv, x, R.Y_bus_eff, R.P_net_const, R.Q_net_const,
         R.const_I_P, R.const_I_Q, R.P_net_set,
         R.bus_slack_participation_factors, R.subnetworks,
         R.bus_state_offset, R.bus_block_size, R.total_bus_state,
@@ -208,7 +205,10 @@ function _update_rect_ci_residual_values!(
     # ZIP constant-Z is folded into `Y_bus_eff` at setup (see `fold_zip_constant_z!`
     # in `rectangular_ci_setup.jl`), so only constant-P and constant-I appear here.
     @inbounds for i in 1:n_buses
-        # ZIP const-I uses |V_state|, not V_set; V_FLOOR2 (1e-16) guards 1/|V|².
+        # ZIP const-I uses |V_state|; V_FLOOR2 (1e-16) guards 1/|V|². The floor only
+        # trips at degenerate |V| < 1e-8 pu (never near a solution), where the Jacobian
+        # keeps the unfloored derivative: inexact but finite and |V|-restoring, and
+        # harmless since the iteration never converges there.
         Vm = sqrt(max(e_state[i]^2 + f_state[i]^2, V_FLOOR2))
         P_eff_cache[i] = P_net_const[i] - const_I_P[i] * Vm
         Q_eff_cache[i] = Q_net_const[i] - const_I_Q[i] * Vm

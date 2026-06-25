@@ -28,12 +28,15 @@ mutable struct PardisoLinSolveCache
 end
 
 """Union of the KLU, AppleAccelerate, and MKLPardiso solver caches. Every member is concrete so
-the 3-way union stays within Julia's small-union splitting; the KLU member is pinned to
-`J_INDEX_TYPE` because that is the only instantiation flowing through these methods (the AC Newton
-cache and its fallback are built from `J.Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE}`)."""
+the 4-way union stays within Julia's small-union splitting. Both KLU index types are listed: the
+AC Newton cache and its fallback are built from `J.Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE}`
+(`Int32` off Apple, `Int64` on Apple), while PNM's DC ABA factorization is always
+`KLULinSolveCache{Float64, Int64}` regardless of platform — so the DC solve path needs the `Int64`
+member even where `J_INDEX_TYPE === Int32`."""
 const PFLinearSolverCache =
     Union{
-        PNM.KLULinSolveCache{Float64, J_INDEX_TYPE},
+        PNM.KLULinSolveCache{Float64, Int32},
+        PNM.KLULinSolveCache{Float64, Int64},
         PNM.AAFactorCache,
         PardisoLinSolveCache,
     }

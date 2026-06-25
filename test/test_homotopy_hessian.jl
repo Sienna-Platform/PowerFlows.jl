@@ -38,6 +38,38 @@
     @test all(isapprox(r, ratios[1]; rtol = 0.2) for r in ratios)
 end
 
+@testset "RH method: hessian at intermediate t" begin
+    # At 0 < t < 1 the assembled Hessian Hv must be the Jacobian (in x) of the
+    # homotopy gradient G(x) = ∇ F_value = (1−t)·diag(PQ)·(x−1) + t·Jᵀ F. Verify
+    # [G(x+Δx) − G(x)] − Hv·Δx → 0 at O(‖Δx‖²). This pins the sign/scaling of the
+    # F-weighted second-derivative term together with the JᵀJ and (1−t) terms.
+    time_step = 1
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14")
+    pf = ACPowerFlow{NewtonRaphsonACPowerFlow}()
+    data = PowerFlowData(pf, sys)
+    hess = PF.HomotopyHessian(data, time_step)
+    t_k = 0.5
+
+    x0 = PF.calculate_x0(data, time_step)
+    n = size(x0, 1)
+    u = rand(Float64, n) .- 0.5
+    u /= LinearAlgebra.norm(u)
+    hess(x0, t_k, time_step)
+    Hv = copy(hess.Hv)
+    errors = Float64[]
+    Δx_mags = collect(10.0^k for k in -3:-1:-6)
+    for Δx_mag in Δx_mags
+        x1 = x0 .+ Δx_mag .* u
+        g0 = similar(x0)
+        g1 = similar(x0)
+        PF.gradient_value!(g0, hess, t_k, x0, time_step)
+        PF.gradient_value!(g1, hess, t_k, x1, time_step)
+        push!(errors, norm((g1 - g0) - Hv * (x1 - x0)) / Δx_mag)
+    end
+    ratios = [err / Δx_mag for (err, Δx_mag) in zip(errors, Δx_mags)]
+    @test all(isapprox(r, ratios[1]; rtol = 0.2) for r in ratios)
+end
+
 @testset "RH method: sparse structure" begin
     # hessian's sparse structure shouldn't change.
     time_step = 1
