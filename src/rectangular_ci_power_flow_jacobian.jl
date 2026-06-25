@@ -169,7 +169,8 @@ function _create_rect_ci_jacobian_structure(
     vals = Float64[]
     n_buses = first(size(data.bus_type))
     n_lccs = size(data.lcc.p_set, 1)
-    total_state = total_bus_state + 4 * n_lccs
+    dcn = get_dc_network(data)
+    total_state = total_bus_state + 4 * n_lccs + vsc_tail_length(dcn)
 
     sizehint!(rows, 4 * SparseArrays.nnz(Y_bus_eff) + 17 * n_lccs + 2 * n_buses)
     sizehint!(cols, 4 * SparseArrays.nnz(Y_bus_eff) + 17 * n_lccs + 2 * n_buses)
@@ -236,7 +237,69 @@ function _create_rect_ci_jacobian_structure(
         )
     end
 
+    # VSC / DC-network tail entries.
+    if has_dc_network(dcn)
+        _create_rect_ci_vsc_structure!(
+            rows, cols, vals, dcn, bus_state_offset, total_bus_state, n_lccs,
+        )
+    end
+
     return SparseArrays.sparse(rows, cols, vals, total_state, total_state)
+end
+
+# Structural slots for the VSC tail (rectangular / MCPB). Bus×converter current-injection entries,
+# the two control rows per converter (with e,f columns for AC-voltage control), and the DC-KCL rows
+# (G_dc pattern + converter coupling, with e,f columns for converter losses). The bus diagonal
+# (e,f) block already exists from the Y_bus structure and is updated by `+=`.
+function _create_rect_ci_vsc_structure!(
+    rows::Vector{J_INDEX_TYPE},
+    cols::Vector{J_INDEX_TYPE},
+    vals::Vector{Float64},
+    dcn::DCNetwork,
+    bus_state_offset::AbstractVector,
+    total_bus_state::Int,
+    n_lccs::Int,
+)
+    nconv = n_vsc_converters(dcn)
+    nnode = n_dc_nodes(dcn)
+    vsc_off = total_bus_state + 4 * n_lccs
+    base = vsc_off + 2 * nconv
+    function push3(r, c)
+        push!(rows, J_INDEX_TYPE(r))
+        push!(cols, J_INDEX_TYPE(c))
+        push!(vals, 0.0)
+        return
+    end
+    for c in 1:nconv
+        off = Int(bus_state_offset[dcn.converter_ac_bus_ix[c]])
+        k = dcn.converter_dc_node_ix[c]
+        pc = vsc_off + 2 * c - 1
+        qc = vsc_off + 2 * c
+        vk = base + k
+        push3(off, pc)       # ∂Ir/∂P_c
+        push3(off, qc)       # ∂Ir/∂Q_c
+        push3(off + 1, pc)   # ∂Ii/∂P_c
+        push3(off + 1, qc)   # ∂Ii/∂Q_c
+        push3(pc, pc)        # ∂r1/∂P_c
+        push3(pc, vk)        # ∂r1/∂V_dc
+        push3(qc, qc)        # ∂r2/∂Q_c
+        push3(qc, off)       # ∂r2/∂e (Vac)
+        push3(qc, off + 1)   # ∂r2/∂f (Vac)
+        push3(vk, pc)        # ∂KCL/∂P_c
+        push3(vk, qc)        # ∂KCL/∂Q_c (loss)
+        push3(vk, off)       # ∂KCL/∂e (loss)
+        push3(vk, off + 1)   # ∂KCL/∂f (loss)
+    end
+    for k in 1:nnode
+        push3(base + k, base + k)
+    end
+    for b in 1:n_dc_branches(dcn)
+        f = dcn.branch_from[b]
+        t = dcn.branch_to[b]
+        push3(base + f, base + t)
+        push3(base + t, base + f)
+    end
+    return
 end
 
 function _create_rect_ci_lcc_structure!(
@@ -588,6 +651,93 @@ function _update_rect_ci_jacobian_values!(
             bus_state_offset,
             time_step,
         )
+    end
+    dcn = get_dc_network(data)
+    if has_dc_network(dcn)
+        _set_entries_for_vsc_rect!(
+            Jv, Jvnz, diag_base_nz, dcn, e_state, f_state,
+            bus_state_offset, total_bus_state, n_lccs, time_step,
+        )
+    end
+    return
+end
+
+# VSC tail Jacobian (rectangular / MCPB). Direct `Jv[r,c]` assignment for the new bus×converter and
+# tail entries; `+=` into the existing bus-diagonal nonzeros (via `diag_base_nz`) for the
+# current-injection (e,f) coupling. Handles all control modes and converter losses.
+function _set_entries_for_vsc_rect!(
+    Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
+    Jvnz::Vector{Float64},
+    diag_base_nz::Matrix{Int},
+    dcn::DCNetwork,
+    e_state::Vector{Float64},
+    f_state::Vector{Float64},
+    bus_state_offset::AbstractVector,
+    total_bus_state::Int,
+    n_lccs::Int,
+    time_step::Int,
+)
+    nconv = n_vsc_converters(dcn)
+    nnode = n_dc_nodes(dcn)
+    vsc_off = total_bus_state + 4 * n_lccs
+    base = vsc_off + 2 * nconv
+    G = dcn.G_dc
+    @inbounds for b in 1:n_dc_branches(dcn)
+        f = dcn.branch_from[b]
+        t = dcn.branch_to[b]
+        Jv[base + f, base + t] = G[f, t]
+        Jv[base + t, base + f] = G[t, f]
+    end
+    @inbounds for k in 1:nnode
+        Jv[base + k, base + k] = G[k, k]
+    end
+    @inbounds for c in 1:nconv
+        ix = dcn.converter_ac_bus_ix[c]
+        off = Int(bus_state_offset[ix])
+        k = dcn.converter_dc_node_ix[c]
+        pc = vsc_off + 2 * c - 1
+        qc = vsc_off + 2 * c
+        vk = base + k
+        mode = dcn.converter_mode[c]
+        e = e_state[ix]
+        f = f_state[ix]
+        D = max(e * e + f * f, V_FLOOR2)
+        Vm = sqrt(D)
+        P = dcn.p_c[c, time_step]
+        Q = dcn.q_c[c, time_step]
+        Vdc = dcn.node_vdc[k, time_step]
+        # current-injection derivatives w.r.t. bus (e,f) → accumulate into the bus diagonal
+        num_r = P * e + Q * f
+        num_i = P * f - Q * e
+        D2 = D * D
+        Jvnz[diag_base_nz[1, ix]] += (P * D - num_r * 2.0 * e) / D2
+        Jvnz[diag_base_nz[2, ix]] += (Q * D - num_r * 2.0 * f) / D2
+        Jvnz[diag_base_nz[3, ix]] += (-Q * D - num_i * 2.0 * e) / D2
+        Jvnz[diag_base_nz[4, ix]] += (P * D - num_i * 2.0 * f) / D2
+        # bus current rows w.r.t. converter (P_c, Q_c)
+        Jv[off, pc] = e / D
+        Jv[off, qc] = f / D
+        Jv[off + 1, pc] = f / D
+        Jv[off + 1, qc] = -e / D
+        # control rows
+        Jv[pc, pc] = _vsc_dr1_dP(mode, dcn, c)
+        Jv[pc, vk] = _vsc_dr1_dVdc(mode)
+        Jv[qc, qc] = _vsc_dr2_dQ(mode)
+        if controls_ac_voltage(mode)
+            Jv[qc, off] = 2.0 * e
+            Jv[qc, off + 1] = 2.0 * f
+        else
+            Jv[qc, off] = 0.0
+            Jv[qc, off + 1] = 0.0
+        end
+        # DC-KCL row
+        Pdc = _vsc_pdc(dcn, c, Vm, time_step)
+        (dP, dQ, dVm) = _vsc_pdc_derivatives(dcn, c, Vm, time_step)
+        Jv[vk, pc] = dP / Vdc
+        Jv[vk, qc] = dQ / Vdc
+        Jv[vk, off] = (dVm * e / Vm) / Vdc
+        Jv[vk, off + 1] = (dVm * f / Vm) / Vdc
+        Jv[vk, vk] += -Pdc / (Vdc * Vdc)
     end
     return
 end

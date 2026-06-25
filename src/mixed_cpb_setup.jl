@@ -76,6 +76,16 @@ function _mixed_fill_state!(
         x[offset_lcc + 3] = data.lcc.rectifier.thyristor_angle[i, value_time_step]
         x[offset_lcc + 4] = data.lcc.inverter.thyristor_angle[i, value_time_step]
     end
+    dcn = get_dc_network(data)
+    vsc_off = total_bus_state + 4 * n_lccs
+    nconv = n_vsc_converters(dcn)
+    for c in 1:nconv
+        x[vsc_off + 2 * c - 1] = dcn.p_c[c, value_time_step]
+        x[vsc_off + 2 * c] = dcn.q_c[c, value_time_step]
+    end
+    for k in 1:n_dc_nodes(dcn)
+        x[vsc_off + 2 * nconv + k] = dcn.node_vdc[k, value_time_step]
+    end
     return
 end
 

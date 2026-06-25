@@ -170,7 +170,8 @@ function _create_mixed_cpb_jacobian_structure(
     vals = Float64[]
     n_buses = first(size(data.bus_type))
     n_lccs = size(data.lcc.p_set, 1)
-    total_state = total_bus_state + 4 * n_lccs
+    dcn = get_dc_network(data)
+    total_state = total_bus_state + 4 * n_lccs + vsc_tail_length(dcn)
 
     sizehint!(rows, 4 * SparseArrays.nnz(Y_bus_eff) + 17 * n_lccs + 2 * n_buses)
     sizehint!(cols, 4 * SparseArrays.nnz(Y_bus_eff) + 17 * n_lccs + 2 * n_buses)
@@ -230,6 +231,14 @@ function _create_mixed_cpb_jacobian_structure(
     if n_lccs > 0
         _create_rect_ci_lcc_structure!(
             rows, cols, vals, data, bus_state_offset, total_bus_state,
+        )
+    end
+
+    # VSC structural slots are identical to the rectangular layout (the imag-first swap affects
+    # values, not the (row, col) pattern), so the rect builder is reused directly.
+    if has_dc_network(dcn)
+        _create_rect_ci_vsc_structure!(
+            rows, cols, vals, dcn, bus_state_offset, total_bus_state, n_lccs,
         )
     end
 
@@ -464,6 +473,108 @@ function _update_mixed_cpb_jacobian_values!(
             data, Jvnz, diag_base_nz, lcc_nz,
             e_state, f_state, bus_state_offset, time_step,
         )
+    end
+    dcn = get_dc_network(data)
+    if has_dc_network(dcn)
+        _set_entries_for_vsc_mixed!(
+            Jv, Jvnz, diag_base_nz, dcn, e_state, f_state,
+            view(data.bus_type, :, time_step), bus_state_offset, total_bus_state,
+            size(data.lcc.p_set, 1), time_step,
+        )
+    end
+    return
+end
+
+# VSC tail Jacobian (MCPB). Identical to the rectangular writer except the bus current-injection
+# entries (bus diagonal + bus×converter) use the imag-first slot order at PQ buses. The tail rows
+# (control + DC-KCL, including their e,f columns) are unchanged.
+function _set_entries_for_vsc_mixed!(
+    Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
+    Jvnz::Vector{Float64},
+    diag_base_nz::Matrix{Int},
+    dcn::DCNetwork,
+    e_state::Vector{Float64},
+    f_state::Vector{Float64},
+    bus_types::AbstractVector,
+    bus_state_offset::AbstractVector,
+    total_bus_state::Int,
+    n_lccs::Int,
+    time_step::Int,
+)
+    nconv = n_vsc_converters(dcn)
+    nnode = n_dc_nodes(dcn)
+    vsc_off = total_bus_state + 4 * n_lccs
+    base = vsc_off + 2 * nconv
+    G = dcn.G_dc
+    @inbounds for b in 1:n_dc_branches(dcn)
+        f = dcn.branch_from[b]
+        t = dcn.branch_to[b]
+        Jv[base + f, base + t] = G[f, t]
+        Jv[base + t, base + f] = G[t, f]
+    end
+    @inbounds for k in 1:nnode
+        Jv[base + k, base + k] = G[k, k]
+    end
+    @inbounds for c in 1:nconv
+        ix = dcn.converter_ac_bus_ix[c]
+        off = Int(bus_state_offset[ix])
+        k = dcn.converter_dc_node_ix[c]
+        pc = vsc_off + 2 * c - 1
+        qc = vsc_off + 2 * c
+        vk = base + k
+        mode = dcn.converter_mode[c]
+        e = e_state[ix]
+        f = f_state[ix]
+        D = max(e * e + f * f, V_FLOOR2)
+        Vm = sqrt(D)
+        P = dcn.p_c[c, time_step]
+        Q = dcn.q_c[c, time_step]
+        Vdc = dcn.node_vdc[k, time_step]
+        num_r = P * e + Q * f
+        num_i = P * f - Q * e
+        D2 = D * D
+        dIr_de = (P * D - num_r * 2.0 * e) / D2
+        dIr_df = (Q * D - num_r * 2.0 * f) / D2
+        dIi_de = (-Q * D - num_i * 2.0 * e) / D2
+        dIi_df = (P * D - num_i * 2.0 * f) / D2
+        if bus_types[ix] == PSY.ACBusTypes.PQ
+            # imag-first: F[off] = Ii, F[off+1] = Ir
+            Jvnz[diag_base_nz[1, ix]] += dIi_de
+            Jvnz[diag_base_nz[2, ix]] += dIi_df
+            Jvnz[diag_base_nz[3, ix]] += dIr_de
+            Jvnz[diag_base_nz[4, ix]] += dIr_df
+            Jv[off, pc] = f / D
+            Jv[off, qc] = -e / D
+            Jv[off + 1, pc] = e / D
+            Jv[off + 1, qc] = f / D
+        else
+            Jvnz[diag_base_nz[1, ix]] += dIr_de
+            Jvnz[diag_base_nz[2, ix]] += dIr_df
+            Jvnz[diag_base_nz[3, ix]] += dIi_de
+            Jvnz[diag_base_nz[4, ix]] += dIi_df
+            Jv[off, pc] = e / D
+            Jv[off, qc] = f / D
+            Jv[off + 1, pc] = f / D
+            Jv[off + 1, qc] = -e / D
+        end
+        # control + DC-KCL tail rows (columns are bus e,f states — no imag-first swap)
+        Jv[pc, pc] = _vsc_dr1_dP(mode, dcn, c)
+        Jv[pc, vk] = _vsc_dr1_dVdc(mode)
+        Jv[qc, qc] = _vsc_dr2_dQ(mode)
+        if controls_ac_voltage(mode)
+            Jv[qc, off] = 2.0 * e
+            Jv[qc, off + 1] = 2.0 * f
+        else
+            Jv[qc, off] = 0.0
+            Jv[qc, off + 1] = 0.0
+        end
+        Pdc = _vsc_pdc(dcn, c, Vm, time_step)
+        (dP, dQ, dVm) = _vsc_pdc_derivatives(dcn, c, Vm, time_step)
+        Jv[vk, pc] = dP / Vdc
+        Jv[vk, qc] = dQ / Vdc
+        Jv[vk, off] = (dVm * e / Vm) / Vdc
+        Jv[vk, off + 1] = (dVm * f / Vm) / Vdc
+        Jv[vk, vk] += -Pdc / (Vdc * Vdc)
     end
     return
 end
