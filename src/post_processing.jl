@@ -11,7 +11,6 @@ function _calculate_fixed_admittance_powers(
     data::PowerFlowData,
     time_step::Int,
 )
-    check_unit_setting(sys)
     nrd = PNM.get_network_reduction_data(get_power_network_matrix(data))
     bus_lookup = get_bus_lookup(data)
 
@@ -45,7 +44,6 @@ function _power_redistribution_ref(
         Dict{Tuple{DataType, String}, Float64},
     } = nothing,
 )
-    check_unit_setting(sys)
     devices_ =
         PSY.get_components(x -> _is_available_source(x, bus), PSY.StaticInjection, sys)
     all_devices = devices_
@@ -53,12 +51,12 @@ function _power_redistribution_ref(
     sources = filter(x -> x isa PSY.Source, collect(devices_))
     non_source_devices = filter(x -> typeof(x) !== PSY.Source, collect(devices_))
     if length(sources) > 0 && length(non_source_devices) > 0
-        P_gen -= sum(PSY.get_active_power.(sources))
+        P_gen -= sum(PSY.get_active_power.(sources, (PSY.SU,)))
         devices_ = setdiff(devices_, sources)
         @warn "Found sources and non-source devices at the same bus. Active power re-distribution is not well defined for this case. Source active power will remain unchanged and remaining active power will be re-distributed among non-source devices."
     elseif length(sources) > 1 && length(non_source_devices) == 0
-        Psources = sum(PSY.get_active_power.(sources))
-        Qsources = sum(PSY.get_reactive_power.(sources))
+        Psources = sum(PSY.get_active_power.(sources, (PSY.SU,)))
+        Qsources = sum(PSY.get_reactive_power.(sources, (PSY.SU,)))
         if isapprox(Psources, P_gen; atol = 0.001) &&
            isapprox(Qsources, Q_gen; atol = 0.001)
             @warn "Only sources found at reference bus --- no redistribution of active or reactive power will take place"
@@ -70,7 +68,7 @@ function _power_redistribution_ref(
     end
     if length(devices_) == 1
         device = first(devices_)
-        PSY.set_active_power!(device, P_gen)
+        PSY.set_active_power!(device, P_gen * PSY.SU)
         _reactive_power_redistribution_pv(sys, Q_gen, bus, max_iterations)
         return
     elseif length(devices_) > 1
@@ -90,13 +88,16 @@ function _power_redistribution_ref(
         if isempty(devices_gspf)
             @debug "No devices with slack factors for bus $(PSY.get_name(bus))"
         else
-            to_redistribute = P_gen - sum(PSY.get_active_power.(all_devices))
+            to_redistribute = P_gen - sum(PSY.get_active_power.(all_devices, (PSY.SU,)))
             sum_bus_gspf = sum(values(devices_gspf))
 
             for (device, factor) in devices_gspf
                 PSY.set_active_power!(
                     device,
-                    PSY.get_active_power(device) + to_redistribute * factor / sum_bus_gspf,
+                    (
+                        PSY.get_active_power(device, PSY.SU) +
+                        to_redistribute * factor / sum_bus_gspf
+                    ) * PSY.SU,
                 )
             end
             _reactive_power_redistribution_pv(sys, Q_gen, bus, max_iterations)
@@ -117,7 +118,7 @@ function _power_redistribution_ref(
             push!(units_at_limit, ix)
             @warn "Unit $(PSY.get_name(d)) set at the limit $(p_set_point). P_max = $(p_limits.max) P_min = $(p_limits.min)"
         end
-        PSY.set_active_power!(d, p_set_point)
+        PSY.set_active_power!(d, p_set_point * PSY.SU)
         p_residual -= p_set_point
     end
 
@@ -138,7 +139,7 @@ function _power_redistribution_ref(
                 p_limits = get_active_power_limits_for_power_flow(d)
                 part_factor = p_limits.max / (sum_basepower - removed_power)
                 p_frac = p_residual * part_factor
-                current_p = PSY.get_active_power(d)
+                current_p = PSY.get_active_power(d, PSY.SU)
                 p_set_point = p_frac + current_p
                 if (p_set_point >= p_limits.max - BOUNDS_TOLERANCE) ||
                    (p_set_point <= p_limits.min + BOUNDS_TOLERANCE)
@@ -146,7 +147,7 @@ function _power_redistribution_ref(
                     @warn "Unit $(PSY.get_name(d)) set at the limit $(p_set_point). P_max = $(p_limits.max) P_min = $(p_limits.min)"
                 end
                 p_set_point = clamp(p_set_point, p_limits.min, p_limits.max)
-                PSY.set_active_power!(d, p_set_point)
+                PSY.set_active_power!(d, p_set_point * PSY.SU)
                 reallocated_p += p_frac
             end
             p_residual -= reallocated_p
@@ -163,8 +164,8 @@ function _power_redistribution_ref(
             @assert length(remaining_unit_index) == 1 remaining_unit_index
             device = devices[remaining_unit_index[1]]
             @debug "Remaining residual $q_residual, $(PSY.get_name(bus))"
-            p_set_point = PSY.get_active_power(device) + p_residual
-            PSY.set_active_power!(device, p_set_point)
+            p_set_point = PSY.get_active_power(device, PSY.SU) + p_residual
+            PSY.set_active_power!(device, p_set_point * PSY.SU)
             p_limits = get_active_power_limits_for_power_flow(device)
             if (p_set_point >= p_limits.max - BOUNDS_TOLERANCE) ||
                (p_set_point <= p_limits.min + BOUNDS_TOLERANCE)
@@ -183,18 +184,17 @@ function _reactive_power_redistribution_pv(
     bus::PSY.ACBus,
     max_iterations::Int,
 )
-    check_unit_setting(sys)
     @debug "Reactive Power Distribution $(PSY.get_name(bus))"
     devices_ =
         PSY.get_components(x -> _is_available_source(x, bus), PSY.StaticInjection, sys)
     sources = filter(x -> typeof(x) == PSY.Source, collect(devices_))
     non_source_devices = filter(x -> typeof(x) !== PSY.Source, collect(devices_))
     if length(sources) > 0 && length(non_source_devices) > 0
-        Q_gen -= sum(PSY.get_reactive_power.(sources))
+        Q_gen -= sum(PSY.get_reactive_power.(sources, (PSY.SU,)))
         devices_ = setdiff(devices_, sources)
         @warn "Found sources and non-source devices at the same bus. Reactive power re-distribution is not well defined for this case. Source reactive power will remain unchanged and remaining reactive power will be re-distributed among non-source devices."
     elseif length(sources) > 1 && length(non_source_devices) == 0
-        Qsources = sum(PSY.get_reactive_power.(sources))
+        Qsources = sum(PSY.get_reactive_power.(sources, (PSY.SU,)))
         if isapprox(Qsources, Q_gen; atol = 0.001)
             @warn "Only sources found at PV bus --- no redistribution of reactive power will take place"
             return
@@ -205,30 +205,30 @@ function _reactive_power_redistribution_pv(
     end
     if length(devices_) == 1
         @debug "Only one generator in the bus"
-        q_limits = PSY.get_reactive_power_limits(first(devices_))
+        q_limits = PSY.get_reactive_power_limits(first(devices_), PSY.SU)
         if !(q_limits.min - BOUNDS_TOLERANCE <= Q_gen <= q_limits.max + BOUNDS_TOLERANCE)
             @warn "Reactive power at ref bus is outside limits."
         end
-        PSY.set_reactive_power!(first(devices_), Q_gen)
+        PSY.set_reactive_power!(first(devices_), Q_gen * PSY.SU)
         return
     elseif length(devices_) > 1
-        devices = sort(collect(devices_); by = x -> PSY.get_max_reactive_power(x))
+        devices = sort(collect(devices_); by = x -> PSY.get_max_reactive_power(x, PSY.SU))
     else
         error("No devices in bus $(PSY.get_name(bus))")
     end
     total_active_power = 0.0
     for d in devices
         if PSY.get_available(d) && !isa(d, PSY.SynchronousCondenser)
-            total_active_power += PSY.get_active_power(d)
+            total_active_power += PSY.get_active_power(d, PSY.SU)
         end
     end
 
     if isapprox(total_active_power, 0.0; atol = ISAPPROX_ZERO_TOLERANCE)
         @debug "Total Active Power Output at the bus is $(total_active_power). Using Unit's Base Power"
-        sum_basepower = sum(PSY.get_base_power.(devices))
+        sum_basepower = sum(PSY.get_base_power.(devices, (PSY.NU,)))
         for d in devices
-            part_factor = PSY.get_base_power(d) / sum_basepower
-            PSY.set_reactive_power!(d, Q_gen * part_factor)
+            part_factor = PSY.get_base_power(d, PSY.NU) / sum_basepower
+            PSY.set_reactive_power!(d, Q_gen * part_factor * PSY.SU)
         end
         return
     end
@@ -245,10 +245,10 @@ function _reactive_power_redistribution_pv(
             continue
         end
 
-        fraction = PSY.get_active_power(d) / total_active_power
+        fraction = PSY.get_active_power(d, PSY.SU) / total_active_power
 
         if fraction == 0.0
-            PSY.set_reactive_power!(d, 0.0)
+            PSY.set_reactive_power!(d, 0.0 * PSY.SU)
             continue
         else
             @assert fraction > 0
@@ -263,7 +263,7 @@ function _reactive_power_redistribution_pv(
             @warn "Unit $(PSY.get_name(d)) set at the limit $(q_set_point). Q_max = $(q_limits.max) Q_min = $(q_limits.min)"
         end
 
-        PSY.set_reactive_power!(d, q_set_point)
+        PSY.set_reactive_power!(d, q_set_point * PSY.SU)
         q_residual -= q_set_point
 
         if isapprox(q_residual, 0.0; atol = ISAPPROX_ZERO_TOLERANCE)
@@ -278,7 +278,7 @@ function _reactive_power_redistribution_pv(
                 @debug "Only one device not at the limit in Bus"
                 break
             end
-            removed_power = sum(PSY.get_active_power.(devices[units_at_limit]))
+            removed_power = sum(PSY.get_active_power.(devices[units_at_limit], (PSY.SU,)))
             reallocated_q = 0.0
             for (ix, d) in enumerate(devices)
                 ix ∈ units_at_limit && continue
@@ -286,7 +286,8 @@ function _reactive_power_redistribution_pv(
 
                 if removed_power < total_active_power
                     fraction =
-                        PSY.get_active_power(d) / (total_active_power - removed_power)
+                        PSY.get_active_power(d, PSY.SU) /
+                        (total_active_power - removed_power)
                 elseif isapprox(removed_power, total_active_power)
                     fraction = 1
                 else
@@ -298,7 +299,7 @@ function _reactive_power_redistribution_pv(
                 else
                     PSY.InfrastructureSystems.@assert_op fraction > 0
                 end
-                current_q = PSY.get_reactive_power(d)
+                current_q = PSY.get_reactive_power(d, PSY.SU)
                 q_frac = q_residual * fraction
                 q_set_point = clamp(q_frac + current_q, q_limits.min, q_limits.max)
                 # Assign new capacity based on the limits and the fraction
@@ -309,7 +310,7 @@ function _reactive_power_redistribution_pv(
                     @warn "Unit $(PSY.get_name(d)) set at the limit $(q_set_point). Q_max = $(q_limits.max) Q_min = $(q_limits.min)"
                 end
 
-                PSY.set_reactive_power!(d, q_set_point)
+                PSY.set_reactive_power!(d, q_set_point * PSY.SU)
             end
             q_residual -= reallocated_q
             if isapprox(q_residual, 0; atol = ISAPPROX_ZERO_TOLERANCE)
@@ -329,8 +330,8 @@ function _reactive_power_redistribution_pv(
         @assert length(remaining_unit_index) == 1 remaining_unit_index
         device = devices[remaining_unit_index[1]]
         @debug "Remaining residual $q_residual, $(PSY.get_name(bus))"
-        q_set_point = PSY.get_reactive_power(device) + q_residual
-        PSY.set_reactive_power!(device, q_set_point)
+        q_set_point = PSY.get_reactive_power(device, PSY.SU) + q_residual
+        PSY.set_reactive_power!(device, q_set_point * PSY.SU)
         q_limits = get_reactive_power_limits_for_power_flow(device)
         if (q_set_point >= q_limits.max - BOUNDS_TOLERANCE) ||
            (q_set_point <= q_limits.min + BOUNDS_TOLERANCE)
@@ -339,7 +340,7 @@ function _reactive_power_redistribution_pv(
     end
 
     @assert isapprox(
-        sum(PSY.get_reactive_power.(devices)),
+        sum(PSY.get_reactive_power.(devices, (PSY.SU,))),
         Q_gen;
         atol = ISAPPROX_ZERO_TOLERANCE,
     )
@@ -600,7 +601,6 @@ function write_power_flow_solution!(
     max_iterations::Int,
     time_step::Int = 1,
 )
-    check_unit_setting(sys)
     nrd = PNM.get_network_reduction_data(get_power_network_matrix(data))
 
     # getting bus by number is slow, O(n), so use names instead.
@@ -717,7 +717,7 @@ function write_power_flow_solution!(
             )
             PSY.set_active_power_flow!(
                 lcc,
-                data.lcc.arc_active_power_flow_from_to[i, time_step],
+                data.lcc.arc_active_power_flow_from_to[i, time_step] * PSY.SU,
             )
         end
     end
@@ -1244,7 +1244,6 @@ function write_results(
     sys::PSY.System,
     flow_reporting::FlowReporting,
 )
-    check_unit_setting(sys)
     @info("Voltages are exported in pu. Powers are exported in MW/MVAr.")
     @info(
         "Constant impedance and constant current loads are included in the results " *
@@ -1278,7 +1277,7 @@ function write_results(
             flow_results,
             get_lcc_names(data, sys),
             buses,
-            PSY.get_base_power(sys),
+            PSY.get_base_power(sys, PSY.NU),
             data.bus_magnitude[:, i],
             data.bus_angles[:, i],
             data.bus_active_power_injections[:, i],
@@ -1320,7 +1319,6 @@ function write_results(
     time_step::Int64,
     flow_reporting::FlowReporting,
 )
-    check_unit_setting(sys)
     @info("Voltages are exported in pu. Powers are exported in MW/MVAr.")
     busIxToFAPower = _calculate_fixed_admittance_powers(sys, data, time_step)
     for (bus_ix, fa_power) in busIxToFAPower
@@ -1362,7 +1360,7 @@ function write_results(
         flow_results,
         get_lcc_names(data, sys),
         bus_numbers,
-        PSY.get_base_power(sys),
+        PSY.get_base_power(sys, PSY.NU),
         data.bus_magnitude[:, time_step],
         data.bus_angles[:, time_step],
         data.bus_active_power_injections[:, time_step],
@@ -1383,7 +1381,6 @@ assumes that `data` was initialized from `sys` and then solved with no further
 modifications.
 """
 function update_system!(sys::PSY.System, data::PowerFlowData; time_step = 1)
-    check_unit_setting(sys)
     nrd = PNM.get_network_reduction_data(get_power_network_matrix(data))
     if !isempty(PNM.get_reductions(nrd))
         error("update_system! does not support systems with network reductions.")

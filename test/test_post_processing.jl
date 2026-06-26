@@ -111,9 +111,12 @@ end
     pf = PF.ACPowerFlow{PF.TrustRegionACPowerFlow}(;
         skip_redistribution = true,
         correct_bustypes = true,
-        network_reductions = PNM.NetworkReduction[PNM.DegreeTwoReduction(;
-            reduce_reactive_power_injectors = false,
-        )],
+        # Same rationale as the arc-reporting testset below: protect
+        # reactive-injector hosts so the reduced network is physics-equivalent
+        # and flow parity at MW/MVAr-scale tolerances is meaningful.
+        network_reductions = PNM.NetworkReduction[
+            PNM.DegreeTwoReduction(; reduce_reactive_power_injectors = false),
+        ],
     )
     results_unreduced = solve_power_flow(pf_unreduced, sys, PF.FlowReporting.BRANCH_FLOWS)
     results_reduced = solve_power_flow(pf, sys, PF.FlowReporting.BRANCH_FLOWS)
@@ -152,7 +155,7 @@ end
         )],
     )
     solve_and_store_power_flow!(pf2, sys2)
-    base_power = PSY.get_base_power(sys2)
+    base_power = PSY.get_base_power(sys2, PSY.NU)
 
     # For every series branch segment, verify that DataFrame flow matches system object.
     nrd = PNM.get_network_reduction_data(
@@ -175,8 +178,8 @@ end
                     df_row = filter(row -> row.flow_name == name, flow_df)
                     @test size(df_row, 1) == 1
                     sys_branch = PSY.get_component(PSY.Branch, sys2, name)
-                    sys_P = PSY.get_active_power_flow(sys_branch)
-                    sys_Q = PSY.get_reactive_power_flow(sys_branch)
+                    sys_P = PSY.get_active_power_flow(sys_branch, PSY.SU)
+                    sys_Q = PSY.get_reactive_power_flow(sys_branch, PSY.SU)
                     @test isapprox(df_row[1, :P_from_to], sys_P * base_power; atol = 1e-3)
                     @test isapprox(df_row[1, :Q_from_to], sys_Q * base_power; atol = 1e-3)
                 end
@@ -186,8 +189,8 @@ end
                 df_row = filter(row -> row.flow_name == name, flow_df)
                 @test size(df_row, 1) == 1
                 sys_branch = PSY.get_component(PSY.Branch, sys2, name)
-                sys_P = PSY.get_active_power_flow(sys_branch)
-                sys_Q = PSY.get_reactive_power_flow(sys_branch)
+                sys_P = PSY.get_active_power_flow(sys_branch, PSY.SU)
+                sys_Q = PSY.get_reactive_power_flow(sys_branch, PSY.SU)
                 # DataFrame is in MW/MVAr, system is in p.u.
                 @test isapprox(df_row[1, :P_from_to], sys_P * base_power; atol = 1e-3)
                 @test isapprox(df_row[1, :Q_from_to], sys_Q * base_power; atol = 1e-3)

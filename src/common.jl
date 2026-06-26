@@ -17,14 +17,13 @@ function _get_injections!(
     removed_buses::Set{Int},
     sys::PSY.System,
 )
-    check_unit_setting(sys)
     for source in PSY.get_available_components(PSY.StaticInjection, sys)
         bus = PSY.get_bus(source)
         PSY.get_number(bus) in removed_buses && continue
         if contributes_active_power(source) &&
            active_power_contribution_type(source) == PowerContributionType.INJECTION
             bus_ix = _get_bus_ix(bus_lookup, reverse_bus_search_map, PSY.get_number(bus))
-            bus_active_power_injections[bus_ix] += PSY.get_active_power(source)
+            bus_active_power_injections[bus_ix] += PSY.get_active_power(source, PSY.SU)
         end
         if considers_reactive_power(pf) && contributes_reactive_power(source) &&
            reactive_power_contribution_type(source) == PowerContributionType.INJECTION
@@ -34,7 +33,8 @@ function _get_injections!(
                 bus_reactive_power_injections[bus_ix] +=
                     PSY.get_reactive_power_required(source)
             else
-                bus_reactive_power_injections[bus_ix] += PSY.get_reactive_power(source)
+                bus_reactive_power_injections[bus_ix] +=
+                    PSY.get_reactive_power(source, PSY.SU)
             end
         end
     end
@@ -64,7 +64,7 @@ function _compute_bus_active_power_range!(
         PSY.get_number(bus) in removed_buses && continue
         PSY.get_bustype(bus) ∈ (PSY.ACBusTypes.REF, PSY.ACBusTypes.PV) || continue
         limits = get_active_power_limits_for_power_flow(source)
-        range_k = limits.max - PSY.get_active_power(source)
+        range_k = limits.max - PSY.get_active_power(source, PSY.SU)
         range_k <= 0.0 && continue
         isfinite(range_k) || continue
         bus_ix = _get_bus_ix(bus_lookup, reverse_bus_search_map, PSY.get_number(bus))
@@ -96,12 +96,12 @@ function _get_withdrawals!(
         if contributes_active_power(l) &&
            active_power_contribution_type(l) == PowerContributionType.WITHDRAWAL
             bus_ix = _get_bus_ix(bus_lookup, reverse_bus_search_map, PSY.get_number(bus))
-            bus_active_power_withdrawals[bus_ix] += PSY.get_active_power(l)
+            bus_active_power_withdrawals[bus_ix] += PSY.get_active_power(l, PSY.SU)
         end
         if considers_reactive_power(pf) && contributes_reactive_power(l) &&
            reactive_power_contribution_type(l) == PowerContributionType.WITHDRAWAL
             bus_ix = _get_bus_ix(bus_lookup, reverse_bus_search_map, PSY.get_number(bus))
-            bus_reactive_power_withdrawals[bus_ix] += PSY.get_reactive_power(l)
+            bus_reactive_power_withdrawals[bus_ix] += PSY.get_reactive_power(l, PSY.SU)
         end
     end
     # handle StandardLoad: they have constant current and constant impedance withdrawals,
@@ -113,16 +113,16 @@ function _get_withdrawals!(
         bus = PSY.get_bus(l)
         PSY.get_number(bus) in removed_buses && continue
         bus_ix = _get_bus_ix(bus_lookup, reverse_bus_search_map, PSY.get_number(bus))
-        bus_active_power_withdrawals[bus_ix] += PSY.get_constant_active_power(l)
-        bus_reactive_power_withdrawals[bus_ix] += PSY.get_constant_reactive_power(l)
+        bus_active_power_withdrawals[bus_ix] += PSY.get_constant_active_power(l, PSY.SU)
+        bus_reactive_power_withdrawals[bus_ix] += PSY.get_constant_reactive_power(l, PSY.SU)
         bus_active_power_constant_current_withdrawals[bus_ix] +=
-            PSY.get_current_active_power(l)
+            PSY.get_current_active_power(l, PSY.SU)
         bus_active_power_constant_impedance_withdrawals[bus_ix] +=
-            PSY.get_impedance_active_power(l)
+            PSY.get_impedance_active_power(l, PSY.SU)
         bus_reactive_power_constant_current_withdrawals[bus_ix] +=
-            PSY.get_current_reactive_power(l)
+            PSY.get_current_reactive_power(l, PSY.SU)
         bus_reactive_power_constant_impedance_withdrawals[bus_ix] +=
-            PSY.get_impedance_reactive_power(l)
+            PSY.get_impedance_reactive_power(l, PSY.SU)
     end
     # FixedAdmittance components are already included in the Ybus matrix.
     for sa in PSY.get_available_components(PSY.SwitchedAdmittance, sys)
@@ -142,7 +142,7 @@ function _get_withdrawals!(
         bus = PSY.get_bus(sc)
         PSY.get_number(bus) in removed_buses && continue
         bus_ix = _get_bus_ix(bus_lookup, reverse_bus_search_map, PSY.get_number(bus))
-        bus_active_power_withdrawals[bus_ix] += PSY.get_active_power_losses(sc)
+        bus_active_power_withdrawals[bus_ix] += PSY.get_active_power_losses(sc, PSY.SU)
         # reactive power handled already:
         # contributes_reactive_power(PSY.SynchronousCondenser) is true.
     end
@@ -269,7 +269,6 @@ function _initialize_bus_data!(
     subnetwork_keys = keys(subnetworks)
     # so that we don't warn if there's just 1 component.
     main_ref_bus = argmax(x -> length(x[2]), subnetworks)[1]
-    check_unit_setting(sys)
     # correct/validate the bus types.
     forced_PV = must_be_PV(sys)
     possible_PV = can_be_PV(sys)
@@ -646,11 +645,28 @@ function _validate_squared_voltage_magnitudes(
 end
 
 """Weighted dot product of two vectors."""
-wdot(wx::Vector{Float64}, x::Vector{Float64}, wy::Vector{Float64}, y::Vector{Float64}) =
-    LinearAlgebra.dot(wx .* x, wy .* y)
+function wdot(
+    wx::Vector{Float64},
+    x::Vector{Float64},
+    wy::Vector{Float64},
+    y::Vector{Float64},
+)
+    acc = 0.0
+    @inbounds @simd for i in eachindex(x, y, wx, wy)
+        acc += wx[i] * x[i] * wy[i] * y[i]
+    end
+    return acc
+end
 
 """Weighted norm of two vectors."""
-wnorm(w::Vector{Float64}, x::Vector{Float64}) = norm(w .* x)
+function wnorm(w::Vector{Float64}, x::Vector{Float64})
+    acc = 0.0
+    # Plain sum-of-abs2; PF magnitudes are O(1)–O(1e2), so LinearAlgebra's overflow-rescaling is unnecessary.
+    @inbounds @simd for i in eachindex(w, x)
+        acc += abs2(w[i] * x[i])
+    end
+    return sqrt(acc)
+end
 """For pretty printing floats in debugging messages."""
 siground(x::Float64) = round(x; sigdigits = 3)
 

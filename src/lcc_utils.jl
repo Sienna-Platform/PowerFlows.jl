@@ -661,7 +661,6 @@ function initialize_LCCParameters!(
     reverse_bus_search_map::Dict{Int, Int},
     removed_buses::Set{Int},
 )
-    check_unit_setting(sys)
     lccs = collect(
         PSY.get_available_components(
             x -> x.arc.from.number ∉ removed_buses && x.arc.to.number ∉ removed_buses,
@@ -700,7 +699,6 @@ function initialize_LCCParameters!(
     reverse_bus_search_map::Dict{Int, Int},
     removed_buses::Set{Int},
 )
-    check_unit_setting(sys)
     lccs = collect(
         PSY.get_available_components(
             x -> x.arc.from.number ∉ removed_buses && x.arc.to.number ∉ removed_buses,
@@ -731,7 +729,7 @@ function initialize_LCCParameters!(
 
     lcc_arcs = PSY.get_arc.(lccs)
 
-    base_power = PSY.get_base_power(sys)
+    base_power = PSY.get_base_power(sys, PSY.NU)
     # todo: if current set point, transform into p set point
     # lcc_p_set = I_dc_A * V_dc_V / system_base_MVA
 

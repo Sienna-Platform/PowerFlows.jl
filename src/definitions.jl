@@ -10,6 +10,9 @@ const ISAPPROX_ZERO_TOLERANCE = 1e-6
 
 const V_FLOOR2 = 1e-16 # lower bound on |V|² (e²+f²) to guard 1/D in rectangular/MCPB current balance
 
+# FIXME really belongs in PowerFlowFileParser
+const PSSE_EXPORT_METADATA_EXTENSION = "_export_metadata.json"
+
 const LCC_sinϕ_TOLERANCE = 1e-8 # if sin(ϕ) < this, treat dQ/dV as zero to avoid singularity in Jacobian
 
 const DEFAULT_NR_MAX_ITER = 50 # default maxIterations for the NR power flow

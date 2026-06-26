@@ -24,7 +24,7 @@ function create_pf_friendly_rts_gmlc()
     ]
         set_reactive_power_limits!(
             get_component(component_type, sys, component_name),
-            new_limits,
+            (min = new_limits.min * PSY.SU, max = new_limits.max * PSY.SU),
         )
     end
     return sys
@@ -85,19 +85,17 @@ function _system_generation_power(
     bus_power = zeros(Float64, length(bus_numbers))
     generators = collect(get_components(Union{Generator, Source}, sys))
     gen_power = zeros(Float64, length(generators))
-    with_units_base(sys, UnitSystem.NATURAL_UNITS) do
-        bus_power .= [
-            isempty(g) ? 0 : sum([get_active_power(gg) for gg in g]) for g in [
-                get_components(
-                    x -> get_number(get_bus(x)) == i,
-                    Union{Generator, Source},
-                    sys,
-                )
-                for i in bus_numbers
-            ]
+    bus_power .= [
+        isempty(g) ? 0 : sum([get_active_power(gg, PSY.NU) for gg in g]) for g in [
+            get_components(
+                x -> get_number(get_bus(x)) == i,
+                Union{Generator, Source},
+                sys,
+            )
+            for i in bus_numbers
         ]
-        gen_power .= get_active_power.(generators)
-    end
+    ]
+    gen_power .= get_active_power.(generators, (PSY.NU,))
     return bus_power, gen_power
 end
 
@@ -105,11 +103,9 @@ function _reset_gen_power!(
     sys::System,
     original_gen_power::Vector{Float64},
 )
-    with_units_base(sys, UnitSystem.NATURAL_UNITS) do
-        for (g, og) in
-            zip(get_components(Union{Generator, Source}, sys), original_gen_power)
-            set_active_power!(g, og)
-        end
+    for (g, og) in
+        zip(get_components(Union{Generator, Source}, sys), original_gen_power)
+        set_active_power!(g, og * PSY.MW)
     end
 end
 
@@ -555,34 +551,28 @@ end
 function power_flow_with_units(
     sys::PSY.System,
     T::Type{<:PF.ACPowerFlow},
-    units::PSY.UnitSystem,
 )
-    with_units_base(sys, units) do
-        results = solve_power_flow(T(; correct_bustypes = true), sys)
-        if "1" in keys(results)
-            first_line_flow = results["1"]["flow_results"][1, :]
-        else
-            first_line_flow = results["flow_results"][1, :]
-        end
-        return (first_line_flow[:flow_name], first_line_flow[:P_from_to])
+    results = solve_power_flow(T(; correct_bustypes = true), sys)
+    if "1" in keys(results)
+        first_line_flow = results["1"]["flow_results"][1, :]
+    else
+        first_line_flow = results["flow_results"][1, :]
     end
+    return (first_line_flow[:flow_name], first_line_flow[:P_from_to])
 end
 
 function power_flow_with_units(
     sys::PSY.System,
     T::Type{<:PF.AbstractDCPowerFlow},
-    units::PSY.UnitSystem,
 )
-    with_units_base(sys, units) do
-        results =
-            solve_power_flow(T(; correct_bustypes = true), sys, PF.FlowReporting.ARC_FLOWS)
-        if "1" in keys(results)
-            first_line_flow = results["1"]["flow_results"][1, :]
-        else
-            first_line_flow = results["flow_results"][1, :]
-        end
-        return (first_line_flow[:flow_name], first_line_flow[:P_from_to])
+    results =
+        solve_power_flow(T(; correct_bustypes = true), sys, PF.FlowReporting.ARC_FLOWS)
+    if "1" in keys(results)
+        first_line_flow = results["1"]["flow_results"][1, :]
+    else
+        first_line_flow = results["flow_results"][1, :]
     end
+    return (first_line_flow[:flow_name], first_line_flow[:P_from_to])
 end
 
 # Reconstruct the polar state vector from solved `data` (REF→(P,Q),

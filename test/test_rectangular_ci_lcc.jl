@@ -4,7 +4,7 @@ end
 
 @testset "Rectangular CI LCC: residual zero at polar-converged state" begin
     raw_path = joinpath(TEST_DATA_DIR, "case5_2_lcc.raw")
-    sys = System(raw_path)
+    sys = make_system(PFP.PowerModelsData(raw_path); runchecks = false)
     pf_p = ACPowerFlow{NewtonRaphsonACPowerFlow}()
     @test PF.solve_and_store_power_flow!(pf_p, sys)
     pf_r = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
@@ -94,7 +94,7 @@ end
 
 @testset "Rectangular CI LCC: asymptotic Jacobian verification on case5_2_lcc" begin
     raw_path = joinpath(TEST_DATA_DIR, "case5_2_lcc.raw")
-    sys = System(raw_path)
+    sys = make_system(PFP.PowerModelsData(raw_path); runchecks = false)
     pf_p = ACPowerFlow{NewtonRaphsonACPowerFlow}()
     PF.solve_and_store_power_flow!(pf_p, sys)
     pf_r = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
@@ -118,8 +118,9 @@ end
 
 @testset "Rectangular CI LCC: solve parity with polar" begin
     raw_path = joinpath(TEST_DATA_DIR, "case5_2_lcc.raw")
-    sys_p = System(raw_path)
-    sys_r = System(raw_path)
+    sys = make_system(PFP.PowerModelsData(raw_path); runchecks = false)
+    sys_p = deepcopy(sys)
+    sys_r = deepcopy(sys)
     pf_p = ACPowerFlow{NewtonRaphsonACPowerFlow}()
     pf_r = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
         solver_settings = _rect_lcc_settings())
@@ -133,8 +134,9 @@ end
 
 @testset "Rectangular CI LCC: step strategy variants" begin
     raw_path = joinpath(TEST_DATA_DIR, "case5_2_lcc.raw")
+    sys = make_system(PFP.PowerModelsData(raw_path); runchecks = false)
     pf_p = ACPowerFlow{NewtonRaphsonACPowerFlow}()
-    res_p = solve_power_flow(pf_p, System(raw_path))
+    res_p = solve_power_flow(pf_p, deepcopy(sys))
     for (label, solver, extra_settings) in [
         ("plain NR", NewtonRaphsonACPowerFlow, Dict{Symbol, Any}()),
         ("NR + Iwamoto", NewtonRaphsonACPowerFlow,
@@ -147,7 +149,7 @@ end
             settings = merge(extra_settings, _rect_lcc_settings())
             pf_r = ACRectangularPowerFlow{solver}(;
                 solver_settings = settings)
-            res_r = solve_power_flow(pf_r, System(raw_path))
+            res_r = solve_power_flow(pf_r, deepcopy(sys))
             @test res_r !== missing
             @test maximum(abs.(res_p["bus_results"].Vm - res_r["bus_results"].Vm)) < 1e-7
             @test maximum(abs.(res_p["bus_results"].θ - res_r["bus_results"].θ)) < 1e-7
