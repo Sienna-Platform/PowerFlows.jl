@@ -35,13 +35,42 @@ function _vsc_control_mode(dc_control, ac_control)
     return ControlPQ
 end
 
-# Count point-to-point VSC lines whose AC endpoints both survive network reduction.
+# Point-to-point VSC lines eligible for joint AC↔DC modeling: both AC endpoints survive network
+# reduction, and the DC link has nonzero conductance. A `g == 0` line is an open DC link, which
+# makes `_build_G_dc` singular (no DC path for a DC-power setpoint) and the joint solve infeasible;
+# such a line is excluded with a warning and left out of the AC solve (as before VSC support).
 function _available_vsc_lines(sys::PSY.System, removed_buses::Set{Int})
-    keep =
+    endpoints_kept =
         l ->
             PSY.get_number(PSY.get_from(PSY.get_arc(l))) ∉ removed_buses &&
                 PSY.get_number(PSY.get_to(PSY.get_arc(l))) ∉ removed_buses
-    return collect(PSY.get_available_components(keep, PSY.TwoTerminalVSCLine, sys))
+    lines =
+        collect(PSY.get_available_components(endpoints_kept, PSY.TwoTerminalVSCLine, sys))
+    for line in lines
+        if iszero(PSY.get_g(line))
+            @warn "VSC line $(PSY.get_name(line)) has zero DC conductance (g = 0), an open DC " *
+                  "link that cannot be solved as a joint AC-DC model; it is ignored in the AC " *
+                  "power flow. Set a nonzero `g` to model it jointly."
+        end
+    end
+    return filter(line -> !iszero(PSY.get_g(line)), lines)
+end
+
+# AC bus numbers that host a VSC / MTDC converter terminal. Passed to PNM as `irreducible_buses`
+# so network reduction never removes a converter's AC bus — a reduced-away terminal would silently
+# drop that converter from the joint AC↔DC model. Skips `g == 0` VSC lines (not modeled jointly).
+function _dc_converter_ac_buses(sys::PSY.System)
+    buses = Set{Int}()
+    for l in PSY.get_available_components(PSY.TwoTerminalVSCLine, sys)
+        iszero(PSY.get_g(l)) && continue
+        arc = PSY.get_arc(l)
+        push!(buses, PSY.get_number(PSY.get_from(arc)))
+        push!(buses, PSY.get_number(PSY.get_to(arc)))
+    end
+    for ic in PSY.get_available_components(PSY.InterconnectingConverter, sys)
+        push!(buses, PSY.get_number(PSY.get_bus(ic)))
+    end
+    return buses
 end
 
 # Union-find connected components over DC branches; validate each connected DC subnet has at least
@@ -292,7 +321,13 @@ function initialize_DCNetwork!(
     get(get_solver_kwargs(data.pf), :model_dc_network, true) || return
 
     vsc_lines = _available_vsc_lines(sys, removed_buses)
-    has_ic = !isempty(PSY.get_available_components(PSY.InterconnectingConverter, sys))
+    # Count only converters whose AC bus survives network reduction: if reduction removed every
+    # interconnecting converter, the multi-terminal DC grid has no AC interface left and is ignored
+    # entirely (rather than lowering converter-less DC lines into an unanchored subnet).
+    has_ic = any(
+        ic -> PSY.get_number(PSY.get_bus(ic)) ∉ removed_buses,
+        PSY.get_available_components(PSY.InterconnectingConverter, sys),
+    )
     (isempty(vsc_lines) && !has_ic) && return
 
     b = _DCNetworkBuilder()
@@ -357,6 +392,25 @@ function initialize_DCNetwork!(
     return
 end
 
+# DC-KCL residual block: writes I_dc = G_dc * V_dc into F[base+1 : base+nnode].
+function _dc_kcl_residual!(
+    F::AbstractVector{Float64},
+    base::Int,
+    dcn::DCNetwork,
+    nnode::Int,
+    time_step::Int,
+)
+    G = dcn.G_dc
+    @inbounds for k in 1:nnode
+        acc = 0.0
+        for jnode in 1:nnode
+            acc += G[k, jnode] * dcn.node_vdc[jnode, time_step]
+        end
+        F[base + k] = acc
+    end
+    return
+end
+
 # Warm-start residual for the VSC tail with AC voltages FIXED: per converter the active/Vdc control
 # row `r1` and a reactive pin `Q_c − q_set` (the true AC-voltage control rows constrain AC voltage,
 # which is fixed here, so they are replaced by the Q pin for the initializer); per DC node the DC-KCL
@@ -378,14 +432,7 @@ function _vsc_warm_residual!(
         F[2 * c] = dcn.q_c[c, time_step] - dcn.q_set[c, time_step]
     end
     base = 2 * nconv
-    G = dcn.G_dc
-    @inbounds for k in 1:nnode
-        acc = 0.0
-        for jnode in 1:nnode
-            acc += G[k, jnode] * dcn.node_vdc[jnode, time_step]
-        end
-        F[base + k] = acc
-    end
+    _dc_kcl_residual!(F, base, dcn, nnode, time_step)
     @inbounds for c in 1:nconv
         node = dcn.converter_dc_node_ix[c]
         ix = dcn.converter_ac_bus_ix[c]
@@ -474,7 +521,8 @@ function _vsc_warm_start!(
         local Δ
         try
             Δ = J \ F
-        catch
+        catch e
+            e isa LinearAlgebra.SingularException || rethrow()
             break
         end
         all(isfinite, Δ) || break
@@ -496,7 +544,7 @@ end
 function _vsc_pdc(dcn::DCNetwork, c::Int, Vm_ac::Float64, time_step::Int)
     P = dcn.p_c[c, time_step]
     Q = dcn.q_c[c, time_step]
-    Ic = sqrt(P * P + Q * Q) / sqrt(max(Vm_ac * Vm_ac, V_FLOOR2))
+    Ic = sqrt(max(P * P + Q * Q, V_FLOOR2)) / sqrt(max(Vm_ac * Vm_ac, V_FLOOR2))
     Ploss = dcn.loss_a[c] + dcn.loss_b[c] * Ic + dcn.loss_c[c] * Ic * Ic
     return P + Ploss
 end
@@ -569,14 +617,7 @@ function _set_vsc_tail_residuals!(
         F[vsc_off + 2 * c] = _vsc_r2(mode, dcn, c, Q, Vm[ix], time_step)
     end
     base = vsc_off + 2 * nconv
-    G = dcn.G_dc
-    @inbounds for k in 1:nnode
-        acc = 0.0
-        for jnode in 1:nnode
-            acc += G[k, jnode] * dcn.node_vdc[jnode, time_step]
-        end
-        F[base + k] = acc
-    end
+    _dc_kcl_residual!(F, base, dcn, nnode, time_step)
     @inbounds for c in 1:nconv
         node = dcn.converter_dc_node_ix[c]
         ix = dcn.converter_ac_bus_ix[c]
@@ -587,6 +628,12 @@ function _set_vsc_tail_residuals!(
 end
 
 # ── Jacobian derivative helpers (branch on the control mode) ──────────────────────────────────
+#
+# Each converter contributes two control rows: r1 (active-power / V_dc, see `_vsc_r1`) and r2
+# (reactive-power / |V_ac|², see `_vsc_r2`). The helpers below return the partials of r1/r2 (and of
+# the DC-side loss term P_dc) w.r.t. the states (P_c, Q_c, V_dc, |V_ac|); `_set_entries_for_vsc`
+# places them in the Jacobian. The values depend only on the control mode (plus |V_ac| for the
+# AC-voltage and loss terms), so each helper is a small branch on the mode, not method dispatch.
 
 # ∂r1/∂P_c: 1 for the P-control modes, the droop gain for droop, 0 for the V_dc-control modes.
 function _vsc_dr1_dP(mode::VSCControlMode, dcn, c)
@@ -627,16 +674,13 @@ function _vsc_pdc_derivatives(dcn::DCNetwork, c::Int, Vm_ac::Float64, time_step:
     P = dcn.p_c[c, time_step]
     Q = dcn.q_c[c, time_step]
     Vmf = sqrt(max(Vm_ac * Vm_ac, V_FLOOR2))
-    S = sqrt(P * P + Q * Q)
+    # Floor S² with V_FLOOR2 (mirroring |V_ac|²) so the apparent-power magnitude never reaches the
+    # P/S, Q/S singularity at S = 0; at the floor the derivatives go smoothly to ~0.
+    S = sqrt(max(P * P + Q * Q, V_FLOOR2))
     Ic = S / Vmf
     dloss_dIc = dcn.loss_b[c] + 2.0 * dcn.loss_c[c] * Ic
-    if iszero(S)
-        dIc_dP = 0.0
-        dIc_dQ = 0.0
-    else
-        dIc_dP = (P / S) / Vmf
-        dIc_dQ = (Q / S) / Vmf
-    end
+    dIc_dP = (P / S) / Vmf
+    dIc_dQ = (Q / S) / Vmf
     dIc_dVm = -Ic / Vmf
     return (1.0 + dloss_dIc * dIc_dP, dloss_dIc * dIc_dQ, dloss_dIc * dIc_dVm)
 end
@@ -690,14 +734,7 @@ function _set_vsc_tail_residuals_rect!(
         F[vsc_off + 2 * c] = _vsc_r2(mode, dcn, c, Q, Vm, time_step)
     end
     base = vsc_off + 2 * nconv
-    G = dcn.G_dc
-    @inbounds for k in 1:nnode
-        acc = 0.0
-        for jnode in 1:nnode
-            acc += G[k, jnode] * dcn.node_vdc[jnode, time_step]
-        end
-        F[base + k] = acc
-    end
+    _dc_kcl_residual!(F, base, dcn, nnode, time_step)
     @inbounds for c in 1:nconv
         node = dcn.converter_dc_node_ix[c]
         ix = dcn.converter_ac_bus_ix[c]
@@ -736,6 +773,105 @@ function _apply_vsc_bus_injections_mixed!(
             F[off] += Ir
             F[off + 1] += Ii
         end
+    end
+    return
+end
+
+# Shared VSC tail Jacobian writer for the rectangular-CI and MCPB formulations. The two are
+# identical except that MCPB uses the imag-first slot order for the bus current-injection rows at
+# PQ buses (`imag_first_pq = true`); rectangular CI always uses real-first (`imag_first_pq = false`).
+# The control + DC-KCL tail rows (and their e,f columns) are the same for both. Direct `Jv[r,c]`
+# assignment for the new bus×converter and tail entries; `+=` into the existing bus-diagonal
+# nonzeros (via `diag_base_nz`) for the current-injection (e,f) coupling.
+function _set_entries_for_vsc_rect_mcpb!(
+    Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
+    Jvnz::Vector{Float64},
+    diag_base_nz::Matrix{Int},
+    dcn::DCNetwork,
+    e_state::Vector{Float64},
+    f_state::Vector{Float64},
+    bus_types::AbstractVector,
+    bus_state_offset::AbstractVector,
+    total_bus_state::Int,
+    n_lccs::Int,
+    time_step::Int,
+    imag_first_pq::Bool,
+)
+    nconv = n_vsc_converters(dcn)
+    nnode = n_dc_nodes(dcn)
+    vsc_off = total_bus_state + 4 * n_lccs
+    base = vsc_off + 2 * nconv
+    G = dcn.G_dc
+    @inbounds for b in 1:n_dc_branches(dcn)
+        f = dcn.branch_from[b]
+        t = dcn.branch_to[b]
+        Jv[base + f, base + t] = G[f, t]
+        Jv[base + t, base + f] = G[t, f]
+    end
+    @inbounds for k in 1:nnode
+        Jv[base + k, base + k] = G[k, k]
+    end
+    @inbounds for c in 1:nconv
+        ix = dcn.converter_ac_bus_ix[c]
+        off = Int(bus_state_offset[ix])
+        k = dcn.converter_dc_node_ix[c]
+        pc = vsc_off + 2 * c - 1
+        qc = vsc_off + 2 * c
+        vk = base + k
+        mode = dcn.converter_mode[c]
+        e = e_state[ix]
+        f = f_state[ix]
+        D = max(e * e + f * f, V_FLOOR2)
+        Vm = sqrt(D)
+        P = dcn.p_c[c, time_step]
+        Q = dcn.q_c[c, time_step]
+        Vdc = dcn.node_vdc[k, time_step]
+        num_r = P * e + Q * f
+        num_i = P * f - Q * e
+        D2 = D * D
+        dIr_de = (P * D - num_r * 2.0 * e) / D2
+        dIr_df = (Q * D - num_r * 2.0 * f) / D2
+        dIi_de = (-Q * D - num_i * 2.0 * e) / D2
+        dIi_df = (P * D - num_i * 2.0 * f) / D2
+        if imag_first_pq && bus_types[ix] == PSY.ACBusTypes.PQ
+            # imag-first (MCPB PQ): F[off] = Ii, F[off+1] = Ir
+            Jvnz[diag_base_nz[1, ix]] += dIi_de
+            Jvnz[diag_base_nz[2, ix]] += dIi_df
+            Jvnz[diag_base_nz[3, ix]] += dIr_de
+            Jvnz[diag_base_nz[4, ix]] += dIr_df
+            Jv[off, pc] = f / D
+            Jv[off, qc] = -e / D
+            Jv[off + 1, pc] = e / D
+            Jv[off + 1, qc] = f / D
+        else
+            # real-first: F[off] = Ir, F[off+1] = Ii
+            Jvnz[diag_base_nz[1, ix]] += dIr_de
+            Jvnz[diag_base_nz[2, ix]] += dIr_df
+            Jvnz[diag_base_nz[3, ix]] += dIi_de
+            Jvnz[diag_base_nz[4, ix]] += dIi_df
+            Jv[off, pc] = e / D
+            Jv[off, qc] = f / D
+            Jv[off + 1, pc] = f / D
+            Jv[off + 1, qc] = -e / D
+        end
+        # control + DC-KCL tail rows (columns are bus e,f states — no imag-first swap)
+        Jv[pc, pc] = _vsc_dr1_dP(mode, dcn, c)
+        Jv[pc, vk] = _vsc_dr1_dVdc(mode)
+        Jv[qc, qc] = _vsc_dr2_dQ(mode)
+        if controls_ac_voltage(mode)
+            Jv[qc, off] = 2.0 * e
+            Jv[qc, off + 1] = 2.0 * f
+        else
+            Jv[qc, off] = 0.0
+            Jv[qc, off + 1] = 0.0
+        end
+        Pdc = _vsc_pdc(dcn, c, Vm, time_step)
+        (dP, dQ, dVm) = _vsc_pdc_derivatives(dcn, c, Vm, time_step)
+        Jv[vk, pc] = dP / Vdc
+        Jv[vk, qc] = dQ / Vdc
+        Jv[vk, off] = (dVm * e / Vm) / Vdc
+        Jv[vk, off + 1] = (dVm * f / Vm) / Vdc
+        Jv[vk, vk] += -Pdc / (Vdc * Vdc)
     end
     return
 end
