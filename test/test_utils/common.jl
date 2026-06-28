@@ -617,3 +617,17 @@ function _calc_x(
     end
     return x
 end
+
+# Reuse an existing Arc between two buses if present (PSY enforces Arc-name uniqueness), else make
+# and add one. HVDC lines may share an Arc with an existing AC branch.
+function _get_or_make_arc(sys, from_bus, to_bus)
+    existing = PSY.get_components(
+        a -> PSY.get_from(a) === from_bus && PSY.get_to(a) === to_bus,
+        PSY.Arc,
+        sys,
+    )
+    isempty(existing) || return first(existing)
+    arc = PSY.Arc(; from = from_bus, to = to_bus)
+    PSY.add_component!(sys, arc)
+    return arc
+end

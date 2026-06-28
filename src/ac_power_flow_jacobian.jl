@@ -640,8 +640,7 @@ function _set_entries_for_vsc(
         mode = dcn.converter_mode[c]
         Vmix = Vm[ix]
         Vdc = dcn.node_vdc[k, time_step]
-        Pdc = _vsc_pdc(dcn, c, Vmix, time_step)
-        (dP, dQ, dVm) = _vsc_pdc_derivatives(dcn, c, Vmix, time_step)
+        (Pdc, dP, dQ, dVm) = _vsc_pdc_derivatives(dcn, c, Vmix, time_step)
         Jv[2 * ix - 1, pc] = -1.0
         Jv[2 * ix, qc] = -1.0
         Jv[pc, pc] = _vsc_dr1_dP(mode, dcn, c)

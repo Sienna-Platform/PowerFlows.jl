@@ -2738,6 +2738,14 @@ function write_to_buffers!(
         # as MW control; the PSS/E record cannot represent DC-voltage droop).
         type1_org = _vsc_export_dc_type(from_dc_control)
         type2_org = _vsc_export_dc_type(to_dc_control)
+        # PSS/E requires exactly one in-service converter to be DC-voltage controlling (TYPE 1). PSY
+        # does not enforce this, so a both- or neither-DC_VOLTAGE line produces a record PSS/E cannot
+        # read; warn and write best-effort rather than emit it silently.
+        if PSY.get_available(vscline) && (type1_org == 1) == (type2_org == 1)
+            @warn "TwoTerminalVSCLine $(PSY.get_name(vscline)) does not have exactly one " *
+                  "DC-voltage-controlling terminal; exported PSS/E TYPE $type1_org/$type2_org " *
+                  "violates the one-TYPE-1 rule and may not re-parse."
+        end
 
         c1 = _compute_vsc_converter_fields(exporter, vscline, I, type1_org, :from)
         c2 = _compute_vsc_converter_fields(exporter, vscline, J, type2_org, :to)

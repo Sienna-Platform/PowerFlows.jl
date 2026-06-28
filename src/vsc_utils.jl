@@ -77,9 +77,15 @@ end
 # one slack node (or is wholly droop-controlled). Fails fast naming the offending subnet.
 function _validate_dc_slacks(dcn::DCNetwork)
     nn = n_dc_nodes(dcn)
-    nn == 0 && return
+    iszero(nn) && return
     parent = collect(1:nn)
-    find(i) = (parent[i] == i ? i : (parent[i] = find(parent[i])))
+    function find(i)
+        if parent[i] == i
+            return i
+        end
+        parent[i] = find(parent[i])
+        return parent[i]
+    end
     for b in 1:n_dc_branches(dcn)
         parent[find(dcn.branch_from[b])] = find(dcn.branch_to[b])
     end
@@ -298,7 +304,11 @@ function _lower_mtdc!(
         r = PSY.get_r(dcline)
         # steady-state DC: only series resistance matters (l, c dropped). A zero-resistance line
         # is a hard short; fall back to a large conductance.
-        g = iszero(r) ? 1.0e6 : 1.0 / r
+        if iszero(r)
+            g = 1.0e6
+        else
+            g = 1.0 / r
+        end
         push!(b.branch_from, nf)
         push!(b.branch_to, nt)
         push!(b.branch_g, g)
@@ -344,9 +354,10 @@ function initialize_DCNetwork!(
     vdc_set = expand(b.vdc_set)
 
     # Seed each DC node's V_dc at a Vdc/droop converter's target if one sits on it, else 1.0.
+    # Gate on the mode (power-control converters carry a placeholder vdc_set = 1.0 and must not seed).
     node_vdc = ones(Float64, n_node, n_time)
     for c in 1:n_conv
-        if !iszero(b.vdc_set[c])
+        if uses_vdc_setpoint(b.mode[c])
             node_vdc[b.dc_node_ix[c], :] .= b.vdc_set[c]
         end
     end
@@ -468,8 +479,7 @@ function _vsc_warm_jacobian!(
         J[pc, pc] = _vsc_dr1_dP(mode, dcn, c)
         J[pc, vk] = _vsc_dr1_dVdc(mode)
         J[qc, qc] = 1.0
-        Pdc = _vsc_pdc(dcn, c, Vm[ix], time_step)
-        (dP, dQ, _) = _vsc_pdc_derivatives(dcn, c, Vm[ix], time_step)
+        (Pdc, dP, dQ, _) = _vsc_pdc_derivatives(dcn, c, Vm[ix], time_step)
         J[vk, pc] += dP / Vdc
         J[vk, qc] += dQ / Vdc
         J[vk, vk] += -Pdc / (Vdc * Vdc)
@@ -490,7 +500,7 @@ function _vsc_warm_start!(
     nconv = n_vsc_converters(dcn)
     nnode = n_dc_nodes(dcn)
     n = 2 * nconv + nnode
-    n == 0 && return
+    iszero(n) && return
     y = Vector{Float64}(undef, n)
     @inbounds for c in 1:nconv
         y[2 * c - 1] = dcn.p_c[c, time_step]
@@ -669,7 +679,9 @@ function _vsc_dr2_dVm(mode::VSCControlMode, Vm)
     return 0.0
 end
 
-# Derivatives of P_dc w.r.t. (P_c, Q_c, |V_ac|) — nonzero off-P only when the converter has losses.
+# P_dc and its derivatives w.r.t. (P_c, Q_c, |V_ac|). Returns `(P_dc, ∂/∂P_c, ∂/∂Q_c, ∂/∂|V_ac|)`;
+# P_dc matches `_vsc_pdc`, computed here from the same `I_c` so the Jacobian path needs one call, not
+# two. Off-P derivatives are nonzero only when the converter has losses.
 function _vsc_pdc_derivatives(dcn::DCNetwork, c::Int, Vm_ac::Float64, time_step::Int)
     P = dcn.p_c[c, time_step]
     Q = dcn.q_c[c, time_step]
@@ -678,11 +690,12 @@ function _vsc_pdc_derivatives(dcn::DCNetwork, c::Int, Vm_ac::Float64, time_step:
     # P/S, Q/S singularity at S = 0; at the floor the derivatives go smoothly to ~0.
     S = sqrt(max(P * P + Q * Q, V_FLOOR2))
     Ic = S / Vmf
+    Ploss = dcn.loss_a[c] + dcn.loss_b[c] * Ic + dcn.loss_c[c] * Ic * Ic
     dloss_dIc = dcn.loss_b[c] + 2.0 * dcn.loss_c[c] * Ic
     dIc_dP = (P / S) / Vmf
     dIc_dQ = (Q / S) / Vmf
     dIc_dVm = -Ic / Vmf
-    return (1.0 + dloss_dIc * dIc_dP, dloss_dIc * dIc_dQ, dloss_dIc * dIc_dVm)
+    return (P + Ploss, 1.0 + dloss_dIc * dIc_dP, dloss_dIc * dIc_dQ, dloss_dIc * dIc_dVm)
 end
 
 # ── Rectangular / MCPB kernels (bus balance is current injection conj(S/V)) ───────────────────
@@ -780,44 +793,38 @@ end
 # Shared VSC tail Jacobian writer for the rectangular-CI and MCPB formulations. The two are
 # identical except that MCPB uses the imag-first slot order for the bus current-injection rows at
 # PQ buses (`imag_first_pq = true`); rectangular CI always uses real-first (`imag_first_pq = false`).
-# The control + DC-KCL tail rows (and their e,f columns) are the same for both. Direct `Jv[r,c]`
-# assignment for the new bus×converter and tail entries; `+=` into the existing bus-diagonal
-# nonzeros (via `diag_base_nz`) for the current-injection (e,f) coupling.
+# The control + DC-KCL tail rows (and their e,f columns) are the same for both. All writes go through
+# the pre-built `vsc_nz` nzval-index cache (and `diag_base_nz` for the current-injection coupling), so
+# the hot path is `O(n_conv + n_node + n_branch)` with no `O(log nnz)` `Jv[r,c]` setindex.
 function _set_entries_for_vsc_rect_mcpb!(
-    Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
     Jvnz::Vector{Float64},
     diag_base_nz::Matrix{Int},
+    vsc_nz::VSCJacobianNZCache,
     dcn::DCNetwork,
     e_state::Vector{Float64},
     f_state::Vector{Float64},
     bus_types::AbstractVector,
-    bus_state_offset::AbstractVector,
-    total_bus_state::Int,
-    n_lccs::Int,
     time_step::Int,
     imag_first_pq::Bool,
 )
     nconv = n_vsc_converters(dcn)
     nnode = n_dc_nodes(dcn)
-    vsc_off = total_bus_state + 4 * n_lccs
-    base = vsc_off + 2 * nconv
     G = dcn.G_dc
+    conv = vsc_nz.conv
+    node = vsc_nz.node
+    branch = vsc_nz.branch
     @inbounds for b in 1:n_dc_branches(dcn)
         f = dcn.branch_from[b]
         t = dcn.branch_to[b]
-        Jv[base + f, base + t] = G[f, t]
-        Jv[base + t, base + f] = G[t, f]
+        Jvnz[branch[2 * b - 1]] = G[f, t]
+        Jvnz[branch[2 * b]] = G[t, f]
     end
     @inbounds for k in 1:nnode
-        Jv[base + k, base + k] = G[k, k]
+        Jvnz[node[k]] = G[k, k]
     end
     @inbounds for c in 1:nconv
         ix = dcn.converter_ac_bus_ix[c]
-        off = Int(bus_state_offset[ix])
         k = dcn.converter_dc_node_ix[c]
-        pc = vsc_off + 2 * c - 1
-        qc = vsc_off + 2 * c
-        vk = base + k
         mode = dcn.converter_mode[c]
         e = e_state[ix]
         f = f_state[ix]
@@ -839,39 +846,38 @@ function _set_entries_for_vsc_rect_mcpb!(
             Jvnz[diag_base_nz[2, ix]] += dIi_df
             Jvnz[diag_base_nz[3, ix]] += dIr_de
             Jvnz[diag_base_nz[4, ix]] += dIr_df
-            Jv[off, pc] = f / D
-            Jv[off, qc] = -e / D
-            Jv[off + 1, pc] = e / D
-            Jv[off + 1, qc] = f / D
+            Jvnz[conv[1, c]] = f / D
+            Jvnz[conv[2, c]] = -e / D
+            Jvnz[conv[3, c]] = e / D
+            Jvnz[conv[4, c]] = f / D
         else
             # real-first: F[off] = Ir, F[off+1] = Ii
             Jvnz[diag_base_nz[1, ix]] += dIr_de
             Jvnz[diag_base_nz[2, ix]] += dIr_df
             Jvnz[diag_base_nz[3, ix]] += dIi_de
             Jvnz[diag_base_nz[4, ix]] += dIi_df
-            Jv[off, pc] = e / D
-            Jv[off, qc] = f / D
-            Jv[off + 1, pc] = f / D
-            Jv[off + 1, qc] = -e / D
+            Jvnz[conv[1, c]] = e / D
+            Jvnz[conv[2, c]] = f / D
+            Jvnz[conv[3, c]] = f / D
+            Jvnz[conv[4, c]] = -e / D
         end
         # control + DC-KCL tail rows (columns are bus e,f states — no imag-first swap)
-        Jv[pc, pc] = _vsc_dr1_dP(mode, dcn, c)
-        Jv[pc, vk] = _vsc_dr1_dVdc(mode)
-        Jv[qc, qc] = _vsc_dr2_dQ(mode)
+        Jvnz[conv[5, c]] = _vsc_dr1_dP(mode, dcn, c)
+        Jvnz[conv[6, c]] = _vsc_dr1_dVdc(mode)
+        Jvnz[conv[7, c]] = _vsc_dr2_dQ(mode)
         if controls_ac_voltage(mode)
-            Jv[qc, off] = 2.0 * e
-            Jv[qc, off + 1] = 2.0 * f
+            Jvnz[conv[8, c]] = 2.0 * e
+            Jvnz[conv[9, c]] = 2.0 * f
         else
-            Jv[qc, off] = 0.0
-            Jv[qc, off + 1] = 0.0
+            Jvnz[conv[8, c]] = 0.0
+            Jvnz[conv[9, c]] = 0.0
         end
-        Pdc = _vsc_pdc(dcn, c, Vm, time_step)
-        (dP, dQ, dVm) = _vsc_pdc_derivatives(dcn, c, Vm, time_step)
-        Jv[vk, pc] = dP / Vdc
-        Jv[vk, qc] = dQ / Vdc
-        Jv[vk, off] = (dVm * e / Vm) / Vdc
-        Jv[vk, off + 1] = (dVm * f / Vm) / Vdc
-        Jv[vk, vk] += -Pdc / (Vdc * Vdc)
+        (Pdc, dP, dQ, dVm) = _vsc_pdc_derivatives(dcn, c, Vm, time_step)
+        Jvnz[conv[10, c]] = dP / Vdc
+        Jvnz[conv[11, c]] = dQ / Vdc
+        Jvnz[conv[12, c]] = (dVm * e / Vm) / Vdc
+        Jvnz[conv[13, c]] = (dVm * f / Vm) / Vdc
+        Jvnz[node[k]] += -Pdc / (Vdc * Vdc)
     end
     return
 end

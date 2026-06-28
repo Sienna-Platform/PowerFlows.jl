@@ -90,3 +90,12 @@ n_dc_branches(dcn::DCNetwork) = length(dcn.branch_from)
 vsc_tail_length(dcn::DCNetwork) = 2 * n_vsc_converters(dcn) + n_dc_nodes(dcn)
 
 has_dc_network(dcn::DCNetwork) = n_vsc_converters(dcn) > 0
+
+# Pre-computed `nonzeros(Jv)` indices for the VSC tail entries of the rectangular-CI / MCPB Jacobian,
+# so the per-iteration writer hits `Jvnz[...]` directly instead of `O(log nnz)` `Jv[r,c]` setindex
+# (mirrors the `lcc_nz` cache). Built once at construction by `_build_vsc_nz_cache`.
+struct VSCJacobianNZCache
+    conv::Matrix{Int}    # 13 × n_conv; per-converter tail slots, order set by `_build_vsc_nz_cache`
+    node::Vector{Int}    # n_node; DC-KCL node-diagonal slot
+    branch::Vector{Int}  # 2·n_branch; DC-KCL off-diagonals, interleaved (from→to, to→from)
+end

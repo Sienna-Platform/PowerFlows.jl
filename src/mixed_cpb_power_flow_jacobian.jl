@@ -39,6 +39,7 @@ struct ACMixedCPBJacobian
     slack_nz_idx_f::Vector{Int}      # nzval index for Jv[k_off+1, ref_off]
     slack_c_k::Vector{Float64}       # c_k = bus_slack_participation_factors[bus_k]
     lcc_nz::Matrix{Int}              # 24 × n_lccs; nzval indices for the LCC entries
+    vsc_nz::VSCJacobianNZCache       # nzval indices for the VSC tail entries
 end
 
 function ACMixedCPBJacobian(
@@ -87,6 +88,10 @@ function ACMixedCPBJacobian(
         Jv0, residual.data, residual.bus_state_offset,
         residual.total_bus_state, n_lccs,
     )
+    vsc_nz = _build_vsc_nz_cache(
+        Jv0, get_dc_network(residual.data), residual.bus_state_offset,
+        residual.total_bus_state, n_lccs,
+    )
     J = ACMixedCPBJacobian(
         residual.data,
         _update_mixed_cpb_jacobian_values!,
@@ -115,6 +120,7 @@ function ACMixedCPBJacobian(
         slack_nz_idx_f,
         slack_c_k,
         lcc_nz,
+        vsc_nz,
     )
     J(time_step)  # populate state-dependent entries (diagonals, PV off-diag, slack, LCC tail)
     return J
@@ -128,7 +134,7 @@ function (J::ACMixedCPBJacobian)(time_step::Int64)
         J.bus_state_offset, J.total_bus_state,
         J.diag_base_nz, J.offdiag_pv_nz, J.offdiag_pv_i, J.offdiag_pv_k, J.offdiag_pv_y,
         J.slack_nz_idx_e, J.slack_nz_idx_f, J.slack_c_k,
-        J.lcc_nz, time_step)
+        J.lcc_nz, J.vsc_nz, time_step)
     return
 end
 
@@ -143,7 +149,7 @@ function (J::ACMixedCPBJacobian)(
         J.bus_state_offset, J.total_bus_state,
         J.diag_base_nz, J.offdiag_pv_nz, J.offdiag_pv_i, J.offdiag_pv_k, J.offdiag_pv_y,
         J.slack_nz_idx_e, J.slack_nz_idx_f, J.slack_c_k,
-        J.lcc_nz, time_step)
+        J.lcc_nz, J.vsc_nz, time_step)
     copyto!(Jv, J.Jv)
     return
 end
@@ -417,6 +423,7 @@ function _update_mixed_cpb_jacobian_values!(
     slack_nz_idx_f::Vector{Int},
     slack_c_k::Vector{Float64},
     lcc_nz::Matrix{Int},
+    vsc_nz::VSCJacobianNZCache,
     time_step::Int64,
 )
     n_buses = first(size(data.bus_type))
@@ -477,9 +484,8 @@ function _update_mixed_cpb_jacobian_values!(
     dcn = get_dc_network(data)
     if has_dc_network(dcn)
         _set_entries_for_vsc_rect_mcpb!(
-            Jv, Jvnz, diag_base_nz, dcn, e_state, f_state,
-            view(data.bus_type, :, time_step), bus_state_offset, total_bus_state,
-            size(data.lcc.p_set, 1), time_step, true,
+            Jvnz, diag_base_nz, vsc_nz, dcn, e_state, f_state,
+            view(data.bus_type, :, time_step), time_step, true,
         )
     end
     return

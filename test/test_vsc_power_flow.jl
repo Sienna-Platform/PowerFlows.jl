@@ -5,20 +5,6 @@
 # otherwise). Every solve in this file enables it.
 const VSC_SETTINGS = Dict{Symbol, Any}(:model_dc_network => true)
 
-# Reuse an existing Arc between two buses if present (PSY enforces Arc-name uniqueness), else make
-# and add one. HVDC lines may share an Arc with an existing AC branch.
-function _get_or_make_arc(sys, from_bus, to_bus)
-    existing = PSY.get_components(
-        a -> PSY.get_from(a) === from_bus && PSY.get_to(a) === to_bus,
-        PSY.Arc,
-        sys,
-    )
-    isempty(existing) || return first(existing)
-    arc = PSY.Arc(; from = from_bus, to = to_bus)
-    PSY.add_component!(sys, arc)
-    return arc
-end
-
 # Build c_sys5 and add one point-to-point VSC line: the `from` converter controls DC voltage
 # (DC slack), the `to` converter controls (P, Q). This is the physically well-posed config: one
 # terminal fixes V_dc, the other sets power.
