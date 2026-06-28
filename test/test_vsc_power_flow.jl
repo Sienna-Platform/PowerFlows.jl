@@ -324,6 +324,83 @@ end
     verify_jacobian_asymptotic(residual, jac.Jv, x, 1; label = "VSC polar lossy")
 end
 
+# Regression: the polar VSC Jacobian must be bus-type aware. Column `2ix-1` is the |V_ac| state
+# only for PQ buses; for PV it is Q_gen and for REF it is P_gen (see state_indexing_helpers.jl).
+# A lossy converter whose AC terminal is a PV (or REF) bus has a nonzero ∂KCL/∂|V_ac| loss term —
+# writing it into column `2ix-1` (which is not |V_ac| there) corrupts the Jacobian. |V_ac| is fixed
+# at PV/REF buses, so that derivative must not enter the Jacobian at all.
+function _vsc_system_pv_terminal(; g = 45.0)
+    sys = deepcopy(PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false))
+    pick(t) = first(
+        sort!(
+            collect(PSY.get_components(b -> PSY.get_bustype(b) == t, PSY.ACBus, sys));
+            by = PSY.get_number,
+        ),
+    )
+    from_bus = pick(PSY.ACBusTypes.PQ)        # DC-voltage slack converter on a PQ bus
+    to_bus = pick(PSY.ACBusTypes.PV)          # lossy power-control converter on a PV bus
+    arc = _get_or_make_arc(sys, from_bus, to_bus)
+    vsc = PSY.TwoTerminalVSCLine(;
+        name = "vsc_pv",
+        available = true,
+        arc = arc,
+        active_power_flow = 0.3,
+        rating = 2.0,
+        active_power_limits_from = (min = -2.0, max = 2.0),
+        active_power_limits_to = (min = -2.0, max = 2.0),
+        g = g,
+        dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
+        ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
+        dc_setpoint_from = 1.03,
+        reactive_power_from = 0.0,
+        dc_control_to = PSY.VSCDCControlModes.DC_POWER,
+        ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
+        dc_setpoint_to = 0.35,
+        reactive_power_to = 0.05,
+        converter_loss_to = PSY.QuadraticCurve(0.01, 0.02, 0.005),
+    )
+    PSY.add_component!(sys, vsc)
+    return sys
+end
+
+@testset "VSC: analytic polar Jacobian matches FD for a lossy converter on a PV bus" begin
+    sys = _vsc_system_pv_terminal(; g = 45.0)
+    data = PowerFlowData(
+        ACPowerFlow{NewtonRaphsonACPowerFlow}(; solver_settings = VSC_SETTINGS),
+        sys,
+    )
+    # check at the flat start to isolate the Jacobian structure from solver convergence
+    residual = PF.ACPowerFlowResidual(data, 1)
+    jac = PF.ACPowerFlowJacobian(residual, 1)
+    x = PF.calculate_x0(data, 1)
+    residual(x, 1)
+    jac(1)
+    verify_jacobian_asymptotic(residual, jac.Jv, x, 1; label = "VSC polar lossy-on-PV")
+end
+
+# A point-to-point VSC with g = 0 is an open DC link: `_build_G_dc` yields an all-zero DC
+# conductance matrix, so the DC nodal balance is singular and the joint AC↔DC solve cannot
+# converge (no DC path for a DC-power setpoint). Such a degenerate line must be excluded from the
+# DCNetwork (and the AC solve falls back to ignoring it, as before VSC support), not break the solve.
+@testset "VSC: a zero-conductance (open) DC link is excluded from joint modeling" begin
+    sys, _, _ = _vsc_system(;
+        g = 0.0,
+        dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
+        ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
+        dc_setpoint_from = 1.03,
+        dc_control_to = PSY.VSCDCControlModes.DC_POWER,
+        ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
+        dc_setpoint_to = 0.3,
+    )
+    data = PowerFlowData(
+        ACPowerFlow{NewtonRaphsonACPowerFlow}(; solver_settings = VSC_SETTINGS),
+        sys,
+    )
+    dcn = PF.get_dc_network(data)
+    @test !PF.has_dc_network(dcn)   # the g = 0 line is not lowered into the DCNetwork
+    @test solve_power_flow!(data)   # the AC power flow still converges
+end
+
 @testset "VSC I4: NR / TrustRegion / LevenbergMarquardt agree on a VSC solve (polar)" begin
     solvers = (
         NewtonRaphsonACPowerFlow,
@@ -527,4 +604,69 @@ end
         @test isapprox(sol["polar"][2], sol[other][2]; atol = 1e-6)
         @test isapprox(sol["polar"][3], sol[other][3]; atol = 1e-6)
     end
+end
+
+# R3: converter AC terminals must be marked irreducible so network reduction can never remove a
+# VSC/IC bus (a reduced-away terminal would silently drop the converter). The protection set comes
+# from `_dc_converter_ac_buses`, passed to PNM as `irreducible_buses` for every PowerFlowData.
+@testset "VSC: converter AC terminals are collected as irreducible buses" begin
+    sys, from_no, to_no = _vsc_system(;
+        g = 50.0,
+        dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
+        dc_setpoint_from = 1.03,
+        dc_control_to = PSY.VSCDCControlModes.DC_POWER,
+        dc_setpoint_to = 0.3,
+    )
+    irr = PF._dc_converter_ac_buses(sys)
+    @test from_no in irr
+    @test to_no in irr
+    # a g = 0 (open, unmodeled) VSC line contributes no protected buses
+    sys0, _, _ = _vsc_system(;
+        g = 0.0,
+        dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
+        dc_setpoint_from = 1.03,
+        dc_control_to = PSY.VSCDCControlModes.DC_POWER,
+        dc_setpoint_to = 0.3,
+    )
+    @test isempty(PF._dc_converter_ac_buses(sys0))
+    # MTDC: every interconnecting-converter AC bus is collected
+    msys = _build_mtdc_system()
+    ic_buses = Set(
+        PSY.get_number(PSY.get_bus(ic)) for
+        ic in PSY.get_components(PSY.InterconnectingConverter, msys)
+    )
+    @test !isempty(ic_buses)
+    @test issubset(ic_buses, PF._dc_converter_ac_buses(msys))
+end
+
+# N4: PSS/E .raw has no DC-voltage-droop representation, so a droop converter is exported as MW
+# (power) control — TYPE 2 — with its DC setpoint as the scheduled active power, not the droop
+# reference voltage; only a strict DC_VOLTAGE terminal is the TYPE 1 DC-voltage controller, and the
+# DC line's base voltage is sourced from a voltage-referencing terminal (DC_VOLTAGE or droop).
+@testset "VSC export: a droop converter maps to MW control (TYPE 2)" begin
+    @test PF._vsc_export_dc_type(PSY.VSCDCControlModes.DC_VOLTAGE) == 1
+    @test PF._vsc_export_dc_type(PSY.VSCDCControlModes.DC_POWER) == 2
+    @test PF._vsc_export_dc_type(PSY.VSCDCControlModes.DC_VOLTAGE_DROOP) == 2
+    @test PF._has_dc_voltage_reference(PSY.VSCDCControlModes.DC_VOLTAGE)
+    @test PF._has_dc_voltage_reference(PSY.VSCDCControlModes.DC_VOLTAGE_DROOP)
+    @test !PF._has_dc_voltage_reference(PSY.VSCDCControlModes.DC_POWER)
+
+    sys, _, _ = _vsc_system(;
+        g = 50.0,
+        dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
+        dc_setpoint_from = 1.04,
+        dc_control_to = PSY.VSCDCControlModes.DC_VOLTAGE_DROOP,
+        dc_voltage_droop_to = 0.05,
+        dc_setpoint_to = 1.0,
+    )
+    vsc = first(PSY.get_components(PSY.TwoTerminalVSCLine, sys))
+    base = PSY.get_base_power(sys)
+    # strict DC_VOLTAGE terminal keeps its voltage setpoint as DCSET
+    @test PF._vsc_export_dcset(vsc, :from, base) == PSY.get_dc_setpoint_from(vsc)
+    # droop terminal's DCSET is the scheduled active-power demand (MW, to side receives -P_flow)
+    @test isapprox(
+        PF._vsc_export_dcset(vsc, :to, base),
+        -PSY.get_active_power_flow(vsc) * base;
+        atol = 1.0,
+    )
 end
