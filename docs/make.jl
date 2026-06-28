@@ -28,6 +28,7 @@ pages = OrderedDict(
         "Levenberg-Marquardt vs Gauss-Seidel" => "explanation/lm_vs_gauss_seidel.md",
         "Folds, Voltage Collapse, and Solver Diagnostics" => "explanation/folds_and_diagnostics.md",
         "LCC Model Implementation" => "explanation/lcc_model.md",
+        "VSC Model Implementation" => "explanation/vsc_model.md",
     ],
     "Reference" => Any[
         "Public API Reference" => "reference/api/public.md",
