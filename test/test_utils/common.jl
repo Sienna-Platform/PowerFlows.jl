@@ -398,8 +398,8 @@ function _add_simple_vsc!(
         g = 0.0,
         dc_current = 0.0,
         reactive_power_from = 0.0,
-        dc_voltage_control_from = false,
-        ac_voltage_control_from = false,
+        dc_control_from = PSY.VSCDCControlModes.DC_POWER,
+        ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
         dc_setpoint_from = 0.0,
         ac_setpoint_from = 1.0,
         converter_loss_from = LinearCurve(loss_coefficient),
@@ -409,8 +409,8 @@ function _add_simple_vsc!(
         power_factor_weighting_fraction_from = 0.0,
         voltage_limits_from = (min = 0.9, max = 1.1),
         reactive_power_to = 0.0,
-        dc_voltage_control_to = false,
-        ac_voltage_control_to = false,
+        dc_control_to = PSY.VSCDCControlModes.DC_POWER,
+        ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
         dc_setpoint_to = 0.0,
         ac_setpoint_to = 1.0,
         converter_loss_to = LinearCurve(loss_coefficient),
@@ -616,4 +616,18 @@ function _calc_x(
         end
     end
     return x
+end
+
+# Reuse an existing Arc between two buses if present (PSY enforces Arc-name uniqueness), else make
+# and add one. HVDC lines may share an Arc with an existing AC branch.
+function _get_or_make_arc(sys, from_bus, to_bus)
+    existing = PSY.get_components(
+        a -> PSY.get_from(a) === from_bus && PSY.get_to(a) === to_bus,
+        PSY.Arc,
+        sys,
+    )
+    isempty(existing) || return first(existing)
+    arc = PSY.Arc(; from = from_bus, to = to_bus)
+    PSY.add_component!(sys, arc)
+    return arc
 end

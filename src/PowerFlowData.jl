@@ -135,6 +135,11 @@ struct PowerFlowData{
     voltage_stability_factors::Union{Matrix{Float64}, Nothing}
     arc_active_power_losses::Union{Matrix{Float64}, Nothing}
     lcc::LCCParameters
+    # All PSY DC components (point-to-point VSC, multi-terminal DC) lowered into one DC network and
+    # solved jointly with the AC buses. Held behind a `Ref` (like `solver_cache`) so the immutable
+    # struct can receive the fully-built network after the system is scanned in
+    # `initialize_DCNetwork!`. Empty `DCNetwork()` for systems with no DC components.
+    dc_network::Base.RefValue{DCNetwork}
     arc_lossy_admittance_from_to::Union{SparseMatrixCSC{YBUS_ELTYPE, Int}, Nothing}
     arc_lossy_admittance_to_from::Union{SparseMatrixCSC{YBUS_ELTYPE, Int}, Nothing}
     # Persistent solver cache, reused across repeated solves on the same data (e.g. a PCM loop:
@@ -274,6 +279,7 @@ get_lcc_rectifier_min_thyristor_angle(pfd::PowerFlowData) =
 get_lcc_inverter_min_thyristor_angle(pfd::PowerFlowData) =
     pfd.lcc.inverter.min_thyristor_angle
 get_lcc_i_dc(pfd::PowerFlowData) = pfd.lcc.i_dc
+get_dc_network(pfd::PowerFlowData) = pfd.dc_network[]
 # pseudo getter.
 get_lcc_count(data::PowerFlowData) = length(data.lcc.rectifier.bus)
 
@@ -407,6 +413,7 @@ function PowerFlowData(
         calculate_voltage_stability_factors ? zeros(n_buses, n_time_steps) : nothing, # voltage_stability_factors
         _make_arc_active_power_losses(pf, n_arcs, n_time_steps), # arc_active_power_losses
         lcc_parameters,
+        Base.RefValue{DCNetwork}(DCNetwork()), # dc_network (built in initialize_DCNetwork!)
         arc_lossy_admittance_from_to,
         arc_lossy_admittance_to_from,
         Base.RefValue{Union{Nothing, SolverCache}}(nothing), # solver_cache (lazily populated)
@@ -605,9 +612,14 @@ function PowerFlowData(
     network_reduction_message(network_reductions, pf)
     reductions, zero_impedance_reduction =
         _route_zero_impedance_reduction(network_reductions)
+    # Converter AC terminals are ALWAYS irreducible — independent of `model_dc_network`. Reducing a
+    # VSC/IC bus away would lose the converter (silently drop it from the joint model, or mishandle
+    # its injection when DC modeling is off), so the protection must not depend on the solve mode.
+    irreducible_buses = _dc_converter_ac_buses(sys)
     power_network_matrix = PNM.Ybus(
         sys;
         network_reductions = reductions,
+        irreducible_buses = irreducible_buses,
         make_arc_admittance_matrices = true,
         include_constant_impedance_loads = false,
         zero_impedance_reduction = zero_impedance_reduction,
@@ -665,6 +677,7 @@ function PowerFlowData(
     ybus = PNM.Ybus(
         sys;
         network_reductions = reductions,
+        irreducible_buses = _dc_converter_ac_buses(sys),
         make_arc_admittance_matrices = pf.lossy_flows,
         zero_impedance_reduction = zero_impedance_reduction,
     )
@@ -735,6 +748,7 @@ function PowerFlowData(
     # get the network matrices
     ybus = PNM.Ybus(sys;
         network_reductions = reductions,
+        irreducible_buses = _dc_converter_ac_buses(sys),
         zero_impedance_reduction = zero_impedance_reduction)
     power_network_matrix = PNM.PTDF(ybus)
     aux_network_matrix = PNM.ABA_Matrix(ybus; factorize = true)
@@ -788,6 +802,7 @@ function PowerFlowData(
     # get the network matrices
     ybus = PNM.Ybus(sys;
         network_reductions = reductions,
+        irreducible_buses = _dc_converter_ac_buses(sys),
         zero_impedance_reduction = zero_impedance_reduction)
     power_network_matrix = PNM.VirtualPTDF(ybus) # evaluates an empty virtual PTDF
     aux_network_matrix = PNM.ABA_Matrix(ybus; factorize = true)

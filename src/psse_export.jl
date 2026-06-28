@@ -2567,6 +2567,46 @@ function write_to_buffers!(
         (md["dcline_name_mapping"] = serialize_component_ids(dcline_name_mapping))
 end
 
+# PSS/E VSC converter DC-control TYPE: 1 = DC voltage control, 2 = MW (power) control. The PSS/E
+# .raw VSC record has no droop representation, so a `DC_VOLTAGE_DROOP` terminal is exported as MW
+# control (TYPE 2) and its DC-voltage-droop characteristic is not preserved; only a strict
+# `DC_VOLTAGE` terminal is exported as the DC-voltage controller (TYPE 1).
+function _vsc_export_dc_type(dc_control)
+    if dc_control == PSY.VSCDCControlModes.DC_VOLTAGE
+        return 1
+    end
+    return 2
+end
+
+# Whether a terminal carries a usable DC-voltage reference (so its `dc_setpoint` is a voltage):
+# true for strict DC-voltage and droop control, false for MW (DC_POWER) control whose setpoint is
+# a power. Used to source the DC line's base voltage from the correct terminal.
+function _has_dc_voltage_reference(dc_control)
+    return dc_control == PSY.VSCDCControlModes.DC_VOLTAGE ||
+           dc_control == PSY.VSCDCControlModes.DC_VOLTAGE_DROOP
+end
+
+# DCSET for one converter. A droop terminal is exported as MW control, so its setpoint is the
+# scheduled active-power demand (NOT the droop reference voltage, which the record cannot hold);
+# the from terminal injects +P_flow into the DC line, the to terminal receives -P_flow. All other
+# modes use the stored DC setpoint (a voltage for DC_VOLTAGE, a power for DC_POWER).
+function _vsc_export_dcset(
+    vscline::PSY.TwoTerminalVSCLine,
+    side::Symbol,
+    base_power::Float64,
+)
+    if side == :from
+        if PSY.get_dc_control_from(vscline) == PSY.VSCDCControlModes.DC_VOLTAGE_DROOP
+            return _psse_round_val(PSY.get_active_power_flow(vscline) * base_power)
+        end
+        return PSY.get_dc_setpoint_from(vscline)
+    end
+    if PSY.get_dc_control_to(vscline) == PSY.VSCDCControlModes.DC_VOLTAGE_DROOP
+        return _psse_round_val(-PSY.get_active_power_flow(vscline) * base_power)
+    end
+    return PSY.get_dc_setpoint_to(vscline)
+end
+
 """Compute VSC converter fields for one side (from or to) of a VSC DC line."""
 function _compute_vsc_converter_fields(
     exporter::PSSEExporter,
@@ -2582,8 +2622,9 @@ function _compute_vsc_converter_fields(
     TYPE = get_ext_key_or_default(vscline, "TYPE_$suffix", type_org)
 
     if side == :from
-        MODE = PSY.get_ac_voltage_control_from(vscline) ? 1 : 2
-        DCSET = PSY.get_dc_setpoint_from(vscline)
+        MODE =
+            PSY.get_ac_control_from(vscline) == PSY.VSCACControlModes.AC_VOLTAGE ? 1 : 2
+        DCSET = _vsc_export_dcset(vscline, :from, base_power)
         ACSET = PSY.get_ac_setpoint_from(vscline)
         converter_loss = PSY.get_converter_loss_from(vscline)
         get_rating = PSY.get_rating_from
@@ -2591,8 +2632,9 @@ function _compute_vsc_converter_fields(
         PWF = PSY.get_power_factor_weighting_fraction_from(vscline)
         q_limits = PSY.get_reactive_power_limits_from(vscline)
     else
-        MODE = PSY.get_ac_voltage_control_to(vscline) ? 1 : 2
-        DCSET = PSY.get_dc_setpoint_to(vscline)
+        MODE =
+            PSY.get_ac_control_to(vscline) == PSY.VSCACControlModes.AC_VOLTAGE ? 1 : 2
+        DCSET = _vsc_export_dcset(vscline, :to, base_power)
         ACSET = PSY.get_ac_setpoint_to(vscline)
         converter_loss = PSY.get_converter_loss_to(vscline)
         get_rating = PSY.get_rating_to
@@ -2629,8 +2671,11 @@ function _compute_vsc_converter_fields(
     MINQ = q_limits.min * base_power
     VSREG = get_ext_key_or_default(vscline, "VSREG_$suffix", 0)
     NREG = get_ext_key_or_default(vscline, "NREG_$suffix", 0)
-    REMOT = get_ext_key_or_default(vscline, "REMOT_$suffix")
-    RMPCT = get_ext_key_or_default(vscline, "RMPCT_$suffix")
+    # REMOT (v33 remote-regulated bus) and RMPCT need valid numeric defaults — a VSC built without
+    # PSS/E `ext` metadata would otherwise export an empty field that fails re-parse. 0 = no remote
+    # bus (matching the v35 VSREG/NREG default); 100.0% is the PSS/E default Mvar fraction.
+    REMOT = get_ext_key_or_default(vscline, "REMOT_$suffix", 0)
+    RMPCT = get_ext_key_or_default(vscline, "RMPCT_$suffix", 100.0)
 
     return (;
         IBUS, TYPE, MODE, DCSET, ACSET, ALOSS, BLOSS, MINLOSS,
@@ -2676,8 +2721,11 @@ function write_to_buffers!(
         vsc_line_name = string(split(PSY.get_name(vscline), "_")[end])
         NAME = _psse_quote_string(vsc_line_name)
         MDC = PSY.get_available(vscline) ? 1 : 0
-        if PSY.get_dc_voltage_control_from(vscline) &&
-           !PSY.get_dc_voltage_control_to(vscline)
+        from_dc_control = PSY.get_dc_control_from(vscline)
+        to_dc_control = PSY.get_dc_control_to(vscline)
+        # Base (DC) voltage comes from a terminal carrying a DC-voltage reference (strict DC_VOLTAGE
+        # or droop); a pure MW (DC_POWER) terminal's setpoint is a power, not a voltage.
+        if _has_dc_voltage_reference(from_dc_control)
             base_voltage = PSY.get_dc_setpoint_from(vscline)
         else
             base_voltage = PSY.get_dc_setpoint_to(vscline)
@@ -2686,18 +2734,17 @@ function write_to_buffers!(
         RDC_org = PSY.get_g(vscline) != 0.0 ? (1 / PSY.get_g(vscline)) * Zbase : 0.0
         RDC = get_ext_key_or_default(vscline, "RDC", RDC_org)
 
-        # Determine converter types based on DC voltage control configuration
-        if PSY.get_dc_voltage_control_from(vscline) &&
-           !PSY.get_dc_voltage_control_to(vscline)
-            type1_org = 1
-            type2_org = 2
-        elseif !PSY.get_dc_voltage_control_from(vscline) &&
-               PSY.get_dc_voltage_control_to(vscline)
-            type1_org = 2
-            type2_org = 1
-        else
-            type1_org = 0
-            type2_org = 0
+        # Converter DC-control TYPE per terminal: DC_VOLTAGE -> 1, MW/droop -> 2 (droop is exported
+        # as MW control; the PSS/E record cannot represent DC-voltage droop).
+        type1_org = _vsc_export_dc_type(from_dc_control)
+        type2_org = _vsc_export_dc_type(to_dc_control)
+        # PSS/E requires exactly one in-service converter to be DC-voltage controlling (TYPE 1). PSY
+        # does not enforce this, so a both- or neither-DC_VOLTAGE line produces a record PSS/E cannot
+        # read; warn and write best-effort rather than emit it silently.
+        if PSY.get_available(vscline) && (type1_org == 1) == (type2_org == 1)
+            @warn "TwoTerminalVSCLine $(PSY.get_name(vscline)) does not have exactly one " *
+                  "DC-voltage-controlling terminal; exported PSS/E TYPE $type1_org/$type2_org " *
+                  "violates the one-TYPE-1 rule and may not re-parse."
         end
 
         c1 = _compute_vsc_converter_fields(exporter, vscline, I, type1_org, :from)

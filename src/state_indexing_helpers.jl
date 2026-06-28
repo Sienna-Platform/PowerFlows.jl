@@ -31,7 +31,10 @@ function update_state!(x::Vector{Float64},
 )
     # I really only need access to 3 classes of fields of data:
     # bus types, bus power contributions [inj/widthdrawal], and bus voltages
-    @assert length(x) == 2 * length(data.bus_type[:, 1]) + 4 * size(data.lcc.p_set, 1)
+    dcn = get_dc_network(data)
+    @assert length(x) ==
+            2 * length(data.bus_type[:, 1]) + 4 * size(data.lcc.p_set, 1) +
+            vsc_tail_length(dcn)
     state_variable_count = 1
     for (ix, b) in enumerate(data.bus_type[:, time_step])
         if b == PSY.ACBusTypes.REF
@@ -63,6 +66,17 @@ function update_state!(x::Vector{Float64},
         x[state_variable_count + 2] = data.lcc.rectifier.thyristor_angle[i, time_step]
         x[state_variable_count + 3] = data.lcc.inverter.thyristor_angle[i, time_step]
         state_variable_count += 4
+    end
+    # VSC tail: per converter (P_c, Q_c), then per DC node V_dc. Mirrors `_read_vsc_state!`.
+    nconv = n_vsc_converters(dcn)
+    for c in 1:nconv
+        x[state_variable_count] = dcn.p_c[c, time_step]
+        x[state_variable_count + 1] = dcn.q_c[c, time_step]
+        state_variable_count += 2
+    end
+    for k in 1:n_dc_nodes(dcn)
+        x[state_variable_count] = dcn.node_vdc[k, time_step]
+        state_variable_count += 1
     end
     @assert state_variable_count - 1 == length(x)
 end
