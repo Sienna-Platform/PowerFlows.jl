@@ -647,11 +647,17 @@ function _set_entries_for_vsc(
         Jv[pc, pc] = _vsc_dr1_dP(mode, dcn, c)
         Jv[pc, vk] = _vsc_dr1_dVdc(mode)
         Jv[qc, qc] = _vsc_dr2_dQ(mode)
-        Jv[qc, 2 * ix - 1] = _vsc_dr2_dVm(mode, Vmix)
         Jv[vk, pc] = dP / Vdc
         Jv[vk, qc] = dQ / Vdc
-        Jv[vk, 2 * ix - 1] = dVm / Vdc
         Jv[vk, vk] += -Pdc / (Vdc * Vdc)
+        # Column `2ix-1` is the |V_ac| state only at PQ buses; at PV/REF |V_ac| is fixed, so the
+        # converter's |V_ac|-coupling derivatives (AC-voltage control + loss) do not enter the
+        # Jacobian. The structure allocates the slot as PQ regardless (PV→PQ transitions), so
+        # leaving it unwritten here keeps a correct structural zero.
+        if data.bus_type[ix, time_step] == PSY.ACBusTypes.PQ
+            Jv[qc, 2 * ix - 1] = _vsc_dr2_dVm(mode, Vmix)
+            Jv[vk, 2 * ix - 1] = dVm / Vdc
+        end
     end
     return
 end
