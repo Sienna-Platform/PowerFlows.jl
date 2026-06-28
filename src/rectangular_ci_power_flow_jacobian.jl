@@ -654,90 +654,10 @@ function _update_rect_ci_jacobian_values!(
     end
     dcn = get_dc_network(data)
     if has_dc_network(dcn)
-        _set_entries_for_vsc_rect!(
+        _set_entries_for_vsc_rect_mcpb!(
             Jv, Jvnz, diag_base_nz, dcn, e_state, f_state,
-            bus_state_offset, total_bus_state, n_lccs, time_step,
+            bus_types, bus_state_offset, total_bus_state, n_lccs, time_step, false,
         )
-    end
-    return
-end
-
-# VSC tail Jacobian (rectangular / MCPB). Direct `Jv[r,c]` assignment for the new bus×converter and
-# tail entries; `+=` into the existing bus-diagonal nonzeros (via `diag_base_nz`) for the
-# current-injection (e,f) coupling. Handles all control modes and converter losses.
-function _set_entries_for_vsc_rect!(
-    Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
-    Jvnz::Vector{Float64},
-    diag_base_nz::Matrix{Int},
-    dcn::DCNetwork,
-    e_state::Vector{Float64},
-    f_state::Vector{Float64},
-    bus_state_offset::AbstractVector,
-    total_bus_state::Int,
-    n_lccs::Int,
-    time_step::Int,
-)
-    nconv = n_vsc_converters(dcn)
-    nnode = n_dc_nodes(dcn)
-    vsc_off = total_bus_state + 4 * n_lccs
-    base = vsc_off + 2 * nconv
-    G = dcn.G_dc
-    @inbounds for b in 1:n_dc_branches(dcn)
-        f = dcn.branch_from[b]
-        t = dcn.branch_to[b]
-        Jv[base + f, base + t] = G[f, t]
-        Jv[base + t, base + f] = G[t, f]
-    end
-    @inbounds for k in 1:nnode
-        Jv[base + k, base + k] = G[k, k]
-    end
-    @inbounds for c in 1:nconv
-        ix = dcn.converter_ac_bus_ix[c]
-        off = Int(bus_state_offset[ix])
-        k = dcn.converter_dc_node_ix[c]
-        pc = vsc_off + 2 * c - 1
-        qc = vsc_off + 2 * c
-        vk = base + k
-        mode = dcn.converter_mode[c]
-        e = e_state[ix]
-        f = f_state[ix]
-        D = max(e * e + f * f, V_FLOOR2)
-        Vm = sqrt(D)
-        P = dcn.p_c[c, time_step]
-        Q = dcn.q_c[c, time_step]
-        Vdc = dcn.node_vdc[k, time_step]
-        # current-injection derivatives w.r.t. bus (e,f) → accumulate into the bus diagonal
-        num_r = P * e + Q * f
-        num_i = P * f - Q * e
-        D2 = D * D
-        Jvnz[diag_base_nz[1, ix]] += (P * D - num_r * 2.0 * e) / D2
-        Jvnz[diag_base_nz[2, ix]] += (Q * D - num_r * 2.0 * f) / D2
-        Jvnz[diag_base_nz[3, ix]] += (-Q * D - num_i * 2.0 * e) / D2
-        Jvnz[diag_base_nz[4, ix]] += (P * D - num_i * 2.0 * f) / D2
-        # bus current rows w.r.t. converter (P_c, Q_c)
-        Jv[off, pc] = e / D
-        Jv[off, qc] = f / D
-        Jv[off + 1, pc] = f / D
-        Jv[off + 1, qc] = -e / D
-        # control rows
-        Jv[pc, pc] = _vsc_dr1_dP(mode, dcn, c)
-        Jv[pc, vk] = _vsc_dr1_dVdc(mode)
-        Jv[qc, qc] = _vsc_dr2_dQ(mode)
-        if controls_ac_voltage(mode)
-            Jv[qc, off] = 2.0 * e
-            Jv[qc, off + 1] = 2.0 * f
-        else
-            Jv[qc, off] = 0.0
-            Jv[qc, off + 1] = 0.0
-        end
-        # DC-KCL row
-        Pdc = _vsc_pdc(dcn, c, Vm, time_step)
-        (dP, dQ, dVm) = _vsc_pdc_derivatives(dcn, c, Vm, time_step)
-        Jv[vk, pc] = dP / Vdc
-        Jv[vk, qc] = dQ / Vdc
-        Jv[vk, off] = (dVm * e / Vm) / Vdc
-        Jv[vk, off + 1] = (dVm * f / Vm) / Vdc
-        Jv[vk, vk] += -Pdc / (Vdc * Vdc)
     end
     return
 end

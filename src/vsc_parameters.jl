@@ -8,7 +8,7 @@
 # (multi-terminal DC) is the same struct with more nodes/branches and the same kernels.
 
 # Converter control modes. An `Int8`-backed `@enum` stored directly on `DCNetwork`: reading
-# `dcn.converter_mode[c]` is type-stable (concrete enum), so the residual/Jacobian hot path dispatches
+# `dcn.converter_mode[c]` is type-stable (concrete enum), so the residual/Jacobian hot path calls
 # the mode-specific kernels (`_vsc_r1`/`_vsc_r2`/…) with no dynamic dispatch. The kernels branch on the
 # enum value — cheap and branch-predictable for the handful of converters.
 #   ControlPQ        r1: P_c − P_set            r2: Q_c − Q_set
@@ -30,6 +30,10 @@ uses_vdc_setpoint(m::VSCControlMode) =
 # Whether the second control row pins AC voltage (|V_ac|² − V_set²) rather than reactive power.
 controls_ac_voltage(m::VSCControlMode) = m == ControlPVac || m == ControlVdcQ
 
+# Keyword-constructed (`@kwdef`) so the 27-field build sites name every field — many fields share
+# `Vector{Float64}`/`Matrix{Float64}` types, so positional construction would silently corrupt on a
+# field reorder. All fields default to empty, so a bare `DCNetwork()` is the empty network used for
+# pure-AC systems (regression-safe — pure AC is untouched).
 """
 Internal lowering of all PSY DC components into a single DC network solved jointly with the AC
 buses. Fields ordered: converters (length `n_conv`), DC nodes (length `n_node`), DC branches
@@ -37,10 +41,6 @@ buses. Fields ordered: converters (length `n_conv`), DC nodes (length `n_node`),
 `PowerFlowData` behind a `Ref` (the struct is immutable; the network is assigned after the system
 is scanned, exactly like `solver_cache`).
 """
-# Keyword-constructed (`@kwdef`) so the 27-field build sites name every field — many fields share
-# `Vector{Float64}`/`Matrix{Float64}` types, so positional construction would silently corrupt on a
-# field reorder. All fields default to empty, so a bare `DCNetwork()` is the empty network used for
-# pure-AC systems (regression-safe — pure AC is untouched).
 Base.@kwdef struct DCNetwork
     # converters
     converter_ac_bus_ix::Vector{Int} = Int[]        # AC bus index (post network reduction)
