@@ -190,6 +190,8 @@ function build_controlled_device_set(
                 bus_lookup[bus],
                 bus_lookup[cbus],
                 vset,
+                lims.min,
+                lims.max,
                 g0,
                 b0,
                 steps,

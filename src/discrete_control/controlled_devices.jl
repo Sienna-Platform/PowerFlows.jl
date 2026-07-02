@@ -26,7 +26,13 @@ mutable struct ControlledSwitchedShunt <: AbstractShuntControl
     name::String
     bus_ix::Int
     controlled_ix::Int
-    vset::Float64
+    vset::Float64                    # current point target; set to the nearest violated
+    # band edge (or held at the base voltage, frozen) once
+    # per solve by `_apply_shunt_deadband!` — see PSS/E's
+    # VSWLO/VSWHI semantics: switch the minimum number of
+    # steps to re-enter the band, not to a fixed setpoint.
+    vset_lo::Float64                 # PSS/E VSWLO
+    vset_hi::Float64                 # PSS/E VSWHI
     g0::Float64                      # real(get_Y)
     b0::Float64                      # imag(get_Y)
     block_steps::Vector{Int}         # number_of_steps per block
