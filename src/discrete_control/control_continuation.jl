@@ -156,6 +156,27 @@ function _step_device!(
     return abs(reached - p_now)
 end
 
+# PSS/E's MODSW=1/2 switched-shunt control switches the minimum number of steps needed to
+# bring the controlled bus back inside [VSWLO, VSWHI] — it does not drive to the band's
+# midpoint. Call once per solve, right after the base-case converges and before any device
+# is probed/stepped: freeze a shunt already inside the band, otherwise point `vset` at the
+# nearest violated edge so the continuation below pushes it back to the edge, not the center.
+function _apply_shunt_deadband!(
+    shunts, offset::Int, frozen::Vector{Bool}, data, ts::Int,
+)
+    for (i, d) in enumerate(shunts)
+        y = measured_value(d, data, ts)
+        if y < d.vset_lo
+            d.vset = d.vset_lo
+        elseif y > d.vset_hi
+            d.vset = d.vset_hi
+        else
+            frozen[offset + i] = true
+        end
+    end
+    return nothing
+end
+
 # Probe each device in one concrete vector for its plant sign (dV/dp) and write the result into
 # the shared per-device state at `offset + i`. A function barrier: the body specializes on the
 # concrete element type, so there is no dynamic dispatch over a heterogeneous device collection.
@@ -165,6 +186,9 @@ function _probe_device_signs!(
     data, ts::Int, pf; kwargs...,
 )
     for (i, d) in enumerate(devices)
+        # Already frozen (e.g. a shunt `_apply_shunt_deadband!` held in-band): skip the
+        # 2-solve probe entirely, it will never be stepped.
+        frozen[offset + i] && continue
         s, reliable = _plant_sign(d, data, ts, pf; kwargs...)
         reliable ? (dVdp[offset + i] = s) : (frozen[offset + i] = true)
     end
@@ -210,30 +234,35 @@ function _control_continuation!(
     frozen = fill(false, n_dev)
     osc = zeros(Int, n_dev)
     prev_sign = zeros(Int, n_dev)
+    _apply_shunt_deadband!(set.shunts, n_taps, frozen, data, ts)
+    deadband_frozen = copy(frozen)   # in-band shunts: expected, not a fault; excluded below
     _probe_device_signs!(set.taps, 0, dVdp, frozen, data, ts, pf; kwargs...)
     _probe_device_signs!(set.shunts, n_taps, dVdp, frozen, data, ts, pf; kwargs...)
     _probe_device_signs!(
         set.facts, n_taps + n_shunts, dVdp, frozen, data, ts, pf; kwargs...)
     _probe_device_signs!(
         set.phase_shifters, n_volt, dVdp, frozen, data, ts, pf; kwargs...)
-    if any(frozen)
+    probe_frozen = frozen .& .!deadband_frozen
+    if any(probe_frozen)
         frozen_names = join(
             vcat(
-                [set.taps[i].name for i in 1:n_taps if frozen[i]],
-                [set.shunts[j].name
-                    for j in eachindex(set.shunts) if frozen[n_taps + j]],
+                [set.taps[i].name for i in 1:n_taps if probe_frozen[i]],
+                [
+                    set.shunts[j].name
+                    for j in eachindex(set.shunts) if probe_frozen[n_taps + j]
+                ],
                 [
                     set.facts[k].name
-                    for k in eachindex(set.facts) if frozen[n_taps + n_shunts + k]
+                    for k in eachindex(set.facts) if probe_frozen[n_taps + n_shunts + k]
                 ],
                 [
                     set.phase_shifters[m].name
-                    for m in eachindex(set.phase_shifters) if frozen[n_volt + m]
+                    for m in eachindex(set.phase_shifters) if probe_frozen[n_volt + m]
                 ],
             ),
             ", ",
         )
-        @warn "discrete control: $(count(frozen)) device(s) had an unreliable \
+        @warn "discrete control: $(count(probe_frozen)) device(s) had an unreliable \
             plant-sensitivity probe and were frozen at their current parameter \
             (time step $ts): $frozen_names"
     end
