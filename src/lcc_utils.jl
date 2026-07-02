@@ -304,37 +304,54 @@ AC terminal from `data.bus_magnitude` (the polar convention). The
 `|V_state| = sqrt(e² + f²)` must be used instead — at PV buses,
 `data.bus_magnitude` holds `V_set` rather than the actual state magnitude.
 """
+# Recompute the phi angles and equivalent branch admittances for a SINGLE LCC `i` given its two
+# AC-terminal magnitudes. Shared by the all-LCC `_update_ybus_lcc!` methods and by the sequential
+# converter sub-solve (which only changes one converter's state per Newton step, so updating all
+# converters there would be wasted work).
+@inline function _update_ybus_lcc_one!(
+    data::PowerFlowData,
+    time_step::Int,
+    i::Int,
+    Vm_fb::Float64,
+    Vm_tb::Float64,
+)
+    data.lcc.rectifier.phi[i, time_step] = _calculate_ϕ_lcc(
+        data.lcc.rectifier.tap[i, time_step],
+        data.lcc.rectifier.thyristor_angle[i, time_step],
+        data.lcc.i_dc[i, time_step],
+        data.lcc.rectifier.transformer_reactance[i],
+        Vm_fb,
+    )
+    data.lcc.inverter.phi[i, time_step] = _calculate_ϕ_lcc(
+        data.lcc.inverter.tap[i, time_step],
+        data.lcc.inverter.thyristor_angle[i, time_step],
+        -data.lcc.i_dc[i, time_step],
+        data.lcc.inverter.transformer_reactance[i],
+        Vm_tb,
+    )
+    rectifier_admittance = _calculate_y_lcc(
+        data.lcc.rectifier.tap[i, time_step],
+        data.lcc.i_dc[i, time_step],
+        Vm_fb,
+        data.lcc.rectifier.phi[i, time_step],
+    )
+    inverter_admittance = _calculate_y_lcc(
+        data.lcc.inverter.tap[i, time_step],
+        data.lcc.i_dc[i, time_step],
+        Vm_tb,
+        data.lcc.inverter.phi[i, time_step],
+    )
+    data.lcc.branch_admittances[i] = (rectifier_admittance, inverter_admittance)
+    return
+end
+
 function _update_ybus_lcc!(data::PowerFlowData, time_step::Int64)
     for (i, (fb, tb)) in enumerate(data.lcc.bus_indices)
-        Vm_fb = data.bus_magnitude[fb, time_step]
-        Vm_tb = data.bus_magnitude[tb, time_step]
-        data.lcc.rectifier.phi[i, time_step] = _calculate_ϕ_lcc(
-            data.lcc.rectifier.tap[i, time_step],
-            data.lcc.rectifier.thyristor_angle[i, time_step],
-            data.lcc.i_dc[i, time_step],
-            data.lcc.rectifier.transformer_reactance[i],
-            Vm_fb,
+        _update_ybus_lcc_one!(
+            data, time_step, i,
+            data.bus_magnitude[fb, time_step],
+            data.bus_magnitude[tb, time_step],
         )
-        data.lcc.inverter.phi[i, time_step] = _calculate_ϕ_lcc(
-            data.lcc.inverter.tap[i, time_step],
-            data.lcc.inverter.thyristor_angle[i, time_step],
-            -data.lcc.i_dc[i, time_step],
-            data.lcc.inverter.transformer_reactance[i],
-            Vm_tb,
-        )
-        rectifier_admittance = _calculate_y_lcc(
-            data.lcc.rectifier.tap[i, time_step],
-            data.lcc.i_dc[i, time_step],
-            Vm_fb,
-            data.lcc.rectifier.phi[i, time_step],
-        )
-        inverter_admittance = _calculate_y_lcc(
-            data.lcc.inverter.tap[i, time_step],
-            data.lcc.i_dc[i, time_step],
-            Vm_tb,
-            data.lcc.inverter.phi[i, time_step],
-        )
-        data.lcc.branch_admittances[i] = (rectifier_admittance, inverter_admittance)
     end
     return
 end
@@ -354,35 +371,11 @@ function _update_ybus_lcc!(
     f_state::Vector{Float64},
 )
     for (i, (fb, tb)) in enumerate(data.lcc.bus_indices)
-        Vm_fb = sqrt(e_state[fb]^2 + f_state[fb]^2)
-        Vm_tb = sqrt(e_state[tb]^2 + f_state[tb]^2)
-        data.lcc.rectifier.phi[i, time_step] = _calculate_ϕ_lcc(
-            data.lcc.rectifier.tap[i, time_step],
-            data.lcc.rectifier.thyristor_angle[i, time_step],
-            data.lcc.i_dc[i, time_step],
-            data.lcc.rectifier.transformer_reactance[i],
-            Vm_fb,
+        _update_ybus_lcc_one!(
+            data, time_step, i,
+            sqrt(e_state[fb]^2 + f_state[fb]^2),
+            sqrt(e_state[tb]^2 + f_state[tb]^2),
         )
-        data.lcc.inverter.phi[i, time_step] = _calculate_ϕ_lcc(
-            data.lcc.inverter.tap[i, time_step],
-            data.lcc.inverter.thyristor_angle[i, time_step],
-            -data.lcc.i_dc[i, time_step],
-            data.lcc.inverter.transformer_reactance[i],
-            Vm_tb,
-        )
-        rectifier_admittance = _calculate_y_lcc(
-            data.lcc.rectifier.tap[i, time_step],
-            data.lcc.i_dc[i, time_step],
-            Vm_fb,
-            data.lcc.rectifier.phi[i, time_step],
-        )
-        inverter_admittance = _calculate_y_lcc(
-            data.lcc.inverter.tap[i, time_step],
-            data.lcc.i_dc[i, time_step],
-            Vm_tb,
-            data.lcc.inverter.phi[i, time_step],
-        )
-        data.lcc.branch_admittances[i] = (rectifier_admittance, inverter_admittance)
     end
     return
 end
@@ -434,6 +427,12 @@ function _set_lcc_tail_residuals!(
     return
 end
 
+"""
+    _write_lcc_tail!(F, data, base_offset, time_step, i, fb, tb, Vm_fb, Vm_tb)
+
+Write LCC `i`'s four tail residual rows (P-setpoint, DC-line balance, rectifier α-limit,
+inverter α-limit) into `F`.
+"""
 @inline function _write_lcc_tail!(
     F::AbstractVector{Float64},
     data::PowerFlowData,
@@ -541,6 +540,7 @@ function _lcc_jacobian_scalars(
     dP_dt_fb = _calculate_dP_dt_lcc(tap_r, i_dc, xtr_r, Vm_fb, phi_r)
     dP_dt_tb = _calculate_dP_dt_lcc(tap_i, i_dc, xtr_i, Vm_tb, phi_i)
     dP_dα_fb = _calculate_dP_dα_lcc(tap_r, i_dc, Vm_fb, alpha_r, phi_r)
+    # Negated: inverter ϕ_i ≈ π − α_i flips ∂ϕ_i/∂α_i vs the helper's rectifier form (see above).
     dP_dα_tb = -_calculate_dP_dα_lcc(tap_i, i_dc, Vm_tb, alpha_i, phi_i)
     return (
         i_dc = i_dc,
@@ -587,6 +587,124 @@ function _lcc_jacobian_scalars(
         d_Ft_fb_d_tap_i = setpoint_at_rect ? 0.0 : -dP_dt_tb,
         d_Ft_fb_d_alpha_i = setpoint_at_rect ? 0.0 : -dP_dα_tb,
     )
+end
+
+"""
+    _lcc_tail_jacobian_block(data, i, time_step, Vm_fb, Vm_tb) -> Matrix{Float64}
+
+The 4×4 Jacobian of LCC `i`'s four tail residual rows (P-setpoint, DC-line balance, rectifier
+α-limit, inverter α-limit; see [`_write_lcc_tail!`](@ref)) with respect to its four tail states
+`[tap_r, tap_i, α_r, α_i]`, at fixed AC terminal magnitudes `Vm_fb`/`Vm_tb`. Used by the sequential
+fast-decoupled LCC sub-solve ([`_fd_converter_substep!`](@ref)) to drive the converter control
+equations to zero given the AC voltages — it is the tail×tail diagonal block of the unified
+Jacobian. Requires `data.lcc.*.phi` to be current (call [`_update_ybus_lcc!`](@ref) first). The
+zero-DC-current case (`i_dc == 0`) returns the identity, matching the tap-pinning branch of
+`_write_lcc_tail!`.
+"""
+function _lcc_tail_jacobian_block(
+    data::PowerFlowData,
+    i::Int,
+    time_step::Int,
+    Vm_fb::Float64,
+    Vm_tb::Float64,
+)
+    if iszero(data.lcc.i_dc[i, time_step])
+        # 0-current converter: F = [tap_r - setpoint, tap_i - setpoint, α_r - min, α_i - min].
+        return Matrix{Float64}(LinearAlgebra.I, 4, 4)
+    end
+    J = zeros(Float64, 4, 4)
+    s = _lcc_jacobian_scalars(data, i, time_step, Vm_fb, Vm_tb)
+    # Columns: 1 = tap_r, 2 = tap_i, 3 = α_r, 4 = α_i.
+    # Row 1: P-setpoint (only the set-point side is non-zero; the scalars zero the inactive side).
+    J[1, 1] = s.d_Ft_fb_d_tap_r
+    J[1, 2] = s.d_Ft_fb_d_tap_i
+    J[1, 3] = s.d_Ft_fb_d_alpha_r
+    J[1, 4] = s.d_Ft_fb_d_alpha_i
+    # Row 2: DC-line balance (P_lcc_from + P_lcc_to − R·I_dc²) — depends on both sides.
+    J[2, 1] = s.d_Ft_tb_d_tap_r
+    J[2, 2] = s.d_Ft_tb_d_tap_i
+    J[2, 3] = s.d_Ft_tb_d_alpha_r
+    J[2, 4] = s.d_Ft_tb_d_alpha_i
+    # Rows 3,4: α-limit rows (α − α_min) — identity in the α columns.
+    J[3, 3] = 1.0
+    J[4, 4] = 1.0
+    return J
+end
+
+"""
+    _fd_converter_substep!(data, time_step; max_iter=20, tol=1e-10) -> Float64
+
+Sequential AC–DC converter sub-solve for the fast-decoupled (`FDDecoupled`) path: holding the AC bus
+voltages in `data.bus_magnitude` FIXED, Newton-iterate each LCC's four tail states
+`[tap_r, tap_i, α_r, α_i]` until its four control residuals (P-setpoint, DC-line balance, α limits;
+[`_write_lcc_tail!`](@ref)) fall below `tol`, refreshing `data.lcc.branch_admittances` via
+[`_update_ybus_lcc!`](@ref) so the converter's equivalent injection at the AC terminals is current.
+Each LCC is an independent 4×4 solve. Returns the final ‖tail residual‖∞ across all LCCs. This is
+the per-AC-iteration converter solve of the sequential AC–DC method: given V it produces the DC
+boundary conditions the AC half-steps then balance. The caller must copy the updated `data.lcc.*`
+states back into the state vector's trailing slots before the next residual evaluation (the residual
+reads those states from `x`).
+"""
+function _fd_converter_substep!(
+    data::PowerFlowData,
+    time_step::Int;
+    max_iter::Int = 20,
+    tol::Float64 = 1e-10,
+)
+    n = size(data.lcc.p_set, 1)
+    worst = 0.0
+    # `_write_lcc_tail!` writes LCC `i`'s 4 rows at the GLOBAL offset `(i-1)*4`, so `F` spans all
+    # converters; the per-LCC Newton reads its own 4-row block.
+    F = zeros(Float64, 4 * n)
+    for i in 1:n
+        (fb, tb) = data.lcc.bus_indices[i]
+        Vm_fb = data.bus_magnitude[fb, time_step]
+        Vm_tb = data.bus_magnitude[tb, time_step]
+        off = 4 * (i - 1)
+        resid_i = Inf
+        for _ in 1:max_iter
+            # Only converter `i`'s state changes here, so refresh just its phi/admittances.
+            _update_ybus_lcc_one!(data, time_step, i, Vm_fb, Vm_tb)
+            _write_lcc_tail!(F, data, 0, time_step, i, fb, tb, Vm_fb, Vm_tb)
+            Fi = view(F, (off + 1):(off + 4))
+            resid_i = norm(Fi, Inf)
+            resid_i < tol && break
+            J = _lcc_tail_jacobian_block(data, i, time_step, Vm_fb, Vm_tb)
+            Δ = J \ (-Fi)
+            data.lcc.rectifier.tap[i, time_step] += Δ[1]
+            data.lcc.inverter.tap[i, time_step] += Δ[2]
+            data.lcc.rectifier.thyristor_angle[i, time_step] += Δ[3]
+            data.lcc.inverter.thyristor_angle[i, time_step] += Δ[4]
+        end
+        _update_ybus_lcc_one!(data, time_step, i, Vm_fb, Vm_tb)  # final converged converter state
+        worst = max(worst, resid_i)
+    end
+    return worst
+end
+
+"""
+    _write_lcc_state_to_x!(x, data, time_step)
+
+Copy the per-LCC converter states (`tap_r, tap_i, α_r, α_i`) from `data.lcc.*` into the trailing
+`4·n_lcc` slots of the state vector `x` — the inverse of the read the residual functor performs.
+Used by the sequential converter sub-solve so `x` stays consistent with the freshly-solved
+converter state before the next residual evaluation.
+"""
+function _write_lcc_state_to_x!(
+    x::AbstractVector{Float64},
+    data::PowerFlowData,
+    time_step::Int,
+)
+    n = size(data.lcc.p_set, 1)
+    base = length(x) - 4 * n
+    @inbounds for i in 1:n
+        off = base + 4 * (i - 1)
+        x[off + 1] = data.lcc.rectifier.tap[i, time_step]
+        x[off + 2] = data.lcc.inverter.tap[i, time_step]
+        x[off + 3] = data.lcc.rectifier.thyristor_angle[i, time_step]
+        x[off + 4] = data.lcc.inverter.thyristor_angle[i, time_step]
+    end
+    return
 end
 
 """

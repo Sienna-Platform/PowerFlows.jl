@@ -67,8 +67,19 @@ median is the representative figure.
     scale**: its Marquardt scaling helps at ≤2000 buses (7 iters) but does not
     scale — 56 iterations / 4.3 s at 10k, ~20× Rectangular/NR. See
     [Levenberg-Marquardt in Place of Gauss-Seidel](@ref).
+  - **Repeated / many solves (PCM, contingency screening, dynamic-sim init):**
+    [`FastDecoupledACPowerFlow`](@ref) — the fast decoupled power flow (PSS/E `FDNS`). It is a
+    *solver* usable on any formulation (polar uses the classic B′/B″ half-iterations; rectangular
+    and mixed use a frozen-Jacobian variant). It is deliberately absent from the iteration tables
+    above: it converges at a **linear** rate (many, far cheaper iterations) rather than NR's
+    quadratic rate, so an iteration-count comparison is apples-to-oranges. Its constant B′/B″ are
+    factored **once** and reused across iterations *and* time steps, so its edge is repeated /
+    multi-period solves where that fixed-matrix build amortizes; it is also a cheap initializer
+    that can `handoff_solver` to NR/TR/LM for the final polish. For a single one-off solve, NR/TR
+    are usually faster. Measure on your system with `test/performance/fd_benchmark.jl`.
 
 See also the explanation pages
-[Mixed Current-Power Balance Formulation](@ref) and
+[Mixed Current-Power Balance Formulation](@ref),
+[Fast/Fixed Decoupled Power Flow](@ref), and
 [Levenberg-Marquardt in Place of Gauss-Seidel](@ref) for the underlying
 trade-offs.

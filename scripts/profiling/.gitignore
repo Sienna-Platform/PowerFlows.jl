@@ -1,0 +1,5 @@
+# Generated profiler reports (profile_power_flow_solvers.jl): flat/tree text dumps and PProf
+# flamegraphs. Regenerate locally; never commit.
+pf_profile_*.flat.txt
+pf_profile_*.tree.txt
+pf_profile_*.pb.gz

@@ -37,18 +37,30 @@ function PowerFlows.make_linear_solver_cache(
     )
     ps = Pardiso.MKLPardisoSolver()
     _init_pardiso!(ps)
-    cache = PardisoLinSolveCache(ps, A, false, Float64[], Matrix{Float64}(undef, 0, 0))
-    finalizer(cache) do c
-        try
-            Pardiso.set_phase!(c.ps, Pardiso.RELEASE_ALL)
-            Pardiso.pardiso(c.ps)
-        catch e
-            # A finalizer must not throw, but a failed RELEASE_ALL leaks native Pardiso
-            # memory, so surface it at `@warn` rather than swallowing it silently.
-            @warn "PardisoLinSolveCache finalizer: RELEASE_ALL failed" exception = e
-        end
-    end
+    cache =
+        PardisoLinSolveCache(ps, A, false, Float64[], Matrix{Float64}(undef, 0, 0), false)
+    finalizer(_finalize_pardiso_cache, cache)
     return cache
+end
+
+# Free the native MKL Pardiso handle, idempotently. Throws on a failed RELEASE_ALL
+# (an MKL memory leak). Safe to call from a normal task (it acquires locks); NOT safe
+# to call directly from a finalizer — see `_finalize_pardiso_cache`.
+function _release!(c::PardisoLinSolveCache)
+    c.released && return c
+    c.released = true   # set first: a failed RELEASE_ALL leaks once but never double-frees
+    Pardiso.set_phase!(c.ps, Pardiso.RELEASE_ALL)
+    Pardiso.pardiso(c.ps)
+    return c
+end
+
+# Finalizers run inside the GC and must not block. `RELEASE_ALL` (and any logging on failure)
+# can deadlock there, so we defer the task via `@async`. Need `errormonitor` here
+# because exceptions from detached tasks aren't logged to stderr by default
+function _finalize_pardiso_cache(c::PardisoLinSolveCache)
+    c.released && return
+    errormonitor(@async _release!(c))
+    return
 end
 
 function PowerFlows.symbolic_factor!(
