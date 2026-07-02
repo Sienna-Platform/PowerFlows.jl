@@ -10,8 +10,14 @@
         sys,
         PF.FlowReporting.ARC_FLOWS,
     )
-    @test default_result["1"]["flow_results"].P_from_to ==
-          explicit_false["1"]["flow_results"].P_from_to
+    # `lossy_flows` defaults to false, so these are the same config. The DC solve carries
+    # machine-epsilon FP noise (~1e-13) that differs between separate calls, so compare with a
+    # tolerance well above the noise and well below any meaningful flow difference.
+    @test isapprox(
+        default_result["1"]["flow_results"].P_from_to,
+        explicit_false["1"]["flow_results"].P_from_to;
+        atol = 1e-8,
+    )
 end
 
 @testset "Lossy DCLF: lossy_flows=true gives different and asymmetric flows" begin

@@ -1,8 +1,8 @@
 # VSC HVDC power-flow tests. I0: lowering of a point-to-point TwoTerminalVSCLine into the internal
 # DCNetwork (isolated 2-node). Later increments add the residual/Jacobian/solver tests.
 
-# Modeling VSC/DC components as joint AC↔DC unknowns is opt-in (they are ignored in AC power flow
-# otherwise). Every solve in this file enables it.
+# Modeling VSC/DC components as joint AC↔DC unknowns is on by default; disable it with
+# `:model_dc_network => false`. These settings are explicit for clarity but match the default.
 const VSC_SETTINGS = Dict{Symbol, Any}(:model_dc_network => true)
 
 # Build c_sys5 and add one point-to-point VSC line: the `from` converter controls DC voltage
@@ -655,4 +655,337 @@ end
         -PSY.get_active_power_flow(vsc) * base;
         atol = 1.0,
     )
+end
+
+# Regression: two lossy converters sharing BOTH the DC node and the AC bus (parallel converters
+# for capacity). `sparse` merges their structural ∂KCL/∂|V_ac| (polar) / ∂KCL/∂(e,f) (rect/mixed)
+# slots into one, so the Jacobian writers must ACCUMULATE those entries — an `=` write drops one
+# converter's loss coupling (caught by the FD check; the residual was always correct).
+function _build_mtdc_parallel_system()
+    sys = deepcopy(PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false))
+    PSY.set_units_base_system!(sys, "SYSTEM_BASE")
+    pq = sort!(
+        collect(
+            PSY.get_components(
+                b -> PSY.get_bustype(b) == PSY.ACBusTypes.PQ,
+                PSY.ACBus,
+                sys,
+            ),
+        );
+        by = PSY.get_number,
+    )
+    dcbuses = PSY.DCBus[]
+    for k in 1:2
+        dcb = PSY.DCBus(;
+            number = 100 + k,
+            name = "dc$k",
+            available = true,
+            magnitude = 1.0,
+            voltage_limits = (min = 0.8, max = 1.2),
+            base_voltage = 230.0,
+        )
+        PSY.add_component!(sys, dcb)
+        push!(dcbuses, dcb)
+    end
+    # ic1 = Vdc slack on (pq[1], dc1); ic2 AND ic3 parallel on the SAME (pq[2], dc2), both lossy
+    configs = (
+        (ac = pq[1], dc = dcbuses[1], mode = PSY.VSCDCControlModes.DC_VOLTAGE, set = 1.05),
+        (ac = pq[2], dc = dcbuses[2], mode = PSY.VSCDCControlModes.DC_POWER, set = 0.15),
+        (ac = pq[2], dc = dcbuses[2], mode = PSY.VSCDCControlModes.DC_POWER, set = 0.10),
+    )
+    for (k, cfg) in enumerate(configs)
+        ic = PSY.InterconnectingConverter(;
+            name = "ic$k",
+            available = true,
+            bus = cfg.ac,
+            dc_bus = cfg.dc,
+            active_power = 0.0,
+            rating = 3.0,
+            active_power_limits = (min = -3.0, max = 3.0),
+            base_power = 100.0,
+            dc_control = cfg.mode,
+            ac_control = PSY.VSCACControlModes.AC_REACTIVE_POWER,
+            dc_setpoint = cfg.set,
+            loss_function = PSY.QuadraticCurve(0.005, 0.01, 0.002),
+        )
+        PSY.add_component!(sys, ic)
+    end
+    arc = PSY.Arc(; from = dcbuses[1], to = dcbuses[2])
+    PSY.add_component!(sys, arc)
+    dcl = PSY.TModelHVDCLine(;
+        name = "dcline12",
+        available = true,
+        active_power_flow = 0.0,
+        arc = arc,
+        r = 0.01,
+        l = 0.0,
+        c = 0.0,
+        active_power_limits_from = (min = -5.0, max = 5.0),
+        active_power_limits_to = (min = -5.0, max = 5.0),
+    )
+    PSY.add_component!(sys, dcl)
+    return sys
+end
+
+@testset "VSC: parallel lossy converters on one (AC bus, DC node) — Jacobian accumulates" begin
+    for (label, PF_T) in (
+        ("polar", PF.ACPolarPowerFlow{NewtonRaphsonACPowerFlow}),
+        ("rect", PF.ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}),
+        ("mixed", PF.ACMixedPowerFlow{NewtonRaphsonACPowerFlow}),
+    )
+        sys = _build_mtdc_parallel_system()
+        pf = PF_T(; solver_settings = VSC_SETTINGS)
+        data = PowerFlowData(pf, sys)
+        @test solve_power_flow!(data)
+        residual, jac, x = PF.initialize_power_flow_variables(pf, data, 1)
+        residual(x, 1)
+        jac(1)
+        verify_jacobian_asymptotic(
+            residual, jac.Jv, x, 1;
+            label = "VSC parallel converters $(label)",
+        )
+    end
+end
+
+# Regression: a converter whose AC terminal is the REF bus. The rect/mixed REF rows are current
+# balance with (P_gen, Q_gen) as the bus states — the converter couples to (P_c, Q_c) but NOT to
+# the (P_gen, Q_gen) columns (e,f are fixed at REF), which the shared Jacobian writer must gate.
+function _vsc_system_ref_terminal(; g = 45.0)
+    sys = deepcopy(PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false))
+    pick(t) = first(
+        sort!(
+            collect(PSY.get_components(b -> PSY.get_bustype(b) == t, PSY.ACBus, sys));
+            by = PSY.get_number,
+        ),
+    )
+    arc = _get_or_make_arc(sys, pick(PSY.ACBusTypes.PQ), pick(PSY.ACBusTypes.REF))
+    vsc = PSY.TwoTerminalVSCLine(;
+        name = "vsc_ref",
+        available = true,
+        arc = arc,
+        active_power_flow = 0.3,
+        rating = 2.0,
+        active_power_limits_from = (min = -2.0, max = 2.0),
+        active_power_limits_to = (min = -2.0, max = 2.0),
+        g = g,
+        dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
+        ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
+        dc_setpoint_from = 1.03,
+        reactive_power_from = 0.0,
+        dc_control_to = PSY.VSCDCControlModes.DC_POWER,
+        ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
+        dc_setpoint_to = 0.35,
+        reactive_power_to = 0.05,
+        converter_loss_to = PSY.QuadraticCurve(0.01, 0.02, 0.005),
+    )
+    PSY.add_component!(sys, vsc)
+    return sys
+end
+
+@testset "VSC: lossy converter on the REF bus — Jacobian and formulation parity" begin
+    sol = Dict{String, Any}()
+    for (label, PF_T) in (
+        ("polar", PF.ACPolarPowerFlow{NewtonRaphsonACPowerFlow}),
+        ("rect", PF.ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}),
+        ("mixed", PF.ACMixedPowerFlow{NewtonRaphsonACPowerFlow}),
+    )
+        sys = _vsc_system_ref_terminal(; g = 45.0)
+        pf = PF_T(; solver_settings = VSC_SETTINGS)
+        data = PowerFlowData(pf, sys)
+        @test solve_power_flow!(data)
+        residual, jac, x = PF.initialize_power_flow_variables(pf, data, 1)
+        residual(x, 1)
+        jac(1)
+        verify_jacobian_asymptotic(
+            residual, jac.Jv, x, 1;
+            label = "VSC REF terminal $(label)",
+        )
+        dcn = PF.get_dc_network(data)
+        sol[label] =
+            (copy(data.bus_magnitude[:, 1]), copy(dcn.p_c[:, 1]), copy(dcn.q_c[:, 1]))
+    end
+    for other in ("rect", "mixed")
+        @test isapprox(sol["polar"][1], sol[other][1]; atol = 1e-6)
+        @test isapprox(sol["polar"][2], sol[other][2]; atol = 1e-6)
+        @test isapprox(sol["polar"][3], sol[other][3]; atol = 1e-6)
+    end
+end
+
+# Regression: a converter on a PV bus in the MIXED formulation. MCPB PV rows are (real-power
+# balance, |V|² pin) — the converter must enter the power row as −P_c and leave the pin row
+# untouched; treating them like rect current rows converges to a silently WRONG solution
+# (the FD check passes because the Jacobian is consistent with the wrong residual — only
+# cross-formulation parity catches it).
+@testset "VSC: lossy converter on a PV bus — all three formulations agree" begin
+    sol = Dict{String, Any}()
+    for (label, PF_T) in (
+        ("polar", PF.ACPolarPowerFlow{NewtonRaphsonACPowerFlow}),
+        ("rect", PF.ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}),
+        ("mixed", PF.ACMixedPowerFlow{NewtonRaphsonACPowerFlow}),
+    )
+        sys = _vsc_system_pv_terminal(; g = 45.0)
+        pf = PF_T(; solver_settings = VSC_SETTINGS)
+        data = PowerFlowData(pf, sys)
+        @test solve_power_flow!(data)
+        residual, jac, x = PF.initialize_power_flow_variables(pf, data, 1)
+        residual(x, 1)
+        jac(1)
+        verify_jacobian_asymptotic(
+            residual, jac.Jv, x, 1;
+            label = "VSC PV terminal $(label)",
+        )
+        dcn = PF.get_dc_network(data)
+        sol[label] = (
+            copy(data.bus_magnitude[:, 1]),
+            copy(dcn.p_c[:, 1]),
+            copy(dcn.node_vdc[:, 1]),
+        )
+    end
+    for other in ("rect", "mixed")
+        @test isapprox(sol["polar"][1], sol[other][1]; atol = 1e-6)
+        @test isapprox(sol["polar"][2], sol[other][2]; atol = 1e-6)
+        @test isapprox(sol["polar"][3], sol[other][3]; atol = 1e-6)
+    end
+end
+
+# Lowering-time validation: an AC-voltage-controlling converter pins |V_ac|, which is singular at
+# a bus whose magnitude is already regulated (PV/REF), and two AC-voltage converters on one bus
+# duplicate the pin. Both must fail fast at PowerFlowData construction, not as a mid-solve
+# singular Jacobian.
+@testset "VSC: AC-voltage control is rejected on regulated buses and duplicate pins" begin
+    # Vac converter on a PV bus → error at construction
+    sys_pv =
+        deepcopy(PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false))
+    pick(sys, t) = first(
+        sort!(
+            collect(PSY.get_components(b -> PSY.get_bustype(b) == t, PSY.ACBus, sys));
+            by = PSY.get_number,
+        ),
+    )
+    arc = _get_or_make_arc(sys_pv, pick(sys_pv, PSY.ACBusTypes.PQ),
+        pick(sys_pv, PSY.ACBusTypes.PV))
+    vsc = PSY.TwoTerminalVSCLine(;
+        name = "vsc_bad_pv",
+        available = true,
+        arc = arc,
+        active_power_flow = 0.3,
+        rating = 2.0,
+        active_power_limits_from = (min = -2.0, max = 2.0),
+        active_power_limits_to = (min = -2.0, max = 2.0),
+        g = 45.0,
+        dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
+        ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
+        dc_setpoint_from = 1.03,
+        dc_control_to = PSY.VSCDCControlModes.DC_POWER,
+        ac_control_to = PSY.VSCACControlModes.AC_VOLTAGE,
+        dc_setpoint_to = 0.3,
+        ac_setpoint_to = 1.0,
+    )
+    PSY.add_component!(sys_pv, vsc)
+    @test_throws ErrorException PowerFlowData(
+        ACPowerFlow{NewtonRaphsonACPowerFlow}(; solver_settings = VSC_SETTINGS),
+        sys_pv,
+    )
+
+    # two Vac converters on the same PQ bus → error at construction
+    sys_dup =
+        deepcopy(PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false))
+    pq = sort!(
+        collect(
+            PSY.get_components(
+                b -> PSY.get_bustype(b) == PSY.ACBusTypes.PQ,
+                PSY.ACBus,
+                sys_dup,
+            ),
+        );
+        by = PSY.get_number,
+    )
+    for (k, to_bus) in enumerate((pq[2], pq[3]))
+        arc_k = _get_or_make_arc(sys_dup, pq[1], to_bus)
+        vsc_k = PSY.TwoTerminalVSCLine(;
+            name = "vsc_dup$k",
+            available = true,
+            arc = arc_k,
+            active_power_flow = 0.2,
+            rating = 2.0,
+            active_power_limits_from = (min = -2.0, max = 2.0),
+            active_power_limits_to = (min = -2.0, max = 2.0),
+            g = 45.0,
+            dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
+            ac_control_from = PSY.VSCACControlModes.AC_VOLTAGE,
+            dc_setpoint_from = 1.03,
+            ac_setpoint_from = 1.0,
+            dc_control_to = PSY.VSCDCControlModes.DC_POWER,
+            ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
+            dc_setpoint_to = 0.2,
+        )
+        PSY.add_component!(sys_dup, vsc_k)
+    end
+    @test_throws ErrorException PowerFlowData(
+        ACPowerFlow{NewtonRaphsonACPowerFlow}(; solver_settings = VSC_SETTINGS),
+        sys_dup,
+    )
+end
+
+# Solver guards: RobustHomotopy has no DC-tail support (must reject at construction, like its LCC
+# guard); the FDDecoupled variant handles the tail via a sequential sub-solve, which cannot honor
+# AC-voltage control rows (must reject those too).
+@testset "VSC: RobustHomotopy rejects DC networks; FDDecoupled rejects AC-voltage control" begin
+    sys = _build_vsc_pq_system(; g = 50.0, p_set = 0.4, q_set = 0.1, vdc = 1.05)
+    data = PowerFlowData(
+        ACPowerFlow{PF.RobustHomotopyPowerFlow}(; solver_settings = VSC_SETTINGS),
+        sys,
+    )
+    @test_throws ArgumentError solve_power_flow!(data)
+
+    sys_vac, _, _ = _vsc_system(;
+        g = 50.0,
+        dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
+        ac_control_from = PSY.VSCACControlModes.AC_VOLTAGE,
+        dc_setpoint_from = 1.05,
+        ac_setpoint_from = 1.01,
+        dc_control_to = PSY.VSCDCControlModes.DC_POWER,
+        ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
+        dc_setpoint_to = 0.25,
+    )
+    data_vac = PowerFlowData(
+        ACPowerFlow{PF.FastDecoupledACPowerFlow}(; solver_settings = VSC_SETTINGS),
+        sys_vac,
+    )
+    @test_throws ArgumentError solve_power_flow!(data_vac)
+end
+
+# The FDDecoupled sequential VSC sub-solve: a LOSSY converter couples the DC tail to the AC
+# voltages, so the tail must be re-solved each cycle (`_fd_vsc_substep!`) — frozen tail states
+# previously left FDDecoupled unable to converge on any lossy VSC system.
+@testset "VSC: FDDecoupled converges on a lossy VSC system and matches NR" begin
+    lossy_kwargs = (;
+        g = 45.0,
+        dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
+        ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
+        dc_setpoint_from = 1.03,
+        reactive_power_from = 0.0,
+        dc_control_to = PSY.VSCDCControlModes.DC_POWER,
+        ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
+        dc_setpoint_to = 0.35,
+        reactive_power_to = 0.05,
+        converter_loss_to = PSY.QuadraticCurve(0.01, 0.02, 0.005),
+    )
+    sol = Dict{String, Any}()
+    for (label, S) in
+        (("nr", NewtonRaphsonACPowerFlow), ("fd", PF.FastDecoupledACPowerFlow))
+        sys, _, _ = _vsc_system(; lossy_kwargs...)
+        data = PowerFlowData(ACPowerFlow{S}(; solver_settings = VSC_SETTINGS), sys)
+        @test solve_power_flow!(data)
+        dcn = PF.get_dc_network(data)
+        sol[label] = (
+            copy(data.bus_magnitude[:, 1]),
+            copy(dcn.p_c[:, 1]),
+            copy(dcn.q_c[:, 1]),
+            copy(dcn.node_vdc[:, 1]),
+        )
+    end
+    for i in 1:4
+        @test isapprox(sol["nr"][i], sol["fd"][i]; atol = 1e-6)
+    end
 end

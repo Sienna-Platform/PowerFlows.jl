@@ -22,7 +22,13 @@ end
 
 # Map the PSY per-terminal DC-side / AC-side control enums to a `DCNetwork` control mode.
 function _vsc_control_mode(dc_control, ac_control)
-    dc_control == PSY.VSCDCControlModes.DC_VOLTAGE_DROOP && return ControlPVdcDroop
+    if dc_control == PSY.VSCDCControlModes.DC_VOLTAGE_DROOP
+        if ac_control == PSY.VSCACControlModes.AC_VOLTAGE
+            @warn "DC_VOLTAGE_DROOP with AC_VOLTAGE control is not supported; the converter's " *
+                  "AC side is treated as reactive-power control (Q pinned at its setpoint)."
+        end
+        return ControlPVdcDroop
+    end
     is_dc_voltage = dc_control == PSY.VSCDCControlModes.DC_VOLTAGE
     is_ac_voltage = ac_control == PSY.VSCACControlModes.AC_VOLTAGE
     if is_dc_voltage && is_ac_voltage
@@ -80,11 +86,11 @@ function _validate_dc_slacks(dcn::DCNetwork)
     iszero(nn) && return
     parent = collect(1:nn)
     function find(i)
-        if parent[i] == i
-            return i
+        while parent[i] != i
+            parent[i] = parent[parent[i]]
+            i = parent[i]
         end
-        parent[i] = find(parent[i])
-        return parent[i]
+        return i
     end
     for b in 1:n_dc_branches(dcn)
         parent[find(dcn.branch_from[b])] = find(dcn.branch_to[b])
@@ -109,6 +115,37 @@ function _validate_dc_slacks(dcn::DCNetwork)
                 "control or droop.",
             )
         end
+    end
+    return
+end
+
+# An AC-voltage-controlling converter (ControlPVac/ControlVdcQ) pins |V_ac| at its bus, which is
+# only well-posed at a PQ bus: at PV/REF the magnitude is already regulated, so the converter's
+# |V_ac|² control row is constant in the state — a structurally singular Jacobian (and an
+# infeasible setpoint conflict unless the two targets coincide). Two AC-voltage converters on one
+# bus duplicate the pin row — the same singularity. Fail fast at lowering, naming the bus.
+function _validate_vsc_ac_controls(dcn::DCNetwork, bus_types::AbstractVector)
+    vac_pinned = Set{Int}()
+    for c in 1:n_vsc_converters(dcn)
+        controls_ac_voltage(dcn.converter_mode[c]) || continue
+        ix = dcn.converter_ac_bus_ix[c]
+        number = dcn.converter_ac_bus_number[c]
+        if bus_types[ix] != PSY.ACBusTypes.PQ
+            error(
+                "A VSC converter at bus $(number) uses AC-voltage control, but the bus type is " *
+                "$(bus_types[ix]): its voltage magnitude is already regulated there, making the " *
+                "converter's |V_ac| control row singular. Use reactive-power control for this " *
+                "converter, or move the voltage regulation.",
+            )
+        end
+        if ix in vac_pinned
+            error(
+                "Two VSC converters both use AC-voltage control at bus $(number); duplicate " *
+                "|V_ac| pins make the Jacobian singular (or the setpoints infeasible). Use " *
+                "reactive-power control for one of them.",
+            )
+        end
+        push!(vac_pinned, ix)
     end
     return
 end
@@ -393,6 +430,7 @@ function initialize_DCNetwork!(
         G_dc,
     )
     _validate_dc_slacks(dcn)
+    _validate_vsc_ac_controls(dcn, view(data.bus_type, :, 1))
     data.dc_network[] = dcn
     # Seed converter/DC-node states with a sequential decoupled DC solve (AC voltages held fixed) so
     # the joint AC↔DC Newton starts from a consistent DC operating point: the robustness of a
@@ -578,6 +616,22 @@ function _vsc_r2(mode::VSCControlMode, dcn, c, Q, Vac, t)
     return Q - dcn.q_set[c, t]
 end
 
+# Copy the solved VSC tail (converter P_c, Q_c; node V_dc) from the network's state mirrors into
+# the trailing slots of the state vector — the inverse of `_read_vsc_state!`. Used by the FD
+# sequential converter sub-solve so `x` stays consistent before the next residual evaluation.
+function _write_vsc_state_to_x!(x::AbstractVector{Float64}, dcn::DCNetwork, time_step::Int)
+    nconv = n_vsc_converters(dcn)
+    vsc_off = length(x) - vsc_tail_length(dcn)
+    @inbounds for c in 1:nconv
+        x[vsc_off + 2 * c - 1] = dcn.p_c[c, time_step]
+        x[vsc_off + 2 * c] = dcn.q_c[c, time_step]
+    end
+    @inbounds for k in 1:n_dc_nodes(dcn)
+        x[vsc_off + 2 * nconv + k] = dcn.node_vdc[k, time_step]
+    end
+    return
+end
+
 # Read the VSC tail of the state vector into the network's solved-state mirrors.
 function _read_vsc_state!(dcn::DCNetwork, x::Vector{Float64}, vsc_off::Int, time_step::Int)
     nconv = n_vsc_converters(dcn)
@@ -687,7 +741,8 @@ function _vsc_pdc_derivatives(dcn::DCNetwork, c::Int, Vm_ac::Float64, time_step:
     Q = dcn.q_c[c, time_step]
     Vmf = sqrt(max(Vm_ac * Vm_ac, V_FLOOR2))
     # Floor S² with V_FLOOR2 (mirroring |V_ac|²) so the apparent-power magnitude never reaches the
-    # P/S, Q/S singularity at S = 0; at the floor the derivatives go smoothly to ~0.
+    # P/S, Q/S singularity at S = 0. Inside the floor region the residual's I_c saturates while
+    # these derivatives stay bounded (|P/S| ≤ 1) — a benign inconsistency confined to S ≤ 1e-8.
     S = sqrt(max(P * P + Q * Q, V_FLOOR2))
     Ic = S / Vmf
     Ploss = dcn.loss_a[c] + dcn.loss_b[c] * Ic + dcn.loss_c[c] * Ic * Ic
@@ -758,8 +813,10 @@ function _set_vsc_tail_residuals_rect!(
     return
 end
 
-# MCPB bus injection: like rect but PQ buses use imag-first row order (the two current slots
-# swapped). REF keeps rect ordering. (VSC converters are expected on PQ buses.)
+# MCPB bus injection. PQ buses use divided current with imag-first row order (the two current
+# slots swapped); REF keeps rect's current rows verbatim. PV rows are (real-power balance, |V|²
+# pin): the converter enters the power balance as its injection P_c and must not touch the pin
+# row (Q_c has no bus row at a PV bus — the generator absorbs it).
 function _apply_vsc_bus_injections_mixed!(
     F::Vector{Float64},
     dcn::DCNetwork,
@@ -779,10 +836,13 @@ function _apply_vsc_bus_injections_mixed!(
         Q = dcn.q_c[c, time_step]
         Ir = (P * e + Q * f) / D
         Ii = (P * f - Q * e) / D
-        if bus_types[ix] == PSY.ACBusTypes.PQ
+        bt = bus_types[ix]
+        if bt == PSY.ACBusTypes.PQ
             F[off] += Ii
             F[off + 1] += Ir
-        else
+        elseif bt == PSY.ACBusTypes.PV
+            F[off] -= P
+        else  # REF
             F[off] += Ir
             F[off + 1] += Ii
         end
@@ -822,6 +882,13 @@ function _set_entries_for_vsc_rect_mcpb!(
     @inbounds for k in 1:nnode
         Jvnz[node[k]] = G[k, k]
     end
+    # Pre-zero the ∂KCL/∂(e,f) loss-coupling slots before accumulating: two converters can share
+    # BOTH the DC node and the AC bus (parallel converters), in which case `sparse` merged their
+    # structural slots into one — an `=` write would clobber the first converter's contribution.
+    @inbounds for c in 1:nconv
+        Jvnz[conv[12, c]] = 0.0
+        Jvnz[conv[13, c]] = 0.0
+    end
     @inbounds for c in 1:nconv
         ix = dcn.converter_ac_bus_ix[c]
         k = dcn.converter_dc_node_ix[c]
@@ -840,7 +907,24 @@ function _set_entries_for_vsc_rect_mcpb!(
         dIr_df = (Q * D - num_r * 2.0 * f) / D2
         dIi_de = (-Q * D - num_i * 2.0 * e) / D2
         dIi_df = (P * D - num_i * 2.0 * f) / D2
-        if imag_first_pq && bus_types[ix] == PSY.ACBusTypes.PQ
+        bt = bus_types[ix]
+        if bt == PSY.ACBusTypes.REF
+            # REF bus: e,f are fixed and columns off/off+1 are the (P_gen, Q_gen) states — the
+            # converter couples to neither (skip the diag block; conv[12,13] stay pre-zeroed).
+            # The current-injection derivatives w.r.t. (P_c, Q_c) still apply: REF rows are
+            # current balance in both rect and MCPB.
+            Jvnz[conv[1, c]] = e / D
+            Jvnz[conv[2, c]] = f / D
+            Jvnz[conv[3, c]] = f / D
+            Jvnz[conv[4, c]] = -e / D
+        elseif imag_first_pq && bt == PSY.ACBusTypes.PV
+            # MCPB PV rows are (real-power balance, |V|² pin): the converter contributes −P_c to
+            # the power row (constant in e,f — no diag coupling) and nothing to the pin row.
+            Jvnz[conv[1, c]] = -1.0
+            Jvnz[conv[2, c]] = 0.0
+            Jvnz[conv[3, c]] = 0.0
+            Jvnz[conv[4, c]] = 0.0
+        elseif imag_first_pq && bt == PSY.ACBusTypes.PQ
             # imag-first (MCPB PQ): F[off] = Ii, F[off+1] = Ir
             Jvnz[diag_base_nz[1, ix]] += dIi_de
             Jvnz[diag_base_nz[2, ix]] += dIi_df
@@ -851,7 +935,7 @@ function _set_entries_for_vsc_rect_mcpb!(
             Jvnz[conv[3, c]] = e / D
             Jvnz[conv[4, c]] = f / D
         else
-            # real-first: F[off] = Ir, F[off+1] = Ii
+            # real-first (rect PQ and rect PV): F[off] = Ir, F[off+1] = Ii
             Jvnz[diag_base_nz[1, ix]] += dIr_de
             Jvnz[diag_base_nz[2, ix]] += dIr_df
             Jvnz[diag_base_nz[3, ix]] += dIi_de
@@ -875,8 +959,11 @@ function _set_entries_for_vsc_rect_mcpb!(
         (Pdc, dP, dQ, dVm) = _vsc_pdc_derivatives(dcn, c, Vm, time_step)
         Jvnz[conv[10, c]] = dP / Vdc
         Jvnz[conv[11, c]] = dQ / Vdc
-        Jvnz[conv[12, c]] = (dVm * e / Vm) / Vdc
-        Jvnz[conv[13, c]] = (dVm * f / Vm) / Vdc
+        if bt != PSY.ACBusTypes.REF
+            # ∂KCL/∂(e,f) loss coupling — accumulated (shared-slot safe); zero at REF (e,f fixed).
+            Jvnz[conv[12, c]] += (dVm * e / Vm) / Vdc
+            Jvnz[conv[13, c]] += (dVm * f / Vm) / Vdc
+        end
         Jvnz[node[k]] += -Pdc / (Vdc * Vdc)
     end
     return

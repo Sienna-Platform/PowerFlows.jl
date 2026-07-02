@@ -50,7 +50,7 @@ Base.@kwdef struct DCNetwork
     loss_a::Vector{Float64} = Float64[]             # P_loss = a + b·I_c + c·I_c²
     loss_b::Vector{Float64} = Float64[]
     loss_c::Vector{Float64} = Float64[]
-    s_max::Vector{Float64} = Float64[]              # capability-circle radius (MVA, device base)
+    s_max::Vector{Float64} = Float64[]              # capability-circle radius (p.u., system base)
     q_min::Vector{Float64} = Float64[]
     q_max::Vector{Float64} = Float64[]
     p_min::Vector{Float64} = Float64[]

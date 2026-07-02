@@ -631,6 +631,14 @@ function _set_entries_for_vsc(
     for k in 1:nnode
         Jv[base + k, base + k] = G[k, k]
     end
+    # Pre-zero the shared ∂KCL/∂|V_ac| slots before accumulating: two converters can share BOTH
+    # the DC node and the AC bus (parallel converters), in which case `sparse` merged their
+    # structural slots into one — an `=` write would clobber the first converter's contribution.
+    for c in 1:nconv
+        if data.bus_type[dcn.converter_ac_bus_ix[c], time_step] == PSY.ACBusTypes.PQ
+            Jv[base + dcn.converter_dc_node_ix[c], 2 * dcn.converter_ac_bus_ix[c] - 1] = 0.0
+        end
+    end
     for c in 1:nconv
         ix = dcn.converter_ac_bus_ix[c]
         k = dcn.converter_dc_node_ix[c]
@@ -655,7 +663,7 @@ function _set_entries_for_vsc(
         # leaving it unwritten here keeps a correct structural zero.
         if data.bus_type[ix, time_step] == PSY.ACBusTypes.PQ
             Jv[qc, 2 * ix - 1] = _vsc_dr2_dVm(mode, Vmix)
-            Jv[vk, 2 * ix - 1] = dVm / Vdc
+            Jv[vk, 2 * ix - 1] += dVm / Vdc
         end
     end
     return
