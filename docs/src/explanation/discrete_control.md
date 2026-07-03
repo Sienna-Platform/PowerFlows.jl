@@ -194,12 +194,14 @@ After the continuous outer loop converges (or reaches its iteration limit),
   - **Tap.** The continuous parameter is snapped to the nearest value in the
     pre-computed `levels` vector (a uniform grid of `NTP` tap positions from
     `p_min` to `p_max`).
-  - **Shunt.** The target susceptance is placed using a block-greedy algorithm:
-    blocks are processed largest-first; each block's step count is floored to
-    avoid overshooting; a single ±1 bounded refinement pass corrects
-    under-committed blocks. Both `block_order` and `block_n` are pre-allocated
-    fields, so `snap_to_discrete` makes no heap allocations. (Continuous
-    devices — MODSW=2 shunts, FACTS, PARs — clamp instead of snapping.)
+  - **Shunt.** The target susceptance is snapped to the nearest point of the
+    PSS/E cumulative block-activation chain: blocks switch on in listed order
+    (and off in reverse), so the physically realizable totals are exactly the
+    prefix sums of the block steps. Walking that chain is simultaneously
+    optimal over the realizable set and order-respecting; `block_n` records
+    the chosen per-block step counts, and `snap_to_discrete` makes no heap
+    allocations. (Continuous devices — MODSW=2 shunts, FACTS, PARs — clamp
+    instead of snapping.)
 
 After snapping all devices, the inner solver is called on the discretized
 network. If it converges, the procedure is complete. If not, each device is

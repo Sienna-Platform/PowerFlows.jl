@@ -34,7 +34,7 @@ end
     @test t.vset == 1.0
     s = set.shunts[1]
     @test s.b_min <= s.b0 <= s.b_max
-    @test length(s.block_order) == length(s.block_dB)
+    @test length(s.block_n) == length(s.block_dB)
     @test s.b0 == 0.0
     @test s.b_min == 0.0
     @test s.b_max == 0.2
@@ -246,12 +246,12 @@ end
     δ = 0.02
     tap = PowerFlows.ControlledTap("tp", 1, 2, 2, 1.0,
         1.0 / (0.01 + 0.1im), 0.0 + 0.0im, 0.0, 0.9, 1.1,
-        collect(range(0.9, 1.1; length = 33)), (1, 2, 3, 4), 1.0)
+        collect(range(0.9, 1.1; length = 33)), (1, 2, 3, 4), 1.0, 1.0, 1.0)
     remote = PowerFlows.ControlledTap("ts", 1, 2, 1, 1.0,
         1.0 / (0.01 + 0.1im), 0.0 + 0.0im, 0.0, 0.9, 1.1,
-        collect(range(0.9, 1.1; length = 33)), (1, 2, 3, 4), 1.0)
+        collect(range(0.9, 1.1; length = 33)), (1, 2, 3, 4), 1.0, 1.0, 1.0)
     shunt = PowerFlows.ControlledSwitchedShunt("sh", 3, 3, 1.0, 0.0, 0.0,
-        [4], [0.05], 0.0, 0.2, [1], zeros(Int, 1), false, 0.0)
+        [4], [0.05], 0.0, 0.2, zeros(Int, 1), false, 0.0, 0.0)
     for d in (tap, remote, shunt)
         vset = PowerFlows.voltage_setpoint(d)
         for dVdp in (1.0, -1.0)
@@ -271,7 +271,7 @@ end
     # iterate alternate every step and tripped the oscillation-freeze detector.)
     d = PowerFlows.ControlledTap("t", 1, 2, 2, 1.0, 1.0 / (0.01 + 0.1im),
         0.0 + 0.0im, 0.0, 0.9, 1.1, collect(range(0.9, 1.1; length = 33)),
-        (1, 2, 3, 4), 1.0)
+        (1, 2, 3, 4), 1.0, 1.0, 1.0)
     lo, hi = PowerFlows.parameter_limits(d)
     for S in (1.0e2, 1.0e3, 5.0e3), dVdp in (-5.0, -1.0, -0.1, 0.1, 1.0, 5.0)
         ω = PowerFlows._relaxation(d, S, dVdp)
@@ -315,24 +315,26 @@ end
 @testset "discrete control: snap" begin
     d = PowerFlows.ControlledTap("t", 1, 2, 2, 1.0, 1.0 + 0im,
         0im, 0.0, 0.9, 1.1, collect(range(0.9, 1.1; length = 5)),
-        (1, 2, 3, 4), 1.0)  # levels: 0.9,0.95,1.0,1.05,1.1
+        (1, 2, 3, 4), 1.0, 1.0, 1.0)  # levels: 0.9,0.95,1.0,1.05,1.1
     @test PowerFlows.snap_to_discrete(d, 1.03) == 1.05
     @test PowerFlows.snap_to_discrete(d, 1.20) == 1.1   # clamp
     block_dB_sh_snap = [0.05]
     sh = PowerFlows.ControlledSwitchedShunt("s", 3, 3, 1.0, 0.0, 0.0,
         [4], block_dB_sh_snap, 0.0, 0.2,
-        [1], zeros(Int, length(block_dB_sh_snap)),
-        false, 0.0)  # reachable: 0,0.05,0.10,0.15,0.20
+        zeros(Int, length(block_dB_sh_snap)),
+        false, 0.0, 0.0)  # reachable: 0,0.05,0.10,0.15,0.20
     @test PowerFlows.snap_to_discrete(sh, 0.12) == 0.10
+    @test sh.block_n == [2]
     block_dB_sh2 = [0.1, 0.02]
     sh2 = PowerFlows.ControlledSwitchedShunt("s2", 3, 3, 1.0, 0.0, 0.0,
         [2, 3], block_dB_sh2, 0.0, 0.26,
-        [1, 2], zeros(Int, length(block_dB_sh2)),
-        false, 0.0)  # block-greedy with ±1 refinement
-    # Floor-greedy: block 0.1 first → n=floor(0.17/0.1)=1 → 0.10;
-    # residual 0.07 → n=floor(0.07/0.02)=3 → 0.06; total=0.16.
-    # ±1 refinement: no block improves on abs(0.16-0.17)=0.01 → stays 0.16.
-    @test PowerFlows.snap_to_discrete(sh2, 0.17) == 0.16
+        zeros(Int, length(block_dB_sh2)),
+        false, 0.0, 0.0)  # PSS/E cumulative chain: blocks activate in listed order
+    # Chain totals: 0.1, 0.2 (block 1), then 0.22, 0.24, 0.26 (block 2).
+    # 0.16 (= 1×0.1 + 3×0.02 with block 1 partially on) is NOT physically reachable;
+    # nearest chain point to 0.17 is 0.2.
+    @test PowerFlows.snap_to_discrete(sh2, 0.17) == 0.2
+    @test sh2.block_n == [2, 0]
 end
 
 @testset "discrete control: continuous shunt no snap" begin
@@ -340,7 +342,7 @@ end
     # NOT the nearest reachable block grid point.
     block_dB = [0.05]
     cont = PowerFlows.ControlledSwitchedShunt("c", 3, 3, 1.0, 0.0, 0.0,
-        [4], block_dB, 0.0, 0.2, [1], zeros(Int, length(block_dB)), true, 0.0)
+        [4], block_dB, 0.0, 0.2, zeros(Int, length(block_dB)), true, 0.0, 0.0)
     # 0.12 is between grid points 0.10 and 0.15; continuous must return it unchanged.
     @test PowerFlows.snap_to_discrete(cont, 0.12) == 0.12
     # clamped at the rails.
@@ -348,7 +350,7 @@ end
     @test PowerFlows.snap_to_discrete(cont, -0.10) == 0.0
     # sanity: the discrete twin DOES snap 0.12 → 0.10.
     disc = PowerFlows.ControlledSwitchedShunt("d", 3, 3, 1.0, 0.0, 0.0,
-        [4], block_dB, 0.0, 0.2, [1], zeros(Int, length(block_dB)), false, 0.0)
+        [4], block_dB, 0.0, 0.2, zeros(Int, length(block_dB)), false, 0.0, 0.0)
     @test PowerFlows.snap_to_discrete(disc, 0.12) == 0.10
 end
 
@@ -697,4 +699,87 @@ end
             include_experimental = true)
     )
     @test length(set.phase_shifters) == 0
+end
+
+@testset "discrete control: arc-admittance rows synced to final parameters" begin
+    # Reported branch flows are computed from arc_admittance_from_to/to_from AFTER the
+    # time-step loop; the post-continuation sync must bring the moved devices' rows in
+    # line with their final tap, exactly matching a fresh rebuild at that tap.
+    sys = _make_tap_shunt_system()
+    data = PowerFlowData(ACPolarPowerFlow(), sys)
+    set = PowerFlows.build_controlled_device_set(
+        sys, PF.get_bus_lookup(data), data.power_network_matrix)
+    d = set.taps[1]
+    newtap = 1.05
+    PowerFlows.apply_parameter!(d, data, newtap, 1)
+    PowerFlows._sync_arc_admittances!(data, set)
+    # Rebuild reference at the new tap.
+    txs = collect(PSY.get_components(PSY.TapTransformer, sys))
+    PSY.set_tap!(txs[1], newtap)
+    data2 = PowerFlowData(ACPolarPowerFlow(), sys)
+    @test data.power_network_matrix.arc_admittance_from_to.data ≈
+          data2.power_network_matrix.arc_admittance_from_to.data
+    @test data.power_network_matrix.arc_admittance_to_from.data ≈
+          data2.power_network_matrix.arc_admittance_to_from.data
+    # Idempotency: a second sync with no parameter change is a no-op.
+    PowerFlows._sync_arc_admittances!(data, set)
+    @test data.power_network_matrix.arc_admittance_from_to.data ≈
+          data2.power_network_matrix.arc_admittance_from_to.data
+end
+
+@testset "discrete control: reported flows match a rebuild at the snapped tap" begin
+    # End-to-end parity: solve with control, then rebuild the system at the solver's
+    # final tap and re-solve WITHOUT control — voltages AND reported branch flows must
+    # agree, proving the flow computation saw the same network as the inner solver.
+    sys = _make_solvable_tap_shunt_system()
+    pf = ACPolarPowerFlow(; control_discrete_devices = true)
+    data = PowerFlowData(pf, sys)
+    solve_power_flow!(data)
+    @test all(data.converged)
+    t = data.controlled_devices.taps[1]
+    sh = data.controlled_devices.shunts[1]
+    # Rebuild: same system with the tap fixed at the solved position and the shunt's
+    # solved susceptance as a fixed admittance baseline.
+    txs = collect(PSY.get_components(PSY.TapTransformer, sys))
+    PSY.set_tap!(txs[1], t.current)
+    # data_ref is built WITHOUT control_discrete_devices, so the VOLTAGE objective is
+    # inert: this is a plain solve of the snapped network.
+    sas = collect(PSY.get_components(PSY.SwitchedAdmittance, sys))
+    PSY.set_Y!(sas[1], PSY.get_Y(sas[1]) + im * (sh.current - sh.initial))
+    data_ref = PowerFlowData(ACPolarPowerFlow(), sys)
+    solve_power_flow!(data_ref)
+    @test all(data_ref.converged)
+    @test all(isapprox.(data.bus_magnitude, data_ref.bus_magnitude; atol = 1e-6))
+    @test all(isapprox.(
+        data.arc_active_power_flow_from_to,
+        data_ref.arc_active_power_flow_from_to;
+        atol = 1e-5,
+    ))
+    @test all(isapprox.(
+        data.arc_reactive_power_flow_from_to,
+        data_ref.arc_reactive_power_flow_from_to;
+        atol = 1e-5,
+    ))
+end
+
+@testset "discrete control: solved device settings surface" begin
+    sys = _make_solvable_tap_shunt_system()
+    pf = ACPolarPowerFlow(; control_discrete_devices = true)
+    data = PowerFlowData(pf, sys)
+    solve_power_flow!(data)
+    df = PowerFlows.get_controlled_device_results(data)
+    @test size(df, 1) == 2
+    tap_row = df[df.family .== "TapTransformer", :]
+    @test tap_row.name == ["tap_1_2"]
+    @test tap_row.initial == [1.0]
+    t = data.controlled_devices.taps[1]
+    @test tap_row.final == [t.current]
+    @test tap_row.lower_limit == [t.p_min]
+    @test tap_row.upper_limit == [t.p_max]
+    # Disabled path: empty frame with the same schema.
+    data_off = PowerFlowData(ACPolarPowerFlow(), _make_tap_shunt_system())
+    df_off = PowerFlows.get_controlled_device_results(data_off)
+    @test size(df_off, 1) == 0
+    @test names(df_off) ==
+          ["family", "name", "lower_limit", "upper_limit", "initial", "final"]
 end

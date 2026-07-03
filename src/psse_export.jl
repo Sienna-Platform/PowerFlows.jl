@@ -303,6 +303,13 @@ Update the `PSSEExporter` with new `data`.
     [`PowerSystems.System`](@extref) with which the exporter was constructed.
 """
 function update_exporter!(exporter::PSSEExporter, data::PowerFlowData)
+    if get_controlled_devices(data) !== nothing
+        @warn "This PowerFlowData was solved with discrete device control, but the \
+            solved tap/shunt/FACTS/PAR settings are not written back to the system: \
+            the export will pair the solved voltages with the ORIGINAL device settings, \
+            so re-solving the exported case will not reproduce these voltages. See \
+            get_controlled_device_results(data) for the solved settings." maxlog = 1
+    end
     # NOTE this relies on exporter.system being a deepcopy of the original system so we're not changing that one here
     update_system!(exporter.system, data)
 end

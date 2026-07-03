@@ -263,7 +263,12 @@ function _control_continuation!(
             full-steepness convergence (S=$S, target=$MAX_CONTROL_STEEPNESS); \
             regulation may be loose at time step $ts"
     end
-    return snap_and_restore!(pf, data, set, ts; kwargs...)
+    ok = snap_and_restore!(pf, data, set, ts; kwargs...)
+    # Reported branch flows are computed from the arc-admittance matrices AFTER the
+    # time-step loop (`solve_power_flow!`); bring the moved branch devices' rows in
+    # line with their final parameters so flows match the solved network.
+    _sync_arc_admittances!(data, set)
+    return ok
 end
 
 # Incremental λ-restore of one device from its snapped value toward the
@@ -273,13 +278,14 @@ function _restore_one!(d, data, ts::Int, continuous::Float64, pf; kwargs...)::Bo
     snapped = current_parameter(d)
     abs(continuous - snapped) < CONTROL_PARAM_TOL &&
         return _solve_with_q_limits!(pf, data, ts; kwargs...)
+    lo, hi = parameter_limits(d)
     done = 0.0
     step = MIN_LAMBDA_STEP
     last_good = snapped
     snap = _snapshot_voltage(data, ts)   # last converged state, restored on a failed trial
     while done < 1.0
         trial = min(1.0, done + step)
-        p = snapped + trial * (continuous - snapped)
+        p = clamp(snapped + trial * (continuous - snapped), lo, hi)
         apply_parameter!(d, data, p, ts)
         if _solve_with_q_limits!(pf, data, ts; kwargs...)
             done = trial
@@ -299,24 +305,27 @@ function _restore_one!(d, data, ts::Int, continuous::Float64, pf; kwargs...)::Bo
     return _solve_with_q_limits!(pf, data, ts; kwargs...)
 end
 
-# Snap a concrete device vector onto its discrete grid (continuous devices clamp), stashing the
-# pre-snap continuous value in `cont` for the restore path. Function barrier over the eltype.
-function _snap_device_group!(devices, data, ts::Int, cont::Dict{String, Float64})
-    for d in devices
-        cont[d.name] = d.current
+# Snap a concrete device vector onto its discrete grid (continuous devices clamp),
+# returning the pre-snap continuous values index-aligned with `devices` for the restore
+# path. (Index alignment, not name keying: device names are only unique per concrete
+# type, and a cross-family collision must not cross the stashed values.)
+function _snap_device_group!(devices, data, ts::Int)
+    cont = Vector{Float64}(undef, length(devices))
+    for (i, d) in enumerate(devices)
+        cont[i] = d.current
         apply_parameter!(d, data, snap_to_discrete(d, d.current), ts)
     end
-    return nothing
+    return cont
 end
 
-# λ-restore a concrete device vector toward its stashed continuous value; returns `true` iff all
-# restored to a converged state.
+# λ-restore a concrete device vector toward its stashed continuous value; returns `true`
+# iff all restored to a converged state.
 function _restore_device_group!(
-    devices, data, ts::Int, cont::Dict{String, Float64}, pf; kwargs...,
+    devices, data, ts::Int, cont::Vector{Float64}, pf; kwargs...,
 )::Bool
     ok = true
-    for d in devices
-        ok &= _restore_one!(d, data, ts, cont[d.name], pf; kwargs...)
+    for (i, d) in enumerate(devices)
+        ok &= _restore_one!(d, data, ts, cont[i], pf; kwargs...)
     end
     return ok
 end
@@ -328,16 +337,19 @@ function snap_and_restore!(
     ts::Int;
     kwargs...,
 )::Bool
-    cont = Dict{String, Float64}()
-    _snap_device_group!(set.taps, data, ts, cont)
-    _snap_device_group!(set.shunts, data, ts, cont)
-    _snap_device_group!(set.facts, data, ts, cont)
-    _snap_device_group!(set.phase_shifters, data, ts, cont)
+    # Last continuous converged state: the restore path must start from here, not from
+    # whatever diverged iterate a failed post-snap solve leaves in `data`.
+    pre = _snapshot_voltage(data, ts)
+    cont_taps = _snap_device_group!(set.taps, data, ts)
+    cont_shunts = _snap_device_group!(set.shunts, data, ts)
+    cont_facts = _snap_device_group!(set.facts, data, ts)
+    cont_pst = _snap_device_group!(set.phase_shifters, data, ts)
     _solve_with_q_limits!(pf, data, ts; kwargs...) && return true
-    ok = _restore_device_group!(set.taps, data, ts, cont, pf; kwargs...)
-    ok &= _restore_device_group!(set.shunts, data, ts, cont, pf; kwargs...)
-    ok &= _restore_device_group!(set.facts, data, ts, cont, pf; kwargs...)
-    ok &= _restore_device_group!(set.phase_shifters, data, ts, cont, pf; kwargs...)
+    _restore_voltage!(data, ts, pre)
+    ok = _restore_device_group!(set.taps, data, ts, cont_taps, pf; kwargs...)
+    ok &= _restore_device_group!(set.shunts, data, ts, cont_shunts, pf; kwargs...)
+    ok &= _restore_device_group!(set.facts, data, ts, cont_facts, pf; kwargs...)
+    ok &= _restore_device_group!(set.phase_shifters, data, ts, cont_pst, pf; kwargs...)
     if !ok
         names = join(
             vcat(
@@ -354,4 +366,50 @@ function snap_and_restore!(
         return false
     end
     return true
+end
+
+"""
+    get_controlled_device_results(data) -> DataFrames.DataFrame
+
+Solved discrete-control device settings: one row per enrolled device with its family,
+name, control band, enrollment-time (`initial`) and solved (`final`) parameter. The
+solved settings live only here and in the mutated network arrays — they are NOT written
+back to the `PSY.System`, and a PSS/E export of the system reflects the ORIGINAL device
+settings (see [`update_exporter!`](@ref)). Returns an empty frame when the data was built
+without discrete control.
+"""
+function get_controlled_device_results(data)
+    family = String[]
+    name = String[]
+    lower = Float64[]
+    upper = Float64[]
+    initial = Float64[]
+    final = Float64[]
+    set = get_controlled_devices(data)
+    if set !== nothing
+        for (fam, devices) in (
+            ("TapTransformer", set.taps),
+            ("SwitchedAdmittance", set.shunts),
+            ("FACTSControlDevice", set.facts),
+            ("PhaseShiftingTransformer", set.phase_shifters),
+        )
+            for d in devices
+                lo, hi = parameter_limits(d)
+                push!(family, fam)
+                push!(name, d.name)
+                push!(lower, lo)
+                push!(upper, hi)
+                push!(initial, d.initial)
+                push!(final, d.current)
+            end
+        end
+    end
+    return DataFrames.DataFrame(
+        "family" => family,
+        "name" => name,
+        "lower_limit" => lower,
+        "upper_limit" => upper,
+        "initial" => initial,
+        "final" => final,
+    )
 end

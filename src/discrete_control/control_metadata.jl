@@ -237,6 +237,7 @@ function build_controlled_device_set(
         _validate_vset("ControlledTap", name, md.vset) || continue
         yt = 1.0 / (PSY.get_r(tx) + PSY.get_x(tx) * im)
         ysh = PSY.get_primary_shunt(tx)
+        tap0 = PSY.get_tap(tx)
         push!(
             taps,
             ControlledTap(
@@ -252,7 +253,9 @@ function build_controlled_device_set(
                 md.pmax,
                 collect(range(md.pmin, md.pmax; length = md.ntp)),
                 _ybus_block_offsets(ybus, fix, tix),
-                PSY.get_tap(tx),
+                tap0,   # initial (reporting)
+                tap0,   # synced (arc-admittance rows reflect this tap)
+                tap0,   # current
             ),
         )
     end
@@ -315,10 +318,10 @@ function build_controlled_device_set(
                 dB,
                 bmin,
                 bmax,
-                sortperm(dB; rev = true),
                 zeros(Int, length(dB)),
                 continuous,
-                current_b,
+                current_b,   # initial (reporting)
+                current_b,   # current
             ),
         )
     end
@@ -392,6 +395,7 @@ function _enroll_facts!(
                 vset,
                 -b_max,
                 b_max,
+                0.0,               # initial (reporting)
                 0.0,               # start neutral; the controller drives b from 0
             ),
         )
@@ -435,6 +439,7 @@ function _enroll_phase_shifters!(
         end
         lims = PSY.get_phase_angle_limits(ps)
         yt = 1.0 / (PSY.get_r(ps) + PSY.get_x(ps) * im)
+        alpha0 = PSY.get_α(ps)
         push!(
             phase_shifters,
             ControlledPhaseShifter(
@@ -447,7 +452,9 @@ function _enroll_phase_shifters!(
                 lims.min,
                 lims.max,
                 _ybus_block_offsets(ybus, fix, tix),
-                PSY.get_α(ps),                   # current phase angle
+                alpha0,   # initial (reporting)
+                alpha0,   # synced (arc-admittance rows reflect this angle)
+                alpha0,   # current
             ),
         )
     end
