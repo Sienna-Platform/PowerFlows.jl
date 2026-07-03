@@ -630,6 +630,14 @@ function get_ext_key_or_default(
     return get(ext, key, default)
 end
 
+function has_ext_key(component::PSY.Component, key::String)
+    ext = PSY.get_ext(component)
+    if isnothing(ext)
+        return false
+    end
+    return haskey(ext, key)
+end
+
 # WRITTEN TO SPEC: PSS/E 33.3 POM 5.2.1 Bus Data
 """
 Given a vector of Sienna bus names, create a dictionary from Sienna bus name to
@@ -2589,22 +2597,35 @@ end
 # DCSET for one converter. A droop terminal is exported as MW control, so its setpoint is the
 # scheduled active-power demand (NOT the droop reference voltage, which the record cannot hold);
 # the from terminal injects +P_flow into the DC line, the to terminal receives -P_flow. All other
-# modes use the stored DC setpoint (a voltage for DC_VOLTAGE, a power for DC_POWER).
+# modes use the stored DC setpoint (a voltage for DC_VOLTAGE, a power for DC_POWER). Systems parsed
+# from PSS/E store the setpoints in system-base p.u. and carry the DC base voltage (kV) in
+# ext["VDCBASE"], so the setpoint scales back to kV (DC_VOLTAGE) or MW (DC_POWER); without the ext
+# key (hand-built systems) the stored setpoint is written through unchanged.
 function _vsc_export_dcset(
     vscline::PSY.TwoTerminalVSCLine,
     side::Symbol,
     base_power::Float64,
 )
     if side == :from
-        if PSY.get_dc_control_from(vscline) == PSY.VSCDCControlModes.DC_VOLTAGE_DROOP
-            return _psse_round_val(PSY.get_active_power_flow(vscline) * base_power)
-        end
-        return PSY.get_dc_setpoint_from(vscline)
+        dc_control = PSY.get_dc_control_from(vscline)
+        dc_setpoint = PSY.get_dc_setpoint_from(vscline)
+        flow_sign = 1.0
+    else
+        dc_control = PSY.get_dc_control_to(vscline)
+        dc_setpoint = PSY.get_dc_setpoint_to(vscline)
+        flow_sign = -1.0
     end
-    if PSY.get_dc_control_to(vscline) == PSY.VSCDCControlModes.DC_VOLTAGE_DROOP
-        return _psse_round_val(-PSY.get_active_power_flow(vscline) * base_power)
+    if dc_control == PSY.VSCDCControlModes.DC_VOLTAGE_DROOP
+        return _psse_round_val(flow_sign * PSY.get_active_power_flow(vscline) * base_power)
     end
-    return PSY.get_dc_setpoint_to(vscline)
+    if !has_ext_key(vscline, "VDCBASE")
+        return dc_setpoint
+    end
+    if dc_control == PSY.VSCDCControlModes.DC_VOLTAGE
+        vdc_base = get_ext_key_or_default(vscline, "VDCBASE", 1.0)
+        return _psse_round_val(dc_setpoint * vdc_base)
+    end
+    return _psse_round_val(dc_setpoint * base_power)
 end
 
 """Compute VSC converter fields for one side (from or to) of a VSC DC line."""
@@ -2643,9 +2664,17 @@ function _compute_vsc_converter_fields(
         q_limits = PSY.get_reactive_power_limits_to(vscline)
     end
 
-    BLOSS = _psse_round_val(
-        PSY.get_proportional_term(PSY.get_function_data(converter_loss)) *
-        1e3 * base_power)
+    # Invert the parser's BLOSS normalization: parsed systems store the proportional loss term
+    # as BLOSS_kW_per_A / VDCBASE_kV; hand-built systems (no ext key) keep the legacy
+    # p.u.-power interpretation.
+    proportional_term = PSY.get_proportional_term(PSY.get_function_data(converter_loss))
+    if has_ext_key(vscline, "VDCBASE")
+        BLOSS = _psse_round_val(
+            proportional_term * get_ext_key_or_default(vscline, "VDCBASE", 1.0),
+        )
+    else
+        BLOSS = _psse_round_val(proportional_term * 1e3 * base_power)
+    end
     psse_converter_loss = _psse_round_val(BLOSS * abs(PSY.get_dc_current(vscline)))
     ALOSS_org = _psse_round_val(
         abs(
@@ -2724,11 +2753,15 @@ function write_to_buffers!(
         from_dc_control = PSY.get_dc_control_from(vscline)
         to_dc_control = PSY.get_dc_control_to(vscline)
         # Base (DC) voltage comes from a terminal carrying a DC-voltage reference (strict DC_VOLTAGE
-        # or droop); a pure MW (DC_POWER) terminal's setpoint is a power, not a voltage.
+        # or droop); a pure MW (DC_POWER) terminal's setpoint is a power, not a voltage. Parsed
+        # systems store the setpoint in p.u. of ext["VDCBASE"] (kV); scale back for Zbase.
         if _has_dc_voltage_reference(from_dc_control)
             base_voltage = PSY.get_dc_setpoint_from(vscline)
         else
             base_voltage = PSY.get_dc_setpoint_to(vscline)
+        end
+        if has_ext_key(vscline, "VDCBASE")
+            base_voltage = base_voltage * get_ext_key_or_default(vscline, "VDCBASE", 1.0)
         end
         Zbase = base_voltage^2 / PSY.get_base_power(exporter.system)
         RDC_org = PSY.get_g(vscline) != 0.0 ? (1 / PSY.get_g(vscline)) * Zbase : 0.0
