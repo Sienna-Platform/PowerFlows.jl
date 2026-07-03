@@ -42,9 +42,13 @@ which selects the two control-row residuals:
 | `ControlPVac`      | $P_c - P_{set}$               | $\lvert V_{ac}\rvert^2 - V_{set}^2$ |
 | `ControlVdc`       | $V_{dc} - V_{set}$            | $Q_c - Q_{set}$                     |
 | `ControlVdcQ`      | $V_{dc} - V_{set}$            | $\lvert V_{ac}\rvert^2 - V_{set}^2$ |
-| `ControlPVdcDroop` | $(V_{dc} - V_{set}) + k\,P_c$ | $Q_c - Q_{set}$                     |
+| `ControlPVdcDroop` | $(V_{dc} - V_{set}) - k\,P_c$ | $Q_c - Q_{set}$                     |
 
-where $k$ is the DC-voltage droop gain. A mode pins the DC-node voltage (makes its node a DC slack)
+where $k$ is the DC-voltage droop gain. With $P_c$ the converter's AC-side injection, the droop row
+$r_1 = (V_{dc} - V_{set}) - k\,P_c$ is equivalently $V_{dc} = V_{set} - k\,P_{dc,inj}$ where
+$P_{dc,inj}$ is the power injected into the DC grid — the standard Beerten droop convention: a
+converter injecting into the DC grid operates below its voltage reference, and a high DC voltage
+drives converters to withdraw more. A mode pins the DC-node voltage (makes its node a DC slack)
 iff it is a $V_{dc}$-control mode; a wholly droop-controlled DC subnet is anchored by the droop
 relation instead. The AC-voltage row uses the raw $\lvert V_{ac}\rvert^2$ (floor-free, like the
 rectangular PV pin) for a derivative consistent with the residual.
@@ -79,7 +83,7 @@ dispatch:
 
 ```math
 \begin{aligned}
-\frac{\partial r_1}{\partial P_c} &= \begin{cases} 0 & V_{dc}\text{-control} \\ k & \text{droop} \\ 1 & P\text{-control} \end{cases}
+\frac{\partial r_1}{\partial P_c} &= \begin{cases} 0 & V_{dc}\text{-control} \\ -k & \text{droop} \\ 1 & P\text{-control} \end{cases}
 &\qquad
 \frac{\partial r_1}{\partial V_{dc}} &= \begin{cases} 1 & V_{dc}\text{-control or droop} \\ 0 & \text{otherwise} \end{cases} \\[1em]
 \frac{\partial r_2}{\partial Q_c} &= \begin{cases} 0 & \text{AC-voltage control} \\ 1 & \text{otherwise} \end{cases}
