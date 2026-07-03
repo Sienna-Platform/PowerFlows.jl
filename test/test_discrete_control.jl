@@ -67,10 +67,85 @@ end
     @test length(set2.shunts) == 1
     @test set2.shunts[1].continuous == true
 
-    # MODSW 3–6 (remote reactive-power / device control): unsupported ⇒ error.
+    # MODSW 3–6 (remote reactive-power / device control): unsupported ⇒ the shunt is
+    # de-enrolled with a warning and stays locked (PSS/E posture); never an error.
     for m in (3, 4, 5, 6)
-        @test_throws ErrorException _build(m)
+        setm = @test_logs (:warn, Regex("MODSW=$m")) match_mode = :any _build(m)
+        @test length(setm.shunts) == 0
+        @test length(setm.taps) == 1   # the tap is unaffected by the bad shunt record
     end
+end
+
+@testset "discrete control: warn-and-lock on unresolvable controlled bus" begin
+    # A remote controlled-bus number that does not exist in the network must
+    # de-enroll the device with a warning, not abort PowerFlowData construction.
+    sys = _make_tap_shunt_system()
+    tx = first(PSY.get_components(PSY.TapTransformer, sys))
+    PSY.get_ext(tx)["CONT1"] = 99   # no bus 99
+    data = PowerFlowData(ACPolarPowerFlow(), sys)
+    set = @test_logs (:warn, r"controlled bus 99") match_mode = :any (
+        PowerFlows.build_controlled_device_set(
+            sys, PF.get_bus_lookup(data), data.power_network_matrix)
+    )
+    @test length(set.taps) == 0
+    @test length(set.shunts) == 1   # the shunt still enrolls
+end
+
+@testset "discrete control: tap ext keys (parser spellings)" begin
+    # The PSS/E parser writes winding-suffixed keys: CONT1 (controlled bus),
+    # RMI1/RMA1 (ratio band), NTP1 (positions). VSET is a user-facing override.
+    sys = _make_tap_shunt_system()
+    tx = first(PSY.get_components(PSY.TapTransformer, sys))
+    ext = PSY.get_ext(tx)
+    ext["CONT1"] = 3
+    ext["RMI1"] = 0.88
+    ext["RMA1"] = 1.12
+    ext["NTP1"] = 25
+    ext["VSET"] = 1.03
+    data = PowerFlowData(ACPolarPowerFlow(), sys)
+    bl = PF.get_bus_lookup(data)
+    set = PowerFlows.build_controlled_device_set(
+        sys, bl, data.power_network_matrix)
+    @test length(set.taps) == 1
+    t = set.taps[1]
+    @test t.controlled_ix == bl[3]
+    @test t.p_min ≈ 0.88
+    @test t.p_max ≈ 1.12
+    @test length(t.levels) == 25
+    @test t.vset ≈ 1.03
+end
+
+@testset "discrete control: implausible vset locks the device" begin
+    # An API-built shunt whose admittance_limits hold actual susceptance bounds
+    # (per the PSY docstring) would yield a garbage voltage setpoint; the builder
+    # must de-enroll it with a warning instead of regulating |V| toward ~0.
+    sys = _make_tap_shunt_system()
+    sa = first(PSY.get_components(PSY.SwitchedAdmittance, sys))
+    PSY.set_admittance_limits!(sa, (min = -0.3, max = 0.3))
+    data = PowerFlowData(ACPolarPowerFlow(), sys)
+    set = @test_logs (:warn, r"voltage setpoint") match_mode = :any (
+        PowerFlows.build_controlled_device_set(
+            sys, PF.get_bus_lookup(data), data.power_network_matrix)
+    )
+    @test length(set.shunts) == 0
+end
+
+@testset "discrete control: PSS/E parser shunt convention (Y = BINIT)" begin
+    # With the parser's MODSW key present, Y holds the TOTAL in-service admittance
+    # (BINIT) and initial_status is zeroed: the reachable range is spanned by the
+    # blocks alone (base 0) and the control baseline sits at BINIT.
+    sys = _make_tap_shunt_system()
+    sa = first(PSY.get_components(PSY.SwitchedAdmittance, sys))
+    PSY.get_ext(sa)["MODSW"] = 1
+    PSY.set_Y!(sa, 0.0 + 0.1im)   # BINIT = 0.1 p.u. (two of the four 0.05 blocks in)
+    data = PowerFlowData(ACPolarPowerFlow(), sys)
+    set = PowerFlows.build_controlled_device_set(
+        sys, PF.get_bus_lookup(data), data.power_network_matrix)
+    s = set.shunts[1]
+    @test s.b0 == 0.0            # block-counting base
+    @test s.b_min == 0.0
+    @test s.b_max ≈ 0.2
+    @test s.current ≈ 0.1        # baseline at BINIT, inside the reachable range
 end
 
 @testset "discrete control: shunt controlled bus SWREM/NREG" begin
@@ -100,9 +175,9 @@ end
     @test s_local.controlled_ix == bl3[3]
 end
 
-@testset "discrete control: shunt invariant validation" begin
-    # Test that b0 outside [b_min, b_max] triggers error.
-    @test_throws ErrorException PowerFlows._validate_shunt!(
+@testset "discrete control: shunt invariant validation (warn-and-lock)" begin
+    # b0 outside [b_min, b_max]: warn, device de-enrolled (returns false).
+    r1 = @test_logs (:warn, r"outside") match_mode = :any PowerFlows._validate_shunt(
         "bad_shunt",
         0.0, # b_min
         0.5, # b0 — above b_max, outside [b_min, b_max]
@@ -110,8 +185,9 @@ end
         [4],
         [0.05],
     )
-    # Test that a zero-step block with nonzero dB triggers error.
-    @test_throws ErrorException PowerFlows._validate_shunt!(
+    @test r1 == false
+    # Zero-step block with nonzero dB: malformed metadata → warn + false.
+    r2 = @test_logs (:warn, r"zero steps") match_mode = :any PowerFlows._validate_shunt(
         "bad_shunt2",
         0.0,  # b_min
         0.0,  # b0
@@ -119,80 +195,64 @@ end
         [0],  # zero steps
         [0.05], # nonzero dB — malformed
     )
-    # Test that b_min == b_max (no controllable range) triggers error.
-    @test_throws ErrorException PowerFlows._validate_shunt!(
-        "no_range",
-        0.5,
-        0.5,
-        0.5,
-        [0],
-        [0.0],
+    @test r2 == false
+    # b_min == b_max (no controllable range): warn + false.
+    r3 = @test_logs (:warn, r"no controllable") match_mode = :any (
+        PowerFlows._validate_shunt("no_range", 0.5, 0.5, 0.5, [0], [0.0])
     )
-    # Valid case — no error.
-    @test PowerFlows._validate_shunt!(
-        "ok_shunt",
-        0.0,
-        0.0,
-        0.2,
-        [4],
-        [0.05],
-    ) === nothing
+    @test r3 == false
+    # Valid case — true, no logs.
+    @test PowerFlows._validate_shunt("ok_shunt", 0.0, 0.0, 0.2, [4], [0.05]) == true
 end
 
-@testset "discrete control: tap invariant validation" begin
-    # p_min > p_max (malformed) triggers error.
-    @test_throws ErrorException PowerFlows._validate_tap!("bad_tap", 1.1, 0.9, 33)
-    # p_min == p_max (no controllable range) triggers error.
-    @test_throws ErrorException PowerFlows._validate_tap!("no_range", 1.0, 1.0, 33)
-    # ntp < 2 (no controllable positions) triggers error.
-    @test_throws ErrorException PowerFlows._validate_tap!("one_pos", 0.9, 1.1, 1)
-    # Valid case — no error.
-    @test PowerFlows._validate_tap!("ok_tap", 0.9, 1.1, 33) === nothing
+@testset "discrete control: tap invariant validation (warn-and-lock)" begin
+    # p_min > p_max (malformed): warn + false.
+    r1 = @test_logs (:warn, r"exceeds") match_mode = :any (
+        PowerFlows._validate_tap("bad_tap", 1.1, 0.9, 33)
+    )
+    @test r1 == false
+    # p_min == p_max (no controllable range): warn + false.
+    r2 = @test_logs (:warn, r"no controllable") match_mode = :any (
+        PowerFlows._validate_tap("no_range", 1.0, 1.0, 33)
+    )
+    @test r2 == false
+    # ntp < 2: a degenerate/locked changer must NOT become an active 33-level
+    # controller; it is de-enrolled with a warning.
+    r3 = @test_logs (:warn, r"fewer than 2 tap positions") match_mode = :any (
+        PowerFlows._validate_tap("one_pos", 0.9, 1.1, 1)
+    )
+    @test r3 == false
+    # Valid case — true.
+    @test PowerFlows._validate_tap("ok_tap", 0.9, 1.1, 33) == true
 end
 
-@testset "discrete control: sigmoid target" begin
-    # ControlledTap, controlled-on-primary (eq.46):
-    # tr = (tr_max-tr_min)/(1+exp(S*(|V|-Vset))) + tr_min
-    d = PowerFlows.ControlledTap("t", 1, 2, 2, true, 1.0, 1.0 / (0.01 + 0.1im),
-        0.0 + 0.0im, 0.0, 0.9, 1.1, collect(range(0.9, 1.1; length = 33)),
-        (1, 2, 3, 4), 1.0)
+@testset "discrete control: sigmoid law" begin
+    # The raw sigmoid: midpoint at x = xset, saturating to hi (x ≪ xset) and
+    # lo (x ≫ xset) when called as _sigmoid(lo, hi, ...) with hi > lo.
     S = 100.0
-    # At |V| = Vset, sigmoid midpoint:
-    @test PowerFlows.target_from_voltage(d, 1.0, S) ≈ (1.1 - 0.9) / 2 + 0.9 atol = 1e-9
-    # |V| ≫ Vset → saturates near tr_min (controlled-on-primary, eq.46)
-    @test PowerFlows.target_from_voltage(d, 1.5, S) ≈ 0.9 atol = 1e-6
-    # |V| ≪ Vset → saturates near tr_max
-    @test PowerFlows.target_from_voltage(d, 0.5, S) ≈ 1.1 atol = 1e-6
-    # secondary-controlled flips sign (eq.47)
-    d2 = PowerFlows.ControlledTap("t2", 1, 2, 1, false, 1.0,
-        1.0 / (0.01 + 0.1im), 0.0 + 0.0im, 0.0, 0.9, 1.1,
-        collect(range(0.9, 1.1; length = 33)), (1, 2, 3, 4), 1.0)
-    @test PowerFlows.target_from_voltage(d2, 1.5, S) ≈ 1.1 atol = 1e-6
-
-    block_dB_sh = [0.05]
-    sh = PowerFlows.ControlledSwitchedShunt("s", 3, 3, 1.0, 0.0, 0.0,
-        [4], block_dB_sh, 0.0, 0.2,
-        [1], zeros(Int, length(block_dB_sh)), false, 0.0)
-    @test PowerFlows.target_from_voltage(sh, 1.0, S) ≈ 0.1 atol = 1e-9
-    @test PowerFlows.target_from_voltage(sh, 0.5, S) ≈ 0.2 atol = 1e-6  # low V → max B
+    @test PowerFlows._sigmoid(0.9, 1.1, S, 1.0, 1.0) ≈ 1.0 atol = 1e-9
+    @test PowerFlows._sigmoid(0.9, 1.1, S, 1.5, 1.0) ≈ 0.9 atol = 1e-6
+    @test PowerFlows._sigmoid(0.9, 1.1, S, 0.5, 1.0) ≈ 1.1 atol = 1e-6
+    # Swapped limits give the increasing orientation.
+    @test PowerFlows._sigmoid(1.1, 0.9, S, 1.5, 1.0) ≈ 1.1 atol = 1e-6
 end
 
 @testset "discrete control: negative-feedback orientation" begin
     # The effective control law `_control_target` must produce negative feedback:
     # sign(d target / dV) opposite to sign(dV/dp), so the closed-loop gain
-    # g' = σ'(V)·dV/dp ≤ 0 for ANY device wiring (primary tap, secondary tap,
-    # shunt) and for both signs of the measured plant sensitivity dV/dp.
+    # g' = σ'(V)·dV/dp ≤ 0 for ANY device wiring — the orientation comes solely
+    # from the measured plant sensitivity, for both signs of dV/dp.
     S = 100.0
     δ = 0.02
-    primary = PowerFlows.ControlledTap("tp", 1, 2, 2, true, 1.0,
+    tap = PowerFlows.ControlledTap("tp", 1, 2, 2, 1.0,
         1.0 / (0.01 + 0.1im), 0.0 + 0.0im, 0.0, 0.9, 1.1,
         collect(range(0.9, 1.1; length = 33)), (1, 2, 3, 4), 1.0)
-    secondary = PowerFlows.ControlledTap("ts", 1, 2, 1, false, 1.0,
+    remote = PowerFlows.ControlledTap("ts", 1, 2, 1, 1.0,
         1.0 / (0.01 + 0.1im), 0.0 + 0.0im, 0.0, 0.9, 1.1,
         collect(range(0.9, 1.1; length = 33)), (1, 2, 3, 4), 1.0)
     shunt = PowerFlows.ControlledSwitchedShunt("sh", 3, 3, 1.0, 0.0, 0.0,
         [4], [0.05], 0.0, 0.2, [1], zeros(Int, 1), false, 0.0)
-    for d in (primary, secondary, shunt)
+    for d in (tap, remote, shunt)
         vset = PowerFlows.voltage_setpoint(d)
         for dVdp in (1.0, -1.0)
             up = PowerFlows._control_target(d, vset + δ, S, dVdp)
@@ -209,14 +269,15 @@ end
     # m = 1 + ω·(g'−1) with g' ≤ 0 and |g'| ≤ gbound = 0.25|hi-lo|·S·|dVdp|, so
     # m ≥ 0 iff ω·(1+gbound) ≤ 1. (A negative slope is what previously made the
     # iterate alternate every step and tripped the oscillation-freeze detector.)
-    d = PowerFlows.ControlledTap("t", 1, 2, 2, true, 1.0, 1.0 / (0.01 + 0.1im),
+    d = PowerFlows.ControlledTap("t", 1, 2, 2, 1.0, 1.0 / (0.01 + 0.1im),
         0.0 + 0.0im, 0.0, 0.9, 1.1, collect(range(0.9, 1.1; length = 33)),
         (1, 2, 3, 4), 1.0)
     lo, hi = PowerFlows.parameter_limits(d)
     for S in (1.0e2, 1.0e3, 5.0e3), dVdp in (-5.0, -1.0, -0.1, 0.1, 1.0, 5.0)
         ω = PowerFlows._relaxation(d, S, dVdp)
         gbound = 0.25 * abs(hi - lo) * S * abs(dVdp)
-        @test 0.0 < ω <= PowerFlows.CONTROL_RELAXATION_MAX
+        # ω = (1−θ)/(1+gbound) ≤ 1−θ = 0.5 by construction (no separate cap).
+        @test 0.0 < ω <= 1.0 - PowerFlows.CONTROL_CONTRACTION
         @test ω * (1.0 + gbound) <= 1.0 + 1e-12   # ⇒ map slope m ≥ 0 (monotone)
     end
 end
@@ -252,7 +313,7 @@ end
 end
 
 @testset "discrete control: snap" begin
-    d = PowerFlows.ControlledTap("t", 1, 2, 2, true, 1.0, 1.0 + 0im,
+    d = PowerFlows.ControlledTap("t", 1, 2, 2, 1.0, 1.0 + 0im,
         0im, 0.0, 0.9, 1.1, collect(range(0.9, 1.1; length = 5)),
         (1, 2, 3, 4), 1.0)  # levels: 0.9,0.95,1.0,1.05,1.1
     @test PowerFlows.snap_to_discrete(d, 1.03) == 1.05
@@ -394,18 +455,18 @@ end
 end
 
 @testset "discrete control: primary-controlled tap orientation (NR)" begin
-    # Exercises the controlled_on_primary=true path (eq.46), which uses
-    # (lo=p_min, hi=p_max) in the sigmoid — the DECREASING orientation.
-    # The negative-feedback condition then requires dVdp > 0 (so flip=true
-    # reverses the law to increasing, making the closed-loop gain negative).
-    # This is the orientation the existing secondary-controlled tests do NOT cover.
+    # Exercises from-side (primary) control: the controlled bus is the tap's FROM
+    # bus, so the measured plant sensitivity dV/dp has the opposite sign to the
+    # usual to-side wiring, and `_control_target` must pick the orientation that
+    # keeps the closed-loop gain negative. The to-side tests do NOT cover this.
     sys = _make_primary_controlled_tap_system()
     pf = ACPolarPowerFlow(; control_discrete_devices = true)
     data = PowerFlowData(pf, sys)
     solve_power_flow!(data)
     @test all(data.converged)
     t = data.controlled_devices.taps[1]
-    @test t.controlled_on_primary
+    # The controlled bus is the tap's FROM bus (set via ext["NREG"] = 2).
+    @test t.controlled_ix == t.from_ix
     @test t.current in t.levels
     @test abs(data.bus_magnitude[t.controlled_ix, 1] - t.vset) <=
           (t.p_max - t.p_min) / length(t.levels) + 1e-2
@@ -502,7 +563,10 @@ end
     # Ample reactive capability (100 MVA ⇒ b_max = 1.0 p.u.): the SVC must inject
     # reactive power to drive the weak PQ bus up to its voltage_setpoint (1.0 p.u.).
     sys = _make_svc_system(; max_shunt_current = 100.0)
-    pf = ACPolarPowerFlow(; control_discrete_devices = true)
+    pf = ACPolarPowerFlow(;
+        control_discrete_devices = true,
+        solver_settings = Dict{Symbol, Any}(:experimental_controls => true),
+    )
     data = PowerFlowData(pf, sys)
     solve_power_flow!(data)
     @test all(data.converged)
@@ -517,7 +581,10 @@ end
     # bus's reactive deficit: the SVC saturates at b_max and the bus stays below
     # setpoint — the homotopy equivalent of the PV→PQ Q-limit release.
     sys = _make_svc_system(; max_shunt_current = 5.0)
-    pf = ACPolarPowerFlow(; control_discrete_devices = true)
+    pf = ACPolarPowerFlow(;
+        control_discrete_devices = true,
+        solver_settings = Dict{Symbol, Any}(:experimental_controls => true),
+    )
     data = PowerFlowData(pf, sys)
     solve_power_flow!(data)
     @test all(data.converged)
@@ -530,7 +597,10 @@ end
     # Two parallel paths (line ∥ PAR) feed a load; the PAR steers its own active-power
     # flow to the setpoint by adjusting its phase angle within the (ample) band.
     sys = _make_par_system(; p_target = 0.3)
-    pf = ACPolarPowerFlow(; control_discrete_devices = true)
+    pf = ACPolarPowerFlow(;
+        control_discrete_devices = true,
+        solver_settings = Dict{Symbol, Any}(:experimental_controls => true),
+    )
     data = PowerFlowData(pf, sys)
     solve_power_flow!(data)
     @test all(data.converged)
@@ -544,7 +614,10 @@ end
     # A 0.45 p.u. flow target needs ≈0.04 rad of phase boost, but the band is only ±0.01:
     # the angle saturates at a limit and the regulated flow falls short of the setpoint.
     sys = _make_par_system(; p_target = 0.45, angle_min = -0.01, angle_max = 0.01)
-    pf = ACPolarPowerFlow(; control_discrete_devices = true)
+    pf = ACPolarPowerFlow(;
+        control_discrete_devices = true,
+        solver_settings = Dict{Symbol, Any}(:experimental_controls => true),
+    )
     data = PowerFlowData(pf, sys)
     solve_power_flow!(data)
     @test all(data.converged)
@@ -556,14 +629,72 @@ end
 
 @testset "discrete control: tap reads first-class PSY fields (#1684)" begin
     # Controllability set via the new PSY fields (no ext); the builder must read them.
-    sys = _make_field_controlled_tap_system()
-    pf = ACPolarPowerFlow(; control_discrete_devices = true)
-    data = PowerFlowData(pf, sys)
-    t = data.controlled_devices.taps[1]
-    @test t.p_min ≈ 0.85
-    @test t.p_max ≈ 1.15
-    @test length(t.levels) == 17
-    @test t.vset ≈ 1.02
-    # regulated_bus_number = 3 ⇒ remote controlled bus, not the to-bus.
-    @test t.controlled_ix == PNM.get_bus_lookup(data.power_network_matrix)[3]
+    # Requires the psy6 PSY branch (PSY #1705); on released PSY 5.x the fields do not
+    # exist and the builder uses the DEFAULT_TAP_* fallbacks instead.
+    if !PowerFlows.PSY_HAS_TAP_CONTROL_FIELDS
+        @test_skip "requires a PowerSystems.jl with the PSY #1705 tap-control fields (psy6 branch)"
+    else
+        sys = _make_field_controlled_tap_system()
+        pf = ACPolarPowerFlow(; control_discrete_devices = true)
+        data = PowerFlowData(pf, sys)
+        t = data.controlled_devices.taps[1]
+        @test t.p_min ≈ 0.85
+        @test t.p_max ≈ 1.15
+        @test length(t.levels) == 17
+        @test t.vset ≈ 1.02
+        # regulated_bus_number = 3 ⇒ remote controlled bus, not the to-bus.
+        @test t.controlled_ix == PNM.get_bus_lookup(data.power_network_matrix)[3]
+    end
+end
+
+@testset "discrete control: construction guards" begin
+    # Only NR/TR inner solvers are validated for the continuation.
+    @test_throws ArgumentError ACPolarPowerFlow{LevenbergMarquardtACPowerFlow}(;
+        control_discrete_devices = true)
+    @test_throws ArgumentError ACPolarPowerFlow{FastDecoupledACPowerFlow}(;
+        control_discrete_devices = true)
+    @test_throws ArgumentError ACRectangularPowerFlow{LevenbergMarquardtACPowerFlow}(;
+        control_discrete_devices = true)
+    @test_throws ArgumentError ACMixedPowerFlow{LevenbergMarquardtACPowerFlow}(;
+        control_discrete_devices = true)
+    # Device state does not track per-time-step baselines yet.
+    @test_throws ArgumentError ACPolarPowerFlow(;
+        control_discrete_devices = true, time_steps = 2)
+    # NR/TR with a single time step construct fine.
+    @test ACPolarPowerFlow{TrustRegionACPowerFlow}(;
+        control_discrete_devices = true) isa ACPolarPowerFlow
+    # LCC systems are rejected at PowerFlowData construction (rollback does not
+    # cover the per-time-step LCC state).
+    lcc_sys = simple_lcc_system()
+    @test_throws ArgumentError PowerFlowData(
+        ACPolarPowerFlow(; control_discrete_devices = true), lcc_sys)
+end
+
+@testset "discrete control: FACTS/PAR are experimental-gated" begin
+    # Without the flag, FACTS devices are not enrolled (an @info points at the flag);
+    # taps/shunts are unaffected.
+    sys = _make_svc_system(; max_shunt_current = 100.0)
+    pf_off = ACPolarPowerFlow(; control_discrete_devices = true)
+    data_off = PowerFlowData(pf_off, sys)
+    @test data_off.controlled_devices === nothing   # SVC was the only device
+    # With the flag, the SVC enrolls.
+    pf_on = ACPolarPowerFlow(;
+        control_discrete_devices = true,
+        solver_settings = Dict{Symbol, Any}(:experimental_controls => true),
+    )
+    data_on = PowerFlowData(pf_on, sys)
+    @test length(data_on.controlled_devices.facts) == 1
+end
+
+@testset "discrete control: PAR with parser-default setpoint is not enrolled" begin
+    # active_power_flow == 0.0 is the parser default, not a real flow setpoint:
+    # enrolling it would command the PAR to erase its own flow.
+    sys = _make_par_system(; p_target = 0.0)
+    data = PowerFlowData(ACPolarPowerFlow(), sys)
+    set = @test_logs (:warn, r"active_power_flow is 0.0") match_mode = :any (
+        PowerFlows.build_controlled_device_set(
+            sys, PF.get_bus_lookup(data), data.power_network_matrix;
+            include_experimental = true)
+    )
+    @test length(set.phase_shifters) == 0
 end

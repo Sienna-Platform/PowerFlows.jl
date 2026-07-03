@@ -30,10 +30,17 @@ function modify_and_numeric_factor!(
             H[i, i] += τ - τ_old # now try H + τ*I
         end
         set_values!(hSolver.mat, SparseArrays.nonzeros(H))
-        # `issuccess` checks PD directly, replacing the throwaway `F \ ones` solve.
-        # `numeric_factor!` can still throw PosDefException, so keep the catch.
+        # Force an LL′ final factor so `issuccess` is a true positive-definiteness check:
+        # CHOLMOD's simplicial LDL′ (its default at power-grid sparsity) "succeeds" on
+        # indefinite matrices with negative D entries, which would let this loop exit
+        # with τ too small and hand the line search a non-descent direction.
+        # `final_ll = true` matches stdlib `cholesky!`; with it, minor < n on any non-PD
+        # input and `issuccess` returns false. The catch stays as defensive cover for
+        # factorization-time throws.
         ok = try
-            numeric_factor!(hSolver.F, hSolver.mat)
+            SparseArrays.CHOLMOD.@cholmod_param final_ll = true begin
+                numeric_factor!(hSolver.F, hSolver.mat)
+            end
             LinearAlgebra.issuccess(hSolver.F)
         catch e
             e isa SparseArrays.CHOLMOD.PosDefException ? false : rethrow(e)

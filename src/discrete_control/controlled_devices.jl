@@ -3,13 +3,14 @@ abstract type AbstractBranchControl <: AbstractControlledDevice end
 abstract type AbstractShuntControl <: AbstractControlledDevice end
 
 """Voltage-controlling tap transformer. `nz_offsets` are the 4 cached
-`nzval` linear indices of the (from,to)×(from,to) Y-bus block."""
+`nzval` linear indices of the (from,to)×(from,to) Y-bus block. The control
+orientation is NOT stored: it comes from the measured plant sensitivity dV/dp
+(see `_control_target`), which is correct for any wiring of the controlled bus."""
 mutable struct ControlledTap <: AbstractBranchControl
     name::String
     from_ix::Int
     to_ix::Int
     controlled_ix::Int
-    controlled_on_primary::Bool      # true → eq.46, false → eq.47
     vset::Float64
     yt::ComplexF64                   # 1/(r+jx)
     y_shunt::ComplexF64              # primary shunt
@@ -205,25 +206,9 @@ function apply_parameter!(d::ControlledFACTS, data, b::Float64, ts::Int)
     return nothing
 end
 
-apply_parameter!(d::ControlledPhaseShifter, args...) = _seam_err(d)
-
 @inline function _sigmoid(lo::Float64, hi::Float64, S::Float64,
     x::Float64, xset::Float64)
     return (hi - lo) / (1.0 + exp(S * (x - xset))) + lo
-end
-
-# Branch (tap): controlled-on-primary uses eq.46 (lo=tr_min,hi=tr_max);
-# controlled-on-secondary uses eq.47 (limits swapped).
-function target_from_voltage(d::ControlledTap, vmag::Float64, S::Float64)
-    lo, hi = d.controlled_on_primary ? (d.p_min, d.p_max) : (d.p_max, d.p_min)
-    return clamp(_sigmoid(lo, hi, S, vmag, d.vset), d.p_min, d.p_max)
-end
-
-# Shunt: eq.9, low V → high B. x→-∞ gives hi=b_max; x→+∞ gives lo=b_min.
-function target_from_voltage(d::ControlledSwitchedShunt, vmag::Float64,
-    S::Float64)
-    b = _sigmoid(d.b_min, d.b_max, S, vmag, d.vset)
-    return clamp(b, d.b_min, d.b_max)
 end
 
 function snap_to_discrete(d::ControlledTap, p::Float64)

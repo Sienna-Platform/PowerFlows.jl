@@ -1,8 +1,6 @@
-# Upper cap on the under-relaxation factor ω; `_relaxation` adapts ω down from here
-# to keep the damped iteration a contraction at the current steepness.
-const CONTROL_RELAXATION_MAX = 0.8
 # Target slope of the local iteration map near the fixed point (0<m<1 ⇒ monotone,
 # non-oscillatory). 0.5 trades settling speed for a 2× margin on the worst-case gain bound.
+# It also bounds the relaxation factor itself: ω = (1−θ)/(1+gbound) ≤ 1−θ = 0.5.
 const CONTROL_CONTRACTION = 0.5
 
 # Snapshot / capture / restore the per-time-step bus voltage state. A failed solve leaves
@@ -101,8 +99,8 @@ end
 @inline function _relaxation(d, S::Float64, dVdp::Float64)
     lo, hi = parameter_limits(d)
     gbound = 0.25 * abs(hi - lo) * S * abs(dVdp)
-    ω = (1.0 - CONTROL_CONTRACTION) / (1.0 + gbound)
-    return min(CONTROL_RELAXATION_MAX, ω)
+    # ω ≤ 1−θ = 0.5 for any gbound ≥ 0, so no additional cap is needed.
+    return (1.0 - CONTROL_CONTRACTION) / (1.0 + gbound)
 end
 
 # One damped, sign-corrected proportional update of a single device.  Returns

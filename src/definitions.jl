@@ -6,7 +6,6 @@ const MAX_REACTIVE_POWER_ITERATIONS = 10
 # Discrete control device λ-continuation outer loop.
 const MAX_CONTROL_OUTER_ITERATIONS = 100
 const CONTROL_PARAM_TOL = 1e-5
-const INITIAL_LAMBDA_STEP = 1.0
 const MIN_LAMBDA_STEP = 1e-3
 const MAX_LAMBDA_STEP = 1.0
 const CONTROL_STEP_GROWTH = 1.5
@@ -14,11 +13,19 @@ const INITIAL_CONTROL_STEEPNESS = 1.0e2   # paper eq.10: start (S−λ_S)≈100
 const MAX_CONTROL_STEEPNESS = 5.0e3       # paper: full S≈5000
 const CONTROL_STEEPNESS_GROWTH = 2.0
 const CONTROL_OSCILLATION_LIMIT = 3
+# Tap-control defaults used on PSY 5.x, where `TapTransformer` has no first-class control
+# fields (they arrive with PSY #1705 / the psy6 branch, whose field defaults these match).
 const DEFAULT_TAP_RATIO_MIN = 0.9
 const DEFAULT_TAP_RATIO_MAX = 1.1
 const DEFAULT_TAP_POSITIONS = 33
 const DEFAULT_TAP_VSET = 1.0
 const DEFAULT_SHUNT_MODSW = 1   # discrete voltage control when ext lacks "MODSW"
+# Voltage setpoints outside this band are treated as data errors and lock the device
+# (PSY's `admittance_limits` carries the PSS/E VSWLO/VSWHI *voltage* band only by parser
+# convention; an API-built component holding actual admittance bounds there would
+# otherwise silently drive |V| toward a garbage setpoint).
+const CONTROL_VSET_MIN = 0.5
+const CONTROL_VSET_MAX = 1.5
 const DEFAULT_MAX_REDISTRIBUTION_ITERATIONS = 10
 const LARGE_RESIDUAL = 10 # threshold for "bad initial guess": default
 # norm(residual, 1)/length(residual) > 10.

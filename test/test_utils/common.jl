@@ -546,13 +546,11 @@ for that bus.  Bus 3 is separately connected to the REF bus via a line and hosts
 shunt.  Buses 2 and 3 are decoupled (both see the REF bus but not each other), so
 shunt adjustments do not perturb the tap-controlled bus and vice-versa.
 
-The continuation engine with `INITIAL_CONTROL_STEEPNESS=100` typically drives the
-tap to a saturation extreme (p_min or p_max) before the oscillation guard triggers.
-`snap_and_restore!` then snaps the tap to the nearest discrete level and re-solves;
-convergence is guaranteed.  The voltage at the snapped level may be far from vset
-for this network—this is expected behaviour of the oscillation guard.  Integration
-tests using this fixture should assert convergence and correct snapping, not voltage
-proximity."""
+The tap has full authority over bus 2 (dV/dp ≈ -1.04) and V₂ = vset = 1.0 is
+reachable at tap ≈ 0.973, well inside [0.9, 1.1], so the damped steepness ramp
+runs to completion and the continuation regulates the controlled bus into the
+vset deadband before snapping.  Integration tests on this fixture assert both
+convergence AND tight voltage proximity (within one discrete tap spacing)."""
 function _make_solvable_tap_shunt_system()
     sys = System(100.0)
     b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.0, 0.0)
@@ -657,7 +655,11 @@ end
 """Build a 3-bus system with one voltage-controlling `TapTransformer` whose controllability is set
 through the FIRST-CLASS PSY fields (`tap_limits`, `number_of_tap_positions`, `regulated_bus_number`,
 `voltage_setpoint`) — no `ext` scrape — to exercise the post-#1684 builder path. The tap (b1→b2)
-remotely regulates b3."""
+remotely regulates b3.
+
+REQUIRES a PowerSystems.jl that carries the PSY #1705 tap-control fields (the psy6 branch);
+callers must gate on `PowerFlows.PSY_HAS_TAP_CONTROL_FIELDS` — on PSY 5.x the
+`TapTransformer` constructor rejects these kwargs."""
 function _make_field_controlled_tap_system()
     sys = System(100.0)
     b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.0, 0.0)
@@ -735,8 +737,9 @@ function _make_par_system(;
     return sys
 end
 
-"""Build a 4-bus system where the TapTransformer's FROM bus is the controlled bus
-(`controlled_on_primary=true`), exercising the eq.46 orientation path.
+"""Build a 4-bus system where the TapTransformer's FROM bus is the controlled bus,
+exercising the from-side control orientation (the plant-sign probe must measure the
+opposite dV/dp sign to the usual to-side wiring).
 
 Topology: REF(1) ─line─ PQ(2) ─tap─ PQ(3); REF(1) ─line─ PQ(4).
 Bus 2 is both the FROM bus of the tap and the controlled bus (set via ext["NREG"]).
