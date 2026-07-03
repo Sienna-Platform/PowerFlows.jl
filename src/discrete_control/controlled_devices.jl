@@ -31,6 +31,8 @@ mutable struct ControlledSwitchedShunt <: AbstractShuntControl
     bus_ix::Int
     controlled_ix::Int
     vset::Float64
+    vset_lo::Float64                 # VSWLO/VSWHI deadband: held anywhere inside
+    vset_hi::Float64
     g0::Float64                      # real(get_Y)
     b0::Float64                      # fixed (non-switchable) susceptance base
     block_steps::Vector{Int}         # number_of_steps per block
@@ -139,6 +141,12 @@ end
 # Seam: future implicit embedding dispatches here. Never called by the outer loop.
 stamp_control!(d::AbstractControlledDevice, args...) =
     error("implicit embedding not implemented for $(typeof(d))")
+
+# PSS/E deadband semantics: a switched shunt is held while the controlled voltage is
+# anywhere INSIDE [VSWLO, VSWHI]; only excursions outside the band trigger switching.
+# Other device families carry a point setpoint (no parsed band) and always regulate.
+_in_deadband(::AbstractControlledDevice, ::Float64) = false
+_in_deadband(d::ControlledSwitchedShunt, y::Float64) = d.vset_lo <= y <= d.vset_hi
 
 function _nz_index(A::SparseArrays.SparseMatrixCSC, row::Int, col::Int)
     @inbounds for k in SparseArrays.nzrange(A, col)

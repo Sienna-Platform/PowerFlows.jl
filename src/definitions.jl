@@ -4,8 +4,16 @@ const INFINITE_BOUND = 1e6 # used as default when a branch has rating 0.0, as im
 const MAX_REACTIVE_POWER_ITERATIONS = 10
 
 # Discrete control device λ-continuation outer loop.
-const MAX_CONTROL_OUTER_ITERATIONS = 100
+# Pass budget PER STEEPNESS STAGE (each of the ~7 stages settles independently; one
+# global budget let a slow early stage starve the stiff later ones).
+const MAX_CONTROL_PASSES_PER_STAGE = 20
 const CONTROL_PARAM_TOL = 1e-5
+# Relative floor of the settle tolerance: tol_d = max(CONTROL_PARAM_TOL, RTOL·range).
+const CONTROL_PARAM_RTOL = 1e-4
+# A device whose full parameter range moves the regulated quantity by less than this
+# (|dy/dp|·(hi−lo), e.g. p.u. voltage) is ineffective: freeze it instead of letting the
+# steep sigmoid slam it to a rail with no feedback (PV-pinned controlled buses probe 0).
+const CONTROL_GAIN_FLOOR = 1e-4
 const MIN_LAMBDA_STEP = 1e-3
 const MAX_LAMBDA_STEP = 1.0
 const CONTROL_STEP_GROWTH = 1.5

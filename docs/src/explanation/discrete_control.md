@@ -121,24 +121,38 @@ ramp happens only after the devices have settled at the current ``S``, so the
 solver is never asked to handle a stiff sigmoid before the network state is
 compatible with it.
 
-### Plant-sign orientation
+### Plant-sign orientation and gain tracking
 
 The orientation of the control law comes **entirely from the measured plant
 sensitivity**, not from the device's wiring. `_plant_sign` measures
-``dy/dp`` by a small parameter perturbation at the converged base point (two
-inner solves per device). `_control_target` then evaluates the sigmoid with
+``dy/dp`` by a small parameter perturbation at the converged base point (one
+inner solve per device; the full pre-probe state — voltages, bus types, and
+injections — is restored afterward, so a probe can never permanently flip a
+marginal generator PV→PQ). `_control_target` then evaluates the sigmoid with
 its limits ordered so the closed-loop gain ``\sigma'(y)\cdot dy/dp`` is
 non-positive (negative feedback): measured ``dy/dp > 0`` selects the
 decreasing orientation ``(\ell, h) = (p_\min, p_\max)``; measured
 ``dy/dp \le 0`` selects the increasing orientation ``(h, \ell)``. There is no
 stored flip flag and no wiring-based (primary/secondary) orientation logic.
-If a probe solve fails, the device is frozen at its current parameter with a
-warning rather than stepped with an unknown sign.
+
+The gain is not frozen at its probed value: every accepted step refreshes it
+with a **secant estimate** from the parameter/response pair the step just
+produced (zero extra solves). Three conditions freeze a device at its current
+parameter with a warning (PSS/E lock-and-continue): a failed probe solve
+(orientation unknown), a full-range effectiveness below `CONTROL_GAIN_FLOOR`
+(e.g. a PV-pinned controlled bus, which probes exactly 0 — stepping it would
+slam the parameter to a rail with no feedback), and a detected **sign
+reversal** of the sensitivity along the trajectory (OLTC reverse action —
+continuing would be positive feedback). Devices sharing a controlled bus
+split the correction (``\omega / n_\text{shared}``), since N co-located
+controllers stepping the full error together have an in-phase gain ≈ N× the
+measured self-gain.
 
 ## The continuation engine
 
-The outer loop `_control_continuation!` runs up to
-`MAX_CONTROL_OUTER_ITERATIONS = 100` passes. Each pass:
+The outer loop `_control_continuation!` runs a steepness ladder of ~7 stages,
+each with its own budget of `MAX_CONTROL_PASSES_PER_STAGE = 20` passes. Each
+pass:
 
  1. Computes the sigmoid target ``p^*`` for every device given the current
     regulated quantity and steepness ``S``.
@@ -163,28 +177,37 @@ already caps ``\omega \le 1-\theta = 0.5``, and the guarantee is conditional on
 the plant gain measured at the base point remaining representative along the
 trajectory — it is a safeguard, not an unconditional convergence proof.
 
+**Deadband.** A switched shunt whose controlled voltage is anywhere inside its
+parsed `[VSWLO, VSWHI]` band is held, not driven toward the band midpoint —
+the PSS/E semantics. Other device families carry a point setpoint (the parser
+persists no band for them) and always regulate.
+
 **Incremental applicator.** `_continuation_to!` walks the parameter from its
 current value to the relaxed target in sub-steps. The first sub-step is
 `MIN_LAMBDA_STEP = 1e-3` of the total interval; successful NR calls allow the
 step to grow (factor `CONTROL_STEP_GROWTH = 1.5`, capped at
 `MAX_LAMBDA_STEP = 1.0`); a failed NR call halves the step. If the step falls
-below `MIN_LAMBDA_STEP` the parameter stays at the last converged point and
-the applicator returns the reached value.
+below `MIN_LAMBDA_STEP` the parameter stays at the last converged point; a
+device that could not move at all despite a requested move is frozen with a
+warning rather than counted as settled.
 
 **Settling and steepness ramp.** A pass is considered settled when every device
-moves by less than `CONTROL_PARAM_TOL = 1e-5`. Steepness ``S`` is advanced only
-after settling, not after every iteration. If `MAX_CONTROL_OUTER_ITERATIONS`
-is reached before full-steepness convergence, an honest `@warn` is emitted
-(regulation may be loose); the solver does not claim failure on account of
-steepness alone.
+moves by less than its scale-aware tolerance
+``\max(10^{-5},\ 10^{-4}\cdot(p_\max - p_\min))``. Each steepness stage has
+its own budget of `MAX_CONTROL_PASSES_PER_STAGE = 20` passes, so a
+slow-settling early stage cannot starve the stiffer later stages; ``S`` is
+advanced when the stage settles (or its budget runs out). If the final stage
+does not settle, an honest `@warn` is emitted (regulation may be loose); the
+solver does not claim failure on account of steepness alone.
 
 **Oscillation safeguard.** If the direction of a device's parameter update
-reverses sign more than `CONTROL_OSCILLATION_LIMIT = 3` times **cumulatively
-over the whole continuation** (the counter is never reset), the device is
-frozen at its current parameter and a `@warn` is emitted. The frozen device
-returns `Inf` as its gap, so the outer loop does not count it as settled while
-other devices continue to step. This mirrors the PSS/E behavior of locking
-oscillating adjustments after a fixed iteration count.
+reverses sign more than `CONTROL_OSCILLATION_LIMIT = 3` times **within one
+steepness stage** (the counter and direction memory reset at each ramp, since
+a ramp legitimately reverses the update direction once; sub-tolerance moves
+carry no direction information), the device is frozen at its current parameter
+with a `@warn`. Frozen devices count as settled — one locked device does not
+block the steepness ramp for the healthy ones. This mirrors the PSS/E behavior
+of locking oscillating adjustments after a fixed iteration count.
 
 ## Snap and feasibility restoration
 

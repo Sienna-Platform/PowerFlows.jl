@@ -250,7 +250,7 @@ end
     remote = PowerFlows.ControlledTap("ts", 1, 2, 1, 1.0,
         1.0 / (0.01 + 0.1im), 0.0 + 0.0im, 0.0, 0.9, 1.1,
         collect(range(0.9, 1.1; length = 33)), (1, 2, 3, 4), 1.0, 1.0, 1.0)
-    shunt = PowerFlows.ControlledSwitchedShunt("sh", 3, 3, 1.0, 0.0, 0.0,
+    shunt = PowerFlows.ControlledSwitchedShunt("sh", 3, 3, 1.0, 0.95, 1.05, 0.0, 0.0,
         [4], [0.05], 0.0, 0.2, zeros(Int, 1), false, 0.0, 0.0)
     for d in (tap, remote, shunt)
         vset = PowerFlows.voltage_setpoint(d)
@@ -319,14 +319,14 @@ end
     @test PowerFlows.snap_to_discrete(d, 1.03) == 1.05
     @test PowerFlows.snap_to_discrete(d, 1.20) == 1.1   # clamp
     block_dB_sh_snap = [0.05]
-    sh = PowerFlows.ControlledSwitchedShunt("s", 3, 3, 1.0, 0.0, 0.0,
+    sh = PowerFlows.ControlledSwitchedShunt("s", 3, 3, 1.0, 0.95, 1.05, 0.0, 0.0,
         [4], block_dB_sh_snap, 0.0, 0.2,
         zeros(Int, length(block_dB_sh_snap)),
         false, 0.0, 0.0)  # reachable: 0,0.05,0.10,0.15,0.20
     @test PowerFlows.snap_to_discrete(sh, 0.12) == 0.10
     @test sh.block_n == [2]
     block_dB_sh2 = [0.1, 0.02]
-    sh2 = PowerFlows.ControlledSwitchedShunt("s2", 3, 3, 1.0, 0.0, 0.0,
+    sh2 = PowerFlows.ControlledSwitchedShunt("s2", 3, 3, 1.0, 0.95, 1.05, 0.0, 0.0,
         [2, 3], block_dB_sh2, 0.0, 0.26,
         zeros(Int, length(block_dB_sh2)),
         false, 0.0, 0.0)  # PSS/E cumulative chain: blocks activate in listed order
@@ -341,7 +341,7 @@ end
     # continuous == true ⇒ snap_to_discrete returns the clamped continuous value,
     # NOT the nearest reachable block grid point.
     block_dB = [0.05]
-    cont = PowerFlows.ControlledSwitchedShunt("c", 3, 3, 1.0, 0.0, 0.0,
+    cont = PowerFlows.ControlledSwitchedShunt("c", 3, 3, 1.0, 0.95, 1.05, 0.0, 0.0,
         [4], block_dB, 0.0, 0.2, zeros(Int, length(block_dB)), true, 0.0, 0.0)
     # 0.12 is between grid points 0.10 and 0.15; continuous must return it unchanged.
     @test PowerFlows.snap_to_discrete(cont, 0.12) == 0.12
@@ -349,7 +349,7 @@ end
     @test PowerFlows.snap_to_discrete(cont, 0.30) == 0.2
     @test PowerFlows.snap_to_discrete(cont, -0.10) == 0.0
     # sanity: the discrete twin DOES snap 0.12 → 0.10.
-    disc = PowerFlows.ControlledSwitchedShunt("d", 3, 3, 1.0, 0.0, 0.0,
+    disc = PowerFlows.ControlledSwitchedShunt("d", 3, 3, 1.0, 0.95, 1.05, 0.0, 0.0,
         [4], block_dB, 0.0, 0.2, zeros(Int, length(block_dB)), false, 0.0, 0.0)
     @test PowerFlows.snap_to_discrete(disc, 0.12) == 0.10
 end
@@ -782,4 +782,25 @@ end
     @test size(df_off, 1) == 0
     @test names(df_off) ==
           ["family", "name", "lower_limit", "upper_limit", "initial", "final"]
+end
+
+@testset "discrete control: shunt deadband semantics" begin
+    # In-band voltages hold the device (PSS/E VSWLO/VSWHI semantics); out-of-band do not.
+    sh = PowerFlows.ControlledSwitchedShunt("s", 3, 3, 1.0, 0.95, 1.05, 0.0, 0.0,
+        [4], [0.05], 0.0, 0.2, zeros(Int, 1), false, 0.0, 0.0)
+    @test PowerFlows._in_deadband(sh, 1.0)
+    @test PowerFlows._in_deadband(sh, 0.96)
+    @test !PowerFlows._in_deadband(sh, 0.94)
+    @test !PowerFlows._in_deadband(sh, 1.06)
+    # Taps carry a point setpoint: never in a deadband.
+    tap = PowerFlows.ControlledTap("t", 1, 2, 2, 1.0, 1.0 + 0im,
+        0im, 0.0, 0.9, 1.1, collect(range(0.9, 1.1; length = 5)),
+        (1, 2, 3, 4), 1.0, 1.0, 1.0)
+    @test !PowerFlows._in_deadband(tap, 1.0)
+    # Scale-aware settle tolerance: wide-range devices get a relative floor.
+    @test PowerFlows._param_tol(tap) ≈
+          max(PowerFlows.CONTROL_PARAM_TOL, PowerFlows.CONTROL_PARAM_RTOL * 0.2)
+    wide = PowerFlows.ControlledSwitchedShunt("w", 3, 3, 1.0, 0.95, 1.05, 0.0, 0.0,
+        [10], [1.0], 0.0, 10.0, zeros(Int, 1), false, 0.0, 0.0)
+    @test PowerFlows._param_tol(wide) ≈ PowerFlows.CONTROL_PARAM_RTOL * 10.0
 end

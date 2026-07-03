@@ -312,6 +312,8 @@ function build_controlled_device_set(
                 bix,
                 cix,
                 vset,
+                lims.min,   # VSWLO: deadband lower edge
+                lims.max,   # VSWHI: deadband upper edge
                 real(Y0),
                 b_fixed,
                 steps,
