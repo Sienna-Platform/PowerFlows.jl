@@ -2596,11 +2596,9 @@ end
 
 # DCSET for one converter. A droop terminal is exported as MW control, so its setpoint is the
 # scheduled active-power demand (NOT the droop reference voltage, which the record cannot hold);
-# the from terminal injects +P_flow into the DC line, the to terminal receives -P_flow. All other
-# modes use the stored DC setpoint (a voltage for DC_VOLTAGE, a power for DC_POWER). Systems parsed
-# from PSS/E store the setpoints in system-base p.u. and carry the DC base voltage (kV) in
-# ext["VDCBASE"], so the setpoint scales back to kV (DC_VOLTAGE) or MW (DC_POWER); without the ext
-# key (hand-built systems) the stored setpoint is written through unchanged.
+# the from terminal injects +P_flow into the DC line, the to terminal receives -P_flow. Parsed
+# systems store setpoints in system-base p.u. with the DC base (kV) in ext["VDCBASE"] — scale
+# back to kV (DC_VOLTAGE) or MW (DC_POWER); hand-built systems write through unchanged.
 function _vsc_export_dcset(
     vscline::PSY.TwoTerminalVSCLine,
     side::Symbol,
@@ -2664,17 +2662,12 @@ function _compute_vsc_converter_fields(
         q_limits = PSY.get_reactive_power_limits_to(vscline)
     end
 
-    # Invert the parser's BLOSS normalization: parsed systems store the proportional loss term
-    # as BLOSS_kW_per_A / VDCBASE_kV; hand-built systems (no ext key) keep the legacy
-    # p.u.-power interpretation.
+    # Invert the parser's BLOSS normalization (BLOSS_kW_per_A / VDCBASE_kV); hand-built systems
+    # (no ext key) keep the legacy p.u.-power interpretation.
     proportional_term = PSY.get_proportional_term(PSY.get_function_data(converter_loss))
-    if has_ext_key(vscline, "VDCBASE")
-        BLOSS = _psse_round_val(
-            proportional_term * get_ext_key_or_default(vscline, "VDCBASE", 1.0),
-        )
-    else
-        BLOSS = _psse_round_val(proportional_term * 1e3 * base_power)
-    end
+    BLOSS = _psse_round_val(
+        proportional_term * get_ext_key_or_default(vscline, "VDCBASE", 1e3 * base_power),
+    )
     psse_converter_loss = _psse_round_val(BLOSS * abs(PSY.get_dc_current(vscline)))
     ALOSS_org = _psse_round_val(
         abs(
@@ -2760,9 +2753,7 @@ function write_to_buffers!(
         else
             base_voltage = PSY.get_dc_setpoint_to(vscline)
         end
-        if has_ext_key(vscline, "VDCBASE")
-            base_voltage = base_voltage * get_ext_key_or_default(vscline, "VDCBASE", 1.0)
-        end
+        base_voltage *= get_ext_key_or_default(vscline, "VDCBASE", 1.0)
         Zbase = base_voltage^2 / PSY.get_base_power(exporter.system)
         RDC_org = PSY.get_g(vscline) != 0.0 ? (1 / PSY.get_g(vscline)) * Zbase : 0.0
         RDC = get_ext_key_or_default(vscline, "RDC", RDC_org)

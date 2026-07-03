@@ -932,6 +932,21 @@ function _fd_decoupled_power_flow(
 
     solver_name = "FastDecoupled(FDDecoupled,$(nameof(typeof(scheme))))"
 
+    # The sequential VSC sub-solve pins each converter's Q at its setpoint (`_vsc_warm_start!`),
+    # which cannot honor an AC-voltage control row — those converters need the full coupled
+    # Jacobian. Reject before any B′/B″ factorization work.
+    dcn = get_dc_network(data)
+    has_vsc = has_dc_network(dcn)
+    if has_vsc && any(controls_ac_voltage, dcn.converter_mode)
+        throw(
+            ArgumentError(
+                "FastDecoupled (FDDecoupled) does not support AC-voltage-controlling VSC " *
+                "converters. Use FastDecoupledACPowerFlow{FDFixedJacobian, <scheme>} or a " *
+                "full-Newton solver (NR/TR/LM).",
+            ),
+        )
+    end
+
     # Factor-once cache (WP5b): B′ over fd.pvpq factored exactly once per (data, scheme, backend)
     # lifetime; the [pq, pq] B″ submatrix + half-step buffers factored once per distinct PQ set
     # (bus-type signature) and reused across Q-limit retries / multi-period steps. The hot loop
@@ -960,24 +975,10 @@ function _fd_decoupled_power_flow(
     vm_pq = view(Vm, bpp.pq)
 
     sv = StateVectorCache(x0_init, residual.Rv)
-    # Sequential AC–DC method: with LCC present the B′/B″ half-steps solve the AC network while a
-    # per-LCC converter sub-solve refreshes the DC boundary conditions each cycle.
-    # `n_lcc == 0` ⇒ the sub-solve is never invoked (pure-AC path unchanged).
+    # Sequential AC–DC method: with LCC or VSC present the B′/B″ half-steps solve the AC network
+    # while a per-converter sub-solve refreshes the DC boundary conditions each cycle. Neither
+    # present ⇒ the sub-solves are never invoked (pure-AC path unchanged).
     n_lcc = get_lcc_count(data)
-    # VSC/DC networks get the analogous sequential sub-solve (`_fd_vsc_substep!`). The sub-solve
-    # pins each converter's Q at its setpoint (`_vsc_warm_start!`), which cannot honor an
-    # AC-voltage control row — those converters need the full coupled Jacobian.
-    dcn = get_dc_network(data)
-    has_vsc = has_dc_network(dcn)
-    if has_vsc && any(controls_ac_voltage, dcn.converter_mode)
-        throw(
-            ArgumentError(
-                "FastDecoupled (FDDecoupled) does not support AC-voltage-controlling VSC " *
-                "converters. Use FastDecoupledACPowerFlow{FDFixedJacobian, <scheme>} or a " *
-                "full-Newton solver (NR/TR/LM).",
-            ),
-        )
-    end
 
     # Sync explicit rows, then evaluate the residual so Rv / data reflect (V, θ, explicit P/Q).
     _sync_explicit_state!(sv, residual, time_step)

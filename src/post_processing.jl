@@ -590,14 +590,9 @@ function _compute_segment_flows(
     return entries
 end
 
-"""
-Write the solved VSC / MTDC state (`p_c`, `q_c`, `node_vdc`) back to the PSY components.
-Point-to-point `TwoTerminalVSCLine`s are matched to their converter pair through the DC branch
-joining their two implicit (`node_number == -1`) DC nodes, keyed by the reduction-mapped arc
-tuple exactly like the LCC write-back; `InterconnectingConverter`s are matched by
-(AC bus number, DC bus number). Parallel components sharing a key are consumed positionally:
-lowering and write-back iterate the same component collections, so orders agree.
-"""
+# Write the solved VSC / MTDC state back to the PSY components. VSC lines are keyed by
+# reduction-mapped arc tuple, ICs by (AC bus number, DC bus number); parallel components sharing a
+# key are consumed positionally (lowering and write-back iterate the same collections).
 function _write_vsc_solution!(
     sys::PSY.System,
     data::ACPowerFlowData,
@@ -645,16 +640,13 @@ function _write_vsc_line_solution!(
         to_number = dcn.converter_ac_bus_number[ct]
         arc = (get(rmap, from_number, from_number), get(rmap, to_number, to_number))
         vsc = popfirst!(arc_to_lines[arc])
-        # `p_c` is the converter's AC-side injection, so the from→to link flow
-        # (`active_power_flow`, consumed by the export path as the scheduled MW order at the
-        # from terminal) is the AC power drawn at the from terminal: −p_c_from.
+        # from→to link flow = AC power drawn at the from terminal: −p_c_from
         PSY.set_active_power_flow!(vsc, -dcn.p_c[cf, time_step])
         PSY.set_reactive_power_from!(vsc, dcn.q_c[cf, time_step])
         PSY.set_reactive_power_to!(vsc, dcn.q_c[ct, time_step])
         Vm_from = data.bus_magnitude[dcn.converter_ac_bus_ix[cf], time_step]
         Vdc_from = dcn.node_vdc[nf, time_step]
-        # The from converter draws P_dc = p_c + losses from its DC node, so it injects
-        # −P_dc/V_dc into the DC line; `dc_current` is positive from→to.
+        # the from converter injects −P_dc/V_dc into the line; dc_current is positive from→to
         PSY.set_dc_current!(
             vsc,
             -_vsc_pdc(dcn, cf, Vm_from, time_step) / Vdc_from,
@@ -685,8 +677,7 @@ function _write_interconnecting_converter_solution!(
         haskey(key_to_convs, key) || continue
         c = popfirst!(key_to_convs[key])
         Vm = data.bus_magnitude[dcn.converter_ac_bus_ix[c], time_step]
-        # `active_power` is DC-side power; positive = drawn from the DC bus and injected into
-        # the AC bus (PSI adds it +1 to the AC balance, −1 to the DC balance): P_dc = p_c + losses.
+        # active_power is DC-side: positive = drawn from the DC bus into AC (P_dc = p_c + losses)
         PSY.set_active_power!(ic, _vsc_pdc(dcn, c, Vm, time_step))
     end
     return

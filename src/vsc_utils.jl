@@ -150,6 +150,56 @@ function _validate_vsc_ac_controls(dcn::DCNetwork, bus_types::AbstractVector)
     return
 end
 
+# Capability limits are lowered onto `DCNetwork` but not enforced by the solver: a converged
+# solve can sit outside them, so surface one consolidated post-solve warning per time step.
+function _warn_vsc_limit_violations(data::ACPowerFlowData, time_step::Int64)
+    dcn = get_dc_network(data)
+    if !has_dc_network(dcn)
+        return
+    end
+    violations = String[]
+    for c in 1:n_vsc_converters(dcn)
+        bus = dcn.converter_ac_bus_number[c]
+        P = dcn.p_c[c, time_step]
+        Q = dcn.q_c[c, time_step]
+        _push_vsc_range_violation!(violations, bus, "Q", Q, dcn.q_min[c], dcn.q_max[c])
+        _push_vsc_range_violation!(violations, bus, "P", P, dcn.p_min[c], dcn.p_max[c])
+        S = sqrt(P^2 + Q^2)
+        if S > dcn.s_max[c] + BOUNDS_TOLERANCE
+            push!(
+                violations,
+                "converter at bus $bus: S = $S exceeds s_max = $(dcn.s_max[c])",
+            )
+        end
+    end
+    if !isempty(violations)
+        @warn(
+            "Converter capability limit violations at time step $time_step " *
+            "(limits are not enforced by the solver):\n" *
+            join(violations, "\n")
+        )
+    end
+    return
+end
+
+function _push_vsc_range_violation!(
+    violations::Vector{String},
+    bus::Int,
+    quantity::String,
+    value::Float64,
+    lo::Float64,
+    hi::Float64,
+)
+    # (0.0, 0.0) is PSY's "unspecified" default for TwoTerminalVSCLine limits — not a real range.
+    if iszero(lo) && iszero(hi)
+        return
+    end
+    if value < lo - BOUNDS_TOLERANCE || value > hi + BOUNDS_TOLERANCE
+        push!(violations, "converter at bus $bus: $quantity = $value outside [$lo, $hi]")
+    end
+    return
+end
+
 # Build the dense DC nodal conductance matrix from the branch list.
 function _build_G_dc(n_node::Int, branch_from::Vector{Int}, branch_to::Vector{Int},
     branch_g::Vector{Float64})
