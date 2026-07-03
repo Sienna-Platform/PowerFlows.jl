@@ -19,6 +19,10 @@ The bus types can be changed from PV to PQ if the reactive power limits are viol
 ## Keyword Arguments
 - `tol`: Infinite norm of residuals under which convergence is declared. Default is `1e-9`.
 - `maxIterations`: Maximum number of Newton-Raphson iterations. Default is `30`.
+- `write_device_settings`: When the solve ran with `control_discrete_devices`, also write
+    the solved tap ratios / shunt admittances / phase-shifter angles back into the system
+    (see [`write_device_settings!`](@ref)). Default is `false` (the input system's device
+    settings are never silently mutated).
 
 # Returns
 - `converged::Bool`: Indicates whether the power flow solution converged.
@@ -40,6 +44,7 @@ solve_and_store_power_flow!(pf, sys; maxIterations=100)
 function solve_and_store_power_flow!(
     pf::AbstractACPowerFlow{<:ACPowerFlowSolverType},
     system::PSY.System;
+    write_device_settings::Bool = false,
     kwargs...,
 )
     # converged must be defined in the outer scope to be visible for return
@@ -56,6 +61,9 @@ function solve_and_store_power_flow!(
                 data,
                 get(kwargs, :maxIterations, DEFAULT_NR_MAX_ITER),
             )
+            if write_device_settings
+                write_device_settings!(system, data)
+            end
             @info("PowerFlow solve converged, the results have been stored in the system")
         else
             @error("The power flow solver returned convergence = $converged")
@@ -63,6 +71,42 @@ function solve_and_store_power_flow!(
     end
 
     return converged
+end
+
+"""
+    write_device_settings!(system, data)
+
+Write the solved discrete-control device settings back into the `PSY.System`:
+tap ratios (`set_tap!`), switched-shunt admittances (`set_Y!`; for PSS/E-parsed
+components `Y` holds the total in-service admittance BINIT, so the solved
+susceptance is written there), and phase-shifter angles (`set_α!`). FACTS devices
+carry no stored setting field in PSY and are skipped. Mutates the user's system —
+called by [`solve_and_store_power_flow!`](@ref) only when
+`write_device_settings = true`; without it, an exported case pairs the solved
+voltages with the ORIGINAL device settings (see `get_controlled_device_results`).
+"""
+function write_device_settings!(system::PSY.System, data)
+    set = get_controlled_devices(data)
+    set === nothing && return nothing
+    for d in set.taps
+        tx = PSY.get_component(PSY.TapTransformer, system, d.name)
+        tx === nothing && continue
+        PSY.set_tap!(tx, d.current)
+    end
+    for d in set.shunts
+        sa = PSY.get_component(PSY.SwitchedAdmittance, system, d.name)
+        sa === nothing && continue
+        PSY.set_Y!(sa, Complex(d.g0, d.current))
+    end
+    for d in set.phase_shifters
+        ps = PSY.get_component(PSY.PhaseShiftingTransformer, system, d.name)
+        ps === nothing && continue
+        PSY.set_α!(ps, d.current)
+    end
+    isempty(set.facts) ||
+        @debug "write_device_settings!: FACTS devices have no stored setting field in \
+            PSY; solved susceptances are available via get_controlled_device_results."
+    return nothing
 end
 
 """

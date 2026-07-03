@@ -823,3 +823,22 @@ end
     solve_power_flow!(data_off)
     @test PowerFlows.get_control_inner_solve_count(data_off) == 0
 end
+
+@testset "discrete control: opt-in device-settings write-back" begin
+    sys = _make_solvable_tap_shunt_system()
+    tx0 = first(PSY.get_components(PSY.TapTransformer, sys))
+    tap_before = PSY.get_tap(tx0)
+    # Default: the input system's device settings are never silently mutated.
+    pf = ACPolarPowerFlow(; control_discrete_devices = true)
+    @test solve_and_store_power_flow!(pf, sys)
+    @test PSY.get_tap(tx0) == tap_before
+    # Opt-in: the solved (snapped) tap is written back.
+    sys2 = _make_solvable_tap_shunt_system()
+    tx2 = first(PSY.get_components(PSY.TapTransformer, sys2))
+    @test solve_and_store_power_flow!(pf, sys2; write_device_settings = true)
+    @test PSY.get_tap(tx2) != tap_before   # the fixture regulates away from tap = 1.0
+    # The written tap is a valid discrete level.
+    data2 = PowerFlowData(pf, sys2)
+    t2 = data2.controlled_devices.taps[1]
+    @test PSY.get_tap(tx2) in t2.levels
+end

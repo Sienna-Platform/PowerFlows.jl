@@ -5,8 +5,8 @@
 > sharing nzval slots — each device's shadow would reset the other's contribution; the
 > delta scheme handles them correctly and its rounding drift is immaterial within the
 > single-time-step scope now enforced, so B-3 is deferred until slot-sharing-aware
-> bookkeeping is actually needed), PR-C ✅ (`ef41bd8`), PR-D partial — D-0 harness, D-1 full-step-first, D-3 tolerance
-> ladder landed; **D-2 (batched passes) deferred**: it interacts with the new secant
+> bookkeeping is actually needed), PR-C ✅ (`ef41bd8`), PR-D — D-0 harness, D-1 full-step-first, D-3 tolerance
+> ladder, and D-4 opt-in write-back (`write_device_settings!`) landed; **D-2 (batched passes) deferred**: it interacts with the new secant
 > gain tracking (joint Δy attribution corrupts per-device gains on coupled buses) and
 > should be designed against CI-measured baselines from the D-0 harness. Single-solve
 > probes (from PR-C's full-state restore) already halved probe cost. All changes are
