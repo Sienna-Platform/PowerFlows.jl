@@ -451,6 +451,28 @@ end
     test_psse_round_trip(DCPowerFlow(), sys, exporter, "basic", export_location)
 end
 
+@testset "Parsed VSC lowers to p.u.-sane setpoints and the AC power flow solves (v33)" begin
+    # Regression: the parser stored DCSET raw (kV/MW), so lowered vdc_set was ~100s of "p.u." and
+    # the joint NR diverged on any parsed VSC line.
+    sys = load_test_system("pti_case16_complete_sys")
+    isnothing(sys) && return
+    # The fixture's MODE=1 records are ill-posed independent of this test: bus 103 is PV
+    # (rejected) and bus 501's ACSET is unreachable within its Q limits (PSS/E itself backed off
+    # to a Q limit). Use fixed-Q control within limits.
+    for vsc in PSY.get_components(PSY.TwoTerminalVSCLine, sys)
+        PSY.set_ac_control_from!(vsc, PSY.VSCACControlModes.AC_REACTIVE_POWER)
+        PSY.set_reactive_power_from!(vsc, -0.45)
+        PSY.set_ac_control_to!(vsc, PSY.VSCACControlModes.AC_REACTIVE_POWER)
+        PSY.set_reactive_power_to!(vsc, -0.4)
+    end
+    data = PowerFlowData(ACPowerFlow{NewtonRaphsonACPowerFlow}(), sys)
+    dcn = PF.get_dc_network(data)
+    @test PF.n_vsc_converters(dcn) > 0
+    @test all(0.5 .<= dcn.vdc_set .<= 1.5)
+    @test all(abs.(dcn.p_set) .< 10.0)
+    @test solve_power_flow!(data)
+end
+
 @testset "PSSE Exporter: a VSC built without PSS/E ext metadata re-parses (v33)" begin
     # Regression: a VSC with no `ext` REMOT/RMPCT must still export valid numeric fields. Previously
     # REMOT defaulted to an empty field, so the exported .raw failed to re-parse (empty-Int error).

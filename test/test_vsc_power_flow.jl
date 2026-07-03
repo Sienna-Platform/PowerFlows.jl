@@ -1,9 +1,8 @@
 # VSC HVDC power-flow tests. I0: lowering of a point-to-point TwoTerminalVSCLine into the internal
 # DCNetwork (isolated 2-node). Later increments add the residual/Jacobian/solver tests.
 
-# Modeling VSC/DC components as joint AC↔DC unknowns is on by default; disable it with
-# `:model_dc_network => false`. These settings are explicit for clarity but match the default.
-const VSC_SETTINGS = Dict{Symbol, Any}(:model_dc_network => true)
+# DC-network modeling is on by default; `VSC_SETTINGS` (test_utils/common.jl) passes it
+# explicitly for clarity.
 
 # Build c_sys5 and add one point-to-point VSC line: the `from` converter controls DC voltage
 # (DC slack), the `to` converter controls (P, Q). This is the physically well-posed config: one
@@ -111,53 +110,9 @@ end
     @test PF.n_vsc_free_nodes(dcn) == 2
 end
 
-# I1: a point-to-point VSC (from = DC-voltage control / DC slack, to = P,Q control) on two PQ buses,
-# zero converter loss. Solve with polar NR and verify convergence + setpoints + Jacobian.
-function _build_vsc_pq_system(;
-    g = 50.0,
-    p_set = 0.4,
-    q_set = 0.1,
-    vdc = 1.05,
-    q_set_from = 0.05,
-)
-    sys = deepcopy(PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false))
-    pq = sort!(
-        collect(
-            PSY.get_components(
-                b -> PSY.get_bustype(b) == PSY.ACBusTypes.PQ,
-                PSY.ACBus,
-                sys,
-            ),
-        );
-        by = PSY.get_number,
-    )
-    from_bus = pq[1]
-    to_bus = pq[2]
-    arc = _get_or_make_arc(sys, from_bus, to_bus)
-    vsc = PSY.TwoTerminalVSCLine(;
-        name = "vsc_i1",
-        available = true,
-        arc = arc,
-        active_power_flow = p_set,
-        rating = 2.0,
-        active_power_limits_from = (min = -2.0, max = 2.0),
-        active_power_limits_to = (min = -2.0, max = 2.0),
-        g = g,
-        # from: DC-voltage control (slack), reactive setpoint
-        dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
-        ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
-        dc_setpoint_from = vdc,
-        reactive_power_from = q_set_from,
-        # to: power control (P, Q)
-        dc_control_to = PSY.VSCDCControlModes.DC_POWER,
-        ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
-        dc_setpoint_to = p_set,
-        reactive_power_to = q_set,
-    )
-    PSY.add_component!(sys, vsc)
-    return sys
-end
-
+# I1: a point-to-point VSC (from = DC-voltage control / DC slack, to = P,Q control) on two PQ
+# buses, zero converter loss (`_build_vsc_pq_system`, test_utils/common.jl). Solve with polar NR
+# and verify convergence + setpoints + Jacobian.
 @testset "VSC I1: polar NR solves a point-to-point VSC and meets setpoints" begin
     sys = _build_vsc_pq_system(; g = 50.0, p_set = 0.4, q_set = 0.1, vdc = 1.05)
     data = PowerFlowData(
@@ -228,16 +183,16 @@ function _vsc_system(; g = 50.0, vsc_kwargs...)
     return (sys, PSY.get_number(pq[1]), PSY.get_number(pq[2]))
 end
 
-@testset "VSC I2: DC-voltage droop — both converters follow V_dc = V_set − k·P_c" begin
+@testset "VSC I2: DC-voltage droop — both converters follow V_dc = V_set + k·P_c" begin
     sys, _, _ = _vsc_system(;
         g = 50.0,
         dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE_DROOP,
         dc_voltage_droop_from = 0.02,
-        dc_setpoint_from = 1.04,
+        dc_setpoint_from = 1.05,
         reactive_power_from = 0.0,
         dc_control_to = PSY.VSCDCControlModes.DC_VOLTAGE_DROOP,
         dc_voltage_droop_to = 0.03,
-        dc_setpoint_to = 1.04,
+        dc_setpoint_to = 1.03,
         reactive_power_to = 0.0,
     )
     data = PowerFlowData(
@@ -251,9 +206,14 @@ end
         node = dcn.converter_dc_node_ix[c]
         @test isapprox(
             dcn.node_vdc[node, 1],
-            dcn.vdc_set[c, 1] - dcn.droop_k[c] * dcn.p_c[c, 1];
+            dcn.vdc_set[c, 1] + dcn.droop_k[c] * dcn.p_c[c, 1];
             atol = 1e-7,
         )
+        # Beerten droop direction: a converter injecting into the DC grid (p_c < 0) sits below
+        # its setpoint; a withdrawing one (p_c > 0) sits above.
+        if abs(dcn.p_c[c, 1]) >= 1e-9
+            @test sign(dcn.node_vdc[node, 1] - dcn.vdc_set[c, 1]) == sign(dcn.p_c[c, 1])
+        end
     end
 end
 
@@ -479,77 +439,9 @@ end
     verify_jacobian_asymptotic(residual, jac.Jv, x, 1; label = "VSC rect")
 end
 
-# I5 / M2: genuine multi-terminal DC grid — DCBus nodes + InterconnectingConverter (AC↔DC) +
-# TModelHVDCLine DC branches. Three terminals: one DC-voltage slack, two power-controlled.
-function _build_mtdc_system()
-    sys = deepcopy(PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false))
-    PSY.set_units_base_system!(sys, "SYSTEM_BASE")
-    pq = sort!(
-        collect(
-            PSY.get_components(
-                b -> PSY.get_bustype(b) == PSY.ACBusTypes.PQ,
-                PSY.ACBus,
-                sys,
-            ),
-        );
-        by = PSY.get_number,
-    )
-    ac = pq[1:3]
-    dcbuses = PSY.DCBus[]
-    for k in 1:3
-        dcb = PSY.DCBus(;
-            number = 100 + k,
-            name = "dc$k",
-            available = true,
-            magnitude = 1.0,
-            voltage_limits = (min = 0.8, max = 1.2),
-            base_voltage = 230.0,
-        )
-        PSY.add_component!(sys, dcb)
-        push!(dcbuses, dcb)
-    end
-    # converters: dc1 = Vdc slack (1.05), dc2/dc3 = power orders
-    configs = (
-        (dc_control = PSY.VSCDCControlModes.DC_VOLTAGE, dc_setpoint = 1.05),
-        (dc_control = PSY.VSCDCControlModes.DC_POWER, dc_setpoint = 0.30),
-        (dc_control = PSY.VSCDCControlModes.DC_POWER, dc_setpoint = 0.20),
-    )
-    for k in 1:3
-        ic = PSY.InterconnectingConverter(;
-            name = "ic$k",
-            available = true,
-            bus = ac[k],
-            dc_bus = dcbuses[k],
-            active_power = 0.0,
-            rating = 3.0,
-            active_power_limits = (min = -3.0, max = 3.0),
-            base_power = 100.0,
-            dc_control = configs[k].dc_control,
-            ac_control = PSY.VSCACControlModes.AC_REACTIVE_POWER,
-            dc_setpoint = configs[k].dc_setpoint,
-        )
-        PSY.add_component!(sys, ic)
-    end
-    # DC branches dc1–dc2 and dc2–dc3
-    for (a, c) in ((1, 2), (2, 3))
-        arc = PSY.Arc(; from = dcbuses[a], to = dcbuses[c])
-        PSY.add_component!(sys, arc)
-        dcl = PSY.TModelHVDCLine(;
-            name = "dcline$(a)$(c)",
-            available = true,
-            active_power_flow = 0.0,
-            arc = arc,
-            r = 0.01,
-            l = 0.0,
-            c = 0.0,
-            active_power_limits_from = (min = -5.0, max = 5.0),
-            active_power_limits_to = (min = -5.0, max = 5.0),
-        )
-        PSY.add_component!(sys, dcl)
-    end
-    return sys
-end
-
+# I5 / M2: genuine multi-terminal DC grid (`_build_mtdc_system`, test_utils/common.jl) — DCBus
+# nodes + InterconnectingConverter (AC↔DC) + TModelHVDCLine DC branches. Three terminals: one
+# DC-voltage slack, two power-controlled.
 @testset "VSC I5: 3-terminal MTDC lowers and solves across all formulations" begin
     sys = _build_mtdc_system()
     data0 = PowerFlowData(
