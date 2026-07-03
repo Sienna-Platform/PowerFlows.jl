@@ -602,7 +602,7 @@ function _vsc_r1(mode::VSCControlMode, dcn, c, P, Vdc, t)
     if mode == ControlVdc || mode == ControlVdcQ
         return Vdc - dcn.vdc_set[c, t]
     elseif mode == ControlPVdcDroop
-        return (Vdc - dcn.vdc_set[c, t]) + dcn.droop_k[c] * P
+        return (Vdc - dcn.vdc_set[c, t]) - dcn.droop_k[c] * P
     end
     return P - dcn.p_set[c, t]  # ControlPQ, ControlPVac
 end
@@ -699,12 +699,12 @@ end
 # places them in the Jacobian. The values depend only on the control mode (plus |V_ac| for the
 # AC-voltage and loss terms), so each helper is a small branch on the mode, not method dispatch.
 
-# ∂r1/∂P_c: 1 for the P-control modes, the droop gain for droop, 0 for the V_dc-control modes.
+# ∂r1/∂P_c: 1 for the P-control modes, minus the droop gain for droop, 0 for the V_dc-control modes.
 function _vsc_dr1_dP(mode::VSCControlMode, dcn, c)
     if mode == ControlVdc || mode == ControlVdcQ
         return 0.0
     elseif mode == ControlPVdcDroop
-        return dcn.droop_k[c]
+        return -dcn.droop_k[c]
     end
     return 1.0  # ControlPQ, ControlPVac
 end

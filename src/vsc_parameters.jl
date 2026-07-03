@@ -15,7 +15,7 @@
 #   ControlPVac      r1: P_c − P_set            r2: |V_ac|² − V_set²
 #   ControlVdc       r1: V_dc − V_set           r2: Q_c − Q_set            (DC-slack converter)
 #   ControlVdcQ      r1: V_dc − V_set           r2: |V_ac|² − V_set²
-#   ControlPVdcDroop r1: (V_dc − V_set) + k·P_c r2: Q_c − Q_set
+#   ControlPVdcDroop r1: (V_dc − V_set) − k·P_c r2: Q_c − Q_set
 @enum VSCControlMode::Int8 ControlPQ = 1 ControlPVac = 2 ControlVdc = 3 ControlVdcQ = 4 ControlPVdcDroop =
     5
 
