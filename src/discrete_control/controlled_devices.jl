@@ -87,10 +87,25 @@ struct ControlledDeviceSet
     shunts::Vector{ControlledSwitchedShunt}
     facts::Vector{ControlledFACTS}
     phase_shifters::Vector{ControlledPhaseShifter}
+    # Inner-solve counter for the last `_control_continuation!` call. Iteration counts
+    # (not wall-clock) are the repo's robust performance metric; this is the harness
+    # the performance regression tests assert against.
+    inner_solves::Base.RefValue{Int}
 end
+ControlledDeviceSet(
+    taps::Vector{ControlledTap},
+    shunts::Vector{ControlledSwitchedShunt},
+    facts::Vector{ControlledFACTS},
+    phase_shifters::Vector{ControlledPhaseShifter},
+) = ControlledDeviceSet(taps, shunts, facts, phase_shifters, Ref(0))
 Base.isempty(s::ControlledDeviceSet) =
     isempty(s.taps) && isempty(s.shunts) && isempty(s.facts) &&
     isempty(s.phase_shifters)
+
+"""Number of inner `_solve_with_q_limits!` calls the last discrete-control continuation
+performed (0 when the data was built without discrete control)."""
+get_control_inner_solve_count(data) =
+    data.controlled_devices === nothing ? 0 : data.controlled_devices.inner_solves[]
 
 controlled_bus_ix(d::ControlledTap) = d.controlled_ix
 controlled_bus_ix(d::ControlledSwitchedShunt) = d.controlled_ix

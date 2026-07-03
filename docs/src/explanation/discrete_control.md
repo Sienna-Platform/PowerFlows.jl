@@ -182,14 +182,17 @@ parsed `[VSWLO, VSWHI]` band is held, not driven toward the band midpoint —
 the PSS/E semantics. Other device families carry a point setpoint (the parser
 persists no band for them) and always regulate.
 
-**Incremental applicator.** `_continuation_to!` walks the parameter from its
-current value to the relaxed target in sub-steps. The first sub-step is
-`MIN_LAMBDA_STEP = 1e-3` of the total interval; successful NR calls allow the
-step to grow (factor `CONTROL_STEP_GROWTH = 1.5`, capped at
-`MAX_LAMBDA_STEP = 1.0`); a failed NR call halves the step. If the step falls
-below `MIN_LAMBDA_STEP` the parameter stays at the last converged point; a
-device that could not move at all despite a requested move is frozen with a
-warning rather than counted as settled.
+**Incremental applicator.** `_continuation_to!` tries the full damped move
+first — in the common case one warm-started inner solve accepts it. Only when
+that fails does it fall back to bisection sub-stepping (starting at half the
+interval, growing by `CONTROL_STEP_GROWTH = 1.5` on success and halving on
+failure). If the step falls below `MIN_LAMBDA_STEP = 1e-3` the parameter stays
+at the last converged point; a device that could not move at all despite a
+requested move is frozen with a warning rather than counted as settled.
+Intermediate steepness stages solve at a relaxed tolerance
+(`CONTROL_STAGE_TOL = 1e-6`); the final stage and the snap/restore solves use
+the full tolerance. `get_control_inner_solve_count(data)` reports the
+continuation's inner-solve count — the metric its performance is measured by.
 
 **Settling and steepness ramp.** A pass is considered settled when every device
 moves by less than its scale-aware tolerance

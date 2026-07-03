@@ -34,6 +34,14 @@ end
     return nothing
 end
 
+# Counting wrapper around the inner solve: iteration counts are the repo's robust
+# performance metric, and the continuation's cost IS its inner-solve count.
+@inline function _ctrl_solve!(pf, data, ts::Int; kwargs...)
+    cd = data.controlled_devices
+    cd === nothing || (cd.inner_solves[] += 1)
+    return _solve_with_q_limits!(pf, data, ts; kwargs...)
+end
+
 # Sign-corrected sigmoid law: orientation comes from the MEASURED dy/dp (not the
 # device's primary/secondary wiring) so the closed-loop gain σ'(y)·dy/dp ≤ 0
 # (negative feedback) regardless of wiring. `_sigmoid(lo,hi,…)` decreases in y when hi>lo.
@@ -73,7 +81,7 @@ function _plant_sign(d, data, ts::Int, pf; kwargs...)::Tuple{Float64, Bool}
     p1 == p0 && (p1 = clamp(p0 - δ, lo, hi))
     h = p1 - p0
     apply_parameter!(d, data, p1, ts)
-    ok = _solve_with_q_limits!(pf, data, ts; kwargs...)
+    ok = _ctrl_solve!(pf, data, ts; kwargs...)
     y1 = measured_value(d, data, ts)
     apply_parameter!(d, data, p0, ts)
     _restore_state!(data, ts, snap)
@@ -83,24 +91,33 @@ function _plant_sign(d, data, ts::Int, pf; kwargs...)::Tuple{Float64, Bool}
 end
 
 # Incremental robust applicator: walk the parameter from `start = d.current`
-# toward `target` so NR stays converged.  The FIRST probe is a SMALL step
-# (fraction `MIN_LAMBDA_STEP` of the interval), growing on NR success and
-# halving on failure (bisection backtracking).  Returns `(reached, moved)`:
+# toward `target` so NR stays converged.  The full move is tried FIRST (one
+# inner solve in the common case); only if it fails does the walk fall back to
+# bisection sub-stepping (growing on NR success, halving on failure, giving up
+# below `MIN_LAMBDA_STEP`).  Returns `(reached, moved)`:
 # the parameter actually reached (solver left converged there) and whether ANY
 # sub-step was applied — a requested move that could not budge at all must not
 # masquerade as a settled device.
 function _continuation_to!(d, data, ts::Int, target::Float64, pf; kwargs...)
     start = current_parameter(d)
     abs(target - start) < _param_tol(d) && return start, true
-    done = 0.0                       # fraction of [start,target] applied so far
-    step = MIN_LAMBDA_STEP
-    reached = start
     snap = _snapshot_state(data, ts)   # last converged state, restored on a failed trial
+    # Full move first: the damped target is usually within the warm-started solver's
+    # reach, so the common case costs ONE inner solve instead of a multi-sub-step walk.
+    apply_parameter!(d, data, target, ts)
+    _ctrl_solve!(pf, data, ts; kwargs...) && return target, true
+    apply_parameter!(d, data, start, ts)
+    _restore_state!(data, ts, snap)
+    # Bisection fallback: the full step failed, so retry from half the interval,
+    # growing on success and halving on failure.
+    done = 0.0                       # fraction of [start,target] applied so far
+    step = 0.5
+    reached = start
     while done < 1.0
         trial = min(1.0, done + step)
         p = start + trial * (target - start)
         apply_parameter!(d, data, p, ts)
-        if _solve_with_q_limits!(pf, data, ts; kwargs...)
+        if _ctrl_solve!(pf, data, ts; kwargs...)
             done = trial
             reached = p
             _capture_state!(snap, data, ts)
@@ -112,7 +129,7 @@ function _continuation_to!(d, data, ts::Int, target::Float64, pf; kwargs...)
             if step < MIN_LAMBDA_STEP
                 if reached != start
                     # Re-solve from the restored converged state (partial move applied).
-                    _solve_with_q_limits!(pf, data, ts; kwargs...)
+                    _ctrl_solve!(pf, data, ts; kwargs...)
                 end
                 return reached, reached != start
             end
@@ -289,7 +306,8 @@ function _control_continuation!(
     kwargs...,
 )::Bool
     set = data.controlled_devices::ControlledDeviceSet
-    converged = _solve_with_q_limits!(pf, data, ts; kwargs...)
+    set.inner_solves[] = 0
+    converged = _ctrl_solve!(pf, data, ts; kwargs...)
     converged || return false
 
     n_taps = length(set.taps)
@@ -348,23 +366,29 @@ function _control_continuation!(
     # Steepness ladder: each stage gets its own pass budget so a slow-settling stage
     # cannot starve the later (stiffer) stages, and the oscillation bookkeeping is
     # reset per stage — a ramp legitimately reverses update directions once.
+    # Tolerance ladder: intermediate steepness stages only need the network state to be
+    # roughly compatible with the sigmoid; full accuracy matters at the final stage and
+    # in the snap/restore solves. A user-supplied tighter tolerance is never loosened
+    # beyond CONTROL_STAGE_TOL.
+    user_tol = Float64(get(kwargs, :tol, DEFAULT_NR_TOL))
     S = INITIAL_CONTROL_STEEPNESS
     regulation_complete = false
     while true
+        stage_tol = S >= MAX_CONTROL_STEEPNESS ? user_tol : max(user_tol, CONTROL_STAGE_TOL)
         settled = false
         for _ in 1:MAX_CONTROL_PASSES_PER_STAGE
             settled = _step_device_group!(
                 set.taps, 0, data, ts, S, pf, frozen, dVdp, osc, prev_sign, n_shared;
-                kwargs...)
+                kwargs..., tol = stage_tol)
             settled &= _step_device_group!(
                 set.shunts, n_taps, data, ts, S, pf, frozen, dVdp, osc, prev_sign,
-                n_shared; kwargs...)
+                n_shared; kwargs..., tol = stage_tol)
             settled &= _step_device_group!(
                 set.facts, n_taps + n_shunts, data, ts, S, pf, frozen, dVdp, osc,
-                prev_sign, n_shared; kwargs...)
+                prev_sign, n_shared; kwargs..., tol = stage_tol)
             settled &= _step_device_group!(
                 set.phase_shifters, n_volt, data, ts, S, pf, frozen, dVdp, osc,
-                prev_sign, n_shared; kwargs...)
+                prev_sign, n_shared; kwargs..., tol = stage_tol)
             settled && break
         end
         if S >= MAX_CONTROL_STEEPNESS
@@ -394,17 +418,22 @@ end
 function _restore_one!(d, data, ts::Int, continuous::Float64, pf; kwargs...)::Bool
     snapped = current_parameter(d)
     abs(continuous - snapped) < _param_tol(d) &&
-        return _solve_with_q_limits!(pf, data, ts; kwargs...)
+        return _ctrl_solve!(pf, data, ts; kwargs...)
     lo, hi = parameter_limits(d)
-    done = 0.0
-    step = MIN_LAMBDA_STEP
-    last_good = snapped
     snap = _snapshot_state(data, ts)   # last converged state, restored on a failed trial
+    # Full move first, matching `_continuation_to!`.
+    apply_parameter!(d, data, clamp(continuous, lo, hi), ts)
+    _ctrl_solve!(pf, data, ts; kwargs...) && return true
+    apply_parameter!(d, data, snapped, ts)
+    _restore_state!(data, ts, snap)
+    done = 0.0
+    step = 0.5
+    last_good = snapped
     while done < 1.0
         trial = min(1.0, done + step)
         p = clamp(snapped + trial * (continuous - snapped), lo, hi)
         apply_parameter!(d, data, p, ts)
-        if _solve_with_q_limits!(pf, data, ts; kwargs...)
+        if _ctrl_solve!(pf, data, ts; kwargs...)
             done = trial
             last_good = p
             _capture_state!(snap, data, ts)
@@ -419,7 +448,7 @@ function _restore_one!(d, data, ts::Int, continuous::Float64, pf; kwargs...)::Bo
             end
         end
     end
-    return _solve_with_q_limits!(pf, data, ts; kwargs...)
+    return _ctrl_solve!(pf, data, ts; kwargs...)
 end
 
 # Snap a concrete device vector onto its discrete grid (continuous devices clamp),
@@ -461,7 +490,7 @@ function snap_and_restore!(
     cont_shunts = _snap_device_group!(set.shunts, data, ts)
     cont_facts = _snap_device_group!(set.facts, data, ts)
     cont_pst = _snap_device_group!(set.phase_shifters, data, ts)
-    _solve_with_q_limits!(pf, data, ts; kwargs...) && return true
+    _ctrl_solve!(pf, data, ts; kwargs...) && return true
     _restore_state!(data, ts, pre)
     ok = _restore_device_group!(set.taps, data, ts, cont_taps, pf; kwargs...)
     ok &= _restore_device_group!(set.shunts, data, ts, cont_shunts, pf; kwargs...)

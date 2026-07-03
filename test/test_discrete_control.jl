@@ -804,3 +804,22 @@ end
         [10], [1.0], 0.0, 10.0, zeros(Int, 1), false, 0.0, 0.0)
     @test PowerFlows._param_tol(wide) ≈ PowerFlows.CONTROL_PARAM_RTOL * 10.0
 end
+
+@testset "discrete control: inner-solve budget regression" begin
+    # Iteration counts (not wall-clock) are the robust performance metric. With
+    # full-step-first continuation, single-solve probes, and per-stage budgets, the
+    # 2-device solvable fixture regulates in well under 150 inner solves; the pre-fix
+    # engine needed >500 (16-sub-step walks per move, 2 solves per probe). Budget has
+    # ~2x headroom over the measured count to absorb solver-version noise.
+    sys = _make_solvable_tap_shunt_system()
+    pf = ACPolarPowerFlow(; control_discrete_devices = true)
+    data = PowerFlowData(pf, sys)
+    solve_power_flow!(data)
+    @test all(data.converged)
+    n = PowerFlows.get_control_inner_solve_count(data)
+    @test 0 < n < 300
+    # Disabled path reports zero.
+    data_off = PowerFlowData(ACPolarPowerFlow(), sys)
+    solve_power_flow!(data_off)
+    @test PowerFlows.get_control_inner_solve_count(data_off) == 0
+end

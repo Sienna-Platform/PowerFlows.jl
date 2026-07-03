@@ -14,6 +14,9 @@ const CONTROL_PARAM_RTOL = 1e-4
 # (|dy/dp|·(hi−lo), e.g. p.u. voltage) is ineffective: freeze it instead of letting the
 # steep sigmoid slam it to a rail with no feedback (PV-pinned controlled buses probe 0).
 const CONTROL_GAIN_FLOOR = 1e-4
+# Inner-solve tolerance for intermediate steepness stages (full accuracy only matters at
+# the final stage and in snap/restore); a tighter user tolerance is respected there.
+const CONTROL_STAGE_TOL = 1e-6
 const MIN_LAMBDA_STEP = 1e-3
 const MAX_LAMBDA_STEP = 1.0
 const CONTROL_STEP_GROWTH = 1.5

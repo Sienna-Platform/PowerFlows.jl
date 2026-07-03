@@ -1,5 +1,14 @@
 # Remediation Plan — PR #381 Discrete Reactive-Power Controls
 
+> **Status (implemented on this branch):** PR-A ✅ (`831652c`), PR-B ✅ (`bacae62`),
+> PR-C ✅ (`ef41bd8`), PR-D partial — D-0 harness, D-1 full-step-first, D-3 tolerance
+> ladder landed; **D-2 (batched passes) deferred**: it interacts with the new secant
+> gain tracking (joint Δy attribution corrupts per-device gains on coupled buses) and
+> should be designed against CI-measured baselines from the D-0 harness. Single-solve
+> probes (from PR-C's full-state restore) already halved probe cost. All changes are
+> parse-checked only — this environment cannot install deps; CI must validate, and the
+> formatter must be run once an environment allows it.
+
 Companion to `REVIEW_PR381.md` (finding IDs reference its sections). Guiding principles:
 
 1. **Simplest sound fix wins.** Where a guard/rejection resolves a finding as safely as new machinery, use the guard. Machinery must earn its way in with a measurement or a failing test.
