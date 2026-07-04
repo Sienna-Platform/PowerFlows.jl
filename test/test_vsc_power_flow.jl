@@ -439,6 +439,153 @@ end
     verify_jacobian_asymptotic(residual, jac.Jv, x, 1; label = "VSC rect")
 end
 
+# ── Coverage: control modes whose analytic Jacobian / cross-formulation parity were previously
+# exercised only for polar-NR convergence. `∂r1/∂P_c = -k` (droop) and the AC-voltage pin rows
+# (`-2e/-2f` in rect/mixed) appear in no earlier FD-parity test.
+const _ALL_AC_FORMULATIONS = (
+    ("polar", PF.ACPolarPowerFlow{NewtonRaphsonACPowerFlow}),
+    ("rect", PF.ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}),
+    ("mixed", PF.ACMixedPowerFlow{NewtonRaphsonACPowerFlow}),
+)
+
+# Two droop converters anchor the DC subnet via the droop relation (no V_dc slack), so this
+# exercises the droop control row and its `∂r1/∂P_c = -k`, `∂r1/∂V_dc = 1` partials.
+function _vsc_droop_system()
+    sys, _, _ = _vsc_system(;
+        g = 50.0,
+        dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE_DROOP,
+        dc_voltage_droop_from = 0.02,
+        dc_setpoint_from = 1.05,
+        reactive_power_from = 0.0,
+        dc_control_to = PSY.VSCDCControlModes.DC_VOLTAGE_DROOP,
+        dc_voltage_droop_to = 0.03,
+        dc_setpoint_to = 1.03,
+        reactive_power_to = 0.0,
+        converter_loss_to = PSY.QuadraticCurve(0.01, 0.02, 0.005),
+    )
+    return sys
+end
+
+# from pins V_dc and AC voltage (ControlVdcQ), to holds P and pins AC voltage (ControlPVac): both
+# `r2` rows are the `|V_ac|^2 - V_set^2` pin, exercising `∂r2/∂|V_ac|` (polar) / `-2e,-2f` (rect/mixed).
+function _vsc_ac_voltage_system()
+    sys, _, _ = _vsc_system(;
+        g = 50.0,
+        dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
+        ac_control_from = PSY.VSCACControlModes.AC_VOLTAGE,
+        dc_setpoint_from = 1.05,
+        ac_setpoint_from = 1.01,
+        dc_control_to = PSY.VSCDCControlModes.DC_POWER,
+        ac_control_to = PSY.VSCACControlModes.AC_VOLTAGE,
+        dc_setpoint_to = 0.25,
+        ac_setpoint_to = 1.0,
+    )
+    return sys
+end
+
+@testset "VSC: DC-voltage droop — analytic Jacobian matches FD ($name)" for (name, PF_T) in
+                                                                            _ALL_AC_FORMULATIONS
+    pf = PF_T(; solver_settings = VSC_SETTINGS)
+    data = PowerFlowData(pf, _vsc_droop_system())
+    @test solve_power_flow!(data)
+    residual, jac, x = PF.initialize_power_flow_variables(pf, data, 1)
+    residual(x, 1)
+    jac(1)
+    verify_jacobian_asymptotic(residual, jac.Jv, x, 1; label = "VSC droop $name")
+end
+
+@testset "VSC: DC-voltage droop — polar, rectangular, and mixed all agree" begin
+    sol = Dict{String, Any}()
+    for (name, PF_T) in _ALL_AC_FORMULATIONS
+        data = PowerFlowData(PF_T(; solver_settings = VSC_SETTINGS), _vsc_droop_system())
+        @test solve_power_flow!(data)
+        dcn = PF.get_dc_network(data)
+        sol[name] = (
+            copy(data.bus_magnitude[:, 1]),
+            copy(dcn.p_c[:, 1]),
+            copy(dcn.q_c[:, 1]),
+            copy(dcn.node_vdc[:, 1]),
+        )
+    end
+    for other in ("rect", "mixed")
+        for k in 1:4
+            @test isapprox(sol["polar"][k], sol[other][k]; atol = 1e-6)
+        end
+    end
+end
+
+@testset "VSC: AC-voltage control — analytic Jacobian matches FD ($name)" for (
+    name,
+    PF_T,
+) in
+                                                                              _ALL_AC_FORMULATIONS
+    pf = PF_T(; solver_settings = VSC_SETTINGS)
+    data = PowerFlowData(pf, _vsc_ac_voltage_system())
+    @test solve_power_flow!(data)
+    residual, jac, x = PF.initialize_power_flow_variables(pf, data, 1)
+    residual(x, 1)
+    jac(1)
+    verify_jacobian_asymptotic(residual, jac.Jv, x, 1; label = "VSC ac-voltage $name")
+end
+
+@testset "VSC: AC-voltage control — polar, rectangular, and mixed all agree" begin
+    sol = Dict{String, Any}()
+    for (name, PF_T) in _ALL_AC_FORMULATIONS
+        data =
+            PowerFlowData(PF_T(; solver_settings = VSC_SETTINGS), _vsc_ac_voltage_system())
+        @test solve_power_flow!(data)
+        dcn = PF.get_dc_network(data)
+        sol[name] = (
+            copy(data.bus_magnitude[:, 1]),
+            copy(dcn.p_c[:, 1]),
+            copy(dcn.q_c[:, 1]),
+            copy(dcn.node_vdc[:, 1]),
+        )
+    end
+    for other in ("rect", "mixed")
+        for k in 1:4
+            @test isapprox(sol["polar"][k], sol[other][k]; atol = 1e-6)
+        end
+    end
+end
+
+# Multi-time-step: DCNetwork state is (n_conv, n_time); PSI drives VSC solves across many periods.
+# Verify every step converges and pins its setpoints, and that the per-step AC solutions actually
+# differ (so the tail is solved per-step, not copied from t=1).
+@testset "VSC: multi-time-step solve holds setpoints at every step ($name)" for (
+    name,
+    PF_T,
+) in
+                                                                                _ALL_AC_FORMULATIONS
+    time_steps = 4
+    sys, from_no, to_no = _vsc_system(;
+        g = 50.0,
+        dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
+        ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
+        dc_setpoint_from = 1.04,
+        reactive_power_from = 0.0,
+        dc_control_to = PSY.VSCDCControlModes.DC_POWER,
+        ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
+        dc_setpoint_to = 0.3,
+        reactive_power_to = 0.05,
+    )
+    pf = PF_T(; time_steps = time_steps, solver_settings = VSC_SETTINGS)
+    data = PowerFlowData(pf, sys)
+    prepare_ts_data!(data, time_steps)
+    @test solve_power_flow!(data)
+    dcn = PF.get_dc_network(data)
+    for t in 1:time_steps
+        node_from = dcn.converter_dc_node_ix[1]
+        @test isapprox(dcn.node_vdc[node_from, t], dcn.vdc_set[1, t]; atol = 1e-7)  # from pins V_dc
+        @test isapprox(dcn.p_c[2, t], dcn.p_set[2, t]; atol = 1e-7)                 # to holds P
+    end
+    # The varying per-step AC injections must produce distinct solutions, proving genuine per-step
+    # solves rather than a replicated t=1 answer.
+    bus_lookup = PF.get_bus_lookup(data)
+    from_ix = bus_lookup[from_no]
+    @test !isapprox(data.bus_magnitude[from_ix, 1], data.bus_magnitude[from_ix, time_steps])
+end
+
 # I5 / M2: genuine multi-terminal DC grid (`_build_mtdc_system`, test_utils/common.jl) — DCBus
 # nodes + InterconnectingConverter (AC↔DC) + TModelHVDCLine DC branches. Three terminals: one
 # DC-voltage slack, two power-controlled.
