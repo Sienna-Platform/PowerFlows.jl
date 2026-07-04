@@ -630,14 +630,6 @@ function get_ext_key_or_default(
     return get(ext, key, default)
 end
 
-function has_ext_key(component::PSY.Component, key::String)
-    ext = PSY.get_ext(component)
-    if isnothing(ext)
-        return false
-    end
-    return haskey(ext, key)
-end
-
 # WRITTEN TO SPEC: PSS/E 33.3 POM 5.2.1 Bus Data
 """
 Given a vector of Sienna bus names, create a dictionary from Sienna bus name to
@@ -2596,9 +2588,10 @@ end
 
 # DCSET for one converter. A droop terminal is exported as MW control, so its setpoint is the
 # scheduled active-power demand (NOT the droop reference voltage, which the record cannot hold);
-# the from terminal injects +P_flow into the DC line, the to terminal receives -P_flow. Parsed
-# systems store setpoints in system-base p.u. with the DC base (kV) in ext["VDCBASE"] — scale
-# back to kV (DC_VOLTAGE) or MW (DC_POWER); hand-built systems write through unchanged.
+# the from terminal injects +P_flow into the DC line, the to terminal receives -P_flow. Setpoints
+# are stored in system-base p.u.; scale back to PSS/E units — a DC-voltage setpoint by
+# `rated_dc_voltage` (kV), a DC-power setpoint by `base_power` (MW). `rated_dc_voltage == 0`
+# (unspecified) writes the DC-voltage setpoint through unchanged.
 function _vsc_export_dcset(
     vscline::PSY.TwoTerminalVSCLine,
     side::Symbol,
@@ -2616,11 +2609,9 @@ function _vsc_export_dcset(
     if dc_control == PSY.VSCDCControlModes.DC_VOLTAGE_DROOP
         return _psse_round_val(flow_sign * PSY.get_active_power_flow(vscline) * base_power)
     end
-    if !has_ext_key(vscline, "VDCBASE")
-        return dc_setpoint
-    end
     if dc_control == PSY.VSCDCControlModes.DC_VOLTAGE
-        vdc_base = get_ext_key_or_default(vscline, "VDCBASE", 1.0)
+        vdc_base = PSY.get_rated_dc_voltage(vscline)
+        iszero(vdc_base) && return dc_setpoint
         return _psse_round_val(dc_setpoint * vdc_base)
     end
     return _psse_round_val(dc_setpoint * base_power)
@@ -2638,7 +2629,8 @@ function _compute_vsc_converter_fields(
     suffix = side == :from ? "FROM" : "TO"
 
     IBUS = bus_number
-    TYPE = get_ext_key_or_default(vscline, "TYPE_$suffix", type_org)
+    # TYPE (DC control) and MODE (AC control) are reconstructed from the control enums, not stored.
+    TYPE = type_org
 
     if side == :from
         MODE =
@@ -2650,6 +2642,8 @@ function _compute_vsc_converter_fields(
         get_imax = PSY.get_max_dc_current_from
         PWF = PSY.get_power_factor_weighting_fraction_from(vscline)
         q_limits = PSY.get_reactive_power_limits_from(vscline)
+        REMOT = PSY.get_remote_bus_control_from(vscline)
+        RMPCT = PSY.get_rmpct_from(vscline)
     else
         MODE =
             PSY.get_ac_control_to(vscline) == PSY.VSCACControlModes.AC_VOLTAGE ? 1 : 2
@@ -2660,24 +2654,21 @@ function _compute_vsc_converter_fields(
         get_imax = PSY.get_max_dc_current_to
         PWF = PSY.get_power_factor_weighting_fraction_to(vscline)
         q_limits = PSY.get_reactive_power_limits_to(vscline)
+        REMOT = PSY.get_remote_bus_control_to(vscline)
+        RMPCT = PSY.get_rmpct_to(vscline)
     end
 
-    # Invert the parser's BLOSS normalization (BLOSS_kW_per_A / VDCBASE_kV); hand-built systems
-    # (no ext key) keep the legacy p.u.-power interpretation.
-    proportional_term = PSY.get_proportional_term(PSY.get_function_data(converter_loss))
-    BLOSS = _psse_round_val(
-        proportional_term * get_ext_key_or_default(vscline, "VDCBASE", 1e3 * base_power),
-    )
-    psse_converter_loss = _psse_round_val(BLOSS * abs(PSY.get_dc_current(vscline)))
-    ALOSS_org = _psse_round_val(
-        abs(
-            psse_converter_loss -
-            PSY.get_constant_term(PSY.get_function_data(converter_loss)) *
-            1e3 * base_power,
-        ),
-    )
-    ALOSS = get_ext_key_or_default(vscline, "ALOSS_$suffix", ALOSS_org)
-    MINLOSS = get_ext_key_or_default(vscline, "MINLOSS_$suffix", psse_converter_loss)
+    # Invert the parser's loss normalization. BLOSS = proportional_term × rated_dc_voltage (kV);
+    # `rated_dc_voltage == 0` (hand-built) keeps the legacy p.u.-power reading. The PSS/E constant
+    # loss splits into ALOSS + MINLOSS, but only the sum is a model quantity (the curve's constant
+    # term), so the whole constant is exported as ALOSS with MINLOSS = 0 (re-parse recovers the
+    # same curve).
+    fd = PSY.get_function_data(converter_loss)
+    vdc_base = PSY.get_rated_dc_voltage(vscline)
+    bloss_base = iszero(vdc_base) ? 1e3 * base_power : vdc_base
+    BLOSS = _psse_round_val(PSY.get_proportional_term(fd) * bloss_base)
+    ALOSS = _psse_round_val(PSY.get_constant_term(fd) * 1e3 * base_power)
+    MINLOSS = 0.0
 
     SMAX = get_rating(vscline)
     # Revert parser transformation: SMAX == 0.0 ? PSSE_INFINITY : SMAX / baseMVA
@@ -2691,17 +2682,10 @@ function _compute_vsc_converter_fields(
 
     MAXQ = q_limits.max * base_power
     MINQ = q_limits.min * base_power
-    VSREG = get_ext_key_or_default(vscline, "VSREG_$suffix", 0)
-    NREG = get_ext_key_or_default(vscline, "NREG_$suffix", 0)
-    # REMOT (v33 remote-regulated bus) and RMPCT need valid numeric defaults — a VSC built without
-    # PSS/E `ext` metadata would otherwise export an empty field that fails re-parse. 0 = no remote
-    # bus (matching the v35 VSREG/NREG default); 100.0% is the PSS/E default Mvar fraction.
-    REMOT = get_ext_key_or_default(vscline, "REMOT_$suffix", 0)
-    RMPCT = get_ext_key_or_default(vscline, "RMPCT_$suffix", 100.0)
 
     return (;
         IBUS, TYPE, MODE, DCSET, ACSET, ALOSS, BLOSS, MINLOSS,
-        SMAX, IMAX, PWF, MAXQ, MINQ, VSREG, NREG, REMOT, RMPCT,
+        SMAX, IMAX, PWF, MAXQ, MINQ, REMOT, RMPCT,
     )
 end
 
@@ -2746,17 +2730,21 @@ function write_to_buffers!(
         from_dc_control = PSY.get_dc_control_from(vscline)
         to_dc_control = PSY.get_dc_control_to(vscline)
         # Base (DC) voltage comes from a terminal carrying a DC-voltage reference (strict DC_VOLTAGE
-        # or droop); a pure MW (DC_POWER) terminal's setpoint is a power, not a voltage. Parsed
-        # systems store the setpoint in p.u. of ext["VDCBASE"] (kV); scale back for Zbase.
-        if _has_dc_voltage_reference(from_dc_control)
-            base_voltage = PSY.get_dc_setpoint_from(vscline)
+        # or droop); a pure MW (DC_POWER) terminal's setpoint is a power, not a voltage. The DC-side
+        # kV is the per-unit setpoint times `rated_dc_voltage` (kV); `rated_dc_voltage == 0` treats
+        # the setpoint as already in kV. RDC is reconstructed from `g` and Zbase (round-trips `g`).
+        vdc_scale = if iszero(PSY.get_rated_dc_voltage(vscline))
+            1.0
         else
-            base_voltage = PSY.get_dc_setpoint_to(vscline)
+            PSY.get_rated_dc_voltage(vscline)
         end
-        base_voltage *= get_ext_key_or_default(vscline, "VDCBASE", 1.0)
+        if _has_dc_voltage_reference(from_dc_control)
+            base_voltage = PSY.get_dc_setpoint_from(vscline) * vdc_scale
+        else
+            base_voltage = PSY.get_dc_setpoint_to(vscline) * vdc_scale
+        end
         Zbase = base_voltage^2 / PSY.get_base_power(exporter.system)
-        RDC_org = PSY.get_g(vscline) != 0.0 ? (1 / PSY.get_g(vscline)) * Zbase : 0.0
-        RDC = get_ext_key_or_default(vscline, "RDC", RDC_org)
+        RDC = PSY.get_g(vscline) != 0.0 ? (1 / PSY.get_g(vscline)) * Zbase : 0.0
 
         # Converter DC-control TYPE per terminal: DC_VOLTAGE -> 1, MW/droop -> 2 (droop is exported
         # as MW control; the PSS/E record cannot represent DC-voltage droop).
@@ -2777,29 +2765,17 @@ function write_to_buffers!(
         @fastprintdelim_unroll(io, false, NAME, MDC, RDC)
         fastprintln_psse_default_ownership(io)
 
-        if exporter.psse_version == :v35
-            @fastprintdelim_unroll(io, false,
-                c1.IBUS, c1.TYPE, c1.MODE, c1.DCSET, c1.ACSET, c1.ALOSS, c1.BLOSS,
-                c1.MINLOSS, c1.SMAX, c1.IMAX, c1.PWF, c1.MAXQ, c1.MINQ,
-                c1.VSREG, c1.NREG)
-            fastprintln(io, c1.RMPCT)
+        # The converter sub-record ends in `REMOT, RMPCT` in both v33 and v35 (PSS/E's parser uses
+        # one VSC converter schema across versions), so the trailing fields are written the same.
+        @fastprintdelim_unroll(io, false,
+            c1.IBUS, c1.TYPE, c1.MODE, c1.DCSET, c1.ACSET, c1.ALOSS, c1.BLOSS,
+            c1.MINLOSS, c1.SMAX, c1.IMAX, c1.PWF, c1.MAXQ, c1.MINQ, c1.REMOT)
+        fastprintln(io, c1.RMPCT)
 
-            @fastprintdelim_unroll(io, false,
-                c2.IBUS, c2.TYPE, c2.MODE, c2.DCSET, c2.ACSET, c2.ALOSS, c2.BLOSS,
-                c2.MINLOSS, c2.SMAX, c2.IMAX, c2.PWF, c2.MAXQ, c2.MINQ,
-                c2.VSREG, c2.NREG)
-            fastprintln(io, c2.RMPCT)
-        else
-            @fastprintdelim_unroll(io, false,
-                c1.IBUS, c1.TYPE, c1.MODE, c1.DCSET, c1.ACSET, c1.ALOSS, c1.BLOSS,
-                c1.MINLOSS, c1.SMAX, c1.IMAX, c1.PWF, c1.MAXQ, c1.MINQ, c1.REMOT)
-            fastprintln(io, c1.RMPCT)
-
-            @fastprintdelim_unroll(io, false,
-                c2.IBUS, c2.TYPE, c2.MODE, c2.DCSET, c2.ACSET, c2.ALOSS, c2.BLOSS,
-                c2.MINLOSS, c2.SMAX, c2.IMAX, c2.PWF, c2.MAXQ, c2.MINQ, c2.REMOT)
-            fastprintln(io, c2.RMPCT)
-        end
+        @fastprintdelim_unroll(io, false,
+            c2.IBUS, c2.TYPE, c2.MODE, c2.DCSET, c2.ACSET, c2.ALOSS, c2.BLOSS,
+            c2.MINLOSS, c2.SMAX, c2.IMAX, c2.PWF, c2.MAXQ, c2.MINQ, c2.REMOT)
+        fastprintln(io, c2.RMPCT)
     end
     end_group(
         io,
