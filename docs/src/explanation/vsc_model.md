@@ -107,3 +107,30 @@ vanish and no Jacobian entry is written). The loss-term DC-side derivatives are
 ```
 
 with $\dfrac{dP_{loss}}{dI_c} = b + 2 c\,I_c$, $\dfrac{\partial I_c}{\partial P_c} = \dfrac{P_c/S}{\lvert V_{ac}\rvert}$, and $\dfrac{\partial I_c}{\partial Q_c} = \dfrac{Q_c/S}{\lvert V_{ac}\rvert}$.
+
+Assembling those into the DC-KCL row for node $k$ (the $P_{dc}/V_{dc}$ term differentiated, on top
+of the constant conductance terms):
+
+```math
+\frac{\partial \text{KCL}_k}{\partial V_{dc,k}} = G_{dc}[k,k] - \frac{P_{dc}}{V_{dc,k}^2}, \qquad
+\frac{\partial \text{KCL}_k}{\partial V_{dc,j}} = G_{dc}[k,j]\ \ (j \neq k), \qquad
+\frac{\partial \text{KCL}_k}{\partial x} = \frac{1}{V_{dc,k}}\frac{\partial P_{dc}}{\partial x}\ \ (x \in \{P_c,\, Q_c,\, \lvert V_{ac}\rvert\})
+```
+
+In rectangular/MCPB the $\lvert V_{ac}\rvert$ terms are chain-ruled onto the bus $(e, f)$ states via
+$\partial \lvert V_{ac}\rvert/\partial e = e/\lvert V_{ac}\rvert$ (and likewise for $f$).
+
+### Code map
+
+The residual and Jacobian kernels are shared across formulations (only the bus-coupling rows
+differ), so each equation above maps to one internal method in `vsc_utils.jl` (polar Jacobian
+bus-coupling lives in `ac_power_flow_jacobian.jl`):
+
+| Role                                      | Method(s)                                                                              |
+|:----------------------------------------- |:-------------------------------------------------------------------------------------- |
+| Lowering PSY DC components → `DCNetwork`  | `initialize_DCNetwork!`, `_vsc_control_mode`, `_loss_coefficients`, `_build_G_dc`      |
+| $P_{dc}$ and its derivatives              | `_vsc_pdc`, `_vsc_pdc_derivatives`                                                     |
+| Control-row residuals $r_1$, $r_2$        | `_vsc_r1`, `_vsc_r2`                                                                   |
+| Control-row partials                      | `_vsc_dr1_dP`, `_vsc_dr1_dVdc`, `_vsc_dr2_dQ`, `_vsc_dr2_dVm`                          |
+| Residual assembly (control rows + DC-KCL) | `_set_vsc_tail_residuals!` (polar), `_set_vsc_tail_residuals_rect!` (rectangular/MCPB) |
+| Jacobian assembly (control rows + DC-KCL) | `_set_entries_for_vsc` (polar), `_set_entries_for_vsc_rect_mcpb!` (rectangular/MCPB)   |
