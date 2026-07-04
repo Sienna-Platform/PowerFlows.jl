@@ -618,14 +618,13 @@ function _calc_x(
     return x
 end
 
-# Reuse an existing Arc between two buses (in either orientation) if present, else make and add one.
-# HVDC lines may share an Arc with an existing AC branch; matching both orientations avoids creating a
-# duplicate parallel Arc when one already exists in the reverse direction.
+# Reuse an existing same-orientation Arc between two buses if present, else make and add one.
+# Orientation is significant and must match: a VSC/HVDC line's from/to terminals carry distinct
+# controls, so an Arc oriented to->from must NOT be reused (it would swap the converter terminals).
+# A correctly-oriented parallel Arc is created instead; sharing only applies to a same-oriented branch.
 function _get_or_make_arc(sys, from_bus, to_bus)
     existing = PSY.get_components(
-        a ->
-            (PSY.get_from(a) === from_bus && PSY.get_to(a) === to_bus) ||
-                (PSY.get_from(a) === to_bus && PSY.get_to(a) === from_bus),
+        a -> PSY.get_from(a) === from_bus && PSY.get_to(a) === to_bus,
         PSY.Arc,
         sys,
     )
