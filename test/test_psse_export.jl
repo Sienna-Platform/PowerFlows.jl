@@ -470,6 +470,9 @@ end
     @test PF.n_vsc_converters(dcn) > 0
     @test all(0.5 .<= dcn.vdc_set .<= 1.5)
     @test all(abs.(dcn.p_set) .< 10.0)
+    # the MW order must survive at full magnitude (guards against re-scaling, e.g. a double
+    # baseMVA division: 0.96 → 0.0096 would still pass the sanity bounds above)
+    @test maximum(abs, dcn.p_set) > 0.1
     @test solve_power_flow!(data)
 end
 
