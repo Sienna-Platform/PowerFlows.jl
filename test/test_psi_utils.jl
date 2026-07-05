@@ -7,11 +7,14 @@
             if PF.contributes_active_power(instance)
                 @test hasmethod(PF.active_power_contribution_type, Tuple{T})
                 if T == PSY.StandardLoad
-                    @test hasmethod(PSY.get_constant_active_power, Tuple{T})
+                    @test hasmethod(
+                        PSY.get_constant_active_power,
+                        Tuple{T, IS.AbstractUnitSystem},
+                    )
                 elseif T == PSY.SynchronousCondenser
                     @test hasmethod(PSY.get_active_power_losses, Tuple{T})
                 else
-                    @test hasmethod(PSY.get_active_power, Tuple{T})
+                    @test hasmethod(PSY.get_active_power, Tuple{T, IS.AbstractUnitSystem})
                 end
             end
             # for FACTS, reactive_power_required is the equivalent of get_reactive_power,
@@ -19,9 +22,12 @@
             if PF.contributes_reactive_power(instance) && T != PSY.FACTSControlDevice
                 @test hasmethod(PF.reactive_power_contribution_type, Tuple{T})
                 if T == PSY.StandardLoad
-                    @test hasmethod(PSY.get_constant_reactive_power, Tuple{T})
+                    @test hasmethod(
+                        PSY.get_constant_reactive_power,
+                        Tuple{T, IS.AbstractUnitSystem},
+                    )
                 else
-                    @test hasmethod(PSY.get_reactive_power, Tuple{T})
+                    @test hasmethod(PSY.get_reactive_power, Tuple{T, IS.AbstractUnitSystem})
                 end
             end
         end

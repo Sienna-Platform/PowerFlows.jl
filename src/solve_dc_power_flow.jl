@@ -63,8 +63,8 @@ function _get_or_build_solver_cache!(
 end
 
 # Per-solve scratch buffers + network-fixed precomputes; built once with the cache. The signed
-# arc-bus incidence is built once at `PowerFlowData` construction via `PNM.IncidenceMatrix` (see
-# `_signed_arc_bus_incidence`) and reused here.
+# arc-bus incidence is built once at `PowerFlowData` construction via `PNM.IncidenceMatrix` and
+# reused here.
 function _make_dc_scratch(data::PowerFlowData)
     valid_ix = get_valid_ix(data)
     # InvertedIndex has no `length`; size via a view.
@@ -244,7 +244,7 @@ function solve_power_flow!(
     @views data.bus_angles[valid_ix, :] .= p_inj
     _shift_angles_to_stored_reference!(data)
 
-    if data.arc_lossy_admittance_from_to !== nothing
+    if !isnothing(data.arc_lossy_admittance_from_to)
         # DC assumption: all bus voltage magnitudes are 1.0 p.u., so V = e^(jθ).
         V = @. exp(1im * data.bus_angles)
         arcs = get_arc_axis(data)
@@ -311,11 +311,9 @@ function solve_power_flow(
     flow_reporting::FlowReporting = FlowReporting.ARC_FLOWS;
     linear_solver::Union{Nothing, AbstractString} = nothing,
 ) where {T <: AbstractDCPowerFlow}
-    with_units_base(sys, PSY.UnitSystem.SYSTEM_BASE) do
-        data = PowerFlowData(pf, sys)
-        solve_power_flow!(data; linear_solver)
-        return write_results(data, sys, flow_reporting)
-    end
+    data = PowerFlowData(pf, sys)
+    solve_power_flow!(data; linear_solver)
+    return write_results(data, sys, flow_reporting)
 end
 
 # MULTI PERIOD ###############################################################
@@ -410,8 +408,8 @@ function dc_loss_factors(
 )
     Rs = _get_arc_resistances(data)
     ptdf_t = data.power_network_matrix.data
-    # PERF could be optimized: remove the Diagonal call.
-    return 2 * ptdf_t * LinearAlgebra.Diagonal(Rs) * ptdf_t' * P
+    # Right-associated to avoid forming a dense buses×buses intermediate.
+    return 2 .* (ptdf_t * (Rs .* (ptdf_t' * P)))
 end
 
 function dc_loss_factors(

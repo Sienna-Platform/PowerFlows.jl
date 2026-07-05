@@ -2,18 +2,19 @@
 Return the reactive power limits that should be used in power flow calculations and PSS/E
 exports. Redirects to `PSY.get_reactive_power_limits` in all but special cases.
 """
-get_reactive_power_limits_for_power_flow(gen::PSY.Device) =
-    PSY.get_reactive_power_limits(gen)
+get_reactive_power_limits_for_power_flow(gen::PSY.Device, units = PSY.SU) =
+    PSY.get_reactive_power_limits(gen, units)
 
-check_unit_setting(sys::PSY.System) = IS.@assert_op PSY.get_units_base(sys) == "SYSTEM_BASE"
-
-function get_reactive_power_limits_for_power_flow(gen::PSY.RenewableNonDispatch)
-    val = PSY.get_reactive_power(gen)
+function get_reactive_power_limits_for_power_flow(
+    gen::PSY.RenewableNonDispatch,
+    units = PSY.SU,
+)
+    val = PSY.get_reactive_power(gen, units)
     return (min = val, max = val)
 end
 
-function get_reactive_power_limits_for_power_flow(gen::PSY.Storage)
-    limits = PSY.get_reactive_power_limits(gen)
+function get_reactive_power_limits_for_power_flow(gen::PSY.Storage, units = PSY.SU)
+    limits = PSY.get_reactive_power_limits(gen, units)
     isnothing(limits) && return (min = -Inf, max = Inf)  # TODO decide on proper behavior in this case
     return limits
 end
@@ -22,45 +23,56 @@ end
 Return the active power limits that should be used in power flow calculations and PSS/E
 exports. Redirects to `PSY.get_active_power_limits` in all but special cases.
 """
-get_active_power_limits_for_power_flow(gen::PSY.Device) = PSY.get_active_power_limits(gen)
+get_active_power_limits_for_power_flow(gen::PSY.Device, units = PSY.SU) =
+    PSY.get_active_power_limits(gen, units)
 
-get_active_power_limits_for_power_flow(::PSY.Source) = (min = -Inf, max = Inf)
+get_active_power_limits_for_power_flow(::PSY.Source, units = PSY.SU) =
+    (min = -Inf, max = Inf)
 
-function get_active_power_limits_for_power_flow(gen::PSY.SynchronousCondenser)
+function get_active_power_limits_for_power_flow(
+    gen::PSY.SynchronousCondenser,
+    units = PSY.SU,
+)
     return (min = 0.0, max = 0.0)
 end
 
-function get_active_power_limits_for_power_flow(gen::PSY.RenewableNonDispatch)
-    val = PSY.get_active_power(gen)
+function get_active_power_limits_for_power_flow(
+    gen::PSY.RenewableNonDispatch,
+    units = PSY.SU,
+)
+    val = PSY.get_active_power(gen, units)
     return (min = val, max = val)
 end
 
-get_active_power_limits_for_power_flow(gen::PSY.RenewableDispatch) =
-    (min = 0.0, max = PSY.get_rating(gen))
+get_active_power_limits_for_power_flow(gen::PSY.RenewableDispatch, units = PSY.SU) =
+    (min = 0.0, max = PSY.get_rating(gen, units))
 
 # TODO verify whether this is the correct behavior for Storage, (a) for redistribution and (b) for exporting
-get_active_power_limits_for_power_flow(gen::PSY.Storage) =
-    (min = 0.0, max = PSY.get_output_active_power_limits(gen).max)
+get_active_power_limits_for_power_flow(gen::PSY.Storage, units = PSY.SU) =
+    (min = 0.0, max = PSY.get_output_active_power_limits(gen, units).max)
 
 """
 Return the active and reactive power generation from a generator component.
 It's pg=0 as default for synchronous condensers since there's no field in the component for active power.
 """
-function get_active_and_reactive_power_from_generator(gen::PSY.SynchronousCondenser)
+function get_active_and_reactive_power_from_generator(
+    gen::PSY.SynchronousCondenser,
+    units = PSY.SU,
+)
     pg = 0.0
-    qg = PSY.get_reactive_power(gen)
+    qg = PSY.get_reactive_power(gen, units)
     return pg, qg
 end
 
-function get_active_and_reactive_power_from_generator(gen)
-    pg = PSY.get_active_power(gen)
-    qg = PSY.get_reactive_power(gen)
+function get_active_and_reactive_power_from_generator(gen, units = PSY.SU)
+    pg = PSY.get_active_power(gen, units)
+    qg = PSY.get_reactive_power(gen, units)
     return pg, qg
 end
 
 function set_power_flow!(br::PSY.ACTransmission, flow::Complex)
-    PSY.set_active_power_flow!(br, real(flow))
-    PSY.set_reactive_power_flow!(br, imag(flow))
+    PSY.set_active_power_flow!(br, real(flow) * PSY.SU)
+    PSY.set_reactive_power_flow!(br, imag(flow) * PSY.SU)
     return
 end
 
@@ -73,7 +85,7 @@ function set_power_flow!(br::PNM.BranchesParallel, flow::Complex)
 end
 
 function set_power_flow!(br::PSY.TwoTerminalLCCLine, flow::Complex)
-    PSY.set_active_power_flow!(br, real(flow))
+    PSY.set_active_power_flow!(br, real(flow) * PSY.SU)
     # TwoTerminalLCCLine does not have reactive power flow attributes (even though PFD has Q results)
     return
 end
@@ -81,14 +93,14 @@ end
 function set_power_flow!(winding::PNM.ThreeWindingTransformerWinding, flow::Complex)
     (trf, num) = (PNM.get_transformer(winding), PNM.get_winding_number(winding))
     if num == 1
-        PSY.set_active_power_flow_primary!(trf, real(flow))
-        PSY.set_reactive_power_flow_primary!(trf, imag(flow))
+        PSY.set_active_power_flow_primary!(trf, real(flow) * PSY.SU)
+        PSY.set_reactive_power_flow_primary!(trf, imag(flow) * PSY.SU)
     elseif num == 2
-        PSY.set_active_power_flow_secondary!(trf, real(flow))
-        PSY.set_reactive_power_flow_secondary!(trf, imag(flow))
+        PSY.set_active_power_flow_secondary!(trf, real(flow) * PSY.SU)
+        PSY.set_reactive_power_flow_secondary!(trf, imag(flow) * PSY.SU)
     elseif num == 3
-        PSY.set_active_power_flow_tertiary!(trf, real(flow))
-        PSY.set_reactive_power_flow_tertiary!(trf, imag(flow))
+        PSY.set_active_power_flow_tertiary!(trf, real(flow) * PSY.SU)
+        PSY.set_reactive_power_flow_tertiary!(trf, imag(flow) * PSY.SU)
     else
         error("Invalid winding number: $num")
     end
@@ -137,7 +149,7 @@ function error_if_reversed(hvdc::PSY.TwoTerminalLCCLine, P_dc::Float64)
     P_dc < 0 && throw(
         ArgumentError(
             "Power flow in $(PSY.summary(hvdc)) is reversed: active power flow " *
-            "is $(PSY.get_active_power_flow(hvdc)), negative. Please check your inputs.",
+            "is $(PSY.get_active_power_flow(hvdc, PSY.NU)), negative. Please check your inputs.",
         ),
     )
 end
@@ -149,9 +161,7 @@ _eval_loss_function(pwl::PSY.PiecewiseIncrementalCurve, x::Float64) =
 
 # returns the tuple (P_dc, P_loss, flow_reversed), first two in natural units
 function hvdc_power_loss_natural_units(hvdc::PSY.TwoTerminalHVDC)
-    P_dc = with_units_base(hvdc, "NATURAL_UNITS") do
-        PSY.get_active_power_flow(hvdc)
-    end
+    P_dc = PSY.get_active_power_flow(hvdc, PSY.NU)
     error_if_reversed(hvdc, P_dc)
     flow_reversed = P_dc < 0
     P_dc = abs(P_dc)
@@ -168,9 +178,7 @@ end
 
 # VSC lines have separate converter losses on each end
 function hvdc_power_loss_natural_units(hvdc::PSY.TwoTerminalVSCLine)
-    P_dc = with_units_base(hvdc, "NATURAL_UNITS") do
-        PSY.get_active_power_flow(hvdc)
-    end
+    P_dc = PSY.get_active_power_flow(hvdc, PSY.NU)
     flow_reversed = P_dc < 0
     P_dc = abs(P_dc)
     # Sum losses from both converters
@@ -190,7 +198,7 @@ function get_hvdc_power_loss(
     hvdc::PSY.TwoTerminalHVDC,
     sys::PSY.System,
 )
-    base_power = PSY.get_base_power(sys)
+    base_power = PSY.get_base_power(sys, PSY.NU)
     (P_dc, P_loss, flow_reversed) = hvdc_power_loss_natural_units(hvdc)
     return (P_dc / base_power, P_loss / base_power, flow_reversed)
 end
@@ -208,7 +216,7 @@ function get_hvdc_injections(
     hvdc::PSY.TwoTerminalHVDC,
     sys::PSY.System,
 )
-    base_power = PSY.get_base_power(sys)
+    base_power = PSY.get_base_power(sys, PSY.NU)
     (P_from, P_to) = hvdc_injections_natural_units(hvdc)
     return (P_from / base_power, P_to / base_power)
 end

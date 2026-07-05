@@ -19,6 +19,10 @@ mutable struct LMWorkspace
     # Marquardt diagonal scaling (length n). All-ones ⇒ √λ·I.
     D::Vector{Float64}
     marquardt_scaling::Bool
+    # Per-iteration scratch: predicted-residual buffer (length m) and trial
+    # iterate (length n). Reused in-place each step.
+    temp_x::Vector{Float64}
+    x_trial::Vector{Float64}
 end
 
 """Build the augmented matrix `[J; D]` once, recording which `A.nzval` entries
@@ -62,7 +66,8 @@ function LMWorkspace(
     D = marquardt_scaling ? zeros(n) : ones(n)
 
     ws = LMWorkspace(
-        A, j_nzval_indices, λ_diag_indices, F, b, D, marquardt_scaling)
+        A, j_nzval_indices, λ_diag_indices, F, b, D, marquardt_scaling,
+        zeros(m), zeros(n))
     if marquardt_scaling
         update_column_scale!(ws, Jv)
     end
@@ -191,8 +196,12 @@ function _run_power_flow_method(
         isnothing(diag_state) ? nothing :
         make_linear_solver_cache(PNM.KLUSolver(), J.Jv)
     isnothing(diag_state) || symbolic_factor!(diag_cache, J.Jv)
+    # J is fresh from initialize_power_flow_variables, so the first iteration
+    # must not re-fill it.
+    step_accepted = false
     while i < maxIterations && !converged && isfinite(λ) && μ < DEFAULT_μ_MAX
-        λ, μ = update_damping_factor!(x, residual, J, μ, time_step, ws)
+        λ, μ, step_accepted =
+            update_damping_factor!(x, residual, J, μ, time_step, ws, step_accepted)
         if !isnothing(diag_state)
             # One-iterate lag: update_damping_factor! evaluated J at the pre-step
             # iterate but residual.Rv is already post-step, so κ̂/λ_min describe the
@@ -222,7 +231,8 @@ end
 # See Nocedal & Wright (2006), sections 10.3 and 11.2.
 
 """Compute one LM trial step. Assumes `residual` and `J` are already evaluated
-at `x` by the caller. Returns the gain ratio ρ."""
+at `x` by the caller. Returns `(ρ, accepted)`: `accepted` is true iff the step
+was taken (`x` mutated to `x + Δx`)."""
 function compute_error(
     x::Vector{Float64},
     residual::Union{ACPowerFlowResidual, ACRectangularCIResidual,
@@ -240,33 +250,37 @@ function compute_error(
     m = length(residual.Rv)
     @assert m == length(ws.b) - size(J.Jv, 2) "residual/J size mismatch vs preallocated LM buffer (m=$m, buf=$(length(ws.b)), n=$(size(J.Jv, 2)))"
     @views ws.b[1:m] .= .-residual.Rv   # bottom n entries stay zero from construction
+    # SPQR's QRSparse exposes no in-place ldiv!, so the solve allocates Δx.
     Δx = ws.F \ ws.b
 
-    temp_x = residual.Rv .+ J.Jv * Δx
+    # temp_x = residual.Rv + J.Jv * Δx. mul! into the buffer, then add Rv; this
+    # must not alias residual.Rv because residual() may overwrite Rv below.
+    LinearAlgebra.mul!(ws.temp_x, J.Jv, Δx)
+    ws.temp_x .+= residual.Rv
 
-    x_trial = x .+ Δx
-    residual(x_trial, time_step) # M(x_c + Δx)
+    ws.x_trial .= x .+ Δx
+    residual(ws.x_trial, time_step) # M(x_c + Δx)
     newResidualSize = dot(residual.Rv, residual.Rv)
 
-    predicted_reduction = residualSize - dot(temp_x, temp_x)
+    predicted_reduction = residualSize - dot(ws.temp_x, ws.temp_x)
     actual_reduction = residualSize - newResidualSize
 
     # Guard against zero/negative predicted reduction.
     if predicted_reduction <= 0.0 || !isfinite(predicted_reduction)
         residual(x, time_step)
-        return 0.0
+        return (0.0, false)
     end
 
     ρ = actual_reduction / predicted_reduction
 
     if ρ > 1e-4
         x .+= Δx
+        return (ρ, true)
     else
         # Bad step: restore data state to match x (not x_trial).
         residual(x, time_step)
+        return (ρ, false)
     end
-
-    return ρ
 end
 
 function update_damping_factor!(
@@ -277,13 +291,16 @@ function update_damping_factor!(
     μ::Float64,
     time_step::Int,
     ws::LMWorkspace,
+    previous_step_accepted::Bool,
 )
-    residual(x, time_step)
+    # residual.Rv is already current at x: every exit of compute_error (and the
+    # pre-loop init) leaves it evaluated at the held x.
     residualSize = dot(residual.Rv, residual.Rv)
-    J(time_step)
+    # J is current unless the previous step moved x; refresh only then.
+    previous_step_accepted && J(time_step)
 
     λ = μ * sqrt(residualSize)
-    ρ = compute_error(x, residual, J, λ, time_step, residualSize, ws)
+    ρ, accepted = compute_error(x, residual, J, λ, time_step, residualSize, ws)
     coef = 4.0
     if ρ > 0.75
         μ = max(μ / coef, 1e-8)
@@ -293,5 +310,5 @@ function update_damping_factor!(
         μ = min(μ * coef, DEFAULT_μ_MAX)
     end
 
-    return (λ, μ)
+    return (λ, μ, accepted)
 end

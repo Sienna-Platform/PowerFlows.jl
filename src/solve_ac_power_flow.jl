@@ -44,22 +44,20 @@ function solve_and_store_power_flow!(
 )
     # converged must be defined in the outer scope to be visible for return
     converged = false
-    with_units_base(system, PSY.UnitSystem.SYSTEM_BASE) do
-        data = PowerFlowData(pf, system)
+    data = PowerFlowData(pf, system)
 
-        converged = solve_power_flow!(data; kwargs...)
+    converged = solve_power_flow!(data; kwargs...)
 
-        if converged
-            write_power_flow_solution!(
-                system,
-                pf,
-                data,
-                get(kwargs, :maxIterations, DEFAULT_NR_MAX_ITER),
-            )
-            @info("PowerFlow solve converged, the results have been stored in the system")
-        else
-            @error("The power flow solver returned convergence = $converged")
-        end
+    if converged
+        write_power_flow_solution!(
+            system,
+            pf,
+            data,
+            get(kwargs, :maxIterations, DEFAULT_NR_MAX_ITER),
+        )
+        @info("PowerFlow solve converged, the results have been stored in the system")
+    else
+        @error("The power flow solver returned convergence = $converged")
     end
 
     return converged
@@ -94,18 +92,16 @@ function solve_power_flow(
     df_results = Dict{String, DataFrames.DataFrame}()
     converged = false
     time_step = 1
-    with_units_base(system, PSY.UnitSystem.SYSTEM_BASE) do
-        data = PowerFlowData(pf, system)
+    data = PowerFlowData(pf, system)
 
-        converged = solve_power_flow!(data; kwargs...)
+    converged = solve_power_flow!(data; kwargs...)
 
-        if converged
-            @info("PowerFlow solve converged, the results are exported in DataFrames")
-            df_results = write_results(pf, system, data, time_step, flow_reporting)
-        else
-            df_results = missing
-            @error("The power flow solver returned convergence = $(converged)")
-        end
+    if converged
+        @info("PowerFlow solve converged, the results are exported in DataFrames")
+        df_results = write_results(pf, system, data, time_step, flow_reporting)
+    else
+        df_results = missing
+        @error("The power flow solver returned convergence = $(converged)")
     end
 
     return df_results

@@ -38,6 +38,12 @@ const PFLinearSolverCache =
         PardisoLinSolveCache,
     }
 
+"""Supertype for the polar NR/TR reuse cache (`PolarNRCache`, `power_flow_method.jl`).
+Exists so `PowerFlowData` can type its `polar_nr_cache` slot as a two-member union:
+the concrete type cannot be referenced there because of the construction cycle
+`PolarNRCache → ACPowerFlowResidual → PowerFlowData`."""
+abstract type AbstractNRCache end
+
 # --- Backend-agnostic operations (forward to the owning PNM namespace) ---
 
 symbolic_factor!(c::PNM.KLULinSolveCache, A::SparseMatrixCSC{Float64}) =
@@ -78,7 +84,7 @@ PNM's preference logic is used. Throws if AppleAccelerate is requested off an Ap
 platform, or if MKLPardiso is requested on a non-x86_64 architecture or without the
 `PowerFlowsPardisoExt` extension loaded (`import Pardiso`)."""
 function resolve_linear_solver_backend(override::Union{Nothing, AbstractString})
-    name = override === nothing ? PNM._default_linear_solver() : String(override)
+    name = isnothing(override) ? PNM._default_linear_solver() : String(override)
     tag = PNM.resolve_linear_solver(name)
     if tag isa PNM.AppleAccelerateLUSolver && !Sys.isapple()
         error("AppleAccelerate backend requested but not on an Apple platform.")

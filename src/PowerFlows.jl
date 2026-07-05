@@ -40,7 +40,7 @@ import Logging
 import DataFrames
 import DataFrames: Not
 import PowerSystems as PSY
-import PowerSystems: System, with_units_base
+import PowerSystems: System
 import LinearAlgebra
 import LinearAlgebra: norm, dot, ldiv!, mul!
 import LinearAlgebra: norm, dot
@@ -58,6 +58,9 @@ import Dates
 import LineSearches: BackTracking
 
 include("definitions.jl")
+# Before PowerFlowData.jl: defines PFLinearSolverCache and AbstractNRCache, which
+# type the lazily-populated cache slots on PowerFlowData.
+include("linear_solver_backend.jl")
 include("branch_flow_results.jl")
 include("psi_utils.jl")
 include("powersystems_utils.jl")
@@ -68,7 +71,6 @@ include("lcc_utils.jl")
 include("common.jl")
 include("initialize_power_flow_data.jl")
 include("psse_export.jl")
-include("linear_solver_backend.jl")
 include("dcpf_loss_injection.jl")
 include("solve_dc_power_flow.jl")
 include("state_indexing_helpers.jl")

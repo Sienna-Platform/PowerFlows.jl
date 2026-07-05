@@ -1,15 +1,24 @@
-# PowerFlows.jl — Claude Guide
+# PowerFlows.jl — Claude Guide (psy6 branch)
 
 Platform-wide Sienna conventions (performance, type stability, formatter, environments, code style) live in `.claude/Sienna.md` — read it too. This file is repo-specific and does not restate them.
 
 ## Purpose & place in the stack
 
-PowerFlows.jl provides AC and DC power-flow solution methods for large-scale systems (tens of thousands of buses), built on PowerSystems.jl. It is the steady-state network-solution layer of the Sienna stack: PowerSimulations.jl (PSI) consumes it for dynamic-init, network validation, and OPF post-processing (`src/psi_utils.jl`). Design priorities: sparse-first (SparseArrays), specialized sparse direct solvers via PowerNetworkMatrices (PNM) backends, factorization reuse, in-place/`!` hot paths. It also exports results in PSS/E `.raw` format (PSLF not supported).
+PowerFlows.jl provides AC and DC power-flow solution methods for large-scale systems (tens of thousands of buses), built on PowerSystems.jl. It is the steady-state network-solution layer of the psy6 stack. **The consumer in this line is PowerOperationsModels (POM)** — via POM's `ext/PowerFlowsExt` extension, which wraps PF models in `PowerFlowEvaluator <: IOM.AbstractEvaluator` so IOM stays PF-agnostic — for dynamic-init, network validation, and OPF post-processing. (The old PowerSimulations does not exist in this line; interfaces labeled "PSI-stable" below are the same protected surface, now consumed by POM.) Design priorities: sparse-first (SparseArrays), specialized sparse direct solvers via PowerNetworkMatrices (PNM) backends, factorization reuse, in-place/`!` hot paths. It also exports results in PSS/E `.raw` format (PSLF not supported).
 
-Coupling:
-- **PowerSystems.jl** (`PSY`, compat `^5.10`): `System` and component model; input to all solvers (`src/powersystems_utils.jl`).
-- **PowerNetworkMatrices.jl** (`PNM`, compat `^0.24`, pinned `=0.24.0` in `test/Project.toml`): Y-bus, PTDF, incidence, network reductions, AND the linear-solver caches/factorization backends (see below). PNM owns network-reduction logic; PowerFlows must pass reduced tuples through it.
-- **InfrastructureSystems.jl** (`IS`, compat `3`): shared infra, `@assert_op`, serialization.
+Coupling (all wired via the psy6 shared env / `[sources]` — compat numbers stay unbumped until release):
+- **PowerSystems.jl** (`PSY`, psy6 branch): `System` and component model; input to all solvers (`src/powersystems_utils.jl`).
+- **PowerNetworkMatrices.jl** (`PNM`, psy6 branch): Y-bus, PTDF, incidence, network reductions, AND the linear-solver caches/factorization backends (see below). PNM owns network-reduction logic; PowerFlows must pass reduced tuples through it.
+- **InfrastructureSystems.jl** (`IS`, IS4 branch): shared infra, `@assert_op`, serialization.
+
+## Explicit units (psy6 — check every PSY read)
+
+Under psy6, PSY getters on convertible fields take an explicit unit-system argument and the
+power-flow layer works in **system base**: `PSY.get_x(br, PSY.SU)`. PNM aggregators already
+return system base. A bare `PSY.get_*` on a convertible field in this repo is a defect; the
+POM/PNM/PF consumer sweep for such bare getters is a known open work item — when touching a
+file, fix the bare getters you see. Angle limits are radians (no base conversion). Wrong
+flow/limit magnitudes after a refactor → suspect units first.
 
 ## Architecture & `src/` layout
 
@@ -34,7 +43,7 @@ Exported solver-model types and functions (see `src/PowerFlows.jl`):
 - Solve: `solve_power_flow`, `solve_power_flow!` (in-place; not exported but PSI-stable), `solve_and_store_power_flow!`.
 - DC models: `DCPowerFlow`, `PTDFDCPowerFlow`, `vPTDFDCPowerFlow` (all `<: AbstractDCPowerFlow`).
 - AC formulation/solver types — **two-axis design**: a *formulation* type parameterized by an `S <: ACPowerFlowSolverType`:
-  - Formulations: `ACPolarPowerFlow{S}`, `ACRectangularPowerFlow{S}`, `ACMixedPowerFlow{S}`, all `<: AbstractACPowerFlow{S}`. `const ACPowerFlow = ACPolarPowerFlow` (back-compat alias; PSI uses it).
+  - Formulations: `ACPolarPowerFlow{S}`, `ACRectangularPowerFlow{S}`, `ACMixedPowerFlow{S}`, all `<: AbstractACPowerFlow{S}`. `const ACPowerFlow = ACPolarPowerFlow` (back-compat alias; POM uses it).
   - Solver types `S`: `NewtonRaphsonACPowerFlow`, `TrustRegionACPowerFlow`, `LevenbergMarquardtACPowerFlow`, `RobustHomotopyPowerFlow`, `GradientDescentACPowerFlow`, and `FastDecoupledACPowerFlow{V<:FDVariant,S<:FDScheme}` (the one *parametric* solver — variant/scheme are type params, not settings: `FDDecoupled`/`FDFixedJacobian` × `FDSchemeXB`/`FDSchemeBX`; bare `FastDecoupledACPowerFlow` picks per-formulation defaults).
   - Example: `ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}`. The solver is the type parameter — there is no `:step_strategy`/`:formulation` settings flag.
 - Export: `PSSEExportPowerFlow`, `PSSEExporter`, `update_exporter!`, `write_export`, `get_psse_export_paths`, `FlowReporting`.
@@ -65,7 +74,11 @@ Exported solver-model types and functions (see `src/PowerFlows.jl`):
 
 **Benchmark measurement trap.** Repeated `_ac_power_flow`/`solve_power_flow!` on the same `data` warm-starts to 0-iteration convergence (lazy early-return). Perturb injections per rep or you measure nothing. Use iteration count (not wall-clock) as the robust metric; the wall-clock timer is noisy. Background heavy compute (10k benchmark, full perf suite) — never block synchronously in a subagent.
 
-**Known unfixed issue.** `write_results` is non-idempotent (it `+=` withdrawals). Flag before any results-layer work.
+**Known unfixed issues (flag before touching the results layer).**
+- `write_results` is non-idempotent (it `+=` withdrawals).
+- **NaN poisoning on non-convergence** (`solve_ac_power_flow.jl`, `OVERWRITE_NON_CONVERGED` path): a failed solve overwrites `PowerFlowData` with NaNs, so retries are non-idempotent and downstream consumers see poisoned state instead of an error. This is one of the platform's named silent-failure patterns — never extend it; new failure paths must error loudly with context.
+- `PowerFlowData` is bare-field accessed across ~40 files (audit-flagged porous encapsulation) — prefer getters when touching these sites; don't add new direct reaches.
+- No REF-bus-per-island pre-check before post-processing (`post_processing.jl`) — islanding surfaces late.
 
 ## Commands (verified against this clone)
 
