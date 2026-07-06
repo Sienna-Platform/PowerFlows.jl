@@ -631,6 +631,49 @@ end
     end
 end
 
+# Results layer: a joint AC↔DC solve surfaces converter/DC-line state in dedicated tables —
+# `vsc_results` (point-to-point TwoTerminalVSCLine), `mtdc_results` (InterconnectingConverter), and
+# `mtdc_line_results` (TModelHVDCLine). A non-applicable table comes back empty (uniform schema).
+@testset "VSC results: MTDC populates converter and DC-line tables" begin
+    sys = _build_mtdc_system()
+    pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(; solver_settings = VSC_SETTINGS)
+    results = solve_power_flow(pf, sys)
+    @test DataFrames.nrow(results["vsc_results"]) == 0   # no point-to-point VSC lines
+
+    mtdc = results["mtdc_results"]
+    @test DataFrames.nrow(mtdc) == 3
+    @test Set(mtdc.converter_name) == Set(["ic1", "ic2", "ic3"])
+    # exactly one DC-voltage converter, pinned at V_dc = 1.05
+    @test count(m -> m == string(PF.ControlVdc), mtdc.mode) == 1
+    @test count(v -> isapprox(v, 1.05; atol = 1e-6), mtdc.Vdc) == 1
+
+    mtdc_line = results["mtdc_line_results"]
+    @test DataFrames.nrow(mtdc_line) == 2
+    @test Set(mtdc_line.line_name) == Set(["dcline12", "dcline23"])
+    @test all(>=(0.0), mtdc_line.P_losses)   # I²r loss is non-negative
+end
+
+@testset "VSC results: point-to-point line populates the vsc table" begin
+    sys, from_no, to_no = _vsc_system(;
+        g = 50.0,
+        dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
+        dc_setpoint_from = 1.03,
+        dc_control_to = PSY.VSCDCControlModes.DC_POWER,
+        dc_setpoint_to = 0.3,
+    )
+    pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(; solver_settings = VSC_SETTINGS)
+    results = solve_power_flow(pf, sys)
+    @test DataFrames.nrow(results["mtdc_results"]) == 0
+    @test DataFrames.nrow(results["mtdc_line_results"]) == 0
+
+    vsc = results["vsc_results"]
+    @test DataFrames.nrow(vsc) == 1
+    @test vsc.bus_from[1] == from_no
+    @test vsc.bus_to[1] == to_no
+    @test isapprox(vsc.Vdc_from[1], 1.03; atol = 1e-6)   # DC-voltage terminal holds V_dc
+    @test vsc.P_losses[1] >= -1e-8
+end
+
 # R3: converter AC terminals must be marked irreducible so network reduction can never remove a
 # VSC/IC bus (a reduced-away terminal would silently drop the converter). The protection set comes
 # from `_dc_converter_ac_buses`, passed to PNM as `irreducible_buses` for every PowerFlowData.
@@ -696,11 +739,11 @@ end
     )
 end
 
-# Regression: two lossy converters sharing BOTH the DC node and the AC bus (parallel converters
-# for capacity). `sparse` merges their structural ∂KCL/∂|V_ac| (polar) / ∂KCL/∂(e,f) (rect/mixed)
-# slots into one, so the Jacobian writers must ACCUMULATE those entries — an `=` write drops one
-# converter's loss coupling (caught by the FD check; the residual was always correct).
-function _build_mtdc_parallel_system()
+# Two InterconnectingConverters on the same AC bus contend for control of that bus's voltage with no
+# defined arbitration, so lowering rejects it (`_validate_ic_ac_buses`). ICs may still share a DC
+# bus (a normal MTDC topology). `shared_ac = true` puts ic2/ic3 on the same AC bus pq[2] (rejected);
+# `false` gives them distinct AC buses but the same DC node dc2 (a valid parallel-on-DC topology).
+function _build_parallel_ic_system(; shared_ac::Bool = true)
     sys = deepcopy(PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false))
     PSY.set_units_base_system!(sys, "SYSTEM_BASE")
     pq = sort!(
@@ -726,11 +769,17 @@ function _build_mtdc_parallel_system()
         PSY.add_component!(sys, dcb)
         push!(dcbuses, dcb)
     end
-    # ic1 = Vdc slack on (pq[1], dc1); ic2 AND ic3 parallel on the SAME (pq[2], dc2), both lossy
+    if shared_ac
+        ac3 = pq[2]
+    else
+        ac3 = pq[3]
+    end
+    # ic1 = Vdc slack on (pq[1], dc1); ic2 on (pq[2], dc2); ic3 on (ac3, dc2). ic2/ic3 always share
+    # the DC node dc2 — `shared_ac` decides whether they also share the AC bus.
     configs = (
         (ac = pq[1], dc = dcbuses[1], mode = PSY.VSCDCControlModes.DC_VOLTAGE, set = 1.05),
         (ac = pq[2], dc = dcbuses[2], mode = PSY.VSCDCControlModes.DC_POWER, set = 0.15),
-        (ac = pq[2], dc = dcbuses[2], mode = PSY.VSCDCControlModes.DC_POWER, set = 0.10),
+        (ac = ac3, dc = dcbuses[2], mode = PSY.VSCDCControlModes.DC_POWER, set = 0.10),
     )
     for (k, cfg) in enumerate(configs)
         ic = PSY.InterconnectingConverter(;
@@ -766,24 +815,19 @@ function _build_mtdc_parallel_system()
     return sys
 end
 
-@testset "VSC: parallel lossy converters on one (AC bus, DC node) — Jacobian accumulates" begin
-    for (label, PF_T) in (
-        ("polar", PF.ACPolarPowerFlow{NewtonRaphsonACPowerFlow}),
-        ("rect", PF.ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}),
-        ("mixed", PF.ACMixedPowerFlow{NewtonRaphsonACPowerFlow}),
+@testset "VSC: two InterconnectingConverters on one AC bus are rejected" begin
+    bad = _build_parallel_ic_system(; shared_ac = true)
+    @test_throws ErrorException PowerFlowData(
+        ACPowerFlow{NewtonRaphsonACPowerFlow}(; solver_settings = VSC_SETTINGS),
+        bad,
     )
-        sys = _build_mtdc_parallel_system()
-        pf = PF_T(; solver_settings = VSC_SETTINGS)
-        data = PowerFlowData(pf, sys)
-        @test solve_power_flow!(data)
-        residual, jac, x = PF.initialize_power_flow_variables(pf, data, 1)
-        residual(x, 1)
-        jac(1)
-        verify_jacobian_asymptotic(
-            residual, jac.Jv, x, 1;
-            label = "VSC parallel converters $(label)",
-        )
-    end
+    # sharing only the DC node (distinct AC buses) is a valid MTDC topology and still solves
+    ok = _build_parallel_ic_system(; shared_ac = false)
+    data = PowerFlowData(
+        ACPowerFlow{NewtonRaphsonACPowerFlow}(; solver_settings = VSC_SETTINGS),
+        ok,
+    )
+    @test solve_power_flow!(data)
 end
 
 # Regression: a converter whose AC terminal is the REF bus. The rect/mixed REF rows are current

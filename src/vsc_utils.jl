@@ -150,6 +150,27 @@ function _validate_vsc_ac_controls(dcn::DCNetwork, bus_types::AbstractVector)
     return
 end
 
+# Two InterconnectingConverters on the same AC bus would both contend for control of that bus's
+# voltage/injection with no defined arbitration — a conflict we can't resolve. ICs may share a DC
+# bus (a normal MTDC topology), but not an AC bus. Fail fast at lowering, naming the bus.
+function _validate_ic_ac_buses(sys::PSY.System, removed_buses::Set{Int})
+    seen = Set{Int}()
+    for ic in PSY.get_available_components(PSY.InterconnectingConverter, sys)
+        bus_number = PSY.get_number(PSY.get_bus(ic))
+        bus_number in removed_buses && continue
+        if bus_number in seen
+            error(
+                "Multiple InterconnectingConverters share AC bus $(bus_number); parallel " *
+                "converters on one AC bus would contend for control of the bus voltage, which is " *
+                "not supported. Place each converter on its own AC bus (converters may still " *
+                "share a DC bus).",
+            )
+        end
+        push!(seen, bus_number)
+    end
+    return
+end
+
 # Capability limits are lowered onto `DCNetwork` but not enforced by the solver: a converged
 # solve can sit outside them, so surface one consolidated post-solve warning per time step.
 function _warn_vsc_limit_violations(data::ACPowerFlowData, time_step::Int64)
@@ -426,6 +447,8 @@ function initialize_DCNetwork!(
         PSY.get_available_components(PSY.InterconnectingConverter, sys),
     )
     (isempty(vsc_lines) && !has_ic) && return
+
+    has_ic && _validate_ic_ac_buses(sys, removed_buses)
 
     b = _DCNetworkBuilder()
     _lower_vsc_lines!(b, vsc_lines, bus_lookup, reverse_bus_search_map)
