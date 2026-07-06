@@ -735,8 +735,6 @@ end
 end
 
 function test_lcc_ac_solver(ACSolver)
-    # Skip the solvers that do not support LCCs
-    ACSolver ∈ (RobustHomotopyPowerFlow,) && return
     sys, lcc = simple_lcc_system()
     # FastDecoupled :decoupled (the polar default) cannot span the LCC state variables; use its
     # :fixed_jacobian variant, which freezes the full Jacobian (LCC rows included). Dedicated FD
@@ -785,6 +783,31 @@ function test_lcc_ac_solver(ACSolver)
 
     @test get_active_power_flow(lcc) ==
           data.lcc.arc_active_power_flow_from_to[1, 1]
+
+    # The reverse-flow (p_set = -25) and zero-flow (p_set = 0) sub-cases
+    # are skipped for RobustHomotopyPowerFlow.
+    #
+    # Reverse flow: after `solve_and_store_power_flow!` writes converged
+    # tap settings back to the PSY component, the next PowerFlowData
+    # inherits those taps. Starting RH from the previous solve's
+    # converged-but-now-stale taps with the residual reoriented
+    # (setpoint_at_rectifier flipped to false) puts the homotopy in a
+    # narrow basin that the second-order method can't navigate within
+    # the default iteration budget. NR/TR/LM solve directly from those
+    # same starting taps without trouble.
+    #
+    # Zero flow (p_set = 0): I_dc → 0 collapses the LCC's contribution
+    # to the Jacobian — the (tap_r, tap_i) columns of J go to zero
+    # (clamped to ~1e-9). NR/TR/LM handle this fine because their direct
+    # square solve gives δ_tap = 0 trivially when the corresponding J
+    # column is zero. RH's Hessian-based step (`J^T J` plus the
+    # modified-Cholesky regularization) cannot: the (tap, tap) Hessian
+    # diagonal collapses to ~1e-18, the regularized inverse produces
+    # huge spurious δ_tap, and the line search shrinks the whole step
+    # to ε. Both are fundamental degeneracies / conditioning
+    # limitations in the I_dc → 0 or stale-initial-state regimes, not
+    # bugs in the LCC Hessian assembly.
+    ACSolver === RobustHomotopyPowerFlow && return
 
     PSY.set_transfer_setpoint!(lcc, -25.0)
     data = PowerFlowData(pf, sys)
