@@ -456,6 +456,7 @@ function _create_jacobian_matrix_structure(
     end
 
     _create_jacobian_matrix_structure_lcc(data, rows, columns, values, num_buses)
+    _create_jacobian_matrix_structure_vsc(data, rows, columns, values, num_buses)
     Jv0 = SparseArrays.sparse(rows, columns, values)
     return Jv0
 end
@@ -550,6 +551,121 @@ function _set_entries_for_neighbor(Jv::SparseArrays.SparseMatrixCSC{Float64, J_I
     q_va_common_term = Vm_from * Vm_to * (-g_ij * cos(θ_from_to) - b_ij * sin(θ_from_to))
     Jv[row_from_q, col_to_va] = q_va_common_term
     diag_elements[2] -= q_va_common_term # ∂Q∂θ_from
+    return
+end
+
+# Structural slots for the VSC tail (polar). Bus×converter injection, the two control rows per
+# converter, and the DC-KCL row per node (G_dc pattern + converter coupling). All-zero placeholders;
+# filled by `_set_entries_for_vsc`. Bus magnitude column (`2ix-1`) slots carry the AC-voltage / loss
+# coupling (zero unless the converter controls |V_ac| or has losses).
+function _create_jacobian_matrix_structure_vsc(
+    data::ACPowerFlowData,
+    rows::Vector{J_INDEX_TYPE},
+    columns::Vector{J_INDEX_TYPE},
+    values::Vector{Float64},
+    num_buses::Int,
+)
+    dcn = get_dc_network(data)
+    has_dc_network(dcn) || return
+    nconv = n_vsc_converters(dcn)
+    nnode = n_dc_nodes(dcn)
+    num_lcc = size(data.lcc.p_set, 1)
+    vsc_off = 2 * num_buses + 4 * num_lcc
+    base = vsc_off + 2 * nconv
+    function push3(r, c)
+        push!(rows, J_INDEX_TYPE(r))
+        push!(columns, J_INDEX_TYPE(c))
+        push!(values, 0.0)
+        return
+    end
+    for c in 1:nconv
+        ix = dcn.converter_ac_bus_ix[c]
+        k = dcn.converter_dc_node_ix[c]
+        pc = vsc_off + 2 * c - 1
+        qc = vsc_off + 2 * c
+        vk = base + k
+        push3(2 * ix - 1, pc)   # ∂P_bal/∂P_c
+        push3(2 * ix, qc)       # ∂Q_bal/∂Q_c
+        push3(pc, pc)           # ∂r1/∂P_c
+        push3(pc, vk)           # ∂r1/∂V_dc
+        push3(qc, qc)           # ∂r2/∂Q_c
+        push3(qc, 2 * ix - 1)   # ∂r2/∂|V_ac| (Vac modes)
+        push3(vk, pc)           # ∂KCL/∂P_c
+        push3(vk, qc)           # ∂KCL/∂Q_c (loss)
+        push3(vk, 2 * ix - 1)   # ∂KCL/∂|V_ac| (loss)
+    end
+    for k in 1:nnode
+        push3(base + k, base + k)  # DC-KCL diagonal (G_dc[k,k] + converter coupling)
+    end
+    for b in 1:n_dc_branches(dcn)
+        f = dcn.branch_from[b]
+        t = dcn.branch_to[b]
+        push3(base + f, base + t)  # DC-KCL off-diagonal
+        push3(base + t, base + f)
+    end
+    return
+end
+
+# Fill the VSC tail Jacobian entries (polar). Called each iteration after the bus and LCC entries.
+function _set_entries_for_vsc(
+    data::ACPowerFlowData,
+    Jv::SparseArrays.SparseMatrixCSC{Float64, J_INDEX_TYPE},
+    num_buses::Int,
+    time_step::Int,
+)
+    dcn = get_dc_network(data)
+    has_dc_network(dcn) || return
+    nconv = n_vsc_converters(dcn)
+    nnode = n_dc_nodes(dcn)
+    num_lcc = size(data.lcc.p_set, 1)
+    vsc_off = 2 * num_buses + 4 * num_lcc
+    base = vsc_off + 2 * nconv
+    Vm = view(data.bus_magnitude, :, time_step)
+    G = dcn.G_dc
+    for b in 1:n_dc_branches(dcn)
+        f = dcn.branch_from[b]
+        t = dcn.branch_to[b]
+        Jv[base + f, base + t] = G[f, t]
+        Jv[base + t, base + f] = G[t, f]
+    end
+    for k in 1:nnode
+        Jv[base + k, base + k] = G[k, k]
+    end
+    # Pre-zero the shared ∂KCL/∂|V_ac| slots before accumulating: two converters can share BOTH
+    # the DC node and the AC bus (parallel converters), in which case `sparse` merged their
+    # structural slots into one — an `=` write would clobber the first converter's contribution.
+    for c in 1:nconv
+        if data.bus_type[dcn.converter_ac_bus_ix[c], time_step] == PSY.ACBusTypes.PQ
+            Jv[base + dcn.converter_dc_node_ix[c], 2 * dcn.converter_ac_bus_ix[c] - 1] = 0.0
+        end
+    end
+    for c in 1:nconv
+        ix = dcn.converter_ac_bus_ix[c]
+        k = dcn.converter_dc_node_ix[c]
+        pc = vsc_off + 2 * c - 1
+        qc = vsc_off + 2 * c
+        vk = base + k
+        mode = dcn.converter_mode[c]
+        Vmix = Vm[ix]
+        Vdc = dcn.node_vdc[k, time_step]
+        (Pdc, dP, dQ, dVm) = _vsc_pdc_derivatives(dcn, c, Vmix, time_step)
+        Jv[2 * ix - 1, pc] = -1.0
+        Jv[2 * ix, qc] = -1.0
+        Jv[pc, pc] = _vsc_dr1_dP(mode, dcn, c)
+        Jv[pc, vk] = _vsc_dr1_dVdc(mode)
+        Jv[qc, qc] = _vsc_dr2_dQ(mode)
+        Jv[vk, pc] = dP / Vdc
+        Jv[vk, qc] = dQ / Vdc
+        Jv[vk, vk] += -Pdc / (Vdc * Vdc)
+        # Column `2ix-1` is the |V_ac| state only at PQ buses; at PV/REF |V_ac| is fixed, so the
+        # converter's |V_ac|-coupling derivatives (AC-voltage control + loss) do not enter the
+        # Jacobian. The structure allocates the slot as PQ regardless (PV→PQ transitions), so
+        # leaving it unwritten here keeps a correct structural zero.
+        if data.bus_type[ix, time_step] == PSY.ACBusTypes.PQ
+            Jv[qc, 2 * ix - 1] = _vsc_dr2_dVm(mode, Vmix)
+            Jv[vk, 2 * ix - 1] += dVm / Vdc
+        end
+    end
     return
 end
 
@@ -788,6 +904,7 @@ function _update_jacobian_matrix_values!(
     end
 
     _set_entries_for_lcc(data, Jv, num_buses, time_step)
+    _set_entries_for_vsc(data, Jv, num_buses, time_step)
     return
 end
 

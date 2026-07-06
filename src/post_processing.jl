@@ -590,6 +590,99 @@ function _compute_segment_flows(
     return entries
 end
 
+# Write the solved VSC / MTDC state back to the PSY components. VSC lines are keyed by
+# reduction-mapped arc tuple, ICs by (AC bus number, DC bus number); parallel components sharing a
+# key are consumed positionally (lowering and write-back iterate the same collections).
+function _write_vsc_solution!(
+    sys::PSY.System,
+    data::ACPowerFlowData,
+    nrd::PNM.NetworkReductionData,
+    time_step::Int,
+)
+    dcn = get_dc_network(data)
+    has_dc_network(dcn) || return
+    _write_vsc_line_solution!(sys, data, dcn, nrd, time_step)
+    _write_interconnecting_converter_solution!(sys, data, dcn, time_step)
+    return
+end
+
+function _write_vsc_line_solution!(
+    sys::PSY.System,
+    data::ACPowerFlowData,
+    dcn::DCNetwork,
+    nrd::PNM.NetworkReductionData,
+    time_step::Int,
+)
+    arc_to_lines = Dict{Tuple{Int, Int}, Vector{PSY.TwoTerminalVSCLine}}()
+    for vsc in PSY.get_available_components(PSY.TwoTerminalVSCLine, sys)
+        # g == 0 lines are open DC links, not lowered into the DC network
+        iszero(PSY.get_g(vsc)) && continue
+        key = PNM.get_arc_tuple(PSY.get_arc(vsc), nrd)
+        push!(get!(() -> PSY.TwoTerminalVSCLine[], arc_to_lines, key), vsc)
+    end
+    conv_at_node = Dict{Int, Int}()
+    for c in 1:n_vsc_converters(dcn)
+        node = dcn.converter_dc_node_ix[c]
+        if dcn.node_number[node] == -1
+            conv_at_node[node] = c
+        end
+    end
+    # remap the recorded (raw) terminal numbers like `get_arc_tuple` remaps the arc key
+    rmap = PNM.get_reverse_bus_search_map(nrd)
+    for b in 1:n_dc_branches(dcn)
+        nf = dcn.branch_from[b]
+        nt = dcn.branch_to[b]
+        # MTDC (`TModelHVDCLine`) branches join real-numbered `DCBus` nodes; skip them here
+        (dcn.node_number[nf] == -1 && dcn.node_number[nt] == -1) || continue
+        cf = conv_at_node[nf]
+        ct = conv_at_node[nt]
+        from_number = dcn.converter_ac_bus_number[cf]
+        to_number = dcn.converter_ac_bus_number[ct]
+        arc = (get(rmap, from_number, from_number), get(rmap, to_number, to_number))
+        vsc = popfirst!(arc_to_lines[arc])
+        # from→to link flow = AC power drawn at the from terminal: −p_c_from
+        PSY.set_active_power_flow!(vsc, -dcn.p_c[cf, time_step])
+        PSY.set_reactive_power_from!(vsc, dcn.q_c[cf, time_step])
+        PSY.set_reactive_power_to!(vsc, dcn.q_c[ct, time_step])
+        Vm_from = data.bus_magnitude[dcn.converter_ac_bus_ix[cf], time_step]
+        Vdc_from = dcn.node_vdc[nf, time_step]
+        # the from converter injects −P_dc/V_dc into the line; dc_current is positive from→to
+        PSY.set_dc_current!(
+            vsc,
+            -_vsc_pdc(dcn, cf, Vm_from, time_step) / Vdc_from,
+        )
+    end
+    return
+end
+
+function _write_interconnecting_converter_solution!(
+    sys::PSY.System,
+    data::ACPowerFlowData,
+    dcn::DCNetwork,
+    time_step::Int,
+)
+    key_to_convs = Dict{Tuple{Int, Int}, Vector{Int}}()
+    for c in 1:n_vsc_converters(dcn)
+        node = dcn.converter_dc_node_ix[c]
+        number = dcn.node_number[node]
+        # point-to-point converters have no DCBus; handled via their DC branch above
+        number == -1 && continue
+        key = (dcn.converter_ac_bus_number[c], number)
+        push!(get!(() -> Int[], key_to_convs, key), c)
+    end
+    isempty(key_to_convs) && return
+    for ic in PSY.get_available_components(PSY.InterconnectingConverter, sys)
+        key = (PSY.get_number(PSY.get_bus(ic)), PSY.get_number(PSY.get_dc_bus(ic)))
+        # an IC whose AC bus was removed by network reduction is not lowered
+        haskey(key_to_convs, key) || continue
+        c = popfirst!(key_to_convs[key])
+        Vm = data.bus_magnitude[dcn.converter_ac_bus_ix[c], time_step]
+        # active_power is DC-side: positive = drawn from the DC bus into AC (P_dc = p_c + losses)
+        PSY.set_active_power!(ic, _vsc_pdc(dcn, c, Vm, time_step))
+    end
+    return
+end
+
 """
 Updates system voltages and powers with power flow results
 """
@@ -722,6 +815,8 @@ function write_power_flow_solution!(
         end
     end
 
+    _write_vsc_solution!(sys, data, nrd, time_step)
+
     # Series branches: set interior bus voltages, then compute and set flows.
     bus_lookup = get_bus_lookup(data)
     for (equivalent_arc, segments) in PNM.get_series_branch_map(nrd)
@@ -808,6 +903,207 @@ empty_lcc_results() = DataFrames.DataFrame(;
     P_losses = Float64[],
     Q_losses = Float64[],
 )
+
+empty_vsc_results() = DataFrames.DataFrame(;
+    line_name = String[],
+    bus_from = Int[],
+    bus_to = Int[],
+    P_from_to = Float64[],
+    Q_from_to = Float64[],
+    Q_to_from = Float64[],
+    dc_current = Float64[],
+    Vdc_from = Float64[],
+    Vdc_to = Float64[],
+    P_losses = Float64[],
+)
+
+empty_mtdc_results() = DataFrames.DataFrame(;
+    converter_name = String[],
+    ac_bus = Int[],
+    dc_bus = Int[],
+    P_dc = Float64[],
+    Q = Float64[],
+    Vac = Float64[],
+    Vdc = Float64[],
+    mode = String[],
+)
+
+empty_mtdc_line_results() = DataFrames.DataFrame(;
+    line_name = String[],
+    dc_bus_from = Int[],
+    dc_bus_to = Int[],
+    dc_current = Float64[],
+    P_losses = Float64[],
+)
+
+# Point-to-point `TwoTerminalVSCLine` results, one row per line. Mirrors the dcn→component mapping
+# in `_write_vsc_line_solution!`: a line is the DC branch joining its two point-to-point nodes.
+# `P_losses` = P_from_to + P_to_from (converter + DC-line loss). Powers in MW/MVAr.
+function vsc_results_dataframe(
+    sys::PSY.System,
+    data::ACPowerFlowData,
+    dcn::DCNetwork,
+    nrd::PNM.NetworkReductionData,
+    sys_basepower::Float64,
+    time_step::Int,
+)
+    df = empty_vsc_results()
+    arc_to_lines = Dict{Tuple{Int, Int}, Vector{PSY.TwoTerminalVSCLine}}()
+    for vsc in PSY.get_available_components(PSY.TwoTerminalVSCLine, sys)
+        iszero(PSY.get_g(vsc)) && continue
+        key = PNM.get_arc_tuple(PSY.get_arc(vsc), nrd)
+        push!(get!(() -> PSY.TwoTerminalVSCLine[], arc_to_lines, key), vsc)
+    end
+    conv_at_node = Dict{Int, Int}()
+    for c in 1:n_vsc_converters(dcn)
+        node = dcn.converter_dc_node_ix[c]
+        if dcn.node_number[node] == -1
+            conv_at_node[node] = c
+        end
+    end
+    rmap = PNM.get_reverse_bus_search_map(nrd)
+    for b in 1:n_dc_branches(dcn)
+        nf = dcn.branch_from[b]
+        nt = dcn.branch_to[b]
+        (dcn.node_number[nf] == -1 && dcn.node_number[nt] == -1) || continue
+        cf = conv_at_node[nf]
+        ct = conv_at_node[nt]
+        from_number = dcn.converter_ac_bus_number[cf]
+        to_number = dcn.converter_ac_bus_number[ct]
+        arc = (get(rmap, from_number, from_number), get(rmap, to_number, to_number))
+        vsc = popfirst!(arc_to_lines[arc])
+        Vm_from = data.bus_magnitude[dcn.converter_ac_bus_ix[cf], time_step]
+        Vdc_from = dcn.node_vdc[nf, time_step]
+        Vdc_to = dcn.node_vdc[nt, time_step]
+        push!(
+            df,
+            (
+                line_name = PSY.get_name(vsc),
+                bus_from = from_number,
+                bus_to = to_number,
+                P_from_to = sys_basepower * (-dcn.p_c[cf, time_step]),
+                Q_from_to = sys_basepower * dcn.q_c[cf, time_step],
+                Q_to_from = sys_basepower * dcn.q_c[ct, time_step],
+                dc_current = -_vsc_pdc(dcn, cf, Vm_from, time_step) / Vdc_from,
+                Vdc_from = Vdc_from,
+                Vdc_to = Vdc_to,
+                # p_c is bus-injection signed (sending end < 0), so the link loss is the negated sum
+                # of both AC injections (equivalently P_from_to + P_to_from).
+                P_losses = -sys_basepower *
+                           (dcn.p_c[cf, time_step] + dcn.p_c[ct, time_step]),
+            ),
+        )
+    end
+    return df
+end
+
+# `InterconnectingConverter` (true MTDC AC↔DC interface) results, one row per converter. Mirrors
+# `_write_interconnecting_converter_solution!`. `P_dc` = DC-side power drawn (AC power + converter
+# loss); powers in MW/MVAr, voltages in p.u.
+function mtdc_results_dataframe(
+    sys::PSY.System,
+    data::ACPowerFlowData,
+    dcn::DCNetwork,
+    sys_basepower::Float64,
+    time_step::Int,
+)
+    df = empty_mtdc_results()
+    key_to_convs = Dict{Tuple{Int, Int}, Vector{Int}}()
+    for c in 1:n_vsc_converters(dcn)
+        node = dcn.converter_dc_node_ix[c]
+        number = dcn.node_number[node]
+        number == -1 && continue
+        key = (dcn.converter_ac_bus_number[c], number)
+        push!(get!(() -> Int[], key_to_convs, key), c)
+    end
+    isempty(key_to_convs) && return df
+    for ic in PSY.get_available_components(PSY.InterconnectingConverter, sys)
+        key = (PSY.get_number(PSY.get_bus(ic)), PSY.get_number(PSY.get_dc_bus(ic)))
+        haskey(key_to_convs, key) || continue
+        c = popfirst!(key_to_convs[key])
+        Vac = data.bus_magnitude[dcn.converter_ac_bus_ix[c], time_step]
+        Vdc = dcn.node_vdc[dcn.converter_dc_node_ix[c], time_step]
+        push!(
+            df,
+            (
+                converter_name = PSY.get_name(ic),
+                ac_bus = key[1],
+                dc_bus = key[2],
+                P_dc = sys_basepower * _vsc_pdc(dcn, c, Vac, time_step),
+                Q = sys_basepower * dcn.q_c[c, time_step],
+                Vac = Vac,
+                Vdc = Vdc,
+                mode = string(dcn.converter_mode[c]),
+            ),
+        )
+    end
+    return df
+end
+
+# `TModelHVDCLine` DC-branch results, one row per DC line. Steady-state DC current is g·ΔV_dc and the
+# line loss is g·ΔV_dc² (I²r); powers in MW, current in p.u.
+function mtdc_line_results_dataframe(
+    sys::PSY.System,
+    dcn::DCNetwork,
+    sys_basepower::Float64,
+    time_step::Int,
+)
+    df = empty_mtdc_line_results()
+    num_to_node = Dict{Int, Int}()
+    for k in 1:n_dc_nodes(dcn)
+        number = dcn.node_number[k]
+        number == -1 && continue
+        num_to_node[number] = k
+    end
+    isempty(num_to_node) && return df
+    for dcline in PSY.get_available_components(PSY.TModelHVDCLine, sys)
+        arc = PSY.get_arc(dcline)
+        from_number = PSY.get_number(PSY.get_from(arc))
+        to_number = PSY.get_number(PSY.get_to(arc))
+        (haskey(num_to_node, from_number) && haskey(num_to_node, to_number)) || continue
+        nf = num_to_node[from_number]
+        nt = num_to_node[to_number]
+        r = PSY.get_r(dcline)
+        if iszero(r)
+            g = 1.0e6
+        else
+            g = 1.0 / r
+        end
+        dV = dcn.node_vdc[nf, time_step] - dcn.node_vdc[nt, time_step]
+        push!(
+            df,
+            (
+                line_name = PSY.get_name(dcline),
+                dc_bus_from = from_number,
+                dc_bus_to = to_number,
+                dc_current = g * dV,
+                P_losses = sys_basepower * g * dV * dV,
+            ),
+        )
+    end
+    return df
+end
+
+# Populate the three VSC/MTDC result tables from the solved DC network. No-op (leaves the empty
+# frames from `_allocate_results_data`) when the system has no joint AC↔DC model.
+function _add_vsc_results!(
+    results::AbstractDict,
+    sys::PSY.System,
+    data::ACPowerFlowData,
+    sys_basepower::Float64,
+    time_step::Int,
+)
+    dcn = get_dc_network(data)
+    has_dc_network(dcn) || return results
+    nrd = PNM.get_network_reduction_data(get_power_network_matrix(data))
+    results["vsc_results"] =
+        vsc_results_dataframe(sys, data, dcn, nrd, sys_basepower, time_step)
+    results["mtdc_results"] =
+        mtdc_results_dataframe(sys, data, dcn, sys_basepower, time_step)
+    results["mtdc_line_results"] =
+        mtdc_line_results_dataframe(sys, dcn, sys_basepower, time_step)
+    return results
+end
 
 function lcc_results_dataframe(
     data::Union{ABAPowerFlowData, PTDFPowerFlowData, vPTDFPowerFlowData},
@@ -937,6 +1233,11 @@ function _allocate_results_data(
         "bus_results" => bus_df,
         "flow_results" => branch_df,
         "lcc_results" => lcc_df,
+        # VSC/MTDC tables are populated only on the AC joint-model path (`_add_vsc_results!`); the
+        # empty frames keep the result-dict schema uniform across DC and VSC-free systems.
+        "vsc_results" => empty_vsc_results(),
+        "mtdc_results" => empty_mtdc_results(),
+        "mtdc_line_results" => empty_mtdc_line_results(),
     )
 end
 
@@ -1357,7 +1658,7 @@ function write_results(
         time_step = time_step,
     )
 
-    return _allocate_results_data(
+    results = _allocate_results_data(
         data,
         flow_results,
         get_lcc_names(data, sys),
@@ -1371,6 +1672,8 @@ function write_results(
         data.bus_reactive_power_withdrawals[:, time_step],
         time_step,
     )
+    _add_vsc_results!(results, sys, data, PSY.get_base_power(sys), time_step)
+    return results
 end
 
 """

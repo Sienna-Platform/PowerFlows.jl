@@ -180,6 +180,7 @@ function solve_power_flow!(
     for time_step in sorted_time_steps
         converged = _ac_power_flow(data, pf, time_step; merged_kwargs...)
         ts_converged[time_step] = converged
+        converged && _warn_vsc_limit_violations(data, time_step)
 
         if OVERWRITE_NON_CONVERGED && !converged
             # set values to NaN for not converged time steps
@@ -255,7 +256,9 @@ function _ac_power_flow(
         end
     end
 
-    @error("could not enforce reactive power limits after $MAX_REACTIVE_POWER_ITERATIONS")
+    @error(
+        "could not enforce reactive power limits after $MAX_REACTIVE_POWER_ITERATIONS"
+    )
     return converged
 end
 

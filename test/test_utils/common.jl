@@ -398,8 +398,8 @@ function _add_simple_vsc!(
         g = 0.0,
         dc_current = 0.0,
         reactive_power_from = 0.0,
-        dc_voltage_control_from = false,
-        ac_voltage_control_from = false,
+        dc_control_from = PSY.VSCDCControlModes.DC_POWER,
+        ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
         dc_setpoint_from = 0.0,
         ac_setpoint_from = 1.0,
         converter_loss_from = LinearCurve(loss_coefficient),
@@ -409,8 +409,8 @@ function _add_simple_vsc!(
         power_factor_weighting_fraction_from = 0.0,
         voltage_limits_from = (min = 0.9, max = 1.1),
         reactive_power_to = 0.0,
-        dc_voltage_control_to = false,
-        ac_voltage_control_to = false,
+        dc_control_to = PSY.VSCDCControlModes.DC_POWER,
+        ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
         dc_setpoint_to = 0.0,
         ac_setpoint_to = 1.0,
         converter_loss_to = LinearCurve(loss_coefficient),
@@ -616,4 +616,149 @@ function _calc_x(
         end
     end
     return x
+end
+
+# Reuse an existing same-orientation Arc between two buses if present, else make and add one.
+# Orientation is significant and must match: a VSC/HVDC line's from/to terminals carry distinct
+# controls, so an Arc oriented to->from must NOT be reused (it would swap the converter terminals).
+# A correctly-oriented parallel Arc is created instead; sharing only applies to a same-oriented branch.
+function _get_or_make_arc(sys, from_bus, to_bus)
+    existing = PSY.get_components(
+        a -> PSY.get_from(a) === from_bus && PSY.get_to(a) === to_bus,
+        PSY.Arc,
+        sys,
+    )
+    isempty(existing) || return first(existing)
+    arc = PSY.Arc(; from = from_bus, to = to_bus)
+    PSY.add_component!(sys, arc)
+    return arc
+end
+
+# ── Shared VSC test builders ────────────────────────────────────────────────────────────────────
+
+const VSC_SETTINGS = Dict{Symbol, Any}(:model_dc_network => true)
+
+# One point-to-point VSC line between the first two PQ buses of c_sys14: from = DC-voltage control
+# (DC slack), to = (P, Q) control. Extra `TwoTerminalVSCLine` fields pass through `vsc_kwargs...`
+# (last-wins, so callers may override the defaults below, e.g. capability limits).
+function _build_vsc_pq_system(;
+    g = 50.0,
+    p_set = 0.4,
+    q_set = 0.1,
+    vdc = 1.05,
+    q_set_from = 0.05,
+    name = "vsc_i1",
+    active_power_flow = p_set,
+    set_system_base = false,
+    vsc_kwargs...,
+)
+    sys = deepcopy(PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false))
+    set_system_base && PSY.set_units_base_system!(sys, "SYSTEM_BASE")
+    pq = sort!(
+        collect(
+            PSY.get_components(
+                b -> PSY.get_bustype(b) == PSY.ACBusTypes.PQ,
+                PSY.ACBus,
+                sys,
+            ),
+        );
+        by = PSY.get_number,
+    )
+    from_bus = pq[1]
+    to_bus = pq[2]
+    arc = _get_or_make_arc(sys, from_bus, to_bus)
+    vsc = PSY.TwoTerminalVSCLine(;
+        name = name,
+        available = true,
+        arc = arc,
+        active_power_flow = active_power_flow,
+        rating = 2.0,
+        active_power_limits_from = (min = -2.0, max = 2.0),
+        active_power_limits_to = (min = -2.0, max = 2.0),
+        g = g,
+        # from: DC-voltage control (slack), reactive setpoint
+        dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
+        ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
+        dc_setpoint_from = vdc,
+        reactive_power_from = q_set_from,
+        # to: power control (P, Q)
+        dc_control_to = PSY.VSCDCControlModes.DC_POWER,
+        ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
+        dc_setpoint_to = p_set,
+        reactive_power_to = q_set,
+        vsc_kwargs...,
+    )
+    PSY.add_component!(sys, vsc)
+    return sys
+end
+
+# 3-terminal MTDC on c_sys14: DCBus nodes + InterconnectingConverter (AC↔DC) + TModelHVDCLine DC
+# branches. ic1 = DC-voltage slack (1.05), ic2/ic3 = power orders; all ICs start with
+# `active_power = 0.0`.
+function _build_mtdc_system()
+    sys = deepcopy(PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false))
+    PSY.set_units_base_system!(sys, "SYSTEM_BASE")
+    pq = sort!(
+        collect(
+            PSY.get_components(
+                b -> PSY.get_bustype(b) == PSY.ACBusTypes.PQ,
+                PSY.ACBus,
+                sys,
+            ),
+        );
+        by = PSY.get_number,
+    )
+    ac = pq[1:3]
+    dcbuses = PSY.DCBus[]
+    for k in 1:3
+        dcb = PSY.DCBus(;
+            number = 100 + k,
+            name = "dc$k",
+            available = true,
+            magnitude = 1.0,
+            voltage_limits = (min = 0.8, max = 1.2),
+            base_voltage = 230.0,
+        )
+        PSY.add_component!(sys, dcb)
+        push!(dcbuses, dcb)
+    end
+    configs = (
+        (dc_control = PSY.VSCDCControlModes.DC_VOLTAGE, dc_setpoint = 1.05),
+        (dc_control = PSY.VSCDCControlModes.DC_POWER, dc_setpoint = 0.30),
+        (dc_control = PSY.VSCDCControlModes.DC_POWER, dc_setpoint = 0.20),
+    )
+    for k in 1:3
+        ic = PSY.InterconnectingConverter(;
+            name = "ic$k",
+            available = true,
+            bus = ac[k],
+            dc_bus = dcbuses[k],
+            active_power = 0.0,
+            rating = 3.0,
+            active_power_limits = (min = -3.0, max = 3.0),
+            base_power = 100.0,
+            dc_control = configs[k].dc_control,
+            ac_control = PSY.VSCACControlModes.AC_REACTIVE_POWER,
+            dc_setpoint = configs[k].dc_setpoint,
+        )
+        PSY.add_component!(sys, ic)
+    end
+    # DC branches dc1–dc2 and dc2–dc3
+    for (a, c) in ((1, 2), (2, 3))
+        arc = PSY.Arc(; from = dcbuses[a], to = dcbuses[c])
+        PSY.add_component!(sys, arc)
+        dcl = PSY.TModelHVDCLine(;
+            name = "dcline$(a)$(c)",
+            available = true,
+            active_power_flow = 0.0,
+            arc = arc,
+            r = 0.01,
+            l = 0.0,
+            c = 0.0,
+            active_power_limits_from = (min = -5.0, max = 5.0),
+            active_power_limits_to = (min = -5.0, max = 5.0),
+        )
+        PSY.add_component!(sys, dcl)
+    end
+    return sys
 end

@@ -144,7 +144,9 @@ function initialize_power_flow_data!(
     # LCCs: initialize parameters. For DC power flow, this also writes the fixed flows to
     # data.lcc.arc_active_power_flow_from_to and data.lcc.arc_active_power_flow_to_from.
     initialize_LCCParameters!(data, sys, bus_lookup, reverse_bus_search_map, removed_buses)
-    # TODO VSC AC power flow model goes here.
+    # VSC + multi-terminal DC: lower all DC components into the joint DCNetwork (AC path only;
+    # the empty placeholder is left in place for DC power flow).
+    initialize_DCNetwork!(data, sys, bus_lookup, reverse_bus_search_map, removed_buses)
     # LCCs and VSCs, DC only: accumulate net power into bus_hvdc_net_power.
     lcc_vsc_fixed_injections!(data, sys, bus_lookup, reverse_bus_search_map, removed_buses)
     # generic HVDC lines: calculate fixed flows and save to generic_hvdc_flows.

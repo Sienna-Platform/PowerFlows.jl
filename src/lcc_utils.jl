@@ -799,13 +799,21 @@ lcc_vsc_fixed_injections!(
     ::Set{Int},
 ) = nothing
 
-lcc_vsc_fixed_injections!(
+function lcc_vsc_fixed_injections!(
     data::Union{PTDFPowerFlowData, vPTDFPowerFlowData, ABAPowerFlowData},
     sys::PSY.System,
     bus_lookup::Dict{Int, Int},
     reverse_bus_search_map::Dict{Int, Int},
     removed_buses::Set{Int},
-) =
+)
+    # Only two-terminal HVDC lines carry a fixed flow the DC formulations can inject; a
+    # multi-terminal DC grid (InterconnectingConverter) has no fixed per-converter order for the
+    # DC-slack terminal, so it is not modeled here — warn instead of silently dropping it.
+    if !isempty(PSY.get_available_components(PSY.InterconnectingConverter, sys))
+        @warn "The system contains InterconnectingConverter components: multi-terminal DC " *
+              "networks are not modeled in DC power flow, and their converter injections are " *
+              "ignored. Use an AC power flow for joint AC-DC results."
+    end
     hvdc_fixed_injections!.(
         (data,),
         (PSY.TwoTerminalLCCLine, PSY.TwoTerminalVSCLine),
@@ -814,6 +822,8 @@ lcc_vsc_fixed_injections!(
         (reverse_bus_search_map,),
         (removed_buses,),
     )
+    return
+end
 
 function initialize_generic_hvdc_flows!(
     data::PowerFlowData,

@@ -69,6 +69,18 @@ Pages = [
 ]
 ```
 
+# VSC HVDC Parameters and Utilities
+
+```@autodocs
+Modules = [PowerFlows]
+Public = false
+Private = true
+Pages = [
+    "vsc_parameters.jl",
+    "vsc_utils.jl",
+]
+```
+
 # AC Power Flow
 
 ## Residuals
