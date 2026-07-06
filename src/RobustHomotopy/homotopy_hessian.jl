@@ -124,6 +124,29 @@ function homotopy_x0(data::ACPowerFlowData, time_step::Int)
 end
 
 function HomotopyHessian(data::ACPowerFlowData, time_step::Int)
+    n_lccs = length(data.lcc.bus_indices)
+    if n_lccs > 0
+        throw(
+            ArgumentError(
+                "RobustHomotopyPowerFlow does not support systems with " *
+                "LCC HVDC lines (found $n_lccs). LCCs add state variables " *
+                "to the Jacobian that the homotopy Hessian formulation " *
+                "does not account for. Use a different AC power flow method.",
+            ),
+        )
+    end
+    dcn = get_dc_network(data)
+    if has_dc_network(dcn)
+        throw(
+            ArgumentError(
+                "RobustHomotopyPowerFlow does not support systems with VSC/DC networks " *
+                "(found $(n_vsc_converters(dcn)) converters). The DC tail adds state " *
+                "variables the homotopy Hessian formulation does not account for. Use a " *
+                "different AC power flow method, or set " *
+                "solver_settings = Dict(:model_dc_network => false) to ignore DC components.",
+            ),
+        )
+    end
     pfResidual = ACPowerFlowResidual(data, time_step)
     J = ACPowerFlowJacobian(pfResidual, time_step)
     # Allocate Hv with the maximal sparsity pattern of J' * J. Sparse `*`

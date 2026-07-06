@@ -1,3 +1,9 @@
+# Two identical solve calls must agree, but exact Float64 equality is fragile: the solve
+# pipeline carries run-to-run FP-accumulation nondeterminism (~1e-13), so compare stored
+# floats with a tolerance and everything else exactly.
+_solved_value_matches(a::AbstractFloat, b::AbstractFloat) = isapprox(a, b; atol = 1e-9)
+_solved_value_matches(a, b) = isequal(a, b)
+
 @testset "AC Power Flow 14-Bus testing" begin
     result_14 = [
         2.3255081760423684
@@ -51,7 +57,7 @@
     # Test that passing check_reactive_power_limits=false is the default and violates limits
     solved2 = deepcopy(sys)
     @test solve_and_store_power_flow!(pf, solved2)
-    @test IS.compare_values(solved1, solved2)
+    @test IS.compare_values(_solved_value_matches, solved1, solved2)
     @test get_reactive_power(get_component(ThermalStandard, solved2, "Bus8")) >
           get_reactive_power_limits(get_component(ThermalStandard, solved2, "Bus8")).max
 

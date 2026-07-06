@@ -840,6 +840,30 @@ function _fd_lcc_substep!(
 end
 
 """
+    _fd_vsc_substep!(sv, residual, data, time_step)
+
+Sequential AC–DC step for the polar `:decoupled` loop when a VSC/DC network is present: re-solve
+the DC tail (converter P_c, Q_c and node V_dc) for the current AC voltages
+([`_vsc_warm_start!`](@ref)), write it back into the trailing tail slots of `sv.x`, then re-sync
+explicit rows and re-evaluate the residual. The B′/B″ half-steps never touch the tail, so without
+this sub-step the tail states would stay frozen at their initial values and any AC↔DC coupling
+(converter losses in particular) would keep the tail rows from converging.
+"""
+function _fd_vsc_substep!(
+    sv::StateVectorCache,
+    residual::ACPowerFlowResidual,
+    data::ACPowerFlowData,
+    time_step::Int64,
+)
+    dcn = get_dc_network(data)
+    _vsc_warm_start!(dcn, view(data.bus_magnitude, :, time_step), time_step)
+    _write_vsc_state_to_x!(sv.x, dcn, time_step)
+    _sync_explicit_state!(sv, residual, time_step)
+    residual(sv.x, time_step)
+    return
+end
+
+"""
     _fd_decoupled_power_flow(pf, data, time_step; ...) -> (converged::Bool, iters::Int)
 
 Polar classic fast-decoupled (B′/B″ half-iteration) FD loop. Builds the constant B′/B″ matrices
@@ -908,6 +932,21 @@ function _fd_decoupled_power_flow(
 
     solver_name = "FastDecoupled(FDDecoupled,$(nameof(typeof(scheme))))"
 
+    # The sequential VSC sub-solve pins each converter's Q at its setpoint (`_vsc_warm_start!`),
+    # which cannot honor an AC-voltage control row — those converters need the full coupled
+    # Jacobian. Reject before any B′/B″ factorization work.
+    dcn = get_dc_network(data)
+    has_vsc = has_dc_network(dcn)
+    if has_vsc && any(controls_ac_voltage, dcn.converter_mode)
+        throw(
+            ArgumentError(
+                "FastDecoupled (FDDecoupled) does not support AC-voltage-controlling VSC " *
+                "converters. Use FastDecoupledACPowerFlow{FDFixedJacobian, <scheme>} or a " *
+                "full-Newton solver (NR/TR/LM).",
+            ),
+        )
+    end
+
     # Factor-once cache (WP5b): B′ over fd.pvpq factored exactly once per (data, scheme, backend)
     # lifetime; the [pq, pq] B″ submatrix + half-step buffers factored once per distinct PQ set
     # (bus-type signature) and reused across Q-limit retries / multi-period steps. The hot loop
@@ -936,17 +975,18 @@ function _fd_decoupled_power_flow(
     vm_pq = view(Vm, bpp.pq)
 
     sv = StateVectorCache(x0_init, residual.Rv)
-    # Sequential AC–DC method: with LCC present the B′/B″ half-steps solve the AC network while a
-    # per-LCC converter sub-solve refreshes the DC boundary conditions each cycle.
-    # `n_lcc == 0` ⇒ the sub-solve is never invoked (pure-AC path unchanged).
+    # Sequential AC–DC method: with LCC or VSC present the B′/B″ half-steps solve the AC network
+    # while a per-converter sub-solve refreshes the DC boundary conditions each cycle. Neither
+    # present ⇒ the sub-solves are never invoked (pure-AC path unchanged).
     n_lcc = get_lcc_count(data)
 
     # Sync explicit rows, then evaluate the residual so Rv / data reflect (V, θ, explicit P/Q).
     _sync_explicit_state!(sv, residual, time_step)
     residual(sv.x, time_step)
-    # Make the converter state consistent with the start voltages so the LCC tail residuals enter
-    # the loop already small (they are refreshed each cycle after the Q half-step).
+    # Make the converter state consistent with the start voltages so the LCC/VSC tail residuals
+    # enter the loop already small (they are refreshed each cycle after the Q half-step).
     n_lcc > 0 && _fd_lcc_substep!(sv, residual, data, time_step)
+    has_vsc && _fd_vsc_substep!(sv, residual, data, time_step)
     ss = dot(residual.Rv, residual.Rv)
     sg = FDSafeguardState(sv.x, ss)
     converged = norm(residual.Rv, Inf) < stage_tol
@@ -1020,6 +1060,9 @@ function _fd_decoupled_power_flow(
         if !diverged && n_lcc > 0
             _fd_lcc_substep!(sv, residual, data, time_step)
         end
+        if !diverged && has_vsc
+            _fd_vsc_substep!(sv, residual, data, time_step)
+        end
 
         ss = dot(residual.Rv, residual.Rv)
 
@@ -1055,11 +1098,14 @@ function _fd_decoupled_power_flow(
                 @inbounds @. sv.x = sg.cycle_x + factor * Δcycle
                 _sync_explicit_state!(sv, residual, time_step)
                 residual(sv.x, time_step)
-                # Re-solve the LCC converters at the rescaled voltages so the tail rows stay zeroed
-                # during backtracking — otherwise the halved step un-solves the converter state and
-                # the tail mismatch dominates `ss`, defeating the line search.
+                # Re-solve the LCC/VSC converters at the rescaled voltages so the tail rows stay
+                # zeroed during backtracking — otherwise the halved step un-solves the converter
+                # state and the tail mismatch dominates `ss`, defeating the line search.
                 if n_lcc > 0
                     _fd_lcc_substep!(sv, residual, data, time_step)
+                end
+                if has_vsc
+                    _fd_vsc_substep!(sv, residual, data, time_step)
                 end
                 ss = dot(residual.Rv, residual.Rv)
                 _fd_update_best!(sg, sv.x, ss)

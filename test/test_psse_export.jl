@@ -438,6 +438,78 @@ end
         "modified_case25_sys.raw")
 end
 
+@testset "PSSE Exporter round-trip preserves a VSC DC line, v33" begin
+    # `pti_case16_complete_sys` contains a VSC DC line, so this round-trip explicitly exercises
+    # VSC export → re-parse: `compare_systems_loosely` includes `PSY.TwoTerminalVSCLine`, so the
+    # converter records (control TYPE/MODE, setpoints, losses, ratings) must survive the round-trip.
+    sys = load_test_system("pti_case16_complete_sys")
+    isnothing(sys) && return
+    @test !isempty(PSY.get_components(PSY.TwoTerminalVSCLine, sys))
+
+    export_location = joinpath(test_psse_export_dir, "v33", "case16_vsc_roundtrip")
+    exporter = PSSEExporter(sys, :v33, export_location; write_comments = true)
+    test_psse_round_trip(DCPowerFlow(), sys, exporter, "basic", export_location)
+end
+
+@testset "Parsed VSC lowers to p.u.-sane setpoints and the AC power flow solves (v33)" begin
+    # Regression: the parser stored DCSET raw (kV/MW), so lowered vdc_set was ~100s of "p.u." and
+    # the joint NR diverged on any parsed VSC line.
+    sys = load_test_system("pti_case16_complete_sys")
+    isnothing(sys) && return
+    # The fixture's MODE=1 records are ill-posed independent of this test: bus 103 is PV
+    # (rejected) and bus 501's ACSET is unreachable within its Q limits (PSS/E itself backed off
+    # to a Q limit). Use fixed-Q control within limits.
+    for vsc in PSY.get_components(PSY.TwoTerminalVSCLine, sys)
+        PSY.set_ac_control_from!(vsc, PSY.VSCACControlModes.AC_REACTIVE_POWER)
+        PSY.set_reactive_power_from!(vsc, -0.45)
+        PSY.set_ac_control_to!(vsc, PSY.VSCACControlModes.AC_REACTIVE_POWER)
+        PSY.set_reactive_power_to!(vsc, -0.4)
+    end
+    data = PowerFlowData(ACPowerFlow{NewtonRaphsonACPowerFlow}(), sys)
+    dcn = PF.get_dc_network(data)
+    @test PF.n_vsc_converters(dcn) > 0
+    @test all(0.5 .<= dcn.vdc_set .<= 1.5)
+    @test all(abs.(dcn.p_set) .< 10.0)
+    # the MW order must survive at full magnitude (guards against re-scaling, e.g. a double
+    # baseMVA division: 0.96 → 0.0096 would still pass the sanity bounds above)
+    @test maximum(abs, dcn.p_set) > 0.1
+    @test solve_power_flow!(data)
+end
+
+@testset "PSSE Exporter: a VSC built without PSS/E ext metadata re-parses (v33)" begin
+    # Regression: a VSC with no `ext` REMOT/RMPCT must still export valid numeric fields. Previously
+    # REMOT defaulted to an empty field, so the exported .raw failed to re-parse (empty-Int error).
+    sys = load_test_system("pti_case16_complete_sys")
+    isnothing(sys) && return
+    n0 = length(collect(PSY.get_components(PSY.TwoTerminalVSCLine, sys)))
+    buses = sort!(collect(PSY.get_components(PSY.ACBus, sys)); by = PSY.get_number)
+    arc = _get_or_make_arc(sys, buses[3], buses[4])
+    PSY.add_component!(
+        sys,
+        PSY.TwoTerminalVSCLine(;
+            name = "vsc_no_ext",
+            available = true,
+            arc = arc,
+            active_power_flow = 0.2,
+            rating = 1.5,
+            active_power_limits_from = (min = -1.5, max = 1.5),
+            active_power_limits_to = (min = -1.5, max = 1.5),
+            g = 40.0,
+            dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
+            dc_setpoint_from = 1.0,
+            dc_control_to = PSY.VSCDCControlModes.DC_POWER,
+            dc_setpoint_to = 0.2,
+        ),
+    )
+    export_location = joinpath(test_psse_export_dir, "v33", "case16_vsc_no_ext")
+    exporter = PSSEExporter(sys, :v33, export_location; write_comments = true)
+    write_export(exporter, "basic"; overwrite = true)
+    raw_path, metadata_path = get_psse_export_paths(joinpath(export_location, "basic"))
+    # the re-parse must succeed (previously threw on the empty REMOT field) and keep both VSCs
+    sys2 = read_system_with_metadata(raw_path, metadata_path)
+    @test length(collect(PSY.get_components(PSY.TwoTerminalVSCLine, sys2))) == n0 + 1
+end
+
 @testset "PSSE Exporter RTS regression: TapTransformer and v35 default ratings" begin
     sys = with_logger(SimpleLogger(Error)) do
         build_system(PSISystems, "modified_RTS_GMLC_DA_sys"; force_build = true)
