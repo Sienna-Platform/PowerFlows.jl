@@ -87,6 +87,38 @@ function _reject_fd_decoupled_on_nonpolar(
     return
 end
 
+# Discrete device control is validated only for NR/TR inner solvers and a single time step (FD
+# reuses stale B′/B″ after tap moves; LM/GD/Homotopy are unvalidated; device state has no per-ts
+# baseline yet). Centralized so the three formulation constructors cannot drift. NR/TR types are
+# defined later in this file — references resolve at call time.
+function _validate_discrete_control_settings(
+    control_discrete_devices::Bool,
+    ::Type{ACSolver},
+    time_steps::Int,
+) where {ACSolver <: ACPowerFlowSolverType}
+    control_discrete_devices || return
+    if !(ACSolver <: Union{NewtonRaphsonACPowerFlow, TrustRegionACPowerFlow})
+        throw(
+            ArgumentError(
+                "control_discrete_devices=true requires a NewtonRaphsonACPowerFlow or " *
+                "TrustRegionACPowerFlow solver; got $(ACSolver). Other solvers are not " *
+                "validated as continuation inner solvers (FastDecoupled would reuse " *
+                "stale B′/B″ factorizations after tap moves).",
+            ),
+        )
+    end
+    if time_steps > 1
+        throw(
+            ArgumentError(
+                "control_discrete_devices=true supports a single time step; got " *
+                "time_steps=$time_steps. Device state does not yet track per-time-step " *
+                "baselines (taps mutate the shared Y-bus; shunt deltas are per-column).",
+            ),
+        )
+    end
+    return
+end
+
 """
     NewtonRaphsonACPowerFlow <: ACPowerFlowSolverType
 
@@ -356,6 +388,7 @@ function ACPolarPowerFlow{ACSolver}(;
         generator_slack_participation_factors,
         time_steps,
     )
+    _validate_discrete_control_settings(control_discrete_devices, ACSolver, time_steps)
     return ACPolarPowerFlow{ACSolver}(
         check_reactive_power_limits,
         exporter,
@@ -509,6 +542,7 @@ function ACRectangularPowerFlow{ACSolver}(;
         generator_slack_participation_factors,
         time_steps,
     )
+    _validate_discrete_control_settings(control_discrete_devices, ACSolver, time_steps)
     return ACRectangularPowerFlow{ACSolver}(
         check_reactive_power_limits,
         exporter,
@@ -628,6 +662,7 @@ function ACMixedPowerFlow{ACSolver}(;
         generator_slack_participation_factors,
         time_steps,
     )
+    _validate_discrete_control_settings(control_discrete_devices, ACSolver, time_steps)
     return ACMixedPowerFlow{ACSolver}(
         check_reactive_power_limits,
         exporter,

@@ -162,6 +162,9 @@ struct PowerFlowData{
     # AC Jacobian and a `solver_cache` entry can both be live in one solve (FastDecoupled handing
     # off to NR), so they must not contend. Lazily populated; see `_get_or_build_jacobian_structure`.
     ac_jacobian_structure_cache::Base.RefValue{Union{Nothing, ACJacobianStructureCache}}
+    # Persisted NR/TR symbolic-factorization cache (a `PolarNRCache`, defined in
+    # `power_flow_method.jl`); its own slot so it never contends with a DC/FD `solver_cache`.
+    polar_nr_cache::Base.RefValue{Union{Nothing, SolverCache}}
 end
 
 # aliases for specific type parameter combinations.
@@ -426,6 +429,7 @@ function PowerFlowData(
         Base.RefValue{Union{Nothing, SolverCache}}(nothing), # solver_cache (lazily populated)
         controlled_devices,
         Base.RefValue{Union{Nothing, ACJacobianStructureCache}}(nothing), # ac_jacobian_structure_cache
+        Base.RefValue{Union{Nothing, SolverCache}}(nothing), # polar_nr_cache (lazily populated)
     )
 end
 
@@ -536,6 +540,12 @@ function make_and_initialize_power_flow_data(
     controlled_devices::Union{Nothing, ControlledDeviceSet} = nothing,
 ) where {M <: PNM.PowerNetworkMatrix, N <: Union{PNM.PowerNetworkMatrix, Nothing}}
     check_unit_setting(sys)
+    if controlled_devices === nothing && get_control_discrete_devices(pf)
+        @warn "control_discrete_devices=true, but no controlled_devices were supplied \
+            to make_and_initialize_power_flow_data — discrete device control will NOT \
+            run. Construct via PowerFlowData(pf, sys), or pass a ControlledDeviceSet \
+            built with build_controlled_device_set." maxlog = 1
+    end
     removed_buses =
         PNM.get_removed_buses(PNM.get_network_reduction_data(power_network_matrix))
     lcc_filter =
@@ -645,8 +655,25 @@ function PowerFlowData(
     end
 
     controlled_devices = if get_control_discrete_devices(pf)
+        if !isempty(PSY.get_available_components(PSY.TwoTerminalLCCLine, sys))
+            throw(
+                ArgumentError(
+                    "control_discrete_devices=true is not supported on systems with " *
+                    "LCC HVDC lines: the continuation's rollback does not yet cover " *
+                    "the per-time-step LCC state.",
+                ),
+            )
+        end
         bus_lookup = PNM.get_bus_lookup(power_network_matrix)
-        set = build_controlled_device_set(sys, bus_lookup, power_network_matrix)
+        nrd = PNM.get_network_reduction_data(power_network_matrix)
+        set = build_controlled_device_set(
+            sys,
+            bus_lookup,
+            power_network_matrix;
+            reverse_bus_search_map = PNM.get_reverse_bus_search_map(nrd),
+            include_experimental = get(
+                pf.solver_settings, :experimental_controls, false)::Bool,
+        )
         isempty(set) ? nothing : set
     else
         nothing

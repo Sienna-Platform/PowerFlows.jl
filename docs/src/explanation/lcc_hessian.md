@@ -76,9 +76,7 @@ Second derivatives of `u_s`:
 \end{aligned}
 ```
 
-(Sign of `\partial^2 u/\partial V \partial t`: `\partial u/\partial V =
-\beta/(V^2 t)`, so `\partial^2 u/\partial V \partial t = \beta/V^2 \cdot
-\partial(1/t)/\partial t = -\beta/(V^2 t^2)`. Easy to miss.)
+(Sign of `\partial^2 u/\partial V \partial t`: `\partial u/\partial V = \beta/(V^2 t)`, so `\partial^2 u/\partial V \partial t = \beta/V^2 \cdot \partial(1/t)/\partial t = -\beta/(V^2 t^2)`. Easy to miss.)
 
 ## Active power: closed form and Hessian
 
@@ -124,11 +122,8 @@ terms):
 ## Reactive power: derivation and Hessian
 
 `Q_s = V_s t_s\, K I_{dc} \sin\phi_s`. With `C := \cos\phi_s = u_s`,
-`S := \sin\phi_s = \sqrt{1-u_s^2}`, and using `\partial S/\partial x =
--(C/S)\,\partial u_s/\partial x`, write `Q_s = K I_{dc}\, A\, S` where
-`A := V_s t_s` (so `\partial A/\partial V_s = t_s`, `\partial A/\partial t_s
-= V_s`, `\partial A/\partial \alpha_s = 0`, `\partial^2 A/\partial V_s\partial
-t_s = 1`, all other second partials of `A` are zero).
+`S := \sin\phi_s = \sqrt{1-u_s^2}`, and using `\partial S/\partial x = -(C/S)\,\partial u_s/\partial x`, write `Q_s = K I_{dc}\, A\, S` where
+`A := V_s t_s` (so `\partial A/\partial V_s = t_s`, `\partial A/\partial t_s = V_s`, `\partial A/\partial \alpha_s = 0`, `\partial^2 A/\partial V_s\partial t_s = 1`, all other second partials of `A` are zero).
 
 Differentiating once, then again, gives the product/chain expansion
 
@@ -158,9 +153,7 @@ derivatives of `u_s` are sign-invariant in `\sigma_s`, so all entries
 without an `\alpha`-derivative come out side-symmetric.)
 
 **Pure `V_s`, `t_s` block (no `\alpha`).** Two of the three entries
-collapse to single-term expressions because the `(\partial A/\partial x) \cdot
-(\partial S/\partial x)` term cancels the leading piece of `A \cdot
-(\partial^2 S/\partial x^2)`:
+collapse to single-term expressions because the `(\partial A/\partial x) \cdot (\partial S/\partial x)` term cancels the leading piece of `A \cdot (\partial^2 S/\partial x^2)`:
 
 ```math
 \begin{aligned}
@@ -176,9 +169,7 @@ collapse to single-term expressions because the `(\partial A/\partial x) \cdot
 ```
 
 (The `\partial^2 Q/\partial V^2` and `\partial^2 Q/\partial t^2`
-single-term forms come from `2(\partial A/\partial V)(\partial S/\partial
-V) + A \cdot \partial^2 S/\partial V^2 = -2u\beta/(V^2 S) +
-(-\beta^2/(V^3 t S^3) + 2u\beta/(V^2 S)) = -\beta^2/(V^3 t S^3)`. The
+single-term forms come from `2(\partial A/\partial V)(\partial S/\partial V) + A \cdot \partial^2 S/\partial V^2 = -2u\beta/(V^2 S) + (-\beta^2/(V^3 t S^3) + 2u\beta/(V^2 S)) = -\beta^2/(V^3 t S^3)`. The
 collapse is unconditional in `\sigma_s`.)
 
 **Mixed with `\alpha_s`:**
@@ -208,8 +199,7 @@ collapse is unconditional in `\sigma_s`.)
 
 (The first term, `-V t K I \sin^2\alpha / S^3`, is sign-invariant in
 `\sigma`: it picks up `(\partial u/\partial \alpha)^2 = \sin^2\alpha`
-either way. The second term carries `\partial^2 u/\partial \alpha^2 =
--\sigma_s \cos\alpha_s`, which through the outer `-\cos\phi_s/S` factor
+either way. The second term carries `\partial^2 u/\partial \alpha^2 = -\sigma_s \cos\alpha_s`, which through the outer `-\cos\phi_s/S` factor
 becomes `+\sigma_s \cos\phi_s \cos\alpha_s / S`.)
 
 ### Sanity check against the Jacobian
@@ -248,15 +238,15 @@ the clean `-K I_{dc} \beta^2/(V^3 t S^3)` form.
 Per LCC, the residual rows that depend on LCC state and contribute to
 `∑_k F_k \nabla^2 F_k` are:
 
-| Row | What it contains | `\nabla^2 F_k` (LCC block) |
-|-----|------------------|-----------------------------|
-| `F_{P, f_b}` (bus-`f_b` active power balance) | adds `+P_r(V_r, t_r, \alpha_r)` to the network sum | `\nabla^2 P_r` |
-| `F_{Q, f_b}` (bus-`f_b` reactive balance) | adds `+Q_r(V_r, t_r, \alpha_r)` | `\nabla^2 Q_r` |
-| `F_{P, t_b}` (bus-`t_b` active power balance) | adds `+P_i(V_i, t_i, \alpha_i)` | `\nabla^2 P_i` |
-| `F_{Q, t_b}` (bus-`t_b` reactive balance) | adds `+Q_i(V_i, t_i, \alpha_i)` | `\nabla^2 Q_i` |
-| `F_{t_r}` (setpoint constraint) | `\pm P_{r\text{ or }i} - P_{\text{set}}` | `\pm \nabla^2 P_{r\text{ or }i}` (sign per `setpoint_at_rectifier`) |
-| `F_{t_i}` (DC line balance) | `P_r + P_i - R_{dc} I_{dc}^2` | `\nabla^2 P_r + \nabla^2 P_i` |
-| `F_{\alpha_r}`, `F_{\alpha_i}` | `\alpha_s - \alpha_{s,\min}` (linear) | `0` |
+| Row                                           | What it contains                                   | `\nabla^2 F_k` (LCC block)                                          |
+|:--------------------------------------------- |:-------------------------------------------------- |:------------------------------------------------------------------- |
+| `F_{P, f_b}` (bus-`f_b` active power balance) | adds `+P_r(V_r, t_r, \alpha_r)` to the network sum | `\nabla^2 P_r`                                                      |
+| `F_{Q, f_b}` (bus-`f_b` reactive balance)     | adds `+Q_r(V_r, t_r, \alpha_r)`                    | `\nabla^2 Q_r`                                                      |
+| `F_{P, t_b}` (bus-`t_b` active power balance) | adds `+P_i(V_i, t_i, \alpha_i)`                    | `\nabla^2 P_i`                                                      |
+| `F_{Q, t_b}` (bus-`t_b` reactive balance)     | adds `+Q_i(V_i, t_i, \alpha_i)`                    | `\nabla^2 Q_i`                                                      |
+| `F_{t_r}` (setpoint constraint)               | `\pm P_{r\text{ or }i} - P_{\text{set}}`           | `\pm \nabla^2 P_{r\text{ or }i}` (sign per `setpoint_at_rectifier`) |
+| `F_{t_i}` (DC line balance)                   | `P_r + P_i - R_{dc} I_{dc}^2`                      | `\nabla^2 P_r + \nabla^2 P_i`                                       |
+| `F_{\alpha_r}`, `F_{\alpha_i}`                | `\alpha_s - \alpha_{s,\min}` (linear)              | `0`                                                                 |
 
 So the additive contribution to the Hessian from LCC `\ell` is
 
@@ -290,10 +280,10 @@ LCC residual). The added sparse structure is therefore two 3×3 dense
 blocks (one per side), embedded into the global Hessian at the
 appropriate row/column indices:
 
-- **Rectifier block:** rows/cols `\{V_{f_b}, t_r, \alpha_r\}` →
-  `\partial^2 (\text{linear comb of } P_r, Q_r)`.
-- **Inverter block:** rows/cols `\{V_{t_b}, t_i, \alpha_i\}` →
-  `\partial^2 (\text{linear comb of } P_i, Q_i)`.
+  - **Rectifier block:** rows/cols `\{V_{f_b}, t_r, \alpha_r\}` →
+    `\partial^2 (\text{linear comb of } P_r, Q_r)`.
+  - **Inverter block:** rows/cols `\{V_{t_b}, t_i, \alpha_i\}` →
+    `\partial^2 (\text{linear comb of } P_i, Q_i)`.
 
 The new structural entries needed for the LCC Hessian are
 `(V_{f_b}, t_r)`, `(V_{f_b}, \alpha_r)`, `(t_r, t_r)`, `(t_r, \alpha_r)`,
@@ -302,14 +292,13 @@ block on `(V_{t_b}, t_i, \alpha_i)`. None of these come from
 *network-only* rows of `J` (which have no `t` or `\alpha` columns at all).
 But the Jacobian has two other categories of rows that do:
 
-1. **LCC bus rows** (`P_{f_b}`, `Q_{f_b}`, `P_{t_b}`, `Q_{t_b}`): these
-   carry the LCC self-admittance contributions and thus have nonzero
-   entries in all of `V`, `t`, and `\alpha` for the relevant side.
-2. **LCC tail rows** (`F_{t_r}`, `F_{t_i}`, `F_{\alpha_r}`,
-   `F_{\alpha_i}`): the `F_t` rows depend on `V` (via the chain rule
-   through `P_{lcc,from/to}`) and on `t`, `\alpha`; the `F_\alpha` rows
-   contain only the unit entry `\partial F_{\alpha_s}/\partial \alpha_s
-   = 1`.
+ 1. **LCC bus rows** (`P_{f_b}`, `Q_{f_b}`, `P_{t_b}`, `Q_{t_b}`): these
+    carry the LCC self-admittance contributions and thus have nonzero
+    entries in all of `V`, `t`, and `\alpha` for the relevant side.
+ 2. **LCC tail rows** (`F_{t_r}`, `F_{t_i}`, `F_{\alpha_r}`,
+    `F_{\alpha_i}`): the `F_t` rows depend on `V` (via the chain rule
+    through `P_{lcc,from/to}`) and on `t`, `\alpha`; the `F_\alpha` rows
+    contain only the unit entry `\partial F_{\alpha_s}/\partial \alpha_s = 1`.
 
 So when `J^\top J` is formed, the columns `V_{f_b}`, `t_r`, `\alpha_r`
 all share the LCC bus rows and the `F_{t_r}` / `F_{t_i}` tail rows as
@@ -330,13 +319,13 @@ residual treats `\phi_s` as locally pinned and the Jacobian helpers drop
 the chain term (see [`_dphi_dV_lcc`](@ref) and [`_dphi_dt_lcc`](@ref)). The
 corresponding Hessian behavior:
 
-- `P_s` becomes linear in `(V_s, t_s)` with no `α`-dependence (since
-  `\cos\phi_s = \pm 1` constant): the *only* non-zero second partial is
-  `\partial^2 P_s / \partial V_s \partial t_s = \pm K I_{dc}`. All
-  `α`-mixed and `α^2` partials vanish.
-- `Q_s = 0` at the clamp boundary (since `\sin\phi_s = 0`) and the
-  derivative is pinned to 0 in the residual: drop **all** second
-  partials of `Q_s` on the clamp branch.
+  - `P_s` becomes linear in `(V_s, t_s)` with no `α`-dependence (since
+    `\cos\phi_s = \pm 1` constant): the *only* non-zero second partial is
+    `\partial^2 P_s / \partial V_s \partial t_s = \pm K I_{dc}`. All
+    `α`-mixed and `α^2` partials vanish.
+  - `Q_s = 0` at the clamp boundary (since `\sin\phi_s = 0`) and the
+    derivative is pinned to 0 in the residual: drop **all** second
+    partials of `Q_s` on the clamp branch.
 
 Both clamp branches are degenerate one-sided regimes — the analytic
 formulas above have `1/S` and `1/S^3` factors that blow up. Matching the
@@ -348,17 +337,17 @@ when below the tolerance.
 
 A compact side-by-side reference for the most error-prone entries:
 
-| Entry | Rectifier (`s = r`) | Inverter (`s = i`) |
-|-------|---------------------|--------------------|
-| `\partial u_s/\partial \alpha_s` | `-\sin\alpha_r` | `+\sin\alpha_i` |
-| `\partial^2 u_s/\partial \alpha_s^2` | `-\cos\alpha_r` | `+\cos\alpha_i` |
-| `\partial^2 P_s/\partial V_s \partial t_s` | `+K I_{dc} \cos\alpha_r` | `-K I_{dc} \cos\alpha_i` |
-| `\partial^2 P_s/\partial V_s \partial \alpha_s` | `-K I_{dc} t_r \sin\alpha_r` | `+K I_{dc} t_i \sin\alpha_i` |
-| `\partial^2 P_s/\partial t_s \partial \alpha_s` | `-K I_{dc} V_r \sin\alpha_r` | `+K I_{dc} V_i \sin\alpha_i` |
-| `\partial^2 P_s/\partial \alpha_s^2` | `-K I_{dc} V_r t_r \cos\alpha_r` | `+K I_{dc} V_i t_i \cos\alpha_i` |
-| `\partial^2 Q_s/\partial V_s^2`, `\partial t_s^2`, `\partial V_s \partial t_s` | same formula both sides | same formula both sides |
-| `\partial^2 Q_s/\partial V_s \partial \alpha_s` | sign of `+\sin\alpha_r` (overall `\sigma_r = +1`) | sign of `-\sin\alpha_i` (overall `\sigma_i = -1`) |
-| `\partial^2 Q_s/\partial \alpha_s^2` | use `\sigma_r = +1` | use `\sigma_i = -1` |
+| Entry                                                                          | Rectifier (`s = r`)                               | Inverter (`s = i`)                                |
+|:------------------------------------------------------------------------------ |:------------------------------------------------- |:------------------------------------------------- |
+| `\partial u_s/\partial \alpha_s`                                               | `-\sin\alpha_r`                                   | `+\sin\alpha_i`                                   |
+| `\partial^2 u_s/\partial \alpha_s^2`                                           | `-\cos\alpha_r`                                   | `+\cos\alpha_i`                                   |
+| `\partial^2 P_s/\partial V_s \partial t_s`                                     | `+K I_{dc} \cos\alpha_r`                          | `-K I_{dc} \cos\alpha_i`                          |
+| `\partial^2 P_s/\partial V_s \partial \alpha_s`                                | `-K I_{dc} t_r \sin\alpha_r`                      | `+K I_{dc} t_i \sin\alpha_i`                      |
+| `\partial^2 P_s/\partial t_s \partial \alpha_s`                                | `-K I_{dc} V_r \sin\alpha_r`                      | `+K I_{dc} V_i \sin\alpha_i`                      |
+| `\partial^2 P_s/\partial \alpha_s^2`                                           | `-K I_{dc} V_r t_r \cos\alpha_r`                  | `+K I_{dc} V_i t_i \cos\alpha_i`                  |
+| `\partial^2 Q_s/\partial V_s^2`, `\partial t_s^2`, `\partial V_s \partial t_s` | same formula both sides                           | same formula both sides                           |
+| `\partial^2 Q_s/\partial V_s \partial \alpha_s`                                | sign of `+\sin\alpha_r` (overall `\sigma_r = +1`) | sign of `-\sin\alpha_i` (overall `\sigma_i = -1`) |
+| `\partial^2 Q_s/\partial \alpha_s^2`                                           | use `\sigma_r = +1`                               | use `\sigma_i = -1`                               |
 
 The `V_s, t_s`-only second partials of `Q_s` are identical on both sides
 because they depend only on `(V_s, t_s, \cos\phi_s, \sin\phi_s, \beta_s)`

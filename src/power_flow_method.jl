@@ -95,6 +95,7 @@ function _set_Δx_nr!(stateVector::StateVectorCache,
     refinement_threshold::Float64,
     refinement_eps::Float64)
     use_fallback = false
+    _count_numeric_refactor!(J.data)
     try
         numeric_refactor!(linSolveCache, J.Jv)
     catch e
@@ -971,6 +972,75 @@ function _finalize_formulation!(
     return
 end
 
+# Persistent NR/TR cache reusing the symbolic factorization across solves on one `data` (Q-limit
+# loop, continuation, PCM steps). The sparsity pattern is invariant across NR iterations and
+# PV↔PQ flips (as `ACJacobianStructureCache` relies on), so symbolic analysis runs once and
+# `numeric_refactor!` refreshes values. Keyed on network-matrix identity + slack nonzero pattern
+# + backend type; an in-place tap/PAR Y-bus edit keeps identity, so the cache correctly survives it.
+struct PolarNRCache{M, B, C} <: SolverCache
+    matrix::M
+    nzind::Vector{Int}
+    backend::B
+    linSolveCache::C
+end
+
+# Backend compared by TYPE (mirrors `_reuse_dc_cache`): a change of backend rebuilds.
+_reuse_polar_nr_cache(::Nothing, matrix, nzind, backend) = nothing
+_reuse_polar_nr_cache(e::PolarNRCache, matrix, nzind, backend) =
+    if e.matrix === matrix && e.nzind == nzind && typeof(e.backend) === typeof(backend)
+        e.linSolveCache
+    else
+        nothing
+    end
+
+# Return the persisted symbolic-factored cache when the structure+backend match; otherwise build
+# it (make + symbolic_factor!), store it, and count the symbolic factorization. `nzind` is the
+# slack-participation nonzero pattern — the same key component `_get_or_build_jacobian_structure`
+# uses — so this cache and the structure cache always agree on a rebuild.
+function _get_or_build_polar_nr_cache!(
+    data::ACPowerFlowData,
+    Jv::SparseArrays.SparseMatrixCSC{Float64, J_INDEX_TYPE},
+    backend,
+    slack_factors::SparseVector{Float64, Int},
+)
+    nzind = SparseArrays.nonzeroinds(slack_factors)
+    reused = _reuse_polar_nr_cache(
+        data.polar_nr_cache[],
+        data.power_network_matrix,
+        nzind,
+        backend,
+    )
+    reused === nothing || return reused
+    linSolveCache = make_linear_solver_cache(backend, Jv)
+    symbolic_factor!(linSolveCache, Jv)
+    _count_symbolic_factor!(data)
+    data.polar_nr_cache[] =
+        PolarNRCache(data.power_network_matrix, copy(nzind), backend, linSolveCache)
+    return linSolveCache
+end
+
+# Polar: the Jacobian sparsity is invariant across NR iterations and PV↔PQ flips, so reuse the
+# persisted symbolic factorization (see `PolarNRCache`).
+_nr_linear_solver_cache!(
+    data::ACPowerFlowData, J::ACPowerFlowJacobian, backend,
+    slack_factors::SparseVector{Float64, Int}) =
+    _get_or_build_polar_nr_cache!(data, J.Jv, backend, slack_factors)
+
+# Rectangular / mixed CB: a PV↔PQ flip changes the per-bus variable count / block pattern, so the
+# sparsity structure is NOT flip-invariant across the Q-limit loop — build + symbolically factor
+# fresh each call (the pre-P1 behavior for these formulations).
+function _nr_linear_solver_cache!(
+    data::ACPowerFlowData,
+    J::Union{ACRectangularCIJacobian, ACMixedCPBJacobian},
+    backend,
+    ::SparseVector{Float64, Int},
+)
+    linSolveCache = make_linear_solver_cache(backend, J.Jv)
+    symbolic_factor!(linSolveCache, J.Jv)
+    _count_symbolic_factor!(data)
+    return linSolveCache
+end
+
 function _newton_power_flow(
     pf::AbstractACPowerFlow{T},
     data::ACPowerFlowData,
@@ -1014,8 +1084,10 @@ function _newton_power_flow(
     x_final = x0_init
     if !converged
         backend = resolve_linear_solver_backend(linear_solver)
-        linSolveCache = make_linear_solver_cache(backend, J.Jv)
-        symbolic_factor!(linSolveCache, J.Jv)
+        # Polar reuses the persisted symbolic factor; rect/mixed build fresh (structure not
+        # flip-invariant). See `_nr_linear_solver_cache!` / `PolarNRCache`.
+        linSolveCache = _nr_linear_solver_cache!(
+            data, J, backend, residual.bus_slack_participation_factors)
         stateVector = StateVectorCache(x0_init, residual.Rv)
         converged, i = _run_power_flow_method(
             time_step,
