@@ -1010,8 +1010,8 @@ end
     )
 end
 
-# Solver guards: RobustHomotopy has no DC-tail support (must reject at construction, like its LCC
-# guard); the FDDecoupled variant handles the tail via a sequential sub-solve, which cannot honor
+# Solver guards: RobustHomotopy has no DC-tail (VSC/MTDC) support (must reject at construction);
+# the FDDecoupled variant handles the tail via a sequential sub-solve, which cannot honor
 # AC-voltage control rows (must reject those too).
 @testset "VSC: RobustHomotopy rejects DC networks; FDDecoupled rejects AC-voltage control" begin
     sys = _build_vsc_pq_system(; g = 50.0, p_set = 0.4, q_set = 0.1, vdc = 1.05)

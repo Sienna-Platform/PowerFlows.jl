@@ -12,7 +12,6 @@ hot path is `O(N + n_LCC)`. Field roles are in the inline comments below.
 """
 struct ACMixedCPBJacobian
     data::ACPowerFlowData
-    Jf!::Function
     Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE}
     Y_bus_eff::SparseMatrixCSC{ComplexF64, Int}
     Y_diag::Vector{ComplexF64}     # cached Y_bus_eff diagonal; avoids O(log nnz) sparse access per iteration
@@ -94,7 +93,6 @@ function ACMixedCPBJacobian(
     )
     J = ACMixedCPBJacobian(
         residual.data,
-        _update_mixed_cpb_jacobian_values!,
         Jv0,
         residual.Y_bus_eff,
         Y_diag,
@@ -127,7 +125,7 @@ function ACMixedCPBJacobian(
 end
 
 function (J::ACMixedCPBJacobian)(time_step::Int64)
-    J.Jf!(J.Jv, J.data, J.Y_diag,
+    _update_mixed_cpb_jacobian_values!(J.Jv, J.data, J.Y_diag,
         J.e_state, J.f_state, J.P_eff_cache, J.Q_eff_cache,
         J.const_I_P, J.const_I_Q, J.Ir_acc, J.Ii_acc,
         J.bus_slack_participation_factors,
@@ -142,7 +140,7 @@ function (J::ACMixedCPBJacobian)(
     Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
     time_step::Int64,
 )
-    J.Jf!(J.Jv, J.data, J.Y_diag,
+    _update_mixed_cpb_jacobian_values!(J.Jv, J.data, J.Y_diag,
         J.e_state, J.f_state, J.P_eff_cache, J.Q_eff_cache,
         J.const_I_P, J.const_I_Q, J.Ir_acc, J.Ii_acc,
         J.bus_slack_participation_factors,
