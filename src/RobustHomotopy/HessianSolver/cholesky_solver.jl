@@ -22,7 +22,10 @@ function modify_and_numeric_factor!(
 )
     minDiagElem = minimum(H[i, i] for i in axes(H, 1))
     τ_old = 0.0
-    τ = minDiagElem > 0.0 ? 0.0 : -minDiagElem + β
+    τ = 0.0
+    if minDiagElem <= 0.0
+        τ = -minDiagElem + β
+    end
     @debug "initial τ = $τ"
     nonsingular = false
     while !nonsingular
@@ -39,7 +42,8 @@ function modify_and_numeric_factor!(
             end
             LinearAlgebra.issuccess(hSolver.F)
         catch e
-            e isa SparseArrays.CHOLMOD.PosDefException ? false : rethrow(e)
+            e isa SparseArrays.CHOLMOD.PosDefException || rethrow(e)
+            false
         end
         if ok
             nonsingular = true
