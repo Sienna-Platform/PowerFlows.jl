@@ -492,7 +492,7 @@ end
 # on; the default of `true` is only safe for DC power flow.
 _assert_ac_reduction_supported(::PNM.NetworkReduction) = nothing
 function _assert_ac_reduction_supported(nr::PNM.DegreeTwoReduction)
-    PNM.get_reduce_reactive_power_injectors(nr) || return nothing
+    PNM.get_reduce_reactive_power_injectors(nr) || return
     throw(
         IS.ConflictingInputsError(
             "DegreeTwoReduction with `reduce_reactive_power_injectors = true` is not \
@@ -540,7 +540,7 @@ function make_and_initialize_power_flow_data(
     controlled_devices::Union{Nothing, ControlledDeviceSet} = nothing,
 ) where {M <: PNM.PowerNetworkMatrix, N <: Union{PNM.PowerNetworkMatrix, Nothing}}
     check_unit_setting(sys)
-    if controlled_devices === nothing && get_control_discrete_devices(pf)
+    if isnothing(controlled_devices) && get_control_discrete_devices(pf)
         @warn "control_discrete_devices=true, but no controlled_devices were supplied \
             to make_and_initialize_power_flow_data — discrete device control will NOT \
             run. Construct via PowerFlowData(pf, sys), or pass a ControlledDeviceSet \
@@ -600,6 +600,40 @@ function _route_zero_impedance_reduction(reductions::Vector{PNM.NetworkReduction
     return others, reductions[idx]
 end
 
+# Build the controlled-device set for a solve, or `nothing` when discrete control is off or the
+# system has no enrollable devices. LCC HVDC is rejected: the continuation's rollback does not yet
+# cover the per-time-step LCC state.
+function _build_controlled_devices(
+    pf::AbstractACPowerFlow,
+    sys::PSY.System,
+    power_network_matrix,
+)
+    if !get_control_discrete_devices(pf)
+        return nothing
+    end
+    if !isempty(PSY.get_available_components(PSY.TwoTerminalLCCLine, sys))
+        throw(
+            ArgumentError(
+                "control_discrete_devices=true is not supported on systems with " *
+                "LCC HVDC lines: the continuation's rollback does not yet cover " *
+                "the per-time-step LCC state.",
+            ),
+        )
+    end
+    nrd = PNM.get_network_reduction_data(power_network_matrix)
+    set = build_controlled_device_set(
+        sys,
+        PNM.get_bus_lookup(power_network_matrix),
+        power_network_matrix;
+        reverse_bus_search_map = PNM.get_reverse_bus_search_map(nrd),
+        include_experimental = get(pf.solver_settings, :experimental_controls, false)::Bool,
+    )
+    if isempty(set)
+        return nothing
+    end
+    return set
+end
+
 """
     PowerFlowData(
         pf::AbstractACPowerFlow{<:ACPowerFlowSolverType},
@@ -654,30 +688,7 @@ function PowerFlowData(
         aux_network_matrix = nothing
     end
 
-    controlled_devices = if get_control_discrete_devices(pf)
-        if !isempty(PSY.get_available_components(PSY.TwoTerminalLCCLine, sys))
-            throw(
-                ArgumentError(
-                    "control_discrete_devices=true is not supported on systems with " *
-                    "LCC HVDC lines: the continuation's rollback does not yet cover " *
-                    "the per-time-step LCC state.",
-                ),
-            )
-        end
-        bus_lookup = PNM.get_bus_lookup(power_network_matrix)
-        nrd = PNM.get_network_reduction_data(power_network_matrix)
-        set = build_controlled_device_set(
-            sys,
-            bus_lookup,
-            power_network_matrix;
-            reverse_bus_search_map = PNM.get_reverse_bus_search_map(nrd),
-            include_experimental = get(
-                pf.solver_settings, :experimental_controls, false)::Bool,
-        )
-        isempty(set) ? nothing : set
-    else
-        nothing
-    end
+    controlled_devices = _build_controlled_devices(pf, sys, power_network_matrix)
 
     return make_and_initialize_power_flow_data(
         pf,
