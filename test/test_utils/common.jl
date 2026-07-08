@@ -725,6 +725,75 @@ function _make_field_controlled_tap_system()
     return sys
 end
 
+"""Build the IEEE 14-bus system (`PSB.PSITestSystems, "c_sys14"`) with every `PowerLoad`
+scaled by `load_scale`. Used for testing reactive power control logic: switched shunt and
+FACTS device adjustment."""
+function _make_ieee14_scaled_load_system(load_scale::Float64 = 1.4)
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    set_units_base_system!(sys, "SYSTEM_BASE")
+    for load in get_components(PowerLoad, sys)
+        set_active_power!(load, get_active_power(load) * load_scale)
+        set_reactive_power!(load, get_reactive_power(load) * load_scale)
+    end
+    return sys
+end
+
+"""Add a continuous shunt `FACTSControlDevice` (SVC/STATCOM-style) at `bus_number` targeting
+`voltage_setpoint`. Requires
+`solver_settings[:experimental_controls] = true` on the `ACPowerFlow` used to solve."""
+function _add_facts_shunt!(
+    sys,
+    bus_number::Int;
+    voltage_setpoint::Float64 = 1.0,
+    max_shunt_current::Float64 = 100.0,
+)
+    b = get_bus(sys, bus_number)
+    facts = FACTSControlDevice(;
+        name = "facts_$bus_number",
+        available = true,
+        bus = b,
+        control_mode = PSY.FACTSOperationModes.NML,
+        voltage_setpoint = voltage_setpoint,
+        max_shunt_current = max_shunt_current,
+        reactive_power_required = 100.0,
+    )
+    add_component!(sys, facts)
+    return facts
+end
+
+"""Add a discrete `SwitchedAdmittance` (PSS/E-style block-switched capacitor bank) at
+`bus_number`, built from `n_steps` blocks of `mvar_per_step` MVar each so the total capacity
+(`n_steps * mvar_per_step` MVar) doesn't saturate. `voltage_setpoint` becomes the midpoint of
+a narrow `admittance_limits` deadband (`± deadband`, in p.u.) — narrow enough that the
+discrete continuation drives the bus close to `voltage_setpoint` rather than stopping as soon
+as voltage enters a wide PSS/E-style VSWLO/VSWHI band."""
+function _add_switched_shunt!(
+    sys,
+    bus_number::Int;
+    voltage_setpoint::Float64 = 1.0,
+    n_steps::Int = 60,
+    mvar_per_step::Float64 = 1.0,
+    deadband::Float64 = 0.001,
+)
+    base_power = get_base_power(sys)
+    b = get_bus(sys, bus_number)
+    sa = SwitchedAdmittance(;
+        name = "shunt_$bus_number",
+        available = true,
+        bus = b,
+        Y = 0.0 + 0.0im,
+        initial_status = [0],
+        number_of_steps = [n_steps],
+        Y_increase = [0.0 + (mvar_per_step / base_power) * im],
+        admittance_limits = (
+            min = voltage_setpoint - deadband,
+            max = voltage_setpoint + deadband,
+        ),
+    )
+    add_component!(sys, sa)
+    return sa
+end
+
 """Build a 2-bus loop where a `PhaseShiftingTransformer` (ACTIVE_POWER_FLOW control) shares the
 path to a load with a parallel `Line`. The phase angle redistributes flow between the two
 branches, so the PAR can regulate ITS OWN active-power flow toward `active_power_flow` (the
