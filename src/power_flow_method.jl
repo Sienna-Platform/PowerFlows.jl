@@ -133,7 +133,7 @@ function _set_Δx_nr!(stateVector::StateVectorCache,
         # values in place while the pattern holds (reusing the factorization); rebuild if it shifts.
         M_prev = stateVector.fallback_matrix[]
         cache_prev = stateVector.fallback_cache[]
-        if M_prev !== nothing && cache_prev !== nothing &&
+        if !isnothing(M_prev) && !isnothing(cache_prev) &&
            _refresh_singular_J_fallback!(M_prev, J.Jv, stateVector.x)
             M = M_prev
             cache = cache_prev
@@ -253,7 +253,7 @@ function _accept_trust_region_step!(
             stateVector.d[i] = max(0.1 * stateVector.d[i], norm(view(Jv, :, i)))
         end
     end
-    return nothing
+    return
 end
 
 """Attempt Iwamoto damping on a rejected trust region step.
@@ -793,7 +793,7 @@ function _run_power_flow_method(time_step::Int,
     if autoscale
         for i in 1:length(stateVector.x)
             stateVector.d[i] = norm(view(J.Jv, :, i))
-            if stateVector.d[i] == 0.0
+            if iszero(stateVector.d[i])
                 stateVector.d[i] = 1.0
             end
         end
@@ -869,7 +869,6 @@ function _finalize_power_flow(
     time_step::Int64,
 )
     if converged
-        @info("The $solver_name solver converged after $i iterations.")
         _warn_small_lcc_angles(data, time_step)
         if get_calculate_loss_factors(data)
             _calculate_loss_factors(data, Jv, time_step)
@@ -911,7 +910,7 @@ even direct Newton hitting one of these bounds is a sign the input data
 is non-physical."""
 function _warn_small_lcc_angles(data::ACPowerFlowData, time_step::Int)
     n_lcc = size(data.lcc.p_set, 1)
-    n_lcc == 0 && return
+    iszero(n_lcc) && return
     lo = LCC_SMALL_ANGLE_THRESHOLD
     hi = π / 2 - LCC_SMALL_ANGLE_THRESHOLD
     for i in 1:n_lcc
@@ -1010,7 +1009,7 @@ function _get_or_build_polar_nr_cache!(
         nzind,
         backend,
     )
-    reused === nothing || return reused
+    isnothing(reused) || return reused
     linSolveCache = make_linear_solver_cache(backend, Jv)
     symbolic_factor!(linSolveCache, Jv)
     _count_symbolic_factor!(data)
@@ -1040,6 +1039,74 @@ function _nr_linear_solver_cache!(
     _count_symbolic_factor!(data)
     return linSolveCache
 end
+
+# Polar: defer the Jacobian entirely — a 0-iteration warm start must not pay for a
+# Jacobian evaluation + sparse-structure copy. The caller builds J only when the
+# convergence check fails.
+function _nr_initialize_with_jacobian_deferred(
+    pf::ACPolarPowerFlow, data::ACPowerFlowData, time_step::Int64; kwargs...,
+)
+    residual, x0 = _initialize_residual_x0(pf, data, time_step; kwargs...)
+    return residual, nothing, x0
+end
+
+# Rectangular/mixed: J is structure-only (no value evaluation), cheap enough to build eagerly.
+# These formulations do not call J(time_step) in their setup, so the cost is just the
+# sparse-structure allocation (~1-2 MB), not the full evaluation.
+function _nr_initialize_with_jacobian_deferred(
+    pf::ACRectangularPowerFlow{T},
+    data::ACPowerFlowData,
+    time_step::Int64;
+    x0::Union{Vector{Float64}, Nothing} = nothing,
+    validate_voltage_magnitudes::Bool = DEFAULT_VALIDATE_VOLTAGES,
+    vm_validation_range::MinMax = DEFAULT_VALIDATION_RANGE,
+    _ignored...,
+) where {T <: ACPowerFlowSolverType}
+    residual = ACRectangularCIResidual(data, time_step)
+    if isnothing(x0)
+        x0_computed = improve_x0(pf, data, residual, time_step)
+    else
+        x0_computed = copy(x0)
+        @warn "Using caller-provided x0; skipping improve_x0."
+        residual(x0_computed, time_step)
+    end
+    _log_initial_residual(residual)
+    J = ACRectangularCIJacobian(residual, time_step)
+    return residual, J, x0_computed
+end
+
+function _nr_initialize_with_jacobian_deferred(
+    pf::ACMixedPowerFlow{T},
+    data::ACPowerFlowData,
+    time_step::Int64;
+    x0::Union{Vector{Float64}, Nothing} = nothing,
+    validate_voltage_magnitudes::Bool = DEFAULT_VALIDATE_VOLTAGES,
+    vm_validation_range::MinMax = DEFAULT_VALIDATION_RANGE,
+    _ignored...,
+) where {T <: ACPowerFlowSolverType}
+    residual = ACMixedCPBResidual(data, time_step)
+    if isnothing(x0)
+        x0_computed = improve_x0(pf, data, residual, time_step)
+    else
+        x0_computed = copy(x0)
+        @warn "Using caller-provided x0; skipping improve_x0."
+        residual(x0_computed, time_step)
+    end
+    _log_initial_residual(residual)
+    J = ACMixedCPBJacobian(residual, time_step)
+    return residual, J, x0_computed
+end
+
+# Build the Jacobian when the deferred path (polar) needs it after a failed convergence check.
+# Rectangular/mixed already have J from setup.
+function _nr_build_jacobian(
+    ::ACPolarPowerFlow, residual::ACPowerFlowResidual, ::Nothing, time_step::Int64,
+)
+    J = ACPowerFlowJacobian(residual, time_step)
+    J(time_step)
+    return J
+end
+_nr_build_jacobian(::AbstractACPowerFlow, residual, J, time_step::Int64) = J
 
 function _newton_power_flow(
     pf::AbstractACPowerFlow{T},
@@ -1076,13 +1143,17 @@ function _newton_power_flow(
     else
         (; validate_voltage_magnitudes, vm_validation_range, x0)
     end
-    residual, J, x0_init = initialize_power_flow_variables(
+    # Build residual + x0 WITHOUT the Jacobian: a 0-iteration warm start (already converged)
+    # must not pay for a Jacobian evaluation + sparse-structure copy. The Jacobian is built
+    # lazily only when the convergence check fails.
+    residual, J_or_nothing, x0_init = _nr_initialize_with_jacobian_deferred(
         pf, data, time_step; init_kwargs...)
     converged = norm(residual.Rv, Inf) < tol
 
     i = 0
     x_final = x0_init
     if !converged
+        J = _nr_build_jacobian(pf, residual, J_or_nothing, time_step)
         backend = resolve_linear_solver_backend(linear_solver)
         # Polar reuses the persisted symbolic factor; rect/mixed build fresh (structure not
         # flip-invariant). See `_nr_linear_solver_cache!` / `PolarNRCache`.
@@ -1110,7 +1181,19 @@ function _newton_power_flow(
             stop_at_fold,
         )
         x_final = stateVector.x
+        _finalize_formulation!(pf, data, x_final, residual, time_step)
+        return _finalize_power_flow(
+            converged, i, string(T), residual, data, J.Jv, time_step)
     end
     _finalize_formulation!(pf, data, x_final, residual, time_step)
-    return _finalize_power_flow(converged, i, string(T), residual, data, J.Jv, time_step)
+    # 0-iteration warm start: skip the Jacobian-dependent post-processing UNLESS the caller
+    # opted into loss / voltage-stability factors — those need J even at 0 iterations, or a
+    # first solve that lands within tol would leave them at their zero-initialized values.
+    if get_calculate_loss_factors(data) || get_calculate_voltage_stability_factors(data)
+        J = _nr_build_jacobian(pf, residual, J_or_nothing, time_step)
+        return _finalize_power_flow(
+            converged, i, string(T), residual, data, J.Jv, time_step)
+    end
+    return _finalize_power_flow(
+        converged, i, string(T), residual, data, nothing, time_step)
 end
