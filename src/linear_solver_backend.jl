@@ -81,7 +81,11 @@ PNM's preference logic is used. Throws if AppleAccelerate is requested off an Ap
 platform, or if MKLPardiso is requested on a non-x86_64 architecture or without the
 `PowerFlowsPardisoExt` extension loaded (`import Pardiso`)."""
 function resolve_linear_solver_backend(override::Union{Nothing, AbstractString})
-    name = override === nothing ? PNM._default_linear_solver() : String(override)
+    name = if isnothing(override)
+        PNM._default_linear_solver()
+    else
+        String(override)
+    end
     tag = PNM.resolve_linear_solver(name)
     if tag isa PNM.AppleAccelerateLUSolver && !Sys.isapple()
         error("AppleAccelerate backend requested but not on an Apple platform.")
