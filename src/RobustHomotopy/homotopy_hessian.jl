@@ -131,18 +131,22 @@ function homotopy_x0(data::ACPowerFlowData, time_step::Int)
             α_r_min = data.lcc.rectifier.min_thyristor_angle[i]
             α_i_min = data.lcc.inverter.min_thyristor_angle[i]
             margin = 0.05
-            # u_r = cos α_r - β_r/(V·t) ∈ (-1, 1) requires α_r off the
-            # rectifier-clamp threshold; u_i = -cos α_i - β_i/(V·t) ∈
-            # (-1, 1) requires α_i > acos(1 - β_i/(V·t)).
-            min_α_r_interior =
-                if β_r ≥ V_fb * t_r
-                    acos(clamp(β_r / (V_fb * t_r) - 1.0, -1.0, 1.0)) + margin
-                else
-                    margin
-                end
+            # Interiority of u_r = cos α_r − β_r/(V·t) ∈ (−1, 1): the −1 side is an UPPER
+            # bound α_r < acos(β_r/(V·t) − 1) when β_r ≥ V·t (cos is decreasing); the +1
+            # side only requires α_r ≥ margin. For the inverter u_i = −cos α_i − β_i/(V·t),
+            # the −1 side is the LOWER bound α_i > acos(1 − β_i/(V·t)).
+            α_r_lo = max(α_r_min, margin)
+            x[offset_lcc + 3] = if β_r ≥ V_fb * t_r
+                max_α_r_interior =
+                    acos(clamp(β_r / (V_fb * t_r) - 1.0, -1.0, 1.0)) - margin
+                # Deep commutation (β_r/(V·t) ≳ 2) admits no interior α_r; fall back to the
+                # smallest non-negative angle rather than a nonphysical negative start.
+                clamp(α_r_lo, 0.0, max(max_α_r_interior, 0.0))
+            else
+                α_r_lo
+            end
             min_α_i_interior =
                 acos(clamp(1.0 - β_i / (V_tb * t_i), -1.0, 1.0)) + margin
-            x[offset_lcc + 3] = max(α_r_min, min_α_r_interior)
             x[offset_lcc + 4] = max(α_i_min, min_α_i_interior)
         end
     end
@@ -162,6 +166,18 @@ function HomotopyHessian(data::ACPowerFlowData, time_step::Int)
             ),
         )
     end
+    n_lcc = size(data.lcc.p_set, 1)
+    if !iszero(n_lcc)
+        for i in 1:n_lcc
+            if abs(data.lcc.i_dc[i, time_step]) < 1e-6
+                @warn "RobustHomotopyPowerFlow with an idle LCC (I_dc ≈ 0, index $i): the \
+                    tap Hessian diagonal is degenerate in this regime and convergence is \
+                    unlikely (see test_solve_power_flow.jl zero-flow skip). Consider \
+                    NewtonRaphsonACPowerFlow/TrustRegionACPowerFlow for this case." maxlog =
+                    1
+            end
+        end
+    end
     pfResidual = ACPowerFlowResidual(data, time_step)
     J = ACPowerFlowJacobian(pfResidual, time_step)
     # Allocate Hv with the maximal sparsity pattern of J' * J. Sparse `*`
@@ -178,7 +194,6 @@ function HomotopyHessian(data::ACPowerFlowData, time_step::Int)
     SparseArrays.nonzeros(Hv) .= 0.0
     copyto!(SparseArrays.nonzeros(J.Jv), original_J_nzval)
     nbuses = size(get_bus_type(data), 1)
-    n_lcc = size(data.lcc.p_set, 1)
     n_state = 2 * nbuses + 4 * n_lcc
     bus_types = view(get_bus_type(data), :, time_step)
     PQ_mask = bus_types .== (PSY.ACBusTypes.PQ,)
@@ -434,7 +449,7 @@ function _update_hessian_lcc_contributions!(
     time_step::Int64,
 )
     n_lcc = size(data.lcc.p_set, 1)
-    n_lcc == 0 && return
+    iszero(n_lcc) && return
     num_buses = first(size(data.bus_type))
     Vm = view(data.bus_magnitude, :, time_step)
     for (i, (fb, tb)) in enumerate(data.lcc.bus_indices)
@@ -484,9 +499,9 @@ function _update_hessian_lcc_contributions!(
         coef_Pi = F_P_tb + F_t_i + (setpoint_at_rect ? 0.0 : -F_t_r)
         coef_Qi = F_Q_tb
 
-        d2P_r = _d2P_lcc(V_fb, tap_r, α_r, I_dc, +1)
+        d2P_r = _d2P_lcc(V_fb, tap_r, α_r, I_dc, ϕ_r, +1)
         d2Q_r = _d2Q_lcc(V_fb, tap_r, α_r, x_t_r, I_dc, ϕ_r, +1)
-        d2P_i = _d2P_lcc(V_tb, tap_i, α_i, I_dc, -1)
+        d2P_i = _d2P_lcc(V_tb, tap_i, α_i, I_dc, ϕ_i, -1)
         d2Q_i = _d2Q_lcc(V_tb, tap_i, α_i, x_t_i, I_dc, ϕ_i, -1)
 
         # Rectifier 3×3 block on (V_fb, t_r, α_r).
