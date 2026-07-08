@@ -13,7 +13,6 @@ mutable struct ControlledTap <: AbstractBranchControl
     controlled_ix::Int
     vset::Float64
     yt::ComplexF64                   # 1/(r+jx)
-    y_shunt::ComplexF64              # primary shunt
     alpha::Float64                   # winding-group phase shift (PSY.get_α)
     p_min::Float64
     p_max::Float64
@@ -43,6 +42,9 @@ mutable struct ControlledSwitchedShunt <: AbstractShuntControl
     continuous::Bool                 # MODSW==2 ⇒ continuous regulation (no discrete snap)
     initial::Float64                 # enrollment-time susceptance (reporting)
     current::Float64                 # current total susceptance b
+    psse_convention::Bool            # true ⇒ PSS/E parser convention (Y=BINIT total,
+    # initial_status zeroed); false ⇒ PSY API convention (Y is the fixed base,
+    # initial_status meaningful). Determines how write_device_settings! sources Y/status.
 end
 
 """Continuous phase-angle regulator (PAR) on a `PhaseShiftingTransformer` (ACTIVE_POWER_FLOW
@@ -93,45 +95,54 @@ struct ControlledDeviceSet
     symbolic_factors::Base.RefValue{Int}
     numeric_refactors::Base.RefValue{Int}
 end
-ControlledDeviceSet(
+function ControlledDeviceSet(
     taps::Vector{ControlledTap},
     shunts::Vector{ControlledSwitchedShunt},
     facts::Vector{ControlledFACTS},
     phase_shifters::Vector{ControlledPhaseShifter},
-) = ControlledDeviceSet(
-    taps, shunts, facts, phase_shifters, Ref(0), Ref(0), Ref(0))
-Base.isempty(s::ControlledDeviceSet) =
-    isempty(s.taps) && isempty(s.shunts) && isempty(s.facts) &&
-    isempty(s.phase_shifters)
+)
+    return ControlledDeviceSet(
+        taps, shunts, facts, phase_shifters, Ref(0), Ref(0), Ref(0))
+end
+function Base.isempty(s::ControlledDeviceSet)
+    return isempty(s.taps) && isempty(s.shunts) && isempty(s.facts) &&
+           isempty(s.phase_shifters)
+end
 
 """Number of inner `_solve_with_q_limits!` calls the last discrete-control continuation
 performed (0 when the data was built without discrete control)."""
-get_control_inner_solve_count(data) =
-    data.controlled_devices === nothing ? 0 : data.controlled_devices.inner_solves[]
+function get_control_inner_solve_count(data)
+    isnothing(data.controlled_devices) && return 0
+    return data.controlled_devices.inner_solves[]
+end
 
 """Number of KLU/AA SYMBOLIC factorizations performed inside the last discrete-control
 continuation. With `PolarNRCache` symbolic reuse this stays O(1) per continuation even as
 `inner_solves` grows; without it, it tracks `inner_solves`. 0 when built without control."""
-get_control_symbolic_factor_count(data) =
-    data.controlled_devices === nothing ? 0 : data.controlled_devices.symbolic_factors[]
+function get_control_symbolic_factor_count(data)
+    isnothing(data.controlled_devices) && return 0
+    return data.controlled_devices.symbolic_factors[]
+end
 
 # Hot-path instrumentation. The `nothing` (non-control) case — every ordinary AC solve — is a
 # single branch and early return, mirroring `_ctrl_solve!`. Only the continuation path counts.
 @inline function _count_symbolic_factor!(data)
     cd = data.controlled_devices
-    cd === nothing || (cd.symbolic_factors[] += 1)
-    return nothing
+    isnothing(cd) || (cd.symbolic_factors[] += 1)
+    return
 end
 @inline function _count_numeric_refactor!(data)
     cd = data.controlled_devices
-    cd === nothing || (cd.numeric_refactors[] += 1)
-    return nothing
+    isnothing(cd) || (cd.numeric_refactors[] += 1)
+    return
 end
 
 """Number of per-NR-iteration NUMERIC refactorizations performed inside the last
 discrete-control continuation. 0 when the data was built without discrete control."""
-get_control_numeric_refactor_count(data) =
-    data.controlled_devices === nothing ? 0 : data.controlled_devices.numeric_refactors[]
+function get_control_numeric_refactor_count(data)
+    isnothing(data.controlled_devices) && return 0
+    return data.controlled_devices.numeric_refactors[]
+end
 
 controlled_bus_ix(d::ControlledTap) = d.controlled_ix
 controlled_bus_ix(d::ControlledSwitchedShunt) = d.controlled_ix
@@ -147,12 +158,6 @@ current_parameter(d::ControlledTap) = d.current
 current_parameter(d::ControlledSwitchedShunt) = d.current
 current_parameter(d::ControlledFACTS) = d.current
 current_parameter(d::ControlledPhaseShifter) = d.current
-set_current_parameter!(d::ControlledTap, p::Float64) = (d.current = p; nothing)
-set_current_parameter!(d::ControlledSwitchedShunt, p::Float64) =
-    (d.current = p; nothing)
-set_current_parameter!(d::ControlledFACTS, p::Float64) = (d.current = p; nothing)
-set_current_parameter!(d::ControlledPhaseShifter, p::Float64) =
-    (d.current = p; nothing)
 
 # The continuation drives `measured_value(d, data, ts)` toward `control_setpoint(d)`. Voltage
 # devices read the controlled-bus magnitude and target their `vset`; the phase shifter reads its
@@ -223,7 +228,7 @@ function apply_parameter!(d::ControlledTap, data, p::Float64, ::Int)
         # Y22 = Yt is tap-independent; no update needed.
     end
     d.current = p
-    return nothing
+    return
 end
 
 # Pure phase change at fixed |t| = tap: Y11 = yt/|t|² and Y22 = yt are invariant, so only the
@@ -239,7 +244,7 @@ function apply_parameter!(d::ControlledPhaseShifter, data, alpha::Float64, ::Int
         A.nzval[o[3]] += -d.yt / new_t - (-d.yt / old_t)
     end
     d.current = alpha
-    return nothing
+    return
 end
 
 # Delta-update (`+=`, not `=`): `_get_withdrawals!` accumulates all constant-Z devices on
@@ -249,7 +254,7 @@ function apply_parameter!(d::ControlledSwitchedShunt, data, b::Float64, ts::Int)
     data.bus_reactive_power_constant_impedance_withdrawals[d.bus_ix, ts] +=
         d.current - b
     d.current = b
-    return nothing
+    return
 end
 
 # Same constant-Z reactive-withdrawal delta as the switched shunt: raising the (capacitive)
@@ -258,7 +263,7 @@ function apply_parameter!(d::ControlledFACTS, data, b::Float64, ts::Int)
     data.bus_reactive_power_constant_impedance_withdrawals[d.bus_ix, ts] +=
         d.current - b
     d.current = b
-    return nothing
+    return
 end
 
 @inline function _sigmoid(lo::Float64, hi::Float64, S::Float64,
@@ -275,35 +280,54 @@ function snap_to_discrete(d::ControlledTap, p::Float64)
     return best
 end
 
-# PSS/E switched-shunt blocks activate cumulatively in listed order (and switch off in
-# reverse), so the physically realizable totals are exactly the prefix sums of the block
-# steps on top of the fixed base. Walking that chain and keeping the closest point is
-# simultaneously optimal over the realizable set and order-respecting; O(Σ steps),
-# allocation-free. `block_n` records the chosen per-block step counts for reporting.
+# PSS/E mixed banks: capacitor blocks (dB>0) switch on cumulatively in listed order,
+# reactor blocks (dB<0) likewise — two independent chains stepping away from the
+# all-off base, NOT one serial chain, so a mixed bank reaches both signs. Realizable
+# totals = b0 ∪ {b0 + capacitor prefixes} ∪ {b0 + reactor prefixes}. Same-sign banks
+# reduce to the previous single-chain walk. O(Σ steps), allocation-free.
 function snap_to_discrete(d::ControlledSwitchedShunt, b::Float64)
-    d.continuous && return clamp(b, d.b_min, d.b_max)   # continuous: no grid snap
+    d.continuous && return clamp(b, d.b_min, d.b_max)
     target = clamp(b, d.b_min, d.b_max)
-    total = d.b0                     # all blocks off
-    best = total
+    best = d.b0
     best_steps = 0
-    steps_taken = 0
-    @inbounds for k in eachindex(d.block_steps, d.block_dB)
-        dB = d.block_dB[k]
-        for _ in 1:d.block_steps[k]
-            total += dB
-            steps_taken += 1
-            if abs(total - target) < abs(best - target)
-                best = total
-                best_steps = steps_taken
+    best_positive = true
+    @inbounds for positive in (true, false)
+        total = d.b0
+        steps_taken = 0
+        for k in eachindex(d.block_steps, d.block_dB)
+            dB = d.block_dB[k]
+            on_side = if positive
+                dB > 0.0
+            else
+                dB < 0.0
+            end
+            on_side || continue
+            for _ in 1:d.block_steps[k]
+                total += dB
+                steps_taken += 1
+                if abs(total - target) < abs(best - target)
+                    best = total
+                    best_steps = steps_taken
+                    best_positive = positive
+                end
             end
         end
     end
-    # Record the chosen prefix in block_n.
+    # Record the winning side's prefix in block_n; the other side's blocks are 0.
+    fill!(d.block_n, 0)
     remaining = best_steps
     @inbounds for k in eachindex(d.block_steps)
-        n = min(remaining, d.block_steps[k])
-        d.block_n[k] = n
-        remaining -= n
+        dB = d.block_dB[k]
+        on_winning_side = if best_positive
+            dB > 0.0
+        else
+            dB < 0.0
+        end
+        if on_winning_side
+            n = min(remaining, d.block_steps[k])
+            d.block_n[k] = n
+            remaining -= n
+        end
     end
     return best
 end
@@ -334,13 +358,13 @@ function _sync_branch_arc_rows!(
     arc_row::Dict{Tuple{Int, Int}, Int},
     ix_to_number::Dict{Int, Int},
 )
-    d.current == d.synced && return nothing
+    d.current == d.synced && return
     fb = ix_to_number[d.from_ix]
     tb = ix_to_number[d.to_ix]
     ff_new, ft_new, tf_new = _branch_terms(d, d.current)
     ff_old, ft_old, tf_old = _branch_terms(d, d.synced)
     r = get(arc_row, (fb, tb), 0)
-    if r != 0
+    if !iszero(r)
         @inbounds begin
             Yft.nzval[_nz_index(Yft, r, d.from_ix)] += ff_new - ff_old
             Yft.nzval[_nz_index(Yft, r, d.to_ix)] += ft_new - ft_old
@@ -351,11 +375,11 @@ function _sync_branch_arc_rows!(
         # The branch may be stored under the reversed arc orientation; the from/to roles
         # of the four terms swap accordingly (its "from side" is our to bus).
         r = get(arc_row, (tb, fb), 0)
-        if r == 0
+        if iszero(r)
             @warn "discrete control: arc ($fb, $tb) of device \"$(d.name)\" not found \
                 in the arc-admittance axes; reported flows on that branch reflect its \
                 original parameter." maxlog = 1
-            return nothing
+            return
         end
         @inbounds begin
             Yft.nzval[_nz_index(Yft, r, d.from_ix)] += tf_new - tf_old
@@ -365,7 +389,7 @@ function _sync_branch_arc_rows!(
         end
     end
     d.synced = d.current
-    return nothing
+    return
 end
 
 """One-shot post-continuation sync: bring the arc-admittance rows of every moved branch
@@ -375,8 +399,8 @@ never touch the arc matrices. No-op when the arc admittance matrices were not bu
 function _sync_arc_admittances!(data, set::ControlledDeviceSet)
     Yft = data.power_network_matrix.arc_admittance_from_to
     Ytf = data.power_network_matrix.arc_admittance_to_from
-    (Yft === nothing || Ytf === nothing) && return nothing
-    isempty(set.taps) && isempty(set.phase_shifters) && return nothing
+    (isnothing(Yft) || isnothing(Ytf)) && return
+    isempty(set.taps) && isempty(set.phase_shifters) && return
     bus_lookup = PNM.get_bus_lookup(Yft)
     ix_to_number = Dict{Int, Int}(v => k for (k, v) in bus_lookup)
     arc_row = get_arc_lookup(data)   # (from_no, to_no) => arc row index
@@ -386,5 +410,5 @@ function _sync_arc_admittances!(data, set::ControlledDeviceSet)
     for d in set.phase_shifters
         _sync_branch_arc_rows!(Yft.data, Ytf.data, d, arc_row, ix_to_number)
     end
-    return nothing
+    return
 end

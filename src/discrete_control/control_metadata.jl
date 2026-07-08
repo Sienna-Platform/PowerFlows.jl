@@ -1,14 +1,5 @@
-# PSY ≥ 6 (the psy6 branch, via PSY #1705) adds first-class tap-control fields to
-# `TapTransformer` (`regulated_bus_number`, `tap_limits`, `number_of_tap_positions`,
-# `voltage_setpoint`); released PSY 5.x does not have them. Resolved once at load time so
-# the branch in `_tap_metadata` is a compile-time constant. When this package is built
-# against the psy6 stack (see the psy6 branch's `[sources]` pins in Project.toml) the
-# first-class path activates automatically; once PSY 6 is the compat floor, delete this
-# constant and the 5.x fallback branch.
-const PSY_HAS_TAP_CONTROL_FIELDS = isdefined(PSY, :get_regulated_bus_number)
-
 """Shunt susceptance invariants; `false` (with a `@warn`) de-enrolls the device, leaving
-it locked at its current setting — the PSS/E posture for bad control data."""
+it locked at its current setting (the safe posture for bad control data)."""
 function _validate_shunt(
     name::String,
     b_min::Float64,
@@ -28,7 +19,7 @@ function _validate_shunt(
         return false
     end
     for k in eachindex(steps, dB)
-        if steps[k] == 0 && dB[k] != 0.0
+        if iszero(steps[k]) && !iszero(dB[k])
             @warn "ControlledSwitchedShunt \"$name\": block $k has zero steps but \
                 nonzero dB=$(dB[k]) — malformed metadata; leaving the shunt locked."
             return false
@@ -38,7 +29,7 @@ function _validate_shunt(
 end
 
 """Tap invariants; `false` (with a `@warn`) de-enrolls the device, leaving the tap locked
-at its current ratio — the PSS/E posture for bad control data."""
+at its current ratio (the safe posture for bad control data)."""
 function _validate_tap(
     name::String,
     p_min::Float64,
@@ -56,8 +47,8 @@ function _validate_tap(
         return false
     end
     if ntp < 2
-        # PSS/E treats missing/degenerate position data as a locked changer; fabricating
-        # a default grid here would silently turn a locked device into an active one.
+        # Missing/degenerate position data means a locked changer; fabricating a default
+        # grid here would silently turn a locked device into an active one.
         @warn "ControlledTap \"$name\": fewer than 2 tap positions (ntp=$ntp); \
             leaving the tap locked at its current ratio."
         return false
@@ -77,45 +68,6 @@ function _validate_vset(kind::String, name::String, vset::Float64)::Bool
     return true
 end
 
-# First ext key (of `keys`, in order) holding a nonzero integer-parsable value; PSS/E uses
-# 0 as the "local control" sentinel. Negative controlled-bus numbers (PSS/E CONT1 sign
-# convention selects the metering/compensation side) refer to the same bus: take abs.
-function _controlled_bus_number(
-    ext::Dict,
-    keys::Tuple{Vararg{String}},
-    fallback::Int,
-)
-    for k in keys
-        haskey(ext, k) || continue
-        v = ext[k]
-        n = v isa Integer ? Int(v) : tryparse(Int, string(v))
-        (n !== nothing && n != 0) && return abs(n)
-    end
-    return fallback
-end
-
-function _ext_float(ext::Dict, keys::Tuple{Vararg{String}}, default::Float64)
-    for k in keys
-        haskey(ext, k) || continue
-        v = ext[k]
-        x = v isa Real ? Float64(v) : tryparse(Float64, string(v))
-        x === nothing || return x
-    end
-    return default
-end
-_ext_float(ext::Dict, key::String, default::Float64) = _ext_float(ext, (key,), default)
-
-function _ext_int(ext::Dict, keys::Tuple{Vararg{String}}, default::Int)
-    for k in keys
-        haskey(ext, k) || continue
-        v = ext[k]
-        x = v isa Integer ? Int(v) : tryparse(Int, string(v))
-        x === nothing || return x
-    end
-    return default
-end
-_ext_int(ext::Dict, key::String, default::Int) = _ext_int(ext, (key,), default)
-
 # Resolve a raw PSY bus number to a network index through the reduction's parent map
 # (merged bus → surviving parent); `nothing` when the bus is not in the reduced network.
 _resolve_bus_ix(
@@ -124,33 +76,22 @@ _resolve_bus_ix(
     n::Int,
 ) = get(bus_lookup, get(reverse_bus_search_map, n, n), nothing)
 
-"""Tap-control metadata for one `TapTransformer`, merged from (in override order) the
-PSS/E parser's ext keys and — on PSY ≥ 6 — the first-class fields.
-
-PSS/E parser reality (PSY `pm_io/psse.jl`): two-winding records carry winding-suffixed
-keys `CONT1` (controlled bus), `RMI1`/`RMA1` (ratio band), `NTP1` (positions); a voltage
-setpoint is never persisted (`VMI1`/`VMA1` are dropped by the parser). The unsuffixed
-`RMI`/`RMA`/`NTP`/`VSET` and `NREG` spellings are honored as user-facing overrides."""
+"""Tap-control metadata for one `TapTransformer`, read from its first-class PSY fields.
+`get_tap_limits` is already in tap-ratio units (the PSS/E parser scales RMI1/RMA1 by WINDV2);
+`get_regulated_bus_number` is 0 for local (to-bus) control."""
 function _tap_metadata(tx, to_bus::Int)
-    ext = PSY.get_ext(tx)
-    if PSY_HAS_TAP_CONTROL_FIELDS
-        reg = PSY.get_regulated_bus_number(tx)   # 0 ⇒ local (to-bus) control
-        lims = PSY.get_tap_limits(tx)
-        ntp0 = PSY.get_number_of_tap_positions(tx)
-        vset0 = PSY.get_voltage_setpoint(tx)
-    else
-        reg = 0
-        lims = (min = DEFAULT_TAP_RATIO_MIN, max = DEFAULT_TAP_RATIO_MAX)
-        ntp0 = DEFAULT_TAP_POSITIONS
-        vset0 = DEFAULT_TAP_VSET
+    lims = PSY.get_tap_limits(tx)
+    reg = PSY.get_regulated_bus_number(tx)
+    cbus = to_bus
+    if !iszero(reg)
+        cbus = reg
     end
-    cbus = reg != 0 ? reg : _controlled_bus_number(ext, ("CONT1", "NREG"), to_bus)
     return (
         cbus = cbus,
-        pmin = _ext_float(ext, ("RMI1", "RMI"), lims.min),
-        pmax = _ext_float(ext, ("RMA1", "RMA"), lims.max),
-        ntp = _ext_int(ext, ("NTP1", "NTP"), ntp0),
-        vset = _ext_float(ext, ("VSET",), vset0),
+        pmin = lims.min,
+        pmax = lims.max,
+        ntp = PSY.get_number_of_tap_positions(tx),
+        vset = PSY.get_voltage_setpoint(tx),
     )
 end
 
@@ -160,18 +101,25 @@ end
 # current point at BINIT. API-built components follow the PSY docstring instead: `Y` is
 # the fixed N=0 base and `initial_status` is meaningful. The presence of the parser's
 # MODSW key distinguishes the two conventions.
+# BINIT convention ⇔ the PSS/E parser produced this shunt: it stores the TOTAL in-service
+# admittance in `Y` and zeroes a full-length `initial_status` (see pm_io/psse.jl). API-built
+# shunts carry the switched part in a nonzero (or empty) `initial_status`. This is the write-back
+# convention too (see `ControlledSwitchedShunt.psse_convention`).
+function _is_binit_shunt(init_status::Vector{Int})
+    return !isempty(init_status) && all(iszero, init_status)
+end
+
 function _shunt_susceptance_model(
     name::String,
     Y0::Complex{Float64},
     steps::Vector{Int},
     dB::Vector{Float64},
     init_status::Vector{Int},
-    ext::Dict,
 )
-    if haskey(ext, "MODSW")   # PSS/E parser convention
+    if _is_binit_shunt(init_status)   # PSS/E parser (BINIT) convention
         b_fixed = 0.0
         current = imag(Y0)
-    else                      # PSY API convention
+    else                              # PSY API convention
         b_fixed = imag(Y0)
         current = imag(Y0) + sum(init_status .* dB; init = 0.0)
     end
@@ -193,8 +141,8 @@ end
 `ybus` is the assembled `AC_Ybus_Matrix` from `data.power_network_matrix`.
 
 Per-device data problems (unresolvable buses, degenerate ranges, unsupported control
-modes) de-enroll the device with a `@warn` — the device stays at its current setting,
-matching PSS/E's warn-and-lock posture — and never abort construction.
+modes) de-enroll the device with a `@warn` — the device stays at its current setting
+(a warn-and-lock posture) — and never abort construction.
 
 `include_experimental` gates the `ControlledFACTS` and `ControlledPhaseShifter` families,
 whose data sourcing is not yet production-validated (enable via
@@ -218,12 +166,16 @@ function build_controlled_device_set(
         fix = _resolve_bus_ix(bus_lookup, reverse_bus_search_map, fb)
         tix = _resolve_bus_ix(bus_lookup, reverse_bus_search_map, tb)
         cix = _resolve_bus_ix(bus_lookup, reverse_bus_search_map, md.cbus)
-        if fix === nothing || tix === nothing
-            @warn "ControlledTap \"$name\": terminal bus $(fix === nothing ? fb : tb) \
+        if isnothing(fix) || isnothing(tix)
+            missing_bus = tb
+            if isnothing(fix)
+                missing_bus = fb
+            end
+            @warn "ControlledTap \"$name\": terminal bus $missing_bus \
                 is not in the (reduced) network; leaving the tap locked."
             continue
         end
-        if cix === nothing
+        if isnothing(cix)
             @warn "ControlledTap \"$name\": controlled bus $(md.cbus) is not in the \
                 (reduced) network; leaving the tap locked."
             continue
@@ -236,8 +188,13 @@ function build_controlled_device_set(
         _validate_tap(name, md.pmin, md.pmax, md.ntp) || continue
         _validate_vset("ControlledTap", name, md.vset) || continue
         yt = 1.0 / (PSY.get_r(tx) + PSY.get_x(tx) * im)
-        ysh = PSY.get_primary_shunt(tx)
         tap0 = PSY.get_tap(tx)
+        if !(md.pmin - BOUNDS_TOLERANCE <= tap0 <= md.pmax + BOUNDS_TOLERANCE)
+            @warn "ControlledTap \"$name\": initial tap ratio $tap0 lies \
+                outside the tap-ratio band [$(md.pmin), $(md.pmax)]; leaving the tap \
+                locked at its current ratio."
+            continue
+        end
         push!(
             taps,
             ControlledTap(
@@ -247,7 +204,6 @@ function build_controlled_device_set(
                 cix,
                 md.vset,
                 yt,
-                ysh,
                 PSY.get_α(tx),   # −(π/6)·winding_group_number: PNM stamps t = p·e^{iα}
                 md.pmin,
                 md.pmax,
@@ -264,34 +220,36 @@ function build_controlled_device_set(
     for sa in PSY.get_available_components(PSY.SwitchedAdmittance, sys)
         name = PSY.get_name(sa)
         bus = PSY.get_number(PSY.get_bus(sa))
-        ext = PSY.get_ext(sa)
-        modsw = _ext_int(ext, "MODSW", DEFAULT_SHUNT_MODSW)
-        if modsw == 0
-            @debug "ControlledSwitchedShunt $name: MODSW=0 (locked); \
+        mode = PSY.get_control_mode(sa)
+        if mode == PSY.SwitchedAdmittanceControlMode.DISCRETE_VOLTAGE
+            continuous = false
+        elseif mode == PSY.SwitchedAdmittanceControlMode.CONTINUOUS_VOLTAGE
+            continuous = true
+        elseif mode == PSY.SwitchedAdmittanceControlMode.FIXED
+            @debug "ControlledSwitchedShunt $name: control_mode FIXED (locked); \
                 treated as fixed admittance, not enrolled."
             continue
-        elseif modsw == 1
-            continuous = false
-        elseif modsw == 2
-            continuous = true
         else
-            @warn "ControlledSwitchedShunt \"$name\": MODSW=$modsw (remote \
-                reactive-power / remote-device control) is not supported — only MODSW=1 \
-                (discrete voltage) and MODSW=2 (continuous voltage) are implemented. \
-                Leaving the shunt locked at its current setting."
+            @warn "ControlledSwitchedShunt \"$name\": control_mode $mode (remote \
+                reactive-power / remote-device control) is not supported — only \
+                DISCRETE_VOLTAGE and CONTINUOUS_VOLTAGE are implemented. Leaving the \
+                shunt locked at its current setting."
             continue
         end
         bix = _resolve_bus_ix(bus_lookup, reverse_bus_search_map, bus)
-        if bix === nothing
+        if isnothing(bix)
             @warn "ControlledSwitchedShunt \"$name\": bus $bus is not in the (reduced) \
                 network; leaving the shunt locked."
             continue
         end
-        # v35 stores the regulated bus under NREG, v32/33 under SWREM. (RMIDNT is a
-        # character remote-device identifier, not a bus number — deliberately not read.)
-        cbus = _controlled_bus_number(ext, ("NREG", "SWREM"), bus)
+        # `regulated_bus_number` is 0 for local control (PSS/E SWREM/NREG map to it in the parser).
+        reg = PSY.get_regulated_bus_number(sa)
+        cbus = bus
+        if !iszero(reg)
+            cbus = reg
+        end
         cix = _resolve_bus_ix(bus_lookup, reverse_bus_search_map, cbus)
-        if cix === nothing
+        if isnothing(cix)
             @warn "ControlledSwitchedShunt \"$name\": controlled bus $cbus is not in \
                 the (reduced) network; leaving the shunt locked."
             continue
@@ -302,8 +260,9 @@ function build_controlled_device_set(
         Y0 = PSY.get_Y(sa)
         steps = PSY.get_number_of_steps(sa)
         dB = imag.(PSY.get_Y_increase(sa))
+        init_status = PSY.get_initial_status(sa)
         b_fixed, current_b, bmin, bmax = _shunt_susceptance_model(
-            name, Y0, steps, dB, PSY.get_initial_status(sa), ext)
+            name, Y0, steps, dB, init_status)
         _validate_shunt(name, bmin, b_fixed, bmax, steps, dB) || continue
         push!(
             shunts,
@@ -324,6 +283,7 @@ function build_controlled_device_set(
                 continuous,
                 current_b,   # initial (reporting)
                 current_b,   # current
+                _is_binit_shunt(init_status),   # psse_convention: true ⇒ parser/BINIT
             ),
         )
     end
@@ -366,14 +326,14 @@ function _enroll_facts!(
         name = PSY.get_name(fd)
         mode = PSY.get_control_mode(fd)
         # OOS or no control mode ⇒ not a voltage-controlling shunt; not enrolled.
-        if mode === nothing || mode == PSY.FACTSOperationModes.OOS
+        if isnothing(mode) || mode == PSY.FACTSOperationModes.OOS
             @debug "ControlledFACTS $name: control_mode=$(mode) is not \
                 voltage-controlling; not enrolled."
             continue
         end
         bus = PSY.get_number(PSY.get_bus(fd))
         bix = _resolve_bus_ix(bus_lookup, reverse_bus_search_map, bus)
-        if bix === nothing
+        if isnothing(bix)
             @warn "ControlledFACTS \"$name\": bus $bus is not in the (reduced) network; \
                 device not enrolled."
             continue
@@ -402,7 +362,7 @@ function _enroll_facts!(
             ),
         )
     end
-    return nothing
+    return
 end
 
 # EXPERIMENTAL: phase-angle regulator (PAR) active-power-flow control. The flow setpoint
@@ -421,7 +381,7 @@ function _enroll_phase_shifters!(
         PSY.TransformerControlObjective.ACTIVE_POWER_FLOW || continue
         name = PSY.get_name(ps)
         p_target = PSY.get_active_power_flow(ps)
-        if p_target == 0.0
+        if iszero(p_target)
             # A raw-parsed PST always lands here (the parser never sets `pf`): a zero
             # setpoint would command the PAR to erase its own flow — actively harmful.
             @warn "ControlledPhaseShifter \"$name\": active_power_flow is 0.0, which is \
@@ -434,7 +394,7 @@ function _enroll_phase_shifters!(
         tb = PSY.get_number(PSY.get_to(arc))
         fix = _resolve_bus_ix(bus_lookup, reverse_bus_search_map, fb)
         tix = _resolve_bus_ix(bus_lookup, reverse_bus_search_map, tb)
-        if fix === nothing || tix === nothing || fix == tix
+        if isnothing(fix) || isnothing(tix) || fix == tix
             @warn "ControlledPhaseShifter \"$name\": arc bus missing from the (reduced) \
                 network or collapsed by a reduction; device not enrolled."
             continue
@@ -460,5 +420,5 @@ function _enroll_phase_shifters!(
             ),
         )
     end
-    return nothing
+    return
 end

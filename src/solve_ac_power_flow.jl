@@ -60,7 +60,7 @@ function solve_and_store_power_flow!(
             # Write moved device settings back BEFORE write_power_flow_solution! recomputes flows —
             # its consistency assertion compares against the stored (moved) flows. Unconditional
             # under active controls (needed for a self-consistent system); a no-op otherwise.
-            if write_device_settings || get_controlled_devices(data) !== nothing
+            if write_device_settings || !isnothing(get_controlled_devices(data))
                 write_device_settings!(system, data)
             end
             write_power_flow_solution!(
@@ -82,36 +82,72 @@ end
     write_device_settings!(system, data)
 
 Write the solved discrete-control device settings back into the `PSY.System`:
-tap ratios (`set_tap!`), switched-shunt admittances (`set_Y!`; for PSS/E-parsed
-components `Y` holds the total in-service admittance BINIT, so the solved
-susceptance is written there), and phase-shifter angles (`set_α!`). FACTS devices
-carry no stored setting field in PSY and are skipped. Mutates the user's system —
-called by [`solve_and_store_power_flow!`](@ref) only when
-`write_device_settings = true`; without it, an exported case pairs the solved
-voltages with the ORIGINAL device settings (see `get_controlled_device_results`).
+tap ratios (`set_tap!`), switched-shunt admittances (`set_Y!`/`set_initial_status!`,
+convention-aware — see below), and phase-shifter angles (`set_α!`). FACTS devices
+carry no stored setting field in PSY and are skipped. A device no longer present
+in `system` is skipped with a `@warn` (its solved setting is not written back).
+Mutates the user's system — called by [`solve_and_store_power_flow!`](@ref)
+whenever the solve ran with active discrete controls (a self-consistent system
+requires it), and when `write_device_settings = true` otherwise.
+
+Switched shunts are sourced under one of two conventions (see
+`ControlledSwitchedShunt.psse_convention`): PSS/E-parsed components store `Y` as
+the TOTAL in-service admittance (BINIT) and `initial_status` is ignored by
+enrollment, so the solved total is written straight into `Y`. PSY API-built components keep `Y` as
+the fixed (non-switchable) base and encode the switched part in
+`initial_status`; writing the solved TOTAL into `Y` while leaving
+`initial_status` untouched would double-count that status on re-enrollment, so
+`Y` stays at the base and the last-snap `block_n` is written into
+`initial_status` instead. If the device was never snapped (continuous, or held
+in its deadband the whole solve) `block_n` may not reconstruct `d.current`; in
+that case the solved total is written into `Y` with `initial_status` zeroed,
+matching the parser convention for that one write.
 """
 function write_device_settings!(system::PSY.System, data)
     set = get_controlled_devices(data)
-    set === nothing && return nothing
+    isnothing(set) && return
     for d in set.taps
         tx = PSY.get_component(PSY.TapTransformer, system, d.name)
-        tx === nothing && continue
+        if isnothing(tx)
+            @warn "write_device_settings!: TapTransformer \"$(d.name)\" not found in the \
+                system; its solved tap ratio $(d.current) was NOT written back."
+            continue
+        end
         PSY.set_tap!(tx, d.current)
     end
     for d in set.shunts
         sa = PSY.get_component(PSY.SwitchedAdmittance, system, d.name)
-        sa === nothing && continue
-        PSY.set_Y!(sa, Complex(d.g0, d.current))
+        if isnothing(sa)
+            @warn "write_device_settings!: SwitchedAdmittance \"$(d.name)\" not found in \
+                the system; its solved susceptance $(d.current) was NOT written back."
+            continue
+        end
+        if d.psse_convention
+            PSY.set_Y!(sa, Complex(d.g0, d.current))
+        else
+            realizable = d.b0 + sum(d.block_n .* d.block_dB; init = 0.0)
+            if abs(realizable - d.current) <= BOUNDS_TOLERANCE
+                PSY.set_Y!(sa, Complex(d.g0, d.b0))
+                PSY.set_initial_status!(sa, copy(d.block_n))
+            else
+                PSY.set_Y!(sa, Complex(d.g0, d.current))
+                PSY.set_initial_status!(sa, zeros(Int, length(d.block_n)))
+            end
+        end
     end
     for d in set.phase_shifters
         ps = PSY.get_component(PSY.PhaseShiftingTransformer, system, d.name)
-        ps === nothing && continue
+        if isnothing(ps)
+            @warn "write_device_settings!: PhaseShiftingTransformer \"$(d.name)\" not \
+                found in the system; its solved angle $(d.current) was NOT written back."
+            continue
+        end
         PSY.set_α!(ps, d.current)
     end
     isempty(set.facts) ||
         @debug "write_device_settings!: FACTS devices have no stored setting field in \
             PSY; solved susceptances are available via get_controlled_device_results."
-    return nothing
+    return
 end
 
 """
@@ -306,9 +342,11 @@ function _solve_with_q_limits!(
     end
 
     @error(
-        "could not enforce reactive power limits after $MAX_REACTIVE_POWER_ITERATIONS"
+        "could not enforce reactive power limits after $MAX_REACTIVE_POWER_ITERATIONS \
+        iterations; returning not-converged (bus types/Q were mutated by the final \
+        check without a re-solve)"
     )
-    return converged
+    return false
 end
 
 function _ac_power_flow(
@@ -318,7 +356,7 @@ function _ac_power_flow(
     kwargs...,
 )
     cd = data.controlled_devices
-    if cd === nothing || isempty(cd)
+    if isnothing(cd) || isempty(cd)
         return _solve_with_q_limits!(pf, data, time_step; kwargs...)
     end
     return _control_continuation!(pf, data, time_step; kwargs...)
