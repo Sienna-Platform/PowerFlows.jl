@@ -43,34 +43,39 @@ end
 end
 
 @testset "discrete control: MODSW gating" begin
-    function _build(modsw)
+    function _build(mode)
         sys = _make_tap_shunt_system()
         sa = first(PSY.get_components(PSY.SwitchedAdmittance, sys))
-        PSY.get_ext(sa)["MODSW"] = modsw
+        PSY.set_control_mode!(sa, mode)
         data = PowerFlowData(ACPolarPowerFlow(), sys)
         return PowerFlows.build_controlled_device_set(
             sys, PF.get_bus_lookup(data), data.power_network_matrix)
     end
 
-    # MODSW=0 (locked): shunt not enrolled; tap unaffected.
-    set0 = _build(0)
+    # FIXED (locked): shunt not enrolled; tap unaffected.
+    set0 = _build(PSY.SwitchedAdmittanceControlMode.FIXED)
     @test length(set0.shunts) == 0
     @test length(set0.taps) == 1
 
-    # MODSW=1 (discrete voltage): enrolled, continuous == false.
-    set1 = _build(1)
+    # DISCRETE_VOLTAGE: enrolled, continuous == false.
+    set1 = _build(PSY.SwitchedAdmittanceControlMode.DISCRETE_VOLTAGE)
     @test length(set1.shunts) == 1
     @test set1.shunts[1].continuous == false
 
-    # MODSW=2 (continuous voltage): enrolled, continuous == true.
-    set2 = _build(2)
+    # CONTINUOUS_VOLTAGE: enrolled, continuous == true.
+    set2 = _build(PSY.SwitchedAdmittanceControlMode.CONTINUOUS_VOLTAGE)
     @test length(set2.shunts) == 1
     @test set2.shunts[1].continuous == true
 
-    # MODSW 3–6 (remote reactive-power / device control): unsupported ⇒ the shunt is
+    # Remote reactive-power / remote-device control modes: unsupported ⇒ the shunt is
     # de-enrolled with a warning and stays locked (PSS/E posture); never an error.
-    for m in (3, 4, 5, 6)
-        setm = @test_logs (:warn, Regex("MODSW=$m")) match_mode = :any _build(m)
+    unsupported = (
+        PSY.SwitchedAdmittanceControlMode.DISCRETE_REACTIVE_PLANT,
+        PSY.SwitchedAdmittanceControlMode.DISCRETE_REACTIVE_VSC,
+        PSY.SwitchedAdmittanceControlMode.DISCRETE_ADMITTANCE_REMOTE,
+    )
+    for mode in unsupported
+        setm = @test_logs (:warn, r"not supported") match_mode = :any _build(mode)
         @test length(setm.shunts) == 0
         @test length(setm.taps) == 1   # the tap is unaffected by the bad shunt record
     end
@@ -81,7 +86,7 @@ end
     # de-enroll the device with a warning, not abort PowerFlowData construction.
     sys = _make_tap_shunt_system()
     tx = first(PSY.get_components(PSY.TapTransformer, sys))
-    PSY.get_ext(tx)["CONT1"] = 99   # no bus 99
+    PSY.set_regulated_bus_number!(tx, 99)   # no bus 99
     data = PowerFlowData(ACPolarPowerFlow(), sys)
     set = @test_logs (:warn, r"controlled bus 99") match_mode = :any (
         PowerFlows.build_controlled_device_set(
@@ -91,17 +96,15 @@ end
     @test length(set.shunts) == 1   # the shunt still enrolls
 end
 
-@testset "discrete control: tap ext keys (parser spellings)" begin
-    # The PSS/E parser writes winding-suffixed keys: CONT1 (controlled bus),
-    # RMI1/RMA1 (ratio band), NTP1 (positions). VSET is a user-facing override.
+@testset "discrete control: tap reads first-class control fields" begin
+    # The builder reads regulated_bus_number (controlled bus), tap_limits (ratio band),
+    # number_of_tap_positions, and voltage_setpoint directly off the PSY component.
     sys = _make_tap_shunt_system()
     tx = first(PSY.get_components(PSY.TapTransformer, sys))
-    ext = PSY.get_ext(tx)
-    ext["CONT1"] = 3
-    ext["RMI1"] = 0.88
-    ext["RMA1"] = 1.12
-    ext["NTP1"] = 25
-    ext["VSET"] = 1.03
+    PSY.set_regulated_bus_number!(tx, 3)
+    PSY.set_tap_limits!(tx, (min = 0.88, max = 1.12))
+    PSY.set_number_of_tap_positions!(tx, 25)
+    PSY.set_voltage_setpoint!(tx, 1.03)
     data = PowerFlowData(ACPolarPowerFlow(), sys)
     bl = PF.get_bus_lookup(data)
     set = PowerFlows.build_controlled_device_set(
@@ -131,12 +134,12 @@ end
 end
 
 @testset "discrete control: PSS/E parser shunt convention (Y = BINIT)" begin
-    # With the parser's MODSW key present, Y holds the TOTAL in-service admittance
-    # (BINIT) and initial_status is zeroed: the reachable range is spanned by the
-    # blocks alone (base 0) and the control baseline sits at BINIT.
+    # A full-length zeroed initial_status marks the parser (BINIT) convention: Y holds
+    # the TOTAL in-service admittance, so the reachable range is spanned by the blocks
+    # alone (base 0) and the control baseline sits at BINIT.
     sys = _make_tap_shunt_system()
     sa = first(PSY.get_components(PSY.SwitchedAdmittance, sys))
-    PSY.get_ext(sa)["MODSW"] = 1
+    PSY.set_control_mode!(sa, PSY.SwitchedAdmittanceControlMode.DISCRETE_VOLTAGE)
     PSY.set_Y!(sa, 0.0 + 0.1im)   # BINIT = 0.1 p.u. (two of the four 0.05 blocks in)
     data = PowerFlowData(ACPolarPowerFlow(), sys)
     set = PowerFlows.build_controlled_device_set(
@@ -148,13 +151,12 @@ end
     @test s.current ≈ 0.1        # baseline at BINIT, inside the reachable range
 end
 
-@testset "discrete control: shunt controlled bus SWREM/NREG" begin
-    function _shunt(ext_pairs...)
+@testset "discrete control: shunt controlled bus (regulated_bus_number)" begin
+    function _shunt(regulated_bus_number = nothing)
         sys = _make_tap_shunt_system()
         sa = first(PSY.get_components(PSY.SwitchedAdmittance, sys))
-        for (k, v) in ext_pairs
-            PSY.get_ext(sa)[k] = v
-        end
+        isnothing(regulated_bus_number) ||
+            PSY.set_regulated_bus_number!(sa, regulated_bus_number)
         data = PowerFlowData(ACPolarPowerFlow(), sys)
         bl = PF.get_bus_lookup(data)
         set = PowerFlows.build_controlled_device_set(
@@ -162,17 +164,13 @@ end
         return set.shunts[1], bl
     end
 
-    # v32/33: regulated bus comes from SWREM.
-    s_swrem, bl = _shunt("SWREM" => 2)
-    @test s_swrem.controlled_ix == bl[2]
+    # regulated_bus_number set ⇒ remote controlled bus.
+    s_remote, bl = _shunt(2)
+    @test s_remote.controlled_ix == bl[2]
 
-    # v35: NREG takes precedence over SWREM.
-    s_nreg, bl2 = _shunt("NREG" => 2, "SWREM" => 3)
-    @test s_nreg.controlled_ix == bl2[2]
-
-    # No remote-bus key ⇒ falls back to the shunt's local bus (3).
-    s_local, bl3 = _shunt()
-    @test s_local.controlled_ix == bl3[3]
+    # regulated_bus_number 0 (default) ⇒ falls back to the shunt's local bus (3).
+    s_local, bl2 = _shunt()
+    @test s_local.controlled_ix == bl2[3]
 end
 
 @testset "discrete control: shunt invariant validation (warn-and-lock)" begin
@@ -226,6 +224,29 @@ end
     @test PowerFlows._validate_tap("ok_tap", 0.9, 1.1, 33) == true
 end
 
+@testset "tap ratio band comes from tap_limits" begin
+    sys = _make_tap_shunt_system()
+    tx = first(PSY.get_components(PSY.TapTransformer, sys))
+    PSY.set_tap_limits!(tx, (min = 0.9, max = 1.1))
+    md = PowerFlows._tap_metadata(tx, 2)
+    @test md.pmin ≈ 0.9
+    @test md.pmax ≈ 1.1
+end
+
+@testset "out-of-band initial tap ratio de-enrolls with a warning" begin
+    sys = _make_tap_shunt_system()
+    tx = first(PSY.get_components(PSY.TapTransformer, sys))
+    PSY.set_tap!(tx, 1.5)   # far outside any [0.9, 1.1]-class band
+    pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; control_discrete_devices = true)
+    data =
+        @test_logs (:warn, r"outside the tap-ratio band") match_mode = :any PowerFlowData(
+            pf,
+            sys,
+        )
+    set = PowerFlows.get_controlled_devices(data)
+    @test isnothing(set) || isempty(set.taps)
+end
+
 @testset "discrete control: sigmoid law" begin
     # The raw sigmoid: midpoint at x = xset, saturating to hi (x ≪ xset) and
     # lo (x ≫ xset) when called as _sigmoid(lo, hi, ...) with hi > lo.
@@ -245,13 +266,13 @@ end
     S = 100.0
     δ = 0.02
     tap = PowerFlows.ControlledTap("tp", 1, 2, 2, 1.0,
-        1.0 / (0.01 + 0.1im), 0.0 + 0.0im, 0.0, 0.9, 1.1,
+        1.0 / (0.01 + 0.1im), 0.0, 0.9, 1.1,
         collect(range(0.9, 1.1; length = 33)), (1, 2, 3, 4), 1.0, 1.0, 1.0)
     remote = PowerFlows.ControlledTap("ts", 1, 2, 1, 1.0,
-        1.0 / (0.01 + 0.1im), 0.0 + 0.0im, 0.0, 0.9, 1.1,
+        1.0 / (0.01 + 0.1im), 0.0, 0.9, 1.1,
         collect(range(0.9, 1.1; length = 33)), (1, 2, 3, 4), 1.0, 1.0, 1.0)
     shunt = PowerFlows.ControlledSwitchedShunt("sh", 3, 3, 1.0, 0.95, 1.05, 0.0, 0.0,
-        [4], [0.05], 0.0, 0.2, zeros(Int, 1), false, 0.0, 0.0)
+        [4], [0.05], 0.0, 0.2, zeros(Int, 1), false, 0.0, 0.0, false)
     for d in (tap, remote, shunt)
         vset = PowerFlows.voltage_setpoint(d)
         for dVdp in (1.0, -1.0)
@@ -270,7 +291,7 @@ end
     # m ≥ 0 iff ω·(1+gbound) ≤ 1. (A negative slope is what previously made the
     # iterate alternate every step and tripped the oscillation-freeze detector.)
     d = PowerFlows.ControlledTap("t", 1, 2, 2, 1.0, 1.0 / (0.01 + 0.1im),
-        0.0 + 0.0im, 0.0, 0.9, 1.1, collect(range(0.9, 1.1; length = 33)),
+        0.0, 0.9, 1.1, collect(range(0.9, 1.1; length = 33)),
         (1, 2, 3, 4), 1.0, 1.0, 1.0)
     lo, hi = PowerFlows.parameter_limits(d)
     for S in (1.0e2, 1.0e3, 5.0e3), dVdp in (-5.0, -1.0, -0.1, 0.1, 1.0, 5.0)
@@ -301,7 +322,7 @@ end
 @testset "discrete control: continuous shunt not grid-pinned" begin
     sys = _make_solvable_tap_shunt_system()
     sa = first(PSY.get_components(PSY.SwitchedAdmittance, sys))
-    PSY.get_ext(sa)["MODSW"] = 2
+    PSY.set_control_mode!(sa, PSY.SwitchedAdmittanceControlMode.CONTINUOUS_VOLTAGE)
     pf = ACPolarPowerFlow(; control_discrete_devices = true)
     data = PowerFlowData(pf, sys)
     solve_power_flow!(data)
@@ -314,7 +335,7 @@ end
 
 @testset "discrete control: snap" begin
     d = PowerFlows.ControlledTap("t", 1, 2, 2, 1.0, 1.0 + 0im,
-        0im, 0.0, 0.9, 1.1, collect(range(0.9, 1.1; length = 5)),
+        0.0, 0.9, 1.1, collect(range(0.9, 1.1; length = 5)),
         (1, 2, 3, 4), 1.0, 1.0, 1.0)  # levels: 0.9,0.95,1.0,1.05,1.1
     @test PowerFlows.snap_to_discrete(d, 1.03) == 1.05
     @test PowerFlows.snap_to_discrete(d, 1.20) == 1.1   # clamp
@@ -322,14 +343,14 @@ end
     sh = PowerFlows.ControlledSwitchedShunt("s", 3, 3, 1.0, 0.95, 1.05, 0.0, 0.0,
         [4], block_dB_sh_snap, 0.0, 0.2,
         zeros(Int, length(block_dB_sh_snap)),
-        false, 0.0, 0.0)  # reachable: 0,0.05,0.10,0.15,0.20
+        false, 0.0, 0.0, false)  # reachable: 0,0.05,0.10,0.15,0.20
     @test PowerFlows.snap_to_discrete(sh, 0.12) == 0.10
     @test sh.block_n == [2]
     block_dB_sh2 = [0.1, 0.02]
     sh2 = PowerFlows.ControlledSwitchedShunt("s2", 3, 3, 1.0, 0.95, 1.05, 0.0, 0.0,
         [2, 3], block_dB_sh2, 0.0, 0.26,
         zeros(Int, length(block_dB_sh2)),
-        false, 0.0, 0.0)  # PSS/E cumulative chain: blocks activate in listed order
+        false, 0.0, 0.0, false)  # PSS/E cumulative chain: blocks activate in listed order
     # Chain totals: 0.1, 0.2 (block 1), then 0.22, 0.24, 0.26 (block 2).
     # 0.16 (= 1×0.1 + 3×0.02 with block 1 partially on) is NOT physically reachable;
     # nearest chain point to 0.17 is 0.2.
@@ -337,12 +358,26 @@ end
     @test sh2.block_n == [2, 0]
 end
 
+@testset "mixed-sign shunt snap reaches both chain sides" begin
+    d = PowerFlows.ControlledSwitchedShunt(
+        "mixed", 1, 1, 1.0, 0.95, 1.05, 0.0,
+        0.0,                    # b0: all blocks off = neutral
+        [1, 1],                 # one reactor step, one capacitor step
+        [-0.5, 0.5],            # reactor listed first (RAW convention)
+        -0.5, 0.5,              # envelope
+        [0, 0], false, 0.0, 0.0, false)
+    @test PowerFlows.snap_to_discrete(d, 0.45) == 0.5    # capacitive side reachable
+    @test PowerFlows.snap_to_discrete(d, -0.45) == -0.5  # reactive side reachable
+    @test iszero(PowerFlows.snap_to_discrete(d, 0.1))    # neutral still nearest
+    @test (@allocated PowerFlows.snap_to_discrete(d, 0.45)) == 0
+end
+
 @testset "discrete control: continuous shunt no snap" begin
     # continuous == true ⇒ snap_to_discrete returns the clamped continuous value,
     # NOT the nearest reachable block grid point.
     block_dB = [0.05]
     cont = PowerFlows.ControlledSwitchedShunt("c", 3, 3, 1.0, 0.95, 1.05, 0.0, 0.0,
-        [4], block_dB, 0.0, 0.2, zeros(Int, length(block_dB)), true, 0.0, 0.0)
+        [4], block_dB, 0.0, 0.2, zeros(Int, length(block_dB)), true, 0.0, 0.0, false)
     # 0.12 is between grid points 0.10 and 0.15; continuous must return it unchanged.
     @test PowerFlows.snap_to_discrete(cont, 0.12) == 0.12
     # clamped at the rails.
@@ -350,7 +385,7 @@ end
     @test PowerFlows.snap_to_discrete(cont, -0.10) == 0.0
     # sanity: the discrete twin DOES snap 0.12 → 0.10.
     disc = PowerFlows.ControlledSwitchedShunt("d", 3, 3, 1.0, 0.95, 1.05, 0.0, 0.0,
-        [4], block_dB, 0.0, 0.2, zeros(Int, length(block_dB)), false, 0.0, 0.0)
+        [4], block_dB, 0.0, 0.2, zeros(Int, length(block_dB)), false, 0.0, 0.0, false)
     @test PowerFlows.snap_to_discrete(disc, 0.12) == 0.10
 end
 
@@ -423,7 +458,7 @@ end
     sys = _make_tap_shunt_system()
     # Default (control_discrete_devices = false): controlled_devices is nothing.
     data_off = PowerFlowData(ACPolarPowerFlow(), sys)
-    @test data_off.controlled_devices === nothing
+    @test isnothing(data_off.controlled_devices)
 
     # Enabled: controlled_devices is a ControlledDeviceSet with expected contents.
     data_on = PowerFlowData(ACPolarPowerFlow(; control_discrete_devices = true), sys)
@@ -436,8 +471,8 @@ end
     sys = _make_tap_shunt_system()
     a = PowerFlowData(ACPolarPowerFlow(), sys)
     b = PowerFlowData(ACPolarPowerFlow(; control_discrete_devices = false), sys)
-    @test a.controlled_devices === nothing
-    @test b.controlled_devices === nothing
+    @test isnothing(a.controlled_devices)
+    @test isnothing(b.controlled_devices)
 end
 
 @testset "discrete control: tap+shunt converges (NR)" begin
@@ -467,7 +502,7 @@ end
     solve_power_flow!(data)
     @test all(data.converged)
     t = data.controlled_devices.taps[1]
-    # The controlled bus is the tap's FROM bus (set via ext["NREG"] = 2).
+    # The controlled bus is the tap's FROM bus (set via regulated_bus_number = 2).
     @test t.controlled_ix == t.from_ix
     @test t.current in t.levels
     @test abs(data.bus_magnitude[t.controlled_ix, 1] - t.vset) <=
@@ -492,7 +527,7 @@ end
     pf = ACPolarPowerFlow()
     data1 = PowerFlowData(pf, sys)
     data2 = PowerFlowData(pf, sys)
-    @test data1.controlled_devices === nothing
+    @test isnothing(data1.controlled_devices)
     converged1 = solve_power_flow!(data1)
     converged2 = solve_power_flow!(data2)
     @test converged1
@@ -630,23 +665,18 @@ end
 end
 
 @testset "discrete control: tap reads first-class PSY fields (#1684)" begin
-    # Controllability set via the new PSY fields (no ext); the builder must read them.
-    # Requires the psy6 PSY branch (PSY #1705); on released PSY 5.x the fields do not
-    # exist and the builder uses the DEFAULT_TAP_* fallbacks instead.
-    if !PowerFlows.PSY_HAS_TAP_CONTROL_FIELDS
-        @test_skip "requires a PowerSystems.jl with the PSY #1705 tap-control fields (psy6 branch)"
-    else
-        sys = _make_field_controlled_tap_system()
-        pf = ACPolarPowerFlow(; control_discrete_devices = true)
-        data = PowerFlowData(pf, sys)
-        t = data.controlled_devices.taps[1]
-        @test t.p_min ≈ 0.85
-        @test t.p_max ≈ 1.15
-        @test length(t.levels) == 17
-        @test t.vset ≈ 1.02
-        # regulated_bus_number = 3 ⇒ remote controlled bus, not the to-bus.
-        @test t.controlled_ix == PNM.get_bus_lookup(data.power_network_matrix)[3]
-    end
+    # Controllability set via the first-class PSY 5.12 fields (no ext); the builder
+    # reads them directly.
+    sys = _make_field_controlled_tap_system()
+    pf = ACPolarPowerFlow(; control_discrete_devices = true)
+    data = PowerFlowData(pf, sys)
+    t = data.controlled_devices.taps[1]
+    @test t.p_min ≈ 0.85
+    @test t.p_max ≈ 1.15
+    @test length(t.levels) == 17
+    @test t.vset ≈ 1.02
+    # regulated_bus_number = 3 ⇒ remote controlled bus, not the to-bus.
+    @test t.controlled_ix == PNM.get_bus_lookup(data.power_network_matrix)[3]
 end
 
 @testset "discrete control: construction guards" begin
@@ -678,7 +708,7 @@ end
     sys = _make_svc_system(; max_shunt_current = 100.0)
     pf_off = ACPolarPowerFlow(; control_discrete_devices = true)
     data_off = PowerFlowData(pf_off, sys)
-    @test data_off.controlled_devices === nothing   # SVC was the only device
+    @test isnothing(data_off.controlled_devices)   # SVC was the only device
     # With the flag, the SVC enrolls.
     pf_on = ACPolarPowerFlow(;
         control_discrete_devices = true,
@@ -791,21 +821,21 @@ end
 @testset "discrete control: shunt deadband semantics" begin
     # In-band voltages hold the device (PSS/E VSWLO/VSWHI semantics); out-of-band do not.
     sh = PowerFlows.ControlledSwitchedShunt("s", 3, 3, 1.0, 0.95, 1.05, 0.0, 0.0,
-        [4], [0.05], 0.0, 0.2, zeros(Int, 1), false, 0.0, 0.0)
+        [4], [0.05], 0.0, 0.2, zeros(Int, 1), false, 0.0, 0.0, false)
     @test PowerFlows._in_deadband(sh, 1.0)
     @test PowerFlows._in_deadband(sh, 0.96)
     @test !PowerFlows._in_deadband(sh, 0.94)
     @test !PowerFlows._in_deadband(sh, 1.06)
     # Taps carry a point setpoint: never in a deadband.
     tap = PowerFlows.ControlledTap("t", 1, 2, 2, 1.0, 1.0 + 0im,
-        0im, 0.0, 0.9, 1.1, collect(range(0.9, 1.1; length = 5)),
+        0.0, 0.9, 1.1, collect(range(0.9, 1.1; length = 5)),
         (1, 2, 3, 4), 1.0, 1.0, 1.0)
     @test !PowerFlows._in_deadband(tap, 1.0)
     # Scale-aware settle tolerance: wide-range devices get a relative floor.
     @test PowerFlows._param_tol(tap) ≈
           max(PowerFlows.CONTROL_PARAM_TOL, PowerFlows.CONTROL_PARAM_RTOL * 0.2)
     wide = PowerFlows.ControlledSwitchedShunt("w", 3, 3, 1.0, 0.95, 1.05, 0.0, 0.0,
-        [10], [1.0], 0.0, 10.0, zeros(Int, 1), false, 0.0, 0.0)
+        [10], [1.0], 0.0, 10.0, zeros(Int, 1), false, 0.0, 0.0, false)
     @test PowerFlows._param_tol(wide) ≈ PowerFlows.CONTROL_PARAM_RTOL * 10.0
 end
 
@@ -853,6 +883,78 @@ end
     @test PSY.get_tap(tx2) in levels
 end
 
+@testset "write-back round-trips the API shunt convention" begin
+    sys = _make_tap_shunt_system()
+    sa = first(PSY.get_components(PSY.SwitchedAdmittance, sys))
+    # A nonzero initial_status marks the API convention (Y is the fixed base,
+    # initial_status meaningful), as opposed to the parser's zeroed-status BINIT
+    # convention.
+    # One block already switched on at enrollment; the fixture's wide deadband holds the
+    # shunt here (it never re-snaps), so this also exercises the never-snapped realizability
+    # guard: block_n stays [0] while d.current reflects the pre-activated block.
+    PSY.set_initial_status!(sa, [1])
+    pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; control_discrete_devices = true)
+    data = PowerFlowData(pf, sys)
+    ts = 1
+    @test PowerFlows.solve_power_flow!(data)
+    PowerFlows.write_device_settings!(sys, data)
+    solved =
+        PowerFlows.current_parameter(first(PowerFlows.get_controlled_devices(data).shunts))
+    # Re-enrolling from the written-back system must reproduce the solved susceptance,
+    # not double-count it.
+    data2 = PowerFlowData(pf, sys)
+    d2 = first(PowerFlows.get_controlled_devices(data2).shunts)
+    @test PowerFlows.current_parameter(d2) ≈ solved atol = 1e-9
+end
+
+@testset "write-back hits the primary API shunt branch on a genuine snap" begin
+    # _make_shunt_snap_system's weak bus needs 3 of 4 discrete steps to reach the
+    # deadband, so the controlled solve snaps block_n to a nonzero, non-saturated
+    # count. Unlike the never-snapped fixture above, this exercises the PRIMARY
+    # (realizable) branch of write_device_settings!, not the fallback.
+    sys = _make_shunt_snap_system()
+    sa0 = first(PSY.get_components(PSY.SwitchedAdmittance, sys))
+    @test isempty(PSY.get_initial_status(sa0))   # API convention, not the BINIT marker
+    pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; control_discrete_devices = true)
+    data = PowerFlowData(pf, sys)
+    @test PowerFlows.solve_power_flow!(data)
+    d = first(PowerFlows.get_controlled_devices(data).shunts)
+    @test !iszero(sum(d.block_n))
+    PowerFlows.write_device_settings!(sys, data)
+    sa = PSY.get_component(PSY.SwitchedAdmittance, sys, d.name)
+    @test PSY.get_Y(sa) ≈ Complex(d.g0, d.b0)
+    @test PSY.get_initial_status(sa) == d.block_n
+    data2 = PowerFlowData(pf, sys)
+    d2 = first(PowerFlows.get_controlled_devices(data2).shunts)
+    @test PowerFlows.current_parameter(d2) ≈ d.current atol = 1e-9
+end
+
+@testset "sub-noise secant samples do not freeze devices" begin
+    sys = _make_tap_shunt_system()
+    pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; control_discrete_devices = true)
+    data = PowerFlowData(pf, sys)
+    ts = 1
+    @test PowerFlows._solve_with_q_limits!(pf, data, ts)
+    set = PowerFlows.get_controlled_devices(data)
+    d = first(set.taps)
+    frozen = [false]
+    dVdp = [0.05]
+    # A sign-flipped but sub-floor sample must be ignored: gain unchanged, not frozen.
+    PowerFlows._maybe_refresh_gain!(
+        d,
+        1,
+        data,
+        ts,
+        frozen,
+        dVdp,
+        0.05,
+        -5.0e-6 / 2.0e-5,
+        5.0e-6,
+    )
+    @test !frozen[1]
+    @test dVdp[1] == 0.05
+end
+
 @testset "discrete control: linearized plant sensitivity matches FD probe (P2)" begin
     # The linearized sensitivity dy/dp = (−J⁻¹ ∂F/∂p)[Vm(controlled)] must agree with the
     # finite-difference probe in SIGN and magnitude (the FD probe carries O(δ) truncation, so
@@ -864,25 +966,31 @@ end
     PowerFlows._solve_with_q_limits!(pf, data, 1)   # converge base case only
     set = data.controlled_devices
     ctx = PowerFlows._sensitivity_context(pf, data, 1)
-    @test ctx !== nothing
+    @test !isnothing(ctx)
+    scratch_snap = PowerFlows._snapshot_state(data, 1)
     for d in (set.taps[1], set.shunts[1])
         lin, ok_lin = PowerFlows._linear_plant_sign(d, data, 1, ctx)
-        fd, ok_fd = PowerFlows._plant_sign(d, data, 1, pf)
+        fd, ok_fd = PowerFlows._plant_sign(d, data, 1, pf, scratch_snap)
         @test ok_lin && ok_fd
         @test sign(lin) == sign(fd)
         @test isapprox(lin, fd; rtol = 1e-2)
     end
 end
 
-@testset "discrete control: P2 keeps symbolic factorization at 1 per continuation" begin
-    # P1 (symbolic reuse) + P2 (sensitivity context reuses that symbolic factor, refactors
-    # numerically): the whole continuation performs exactly one symbolic factorization.
+@testset "discrete control: P2 keeps symbolic factorization at 2 per continuation" begin
+    # P1 (symbolic reuse) + P2 (the sensitivity context reuses that symbolic factor, refactors
+    # numerically): the whole continuation performs exactly two counted builds — one for the
+    # first `_ctrl_solve!`'s persisted `PolarNRCache` (the real KLU symbolic factorization) and
+    # one for the single full `_sensitivity_context` build in the probe phase. Every subsequent
+    # batched-pass gain refresh goes through `_refresh_sensitivity_context!` (values-only,
+    # reusing both the KLU symbolic factor AND the persisted residual/Jacobian objects), so
+    # neither count grows with the number of passes.
     sys = _make_solvable_tap_shunt_system()
     pf = ACPolarPowerFlow(; control_discrete_devices = true)
     data = PowerFlowData(pf, sys)
     solve_power_flow!(data)
     @test all(data.converged)
-    @test PowerFlows.get_control_symbolic_factor_count(data) == 1
+    @test PowerFlows.get_control_symbolic_factor_count(data) == 2
     @test PowerFlows.get_control_inner_solve_count(data) > 1
 end
 
@@ -940,4 +1048,139 @@ end
     # Batched: n8 ≈ n1 (one solve/pass, flat). Sequential would give n8 ≳ 8·n1. Allow generous
     # headroom for the extra per-pass work while still failing loudly if batching regresses.
     @test n8 < 2 * n1 + 20
+end
+
+@testset "linear plant sign matches FD probe at PV controlled bus" begin
+    sys = _make_tap_shunt_system()
+    pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; control_discrete_devices = true)
+    data = PowerFlowData(pf, sys)
+    ts = 1
+    # Converge the base state, then build the sensitivity context the probes use.
+    @test PowerFlows._solve_with_q_limits!(pf, data, ts)
+    ctx = PowerFlows._sensitivity_context(pf, data, ts)
+    @test !isnothing(ctx)
+    set = PowerFlows.get_controlled_devices(data)
+    for d in set.shunts
+        cbus = PowerFlows.controlled_bus_ix(d)
+        # Force the controlled bus PV (the must_be_PV production case).
+        original_bt = data.bus_type[cbus, ts]
+        data.bus_type[cbus, ts] = PSY.ACBusTypes.PV
+        s_lin, ok = PowerFlows._linear_plant_sign(d, data, ts, ctx)
+        data.bus_type[cbus, ts] = original_bt
+        @test ok
+        # Voltage at a PV bus is pinned: the true sensitivity is exactly zero.
+        @test iszero(s_lin)
+    end
+end
+
+@testset "_restore_one! early-return restores state on a failed solve" begin
+    sys = _make_tap_shunt_system()
+    pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; control_discrete_devices = true)
+    data = PowerFlowData(pf, sys)
+    ts = 1
+    @test PowerFlows._solve_with_q_limits!(pf, data, ts)
+    set = PowerFlows.get_controlled_devices(data)
+    d = first(set.taps)
+    pre_v = copy(data.bus_magnitude[:, ts])
+    pre_q = copy(data.bus_reactive_power_injections[:, ts])
+    # `_run_power_flow_method`'s loop guard is `i < maxIterations` with i starting at 1,
+    # so maxIterations=1 (or 0) takes ZERO real steps — maxIterations=2 is the smallest
+    # budget that runs exactly one real NR step (mutating bus_magnitude away from the
+    # poisoned start) while still failing to converge from such a bad warm start.
+    data.bus_magnitude[:, ts] .= 0.05
+    snapshot_v = copy(data.bus_magnitude[:, ts])
+    # The forced non-convergence emits an @error at finalization; capture it with @test_logs so
+    # it does not trip run_tests()'s zero-Logging.Error-events assertion (full suite).
+    scratch_snap = PowerFlows._snapshot_state(data, ts)
+    ok =
+        @test_logs (:error, r"failed to converge") match_mode = :any PowerFlows._restore_one!(
+            d, data, ts, PowerFlows.current_parameter(d), pf, scratch_snap;
+            maxIterations = 2)
+    @test !ok
+    # On failure the pre-call state must be untouched (no diverged iterate left).
+    @test data.bus_magnitude[:, ts] == snapshot_v
+    # Restore sanity for later testsets.
+    data.bus_magnitude[:, ts] .= pre_v
+    data.bus_reactive_power_injections[:, ts] .= pre_q
+end
+
+@testset "snap holds never-moved off-grid devices" begin
+    sys = _make_tap_shunt_system()
+    pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; control_discrete_devices = true)
+    data = PowerFlowData(pf, sys)
+    ts = 1
+    @test PowerFlows._solve_with_q_limits!(pf, data, ts)
+    set = PowerFlows.get_controlled_devices(data)
+    d = first(set.shunts)
+    # Simulate a deadband-held device whose baseline is OFF the prefix chain: current
+    # equals initial (never moved) and sits between two chain points.
+    off_chain = d.initial + 0.4 * minimum(abs, d.block_dB)
+    d.initial = off_chain
+    PowerFlows.apply_parameter!(d, data, off_chain, ts)
+    PowerFlows._snap_device_group!([d], data, ts)
+    @test PowerFlows.current_parameter(d) == off_chain   # held, not snapped
+end
+
+@testset "probe restores VSC DC-network state" begin
+    # A VSC system passes the construction guard (only LCC is rejected), so it can enter the
+    # continuation with a controlled tap. `_read_vsc_state!` writes the solver iterate into
+    # dcn.p_c/q_c/node_vdc on every residual evaluation; a probe that fails to restore them
+    # would leak a diverged DC state into the next warm start.
+    #
+    # The "to" converter must NOT pin P via DC_POWER for this to be observable: with a fixed P
+    # setpoint, p_c/node_vdc are pure DC-side algebra (P_from + P_to = losses(Vdc), Vdc[slack]
+    # fixed) and are exactly invariant to any AC-only perturbation regardless of restore
+    # correctness. Giving the "to" converter AC-voltage control (ControlPVac: P pinned, Q free)
+    # makes q_c a genuine AC-network-coupled unknown — moving under a nearby tap probe and
+    # needing a real restore — while p_c/node_vdc stay checked too (they should never move).
+    sys = _build_vsc_pq_system(;
+        ac_control_to = PSY.VSCACControlModes.AC_VOLTAGE,
+        ac_setpoint_to = 1.0,
+    )
+    pq = sort!(
+        collect(
+            PSY.get_components(
+                b -> PSY.get_bustype(b) == PSY.ACBusTypes.PQ,
+                PSY.ACBus,
+                sys,
+            ),
+        );
+        by = PSY.get_number,
+    )
+    _add_control_tap!(sys, pq[2], pq[3])   # incident to the AC-voltage-controlled VSC bus
+    pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
+        control_discrete_devices = true,
+        solver_settings = VSC_SETTINGS,
+    )
+    data = PowerFlowData(pf, sys)
+    ts = 1
+    @test PowerFlows._solve_with_q_limits!(pf, data, ts)
+    dcn = PowerFlows.get_dc_network(data)
+    @test PowerFlows.has_dc_network(dcn)
+    pre_p = copy(dcn.p_c[:, ts])
+    pre_q = copy(dcn.q_c[:, ts])
+    pre_v = copy(dcn.node_vdc[:, ts])
+    set = PowerFlows.get_controlled_devices(data)
+    @test !isempty(set.taps)
+    d = first(set.taps)
+    scratch_snap = PowerFlows._snapshot_state(data, ts)
+    PowerFlows._plant_sign(d, data, ts, pf, scratch_snap)   # probe solves, then must restore
+    @test dcn.p_c[:, ts] == pre_p
+    @test dcn.node_vdc[:, ts] == pre_v
+    @test dcn.q_c[:, ts] == pre_q
+end
+
+@testset "continuation reuses symbolic factorization and bounded inner solves" begin
+    # Task 13(b): the sensitivity context (residual + Jacobian + numeric refactor) must be
+    # built ONCE per continuation and REFRESHED (values only) thereafter, not rebuilt from
+    # scratch on every converged batched pass. `get_control_symbolic_factor_count` is the
+    # regression metric: a full `_sensitivity_context` build counts, a values-only
+    # `_refresh_sensitivity_context!` does not.
+    sys = _make_tap_shunt_system()
+    pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; control_discrete_devices = true)
+    data = PowerFlowData(pf, sys)
+    @test PowerFlows.solve_power_flow!(data)
+    @test PowerFlows.get_control_symbolic_factor_count(data) <= 2
+    n_inner = PowerFlows.get_control_inner_solve_count(data)
+    @test 0 < n_inner < 200
 end

@@ -201,6 +201,58 @@ end
     @test hess.Hv.rowval == rowval && hess.Hv.colptr == colptr
 end
 
+@testset "homotopy_x0 rectifier start is interior" begin
+    # Deep-commutation regime β_r ≥ V·t: force it directly on the data so the
+    # test doesn't depend on how simple_lcc_system()'s defaults happen to land.
+    time_step = 1
+    sys, _ = simple_lcc_system()
+    pf = ACPowerFlow{NewtonRaphsonACPowerFlow}()
+    data = PowerFlowData(pf, sys)
+    for i in 1:length(data.lcc.i_dc[:, time_step])
+        # β_r = x_t·I_dc/√2; with V ≈ t ≈ 1 at flat start, this puts
+        # β_r/(V·t) = 1.5, squarely inside the deep-commutation regime.
+        data.lcc.i_dc[i, time_step] = 1.0
+        data.lcc.rectifier.transformer_reactance[i] = 1.5 * sqrt(2)
+    end
+    x = PF.homotopy_x0(data, time_step)
+
+    n_lcc = size(data.lcc.p_set, 1)
+    num_buses = first(size(PF.get_bus_type(data)))
+    for i in 1:n_lcc
+        # Offset computation copied verbatim from homotopy_x0's own loop.
+        offset_lcc = num_buses * 2 + (i - 1) * 4
+        t_r = x[offset_lcc + 1]
+        α_r = x[offset_lcc + 3]
+        V_fb = PF._bus_V(data, first(data.lcc.bus_indices[i]), time_step)
+        β_r =
+            data.lcc.rectifier.transformer_reactance[i] * data.lcc.i_dc[i, time_step] /
+            sqrt(2)
+        u_r = cos(α_r) - β_r / (V_fb * t_r)
+        @test -1.0 < u_r < 1.0
+    end
+end
+
+@testset "homotopy_x0 rectifier start is non-negative under deep commutation" begin
+    # β_r/(V·t) ≈ 3: the interior window for α_r is empty (max_α_r_interior < 0).
+    # The fallback must clamp to a non-negative angle, never a negative one.
+    time_step = 1
+    sys, _ = simple_lcc_system()
+    pf = ACPowerFlow{NewtonRaphsonACPowerFlow}()
+    data = PowerFlowData(pf, sys)
+    for i in 1:length(data.lcc.i_dc[:, time_step])
+        data.lcc.i_dc[i, time_step] = 1.0
+        data.lcc.rectifier.transformer_reactance[i] = 3.0 * sqrt(2)
+    end
+    x = PF.homotopy_x0(data, time_step)
+
+    n_lcc = size(data.lcc.p_set, 1)
+    num_buses = first(size(PF.get_bus_type(data)))
+    for i in 1:n_lcc
+        offset_lcc = num_buses * 2 + (i - 1) * 4
+        @test x[offset_lcc + 3] >= 0.0
+    end
+end
+
 @testset "RH method: gradient" begin
     time_step = 1
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14")

@@ -267,7 +267,7 @@ end
         solve_power_flow!(data)
 
         # The field should be populated after solve.
-        @test data.arc_active_power_losses !== nothing
+        @test !isnothing(data.arc_active_power_losses)
         losses = data.arc_active_power_losses
 
         # Recompute expected losses from resistances and flows.
@@ -323,5 +323,20 @@ end
 
         # Q_losses must be zero for DC.
         @test all(flow_df[!, :Q_losses] .== 0.0)
+    end
+end
+
+@testset "DC solve parity across barrier rewiring" begin
+    # Guards the function-barrier refactor (_run_aba_solve!/_run_ptdf_solve!/
+    # _run_vptdf_solve!): a repeated solve on the same `data` must reuse the
+    # cached factorization/scratch and reproduce the same flows. DC solves are
+    # FP-nondeterministic at ~1e-13, so compare with isapprox, never ==.
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    for pf in (DCPowerFlow(), PTDFDCPowerFlow(), vPTDFDCPowerFlow())
+        data = PowerFlowData(pf, sys)
+        solve_power_flow!(data)
+        flows_before = copy(data.arc_active_power_flow_from_to)
+        solve_power_flow!(data)
+        @test isapprox(data.arc_active_power_flow_from_to, flows_before; atol = 1e-10)
     end
 end

@@ -71,12 +71,23 @@ end
     pf = ACPowerFlow{PF.NewtonRaphsonACPowerFlow}(; correct_bustypes = true)
     data = PF.PowerFlowData(pf, sys)
     PF.solve_power_flow!(data)               # warm: builds + caches the structure
+    # Perturb injections so the measured solve must ITERATE (not a 0-iteration warm start).
+    data.bus_active_power_injections[:, 1] .*= 1.02
+    a_iterating = @allocated PF.solve_power_flow!(data)
+    @test a_iterating < 4_000_000
     v1 = copy(data.bus_magnitude[:, 1])
     θ1 = copy(data.bus_angles[:, 1])
-    a = @allocated PF.solve_power_flow!(data)   # reuse the cached structure
-    @test a < 2_000_000                          # was ~4.2 MB before the cache
-    @test data.bus_magnitude[:, 1] == v1         # structure reuse is answer-preserving
-    @test data.bus_angles[:, 1] == θ1
+    # A true 0-iteration warm re-solve: NO state change between the two calls, so the
+    # deferred Jacobian (Task 13a) means the convergence check short-circuits before any
+    # Jacobian work is done inside `_newton_power_flow`. `solve_power_flow!` itself still pays
+    # a fixed per-call cost outside the NR loop (branch-flow recompute over all time steps,
+    # `Sft`/`Stf` sparse-times-dense products) regardless of iteration count, so this is well
+    # above zero but far below `a_iterating` — measured ~917 KB on 2000-bus; bound is ~1.5x that.
+    a_warm = @allocated PF.solve_power_flow!(data)
+    @test a_warm < 1_400_000
+    # 0 iterations means the re-solve must leave the converged state untouched.
+    @test isapprox(data.bus_magnitude[:, 1], v1; atol = 1e-12)
+    @test isapprox(data.bus_angles[:, 1], θ1; atol = 1e-12)
 end
 
 @testset "DC PCM-reuse allocation regression" begin
@@ -91,4 +102,27 @@ end
     PF.solve_power_flow!(data)   # warm: builds + factors the cache and scratch
     PF.solve_power_flow!(data)   # 2nd: cache + scratch reused
     @test (@allocated PF.solve_power_flow!(data)) < 5_000
+end
+
+@testset "PTDF PCM-reuse allocation regression" begin
+    # Same idea as the ABA test above, but for the PTDF path.  The scratch
+    # eliminates the per-solve `power_injections` allocation, the `Not(ref)`
+    # re-materialization, and the `_get_arc_resistances` call.
+    sys = PSB.build_system(PSB.MatpowerTestSystems, "matpower_ACTIVSg2000_sys")
+    data = PF.PowerFlowData(PTDFDCPowerFlow(), sys)
+    PF.solve_power_flow!(data)   # warm
+    PF.solve_power_flow!(data)   # 2nd: cache + scratch reused
+    @test (@allocated PF.solve_power_flow!(data)) < 5_000
+end
+
+@testset "vPTDF PCM-reuse allocation regression" begin
+    # Same idea, but for the vPTDF path. The VirtualPTDF has inherent overhead from
+    # cache lookups and sparse row access (~36 KB on 2000-bus), but the scratch-ify
+    # eliminates the major allocators (power_injections, Not(ref) gather, Rs rebuild,
+    # fb_ix/tb_ix rebuild, my_mul_mt row allocation). Before the fix: ~44 MB/solve.
+    sys = PSB.build_system(PSB.MatpowerTestSystems, "matpower_ACTIVSg2000_sys")
+    data = PF.PowerFlowData(vPTDFDCPowerFlow(), sys)
+    PF.solve_power_flow!(data)   # warm
+    PF.solve_power_flow!(data)   # 2nd: cache + scratch reused
+    @test (@allocated PF.solve_power_flow!(data)) < 50_000
 end

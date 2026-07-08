@@ -725,6 +725,29 @@ end
     test_psse_exporter_inner(NewtonRaphsonACPowerFlow, "case24_sys_NR")
 end
 
+@testset "update_exporter!(::PowerFlowData) writes solved discrete-control settings" begin
+    # A controlled solve moves the tap; update_exporter! must write the solved tap into
+    # the exporter's (deepcopied) system without touching the caller's system.
+    sys = _make_solvable_tap_shunt_system()
+    tx = first(PSY.get_components(PSY.TapTransformer, sys))
+    tap_before = PSY.get_tap(tx)
+    pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; control_discrete_devices = true)
+    data = PowerFlowData(pf, sys)
+    @test PowerFlows.solve_power_flow!(data)
+    t = data.controlled_devices.taps[1]
+    @test t.current != tap_before
+
+    export_location = joinpath(test_psse_export_dir, "v33", "controlled_tap_update")
+    exporter = PSSEExporter(sys, :v33, export_location)
+    update_exporter!(exporter, data)
+    tx_exported = PSY.get_component(PSY.TapTransformer, exporter.system, t.name)
+    @test PSY.get_tap(tx_exported) == t.current
+    @test PSY.get_tap(tx_exported) != tap_before
+
+    tx_user = PSY.get_component(PSY.TapTransformer, sys, t.name)
+    @test PSY.get_tap(tx_user) == tap_before
+end
+
 @testset "Test exporter helper functions" begin
     @test PF._psse_bus_numbers([2, 3, 999_997, 999_998, 1_000_001, 1]) ==
           Dict(
