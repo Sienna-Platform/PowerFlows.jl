@@ -1,14 +1,12 @@
 # Discrete Control Devices via λ-Continuation
 
-PowerFlows.jl supports four families of controlled devices, solved by a common
-outer-loop continuation: **tap-changing transformers** and **switched
-(stepping) shunts** (production-scoped), plus **shunt FACTS devices**
-(SVC/STATCOM) and **phase-angle regulators** (PARs), which are implemented but
-**experimental** (see [Scope and guards](@ref discrete-control-guards)). This
-page explains what those devices are, why an outer-loop continuation strategy
-is used instead of embedding the control law in the Jacobian, how the sigmoid
-control law and its steepness ramp work, and what happens when the continuous
-solution is snapped to discrete settings.
+PowerFlows.jl supports three families of controlled devices, solved by a common
+outer-loop continuation: **tap-changing transformers**, **switched (stepping)
+shunts**, and **shunt FACTS devices** (SVC/STATCOM). This page explains what
+those devices are, why an outer-loop continuation strategy is used instead of
+embedding the control law in the Jacobian, how the sigmoid control law and its
+steepness ramp work, and what happens when the continuous solution is snapped
+to discrete settings.
 
 ## What and why
 
@@ -32,7 +30,7 @@ convergence safeguards are original to PowerFlows.jl):
   - The inner solver ([`NewtonRaphsonACPowerFlow`](@ref),
     [`TrustRegionACPowerFlow`](@ref)) is called without any modification.
   - Between outer iterations only `data` is mutated: Y-bus `nzval` entries for
-    tap/PAR devices; the reactive constant-impedance withdrawal matrix for
+    tap devices; the reactive constant-impedance withdrawal matrix for
     shunt/FACTS devices.
   - The outer loop is **formulation-agnostic**: it works identically for
     [`ACPolarPowerFlow`](@ref), [`ACRectangularPowerFlow`](@ref), and
@@ -64,25 +62,19 @@ ranges, unsupported MODSW modes, implausible voltage setpoints) never abort
 construction: the device is de-enrolled with a `@warn` and stays at its current
 setting — the same *warn and lock* posture PSS/E takes for bad control data.
 
-`ControlledFACTS` and `ControlledPhaseShifter` are fully implemented but their
-metadata sourcing is not yet production-validated (see
-[Metadata sourcing](@ref discrete-control-metadata)); they are enrolled only
-when `solver_settings[:experimental_controls] = true`. A PAR whose
-`active_power_flow` is `0.0` (the parser default, not a real setpoint) is never
-enrolled.
+`ControlledFACTS` is enrolled unconditionally (no flag); its metadata sourcing
+caveats are noted in [Metadata sourcing](@ref discrete-control-metadata).
 
 ## Device abstraction
 
 Two abstract families sit under `AbstractControlledDevice`:
 
   - `AbstractBranchControl` — devices that mutate the branch's 2×2 Y-bus block:
-    `ControlledTap` (voltage-controlling `TapTransformer`) and
-    `ControlledPhaseShifter` (flow-controlling `PhaseShiftingTransformer`,
-    experimental).
+    `ControlledTap` (voltage-controlling `TapTransformer`).
   - `AbstractShuntControl` — devices that mutate the bus reactive
     constant-impedance withdrawal: `ControlledSwitchedShunt`
     (voltage-controlling `SwitchedAdmittance`) and `ControlledFACTS`
-    (SVC/STATCOM, experimental).
+    (SVC/STATCOM).
 
 The runtime container is `ControlledDeviceSet`, which holds one concretely
 typed `Vector` per family. All outer-loop traversal iterates each vector
@@ -106,8 +98,7 @@ so co-located constant-impedance contributions on the same bus are preserved.
 ## The sigmoid control law
 
 The continuous target for each device is a sigmoid function of the regulated
-quantity ``y`` (the controlled-bus voltage magnitude for voltage devices, the
-branch active-power flow for the PAR):
+quantity ``y`` (the controlled-bus voltage magnitude):
 
 ```math
 \sigma(\ell, h, S, y, y_\text{set}) = \frac{h - \ell}{1 + e^{S(y - y_\text{set})}} + \ell
@@ -226,8 +217,8 @@ After the continuous outer loop converges (or reaches its iteration limit),
     prefix sums of the block steps. Walking that chain is simultaneously
     optimal over the realizable set and order-respecting; `block_n` records
     the chosen per-block step counts, and `snap_to_discrete` makes no heap
-    allocations. (Continuous devices — MODSW=2 shunts, FACTS, PARs — clamp
-    instead of snapping.)
+    allocations. (Continuous devices — MODSW=2 shunts, FACTS — clamp instead
+    of snapping.)
 
 After snapping all devices, the inner solver is called on the discretized
 network. If it converges, the procedure is complete. If not, each device is
@@ -282,15 +273,45 @@ so the reachable range is spanned by the blocks alone with the current point
 at BINIT; **API-built** components follow the PSY docstring (`Y` = fixed N=0
 base, `initial_status` meaningful).
 
-### Experimental families
+### `FACTSControlDevice` → `ControlledFACTS`
 
-`FACTSControlDevice` (non-OOS control mode) enrolls as a continuous shunt with
-a symmetric susceptance band `±max_shunt_current/S_base` regulating its own
-bus at `voltage_setpoint`; remote (FCREG) regulation and the |V|-dependent
-current limit are not yet modeled. `PhaseShiftingTransformer`
-(ACTIVE_POWER_FLOW objective) enrolls with `p_target = active_power_flow` and
-the `phase_angle_limits` band — both must be explicitly populated on the
-component, since the PSS/E parser persists neither.
+A `FACTSControlDevice` in a non-out-of-service control mode enrolls
+unconditionally (no flag) as a *continuous* shunt: it varies a symmetric
+susceptance `b` to hold its regulated bus at `voltage_setpoint`, injecting
+`Q = b·|V|²`.
+
+| Parameter          | `ext` keys (parser first)       | First-class field (PSY ≥ 6)                    | Default on PSY 5.x |
+|:------------------ |:------------------------------- |:---------------------------------------------- |:------------------ |
+| Regulated bus      | `FCREG` (v35), `REMOT` (v32/33) | `regulated_bus_number` (0 ⇒ local/sending bus) | local bus          |
+| Voltage setpoint   | `VSET`                          | `voltage_setpoint`                             | `1.0`              |
+| Shunt current cap  | `SHMX`                          | `max_shunt_current` (MVA at unity voltage)     | `9999`             |
+| Reactive power cap | —                               | `max_reactive_power` (MVA)                     | `9999`             |
+| Device class       | —                               | `shunt_control_type` (SVC / STATCOM)           | STATCOM            |
+
+`SHMX` is the shunt *current* capability, **not** a reactive-power limit; the
+series-branch current `IMX` and `RMPCT` are out of scope and left in `ext`.
+`reactive_power_required` is a solver *output* (the delivered `Q`), not a parsed
+input.
+
+**Voltage-dependent limit.** The effective susceptance bound `b ∈ [−b_lim, b_lim]`
+is refreshed each outer iteration from the measured regulated-bus voltage `V`,
+with `rating = SHMX/S_base` and `q_cap = max_reactive_power/S_base`:
+
+  - **SVC** (susceptance-limited): `b_lim = min(rating, q_cap/V²)`
+  - **STATCOM** (current-limited): `b_lim = min(rating/V, q_cap/V²)`
+
+so a STATCOM's reactive capability falls off linearly with voltage (`Q ≈ V·SHMX`
+at the current limit) while an SVC's falls off as `V²`. At the bound the clamp
+holds `b` there — the homotopy analogue of the PV→PQ Q-limit release. To keep the
+refreshing bound from chattering, a device that has been oscillation-frozen holds
+its last `b_lim` instead of continuing to track voltage.
+
+**Saturation reporting.** After the solve each FACTS device is classified: one
+pinned at `b_lim` while its regulated bus remains off `voltage_setpoint` is
+flagged `saturated = true` (with a warning). `get_controlled_device_results`
+carries that flag plus `delivered_q_mvar = b·|V|²·S_base` on the FACTS rows, and
+under active controls the solved `Q` is written back to the component's
+`reactive_power_required`.
 
 ## Reserved seams for future work
 

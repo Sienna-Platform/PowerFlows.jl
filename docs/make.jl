@@ -17,6 +17,8 @@ pages = OrderedDict(
     "Welcome Page" => "index.md",
     "Tutorials" => Any[
         "Solving a Power Flow" => "tutorials/generated_solving_a_power_flow.md",
+        "Discrete Shunt Voltage Control" => "tutorials/generated_discrete_control_14bus.md",
+        "HVDC Converters (VSC & LCC)" => "tutorials/generated_hvdc_converters_14bus.md",
     ],
     "How-to-Guides" => Any[
         "How to choose an AC formulation and solver" => "how-tos/choose_ac_formulation_and_solver.md",
