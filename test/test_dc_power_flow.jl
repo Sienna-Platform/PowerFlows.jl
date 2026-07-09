@@ -280,6 +280,30 @@ end
     end
 end
 
+@testset "DC power flow: slack bus balances active power on imbalanced systems" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    # Introduce a deliberate imbalance by scaling one load up.
+    load = first(get_components(PSY.PowerLoad, sys))
+    set_active_power!(load, 2.0 * get_active_power(load))
+
+    for T in (DCPowerFlow, PTDFDCPowerFlow, vPTDFDCPowerFlow)
+        results =
+            solve_power_flow(T(; correct_bustypes = true), sys, PF.FlowReporting.ARC_FLOWS)
+        bus_results = results["1"]["bus_results"]
+        total_gen = sum(bus_results.P_gen)
+        total_load = sum(bus_results.P_load)
+        total_net = sum(bus_results.P_net)
+
+        # The slack bus should absorb the imbalance so total generation matches total load.
+        @test isapprox(total_gen, total_load; atol = 1e-6)
+        @test isapprox(total_net, 0.0; atol = 1e-6)
+
+        # The reference bus (bus 1 in c_sys14) P_gen must differ from the original setpoint.
+        ref_gen = bus_results[bus_results.bus_number .== 1, :P_gen][1]
+        @test !iszero(ref_gen)
+    end
+end
+
 @testset "DC branch-level losses with BRANCH_FLOWS reporting" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
     base_power = PSY.get_base_power(sys)
