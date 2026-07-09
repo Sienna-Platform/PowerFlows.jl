@@ -46,6 +46,8 @@ makedocs(;
     format = Documenter.HTML(;
         prettyurls = haskey(ENV, "GITHUB_ACTIONS"),
         mathengine = Documenter.MathJax(),
+        size_threshold = 500 * 1024,
+        size_threshold_warn = 300 * 1024,
     ),
     sitename = "PowerFlows.jl",
     pages = Any[p for p in pages],
