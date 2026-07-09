@@ -43,7 +43,8 @@ function _power_redistribution_ref(
     generator_slack_participation_factors::Union{
         Nothing,
         Dict{Tuple{DataType, String}, Float64},
-    } = nothing,
+    } = nothing;
+    skip_reactive::Bool = false,
 )
     check_unit_setting(sys)
     devices_ =
@@ -71,7 +72,7 @@ function _power_redistribution_ref(
     if length(devices_) == 1
         device = first(devices_)
         PSY.set_active_power!(device, P_gen)
-        _reactive_power_redistribution_pv(sys, Q_gen, bus, max_iterations)
+        skip_reactive || _reactive_power_redistribution_pv(sys, Q_gen, bus, max_iterations)
         return
     elseif length(devices_) > 1
         devices =
@@ -99,7 +100,8 @@ function _power_redistribution_ref(
                     PSY.get_active_power(device) + to_redistribute * factor / sum_bus_gspf,
                 )
             end
-            _reactive_power_redistribution_pv(sys, Q_gen, bus, max_iterations)
+            skip_reactive ||
+                _reactive_power_redistribution_pv(sys, Q_gen, bus, max_iterations)
             return
         end
     end
@@ -172,7 +174,7 @@ function _power_redistribution_ref(
             end
         end
     end
-    _reactive_power_redistribution_pv(sys, Q_gen, bus, max_iterations)
+    skip_reactive || _reactive_power_redistribution_pv(sys, Q_gen, bus, max_iterations)
     return
 end
 
@@ -837,6 +839,69 @@ function write_power_flow_solution!(
     for (equiv_arc, parallel_branches) in PNM.get_parallel_branch_map(nrd)
         flow_entries = _compute_segment_flows(parallel_branches, data, equiv_arc, time_step)
         _apply_flow_entries!(flow_entries, parallel_branches)
+    end
+    return
+end
+
+"""
+Store a DC power-flow solution into the system: bus angles, unit voltage
+magnitudes, bus types, and redistributed active generation at REF buses and
+any bus with a nonzero slack participation factor. Branch flows are not
+written (the DC flow model differs from the voltage-recomputed AC flows;
+use the `solve_power_flow` DataFrame output for DC flows).
+"""
+function write_power_flow_solution!(
+    sys::PSY.System,
+    pf::AbstractDCPowerFlow,
+    data::Union{PTDFPowerFlowData, vPTDFPowerFlowData, ABAPowerFlowData},
+    max_iterations::Int,
+    time_step::Int = 1,
+)
+    check_unit_setting(sys)
+    nrd = PNM.get_network_reduction_data(get_power_network_matrix(data))
+    temp_bus_map = Dict{Int, String}(
+        PSY.get_number(b) => PSY.get_name(b) for b in PSY.get_components(PSY.ACBus, sys)
+    )
+    if isempty(get_computed_gspf(data))
+        gspf = nothing
+    else
+        gspf = get_computed_gspf(data)[time_step]
+    end
+    bus_lookup = get_bus_lookup(data)
+    for (bus_number, reduced_buses) in PNM.get_bus_reduction_map(nrd)
+        if !iszero(length(reduced_buses))
+            @warn "Buses $reduced_buses were reduced into bus $bus_number: leaving " *
+                  "their fields unchanged." maxlog = PF_MAX_LOG
+            continue
+        end
+        bus_name = temp_bus_map[bus_number]
+        bus = PSY.get_component(PSY.ACBus, sys, bus_name)
+        ix = bus_lookup[bus_number]
+        bustype = data.bus_type[ix, time_step]
+        if bustype != PSY.get_bustype(bus)
+            @warn "Changing system bus type at bus $(PSY.get_name(bus)) to match " *
+                  "power flow bus type." maxlog = PF_MAX_LOG
+            PSY.set_bustype!(bus, bustype)
+        end
+        PSY.set_angle!(bus, data.bus_angles[ix, time_step])
+        PSY.set_magnitude!(bus, 1.0)
+        participates = !iszero(data.bus_slack_participation_factors[ix, time_step])
+        redistribute =
+            !pf.skip_redistribution &&
+            (bustype == PSY.ACBusTypes.REF || participates)
+        if redistribute
+            P_gen = data.bus_active_power_injections[ix, time_step]
+            Q_gen = data.bus_reactive_power_injections[ix, time_step]
+            _power_redistribution_ref(
+                sys,
+                P_gen,
+                Q_gen,
+                bus,
+                max_iterations,
+                gspf;
+                skip_reactive = true,
+            )
+        end
     end
     return
 end

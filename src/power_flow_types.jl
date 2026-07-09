@@ -624,7 +624,10 @@ Subtypes: [`DCPowerFlow`](@ref), [`PTDFDCPowerFlow`](@ref), and [`vPTDFDCPowerFl
 abstract type AbstractDCPowerFlow <: PowerFlowEvaluationModel end
 
 # only make sense for AC power flows, but convenient to have for code reuse reasons.
-get_slack_participation_factors(::AbstractDCPowerFlow) = nothing
+get_slack_participation_factors(pf::AbstractDCPowerFlow) =
+    pf.generator_slack_participation_factors
+get_distribute_slack_proportional_to_headroom(pf::AbstractDCPowerFlow) =
+    pf.distribute_slack_proportional_to_headroom
 get_calculate_loss_factors(::AbstractDCPowerFlow) = false
 get_calculate_voltage_stability_factors(::AbstractDCPowerFlow) = false
 
@@ -665,14 +668,60 @@ or section 4 of the [MATPOWER docs](https://matpower.org/docs/MATPOWER-manual-4.
     then `P_from_to + P_to_from` (exact real-power balance). When `false` (default),
     flows are computed from the lossless `BA·θ` formula (symmetric), and losses are
     approximated as `R·P²`.
+- `generator_slack_participation_factors`: An optional parameter that specifies the participation
+    factors for generator slack in the power flow solution. Same semantics as [`ACPolarPowerFlow`](@ref).
+    Default is `nothing`.
+- `distribute_slack_proportional_to_headroom::Bool`: Whether to distribute the slack proportional to
+    generator headroom. Default is `false`.
+- `skip_redistribution::Bool`: Whether to skip slack redistribution. Default is `false`.
 """
-@kwdef struct DCPowerFlow <: AbstractDCPowerFlow
-    exporter::Union{Nothing, PowerFlowEvaluationModel} = nothing
-    network_reductions::Vector{PNM.NetworkReduction} = PNM.NetworkReduction[]
-    time_steps::Int = 1
-    time_step_names::Vector{String} = String[]
-    correct_bustypes::Bool = false
-    lossy_flows::Bool = false
+struct DCPowerFlow <: AbstractDCPowerFlow
+    exporter::Union{Nothing, PowerFlowEvaluationModel}
+    generator_slack_participation_factors::Union{
+        Nothing,
+        Dict{Tuple{DataType, String}, Float64},
+        Vector{Dict{Tuple{DataType, String}, Float64}},
+    }
+    distribute_slack_proportional_to_headroom::Bool
+    skip_redistribution::Bool
+    network_reductions::Vector{PNM.NetworkReduction}
+    time_steps::Int
+    time_step_names::Vector{String}
+    correct_bustypes::Bool
+    lossy_flows::Bool
+end
+
+function DCPowerFlow(;
+    exporter::Union{Nothing, PowerFlowEvaluationModel} = nothing,
+    generator_slack_participation_factors::Union{
+        Nothing,
+        Dict{Tuple{DataType, String}, Float64},
+        Vector{Dict{Tuple{DataType, String}, Float64}},
+    } = nothing,
+    distribute_slack_proportional_to_headroom::Bool = false,
+    skip_redistribution::Bool = false,
+    network_reductions::Vector{PNM.NetworkReduction} = PNM.NetworkReduction[],
+    time_steps::Int = 1,
+    time_step_names::Vector{String} = String[],
+    correct_bustypes::Bool = false,
+    lossy_flows::Bool = false,
+)
+    _validate_slack_distribution_settings(
+        distribute_slack_proportional_to_headroom,
+        generator_slack_participation_factors,
+        time_steps,
+    )
+    return DCPowerFlow(
+        exporter,
+        generator_slack_participation_factors,
+        distribute_slack_proportional_to_headroom,
+        skip_redistribution,
+        network_reductions,
+        time_steps,
+        time_step_names,
+        correct_bustypes,
+        lossy_flows,
+    )
 end
 
 """
@@ -700,14 +749,60 @@ for details.
 - `time_step_names::Vector{String}`: Names for each time step. Default is an empty vector.
 - `correct_bustypes::Bool`: Whether to automatically correct bus types based on available generation.
     Default is `false`.
+- `generator_slack_participation_factors`: An optional parameter that specifies the participation
+    factors for generator slack in the power flow solution. Same semantics as [`ACPolarPowerFlow`](@ref).
+    Default is `nothing`.
+- `distribute_slack_proportional_to_headroom::Bool`: Whether to distribute the slack proportional to
+    generator headroom. Default is `false`.
+- `skip_redistribution::Bool`: Whether to skip slack redistribution. Default is `false`.
 """
-@kwdef struct PTDFDCPowerFlow <: AbstractDCPowerFlow
-    exporter::Union{Nothing, PowerFlowEvaluationModel} = nothing
-    calculate_loss_factors::Bool = false
-    network_reductions::Vector{PNM.NetworkReduction} = PNM.NetworkReduction[]
-    time_steps::Int = 1
-    time_step_names::Vector{String} = String[]
-    correct_bustypes::Bool = false
+struct PTDFDCPowerFlow <: AbstractDCPowerFlow
+    exporter::Union{Nothing, PowerFlowEvaluationModel}
+    calculate_loss_factors::Bool
+    generator_slack_participation_factors::Union{
+        Nothing,
+        Dict{Tuple{DataType, String}, Float64},
+        Vector{Dict{Tuple{DataType, String}, Float64}},
+    }
+    distribute_slack_proportional_to_headroom::Bool
+    skip_redistribution::Bool
+    network_reductions::Vector{PNM.NetworkReduction}
+    time_steps::Int
+    time_step_names::Vector{String}
+    correct_bustypes::Bool
+end
+
+function PTDFDCPowerFlow(;
+    exporter::Union{Nothing, PowerFlowEvaluationModel} = nothing,
+    calculate_loss_factors::Bool = false,
+    generator_slack_participation_factors::Union{
+        Nothing,
+        Dict{Tuple{DataType, String}, Float64},
+        Vector{Dict{Tuple{DataType, String}, Float64}},
+    } = nothing,
+    distribute_slack_proportional_to_headroom::Bool = false,
+    skip_redistribution::Bool = false,
+    network_reductions::Vector{PNM.NetworkReduction} = PNM.NetworkReduction[],
+    time_steps::Int = 1,
+    time_step_names::Vector{String} = String[],
+    correct_bustypes::Bool = false,
+)
+    _validate_slack_distribution_settings(
+        distribute_slack_proportional_to_headroom,
+        generator_slack_participation_factors,
+        time_steps,
+    )
+    return PTDFDCPowerFlow(
+        exporter,
+        calculate_loss_factors,
+        generator_slack_participation_factors,
+        distribute_slack_proportional_to_headroom,
+        skip_redistribution,
+        network_reductions,
+        time_steps,
+        time_step_names,
+        correct_bustypes,
+    )
 end
 
 """
@@ -733,14 +828,60 @@ where creating and storing the full PTDF matrix would be infeasible or slow. See
 - `time_step_names::Vector{String}`: Names for each time step. Default is an empty vector.
 - `correct_bustypes::Bool`: Whether to automatically correct bus types based on available generation.
     Default is `false`.
+- `generator_slack_participation_factors`: An optional parameter that specifies the participation
+    factors for generator slack in the power flow solution. Same semantics as [`ACPolarPowerFlow`](@ref).
+    Default is `nothing`.
+- `distribute_slack_proportional_to_headroom::Bool`: Whether to distribute the slack proportional to
+    generator headroom. Default is `false`.
+- `skip_redistribution::Bool`: Whether to skip slack redistribution. Default is `false`.
 """
-@kwdef struct vPTDFDCPowerFlow <: AbstractDCPowerFlow
-    exporter::Union{Nothing, PowerFlowEvaluationModel} = nothing
-    calculate_loss_factors::Bool = false
-    network_reductions::Vector{PNM.NetworkReduction} = PNM.NetworkReduction[]
-    time_steps::Int = 1
-    time_step_names::Vector{String} = String[]
-    correct_bustypes::Bool = false
+struct vPTDFDCPowerFlow <: AbstractDCPowerFlow
+    exporter::Union{Nothing, PowerFlowEvaluationModel}
+    calculate_loss_factors::Bool
+    generator_slack_participation_factors::Union{
+        Nothing,
+        Dict{Tuple{DataType, String}, Float64},
+        Vector{Dict{Tuple{DataType, String}, Float64}},
+    }
+    distribute_slack_proportional_to_headroom::Bool
+    skip_redistribution::Bool
+    network_reductions::Vector{PNM.NetworkReduction}
+    time_steps::Int
+    time_step_names::Vector{String}
+    correct_bustypes::Bool
+end
+
+function vPTDFDCPowerFlow(;
+    exporter::Union{Nothing, PowerFlowEvaluationModel} = nothing,
+    calculate_loss_factors::Bool = false,
+    generator_slack_participation_factors::Union{
+        Nothing,
+        Dict{Tuple{DataType, String}, Float64},
+        Vector{Dict{Tuple{DataType, String}, Float64}},
+    } = nothing,
+    distribute_slack_proportional_to_headroom::Bool = false,
+    skip_redistribution::Bool = false,
+    network_reductions::Vector{PNM.NetworkReduction} = PNM.NetworkReduction[],
+    time_steps::Int = 1,
+    time_step_names::Vector{String} = String[],
+    correct_bustypes::Bool = false,
+)
+    _validate_slack_distribution_settings(
+        distribute_slack_proportional_to_headroom,
+        generator_slack_participation_factors,
+        time_steps,
+    )
+    return vPTDFDCPowerFlow(
+        exporter,
+        calculate_loss_factors,
+        generator_slack_participation_factors,
+        distribute_slack_proportional_to_headroom,
+        skip_redistribution,
+        network_reductions,
+        time_steps,
+        time_step_names,
+        correct_bustypes,
+    )
 end
 
 get_calculate_loss_factors(pf::PTDFDCPowerFlow) = pf.calculate_loss_factors
