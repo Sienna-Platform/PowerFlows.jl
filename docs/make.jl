@@ -50,8 +50,10 @@ makedocs(;
     format = Documenter.HTML(;
         prettyurls = haskey(ENV, "GITHUB_ACTIONS"),
         mathengine = Documenter.MathJax(),
-        size_threshold = 500 * 1024,
-        size_threshold_warn = 300 * 1024,
+        # The auto-generated internal `@autodocs` pages exceed Documenter's default 200 KiB
+        # hard limit and keep growing with the codebase; raise the ceiling for them.
+        size_threshold = 500 * 2^10,
+        size_threshold_warn = 300 * 2^10,
     ),
     sitename = "PowerFlows.jl",
     pages = Any[p for p in pages],
