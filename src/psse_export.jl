@@ -2970,14 +2970,14 @@ function write_to_buffers!(
         VSMX = get_ext_key_or_default(facts, "VSMX")
         IMX = get_ext_key_or_default(facts, "IMX")
         LINX = get_ext_key_or_default(facts, "LINX")
-        RMPCT = PSY.get_reactive_power_required(facts)
+        RMPCT = get_ext_key_or_default(facts, "RMPCT")
         OWNER = PSSE_DEFAULT
         SET1 = get_ext_key_or_default(facts, "SET1")
         SET2 = get_ext_key_or_default(facts, "SET2")
         VSREF = get_ext_key_or_default(facts, "VSREF")
-        FCREG = get_ext_key_or_default(facts, "FCREG")
+        FCREG = PSY.get_regulated_bus_number(facts)
         NREG = get_ext_key_or_default(facts, "NREG")
-        REMOT = get_ext_key_or_default(facts, "REMOT")
+        REMOT = PSY.get_regulated_bus_number(facts)
         MNAME = get_ext_key_or_default(facts, "MNAME", "")
         MNAME = _psse_quote_string(String(MNAME))
 

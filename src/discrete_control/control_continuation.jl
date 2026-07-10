@@ -74,7 +74,7 @@ end
 # Sign-corrected sigmoid law: orientation comes from the MEASURED dy/dp (not the
 # device's primary/secondary wiring) so the closed-loop gain σ'(y)·dy/dp ≤ 0
 # (negative feedback) regardless of wiring. `_sigmoid(lo,hi,…)` decreases in y when hi>lo.
-# `y` is the regulated quantity — bus voltage for voltage devices, branch flow for the PAR.
+# `y` is the regulated quantity — bus voltage for every currently supported device family.
 @inline function _control_target(d, y::Float64, S::Float64, dydp::Float64)
     lo, hi = parameter_limits(d)
     return if dydp > 0.0
@@ -129,8 +129,8 @@ end
 # Differentiating F(x,p)=0 at the converged base: dx/dp = −J⁻¹·(∂F/∂p), and dy/dp is the
 # controlled-bus voltage component — no perturbation, one triangular solve per device on P1's
 # reused factorization instead of a full nonlinear solve. Polar + voltage-device (tap/shunt/FACTS)
-# only (state layout x[2b−1]=Vm, x[2b]=Va and ∂F/∂p are polar-specific); rect/mixed and phase
-# shifters fall back to the FD `_plant_sign`. Signs are validated against the FD probe in the tests.
+# only (state layout x[2b−1]=Vm, x[2b]=Va and ∂F/∂p are polar-specific); rect/mixed formulations
+# fall back to the FD `_plant_sign`. Signs are validated against the FD probe in the tests.
 
 # Sensitivity context: residual+Jacobian built at the CURRENT converged base state and numerically
 # factored (reusing P1's persisted symbolic factorization). Built ONCE per continuation (probe
@@ -239,8 +239,9 @@ function _refresh_sensitivity_context!(ctx::_SensitivityContext, data, ts::Int):
 end
 
 # ∂F/∂p into `rhs` (zeroed first). Returns `true` iff the family has an analytic polar form here;
-# `false` (phase shifter) signals the caller to use the FD probe. Row convention: F[2b−1] active,
-# F[2b] reactive balance at bus b (see `_update_residual_values!`).
+# `false` signals the caller to use the FD probe (no family currently returns `false`, but the
+# caller still handles it — see `_linear_plant_sign`). Row convention: F[2b−1] active, F[2b]
+# reactive balance at bus b (see `_update_residual_values!`).
 function _dF_dp!(rhs::Vector{Float64}, d::ControlledTap, data, ts::Int)
     fill!(rhs, 0.0)
     f, t = d.from_ix, d.to_ix
@@ -277,9 +278,6 @@ function _dF_dp!(
     @inbounds rhs[2 * b] = -Vm^2
     return true
 end
-
-# Phase shifter: regulated quantity is a branch flow, not a bus voltage — no analytic form here.
-_dF_dp!(::Vector{Float64}, ::ControlledPhaseShifter, data, ts::Int) = false
 
 # Linearized dy/dp for a voltage device via the factored Jacobian. `y = Vm(controlled_bus)`
 # = x[2·cbus−1], and dx/dp = −J⁻¹·(∂F/∂p). Returns `(dy/dp, true)`, or `(0.0, false)` when the
@@ -366,6 +364,30 @@ function _freeze_device!(frozen::Vector{Bool}, idx::Int, d, ts::Int, reason::Str
     frozen[idx] = true
     @warn "discrete control: freezing device $(d.name) at parameter \
         $(current_parameter(d)) (time step $ts): $reason"
+    return
+end
+
+# Refresh one ControlledFACTS's voltage-dependent susceptance bound (`_facts_b_limit`) from
+# its measured controlled-bus voltage, once per continuation pass, BEFORE this pass's damped
+# target/clamp reads `parameter_limits`. Chatter guard: `frozen` (this device's CURRENT
+# oscillation-freeze state, unrelated to any freeze this same pass may go on to trigger) holds
+# `b_lim` at its last refreshed value instead of continuing to track voltage — a frozen device
+# is never stepped again, so re-tracking voltage would only reopen/reclose the bound with no
+# corresponding parameter move (chatter with no corrective effect).
+function _refresh_facts_limit!(d::ControlledFACTS, data, ts::Int, frozen::Bool)
+    frozen && return d.b_lim
+    d.b_lim = _facts_b_limit(d, measured_value(d, data, ts))
+    return d.b_lim
+end
+
+# Per-pass refresh of every FACTS device's bound (function-barrier group wrapper, offset-
+# indexed into the shared `frozen` bookkeeping — mirrors `_probe_device_signs!`).
+function _refresh_facts_limits!(
+    devices::Vector{ControlledFACTS}, offset::Int, data, ts::Int, frozen::Vector{Bool},
+)
+    for (i, d) in enumerate(devices)
+        _refresh_facts_limit!(d, data, ts, frozen[offset + i])
+    end
     return
 end
 
@@ -484,7 +506,7 @@ function _step_device!(
 end
 
 # One device's plant sign: the linear sensitivity when a polar `ctx` is live and the family has an
-# analytic form (tap/shunt/FACTS), else the FD probe (phase shifters, non-polar, singular base).
+# analytic form (tap/shunt/FACTS), else the FD probe (non-polar formulations, singular base).
 _probe_one_sign(d, data, ts::Int, pf, scratch_snap, ::Nothing; kwargs...) =
     _plant_sign(d, data, ts, pf, scratch_snap; kwargs...)
 function _probe_one_sign(
@@ -594,8 +616,7 @@ end
 # One batched pass over the voltage-device groups (taps, shunts, FACTS). Returns
 # `(settled, converged)`: `converged=false` means the joint solve failed (or, rarely, the
 # post-solve sensitivity refresh hit a singular Jacobian) and the pass was fully rolled back —
-# the caller must run the sequential path for this pass. Phase shifters are NOT batched (their
-# gain has no analytic form); the caller steps them sequentially. `ctx` is the ONE
+# the caller must run the sequential path for this pass. `ctx` is the ONE
 # `_SensitivityContext` persisted for the whole continuation (built once in
 # `_control_continuation!`); a converged joint solve refreshes it in place instead of rebuilding.
 function _batched_pass!(
@@ -616,6 +637,9 @@ function _batched_pass!(
         n_shared, p_prev, did_move)
     moved |= _apply_targets_group!(set.shunts, n_taps, data, ts, S, frozen, dVdp, osc,
         prev_sign, n_shared, p_prev, did_move)
+    # FACTS branch: refresh each device's |V|-dependent susceptance bound from the voltage at
+    # the start of this pass (no solve has run yet within this batched pass) before it moves.
+    _refresh_facts_limits!(set.facts, off_facts, data, ts, frozen)
     moved |= _apply_targets_group!(set.facts, off_facts, data, ts, S, frozen, dVdp, osc,
         prev_sign, n_shared, p_prev, did_move)
     moved || return true, true            # nothing wanted to move ⇒ settled, no solve needed
@@ -662,6 +686,9 @@ function _step_voltage_groups!(
         osc, prev_sign, n_shared; kwargs...)
     settled &= _step_device_group!(set.shunts, n_taps, data, ts, S, pf, scratch_snap,
         frozen, dVdp, osc, prev_sign, n_shared; kwargs...)
+    # FACTS branch: refresh each device's |V|-dependent susceptance bound from the CURRENT
+    # measured voltage (post taps/shunts moves earlier in this same pass) before it is stepped.
+    _refresh_facts_limits!(set.facts, n_taps + n_shunts, data, ts, frozen)
     settled &= _step_device_group!(set.facts, n_taps + n_shunts, data, ts, S, pf,
         scratch_snap, frozen, dVdp, osc, prev_sign, n_shared; kwargs...)
     return settled
@@ -669,35 +696,25 @@ end
 
 # One continuation pass. Voltage devices go through the batched (one-solve) path when it is
 # enabled and its joint solve converges, else the sequential path (which fully preserves the
-# backtracking/freeze behavior). Phase shifters always step sequentially. Returns whether the
-# whole pass settled. `ctx` is the persisted sensitivity context (non-`nothing` iff
-# `use_batched`); passed through unchanged so `_batched_pass!` can refresh it in place.
+# backtracking/freeze behavior). Returns whether the whole pass settled. `ctx` is the
+# persisted sensitivity context (non-`nothing` iff `use_batched`); passed through unchanged
+# so `_batched_pass!` can refresh it in place.
 function _control_pass!(
-    set::ControlledDeviceSet, n_taps::Int, n_shunts::Int, n_volt::Int, use_batched::Bool,
+    set::ControlledDeviceSet, n_taps::Int, n_shunts::Int, use_batched::Bool,
     data, ts::Int, S::Float64, pf, scratch_snap, frozen::Vector{Bool},
     dVdp::Vector{Float64},
     osc::Vector{Int}, prev_sign::Vector{Int}, n_shared::Vector{Int},
     p_prev::Vector{Float64}, did_move::Vector{Bool},
     ctx::Union{Nothing, _SensitivityContext}; kwargs...,
 )
-    settled_v = if use_batched
+    if use_batched
         s, converged =
             _batched_pass!(set, n_taps, n_shunts, data, ts, S, pf, scratch_snap, frozen,
                 dVdp, osc, prev_sign, n_shared, p_prev, did_move, ctx; kwargs...)
-        if converged
-            s
-        else
-            _step_voltage_groups!(set, n_taps, n_shunts, data, ts, S, pf, scratch_snap,
-                frozen, dVdp, osc, prev_sign, n_shared; kwargs...)
-        end
-    else
-        _step_voltage_groups!(set, n_taps, n_shunts, data, ts, S, pf, scratch_snap,
-            frozen,
-            dVdp, osc, prev_sign, n_shared; kwargs...)
+        converged && return s
     end
-    settled_p = _step_device_group!(set.phase_shifters, n_volt, data, ts, S, pf,
-        scratch_snap, frozen, dVdp, osc, prev_sign, n_shared; kwargs...)
-    return settled_v & settled_p
+    return _step_voltage_groups!(set, n_taps, n_shunts, data, ts, S, pf, scratch_snap,
+        frozen, dVdp, osc, prev_sign, n_shared; kwargs...)
 end
 
 function _control_continuation!(
@@ -716,16 +733,14 @@ function _control_continuation!(
     n_taps = length(set.taps)
     n_shunts = length(set.shunts)
     n_facts = length(set.facts)
-    n_volt = n_taps + n_shunts + n_facts   # offset of the phase-shifter block
-    n_dev = n_volt + length(set.phase_shifters)
-    # Per-device state, indexed in parallel with [taps; shunts; facts; phase_shifters]. dVdp: sign
+    n_dev = n_taps + n_shunts + n_facts
+    # Per-device state, indexed in parallel with [taps; shunts; facts]. dVdp: sign
     # sets the negative-feedback orientation, magnitude drives ω; frozen devices are held, not stepped.
     dVdp = zeros(n_dev)
     frozen = fill(false, n_dev)
     osc = zeros(Int, n_dev)
     prev_sign = zeros(Int, n_dev)
-    # Voltage devices sharing a controlled bus split the correction (ω / n_shared);
-    # phase shifters regulate their own branch flow and never share.
+    # Voltage devices sharing a controlled bus split the correction (ω / n_shared).
     n_shared = ones(Int, n_dev)
     counts = Dict{Int, Int}()
     _count_controlled_buses!(counts, set.taps)
@@ -763,9 +778,6 @@ function _control_continuation!(
     _probe_device_signs!(
         set.facts, n_taps + n_shunts, dVdp, frozen, ctx, data, ts, pf, scratch_snap;
         kwargs...)
-    _probe_device_signs!(
-        set.phase_shifters, n_volt, dVdp, frozen, ctx, data, ts, pf, scratch_snap; kwargs...,
-    )
     if any(frozen)
         frozen_names = join(
             vcat(
@@ -775,10 +787,6 @@ function _control_continuation!(
                 [
                     set.facts[k].name
                     for k in eachindex(set.facts) if frozen[n_taps + n_shunts + k]
-                ],
-                [
-                    set.phase_shifters[m].name
-                    for m in eachindex(set.phase_shifters) if frozen[n_volt + m]
                 ],
             ),
             ", ",
@@ -808,7 +816,7 @@ function _control_continuation!(
         settled = false
         for _ in 1:MAX_CONTROL_PASSES_PER_STAGE
             settled = _control_pass!(
-                set, n_taps, n_shunts, n_volt, use_batched, data, ts, S, pf,
+                set, n_taps, n_shunts, use_batched, data, ts, S, pf,
                 scratch_snap,
                 frozen, dVdp, osc, prev_sign, n_shared, p_prev, did_move, ctx;
                 kwargs..., tol = stage_tol)
@@ -828,6 +836,12 @@ function _control_continuation!(
             (S=$S); regulation may be loose at time step $ts"
     end
     ok = snap_and_restore!(pf, data, set, ts, scratch_snap; kwargs...)
+    # Classify each FACTS endpoint against its final voltage-dependent bound and setpoint
+    # (`saturated` reported by `get_controlled_device_results` and written back to PSY). Uses
+    # the final converged voltages from `snap_and_restore!`.
+    for d in set.facts
+        classify_facts_saturation!(d, measured_value(d, data, ts))
+    end
     # Reported branch flows are computed from the arc-admittance matrices AFTER the
     # time-step loop (`solve_power_flow!`); bring the moved branch devices' rows in
     # line with their final parameters so flows match the solved network.
@@ -932,7 +946,6 @@ function snap_and_restore!(
     cont_taps = _snap_device_group!(set.taps, data, ts)
     cont_shunts = _snap_device_group!(set.shunts, data, ts)
     cont_facts = _snap_device_group!(set.facts, data, ts)
-    cont_pst = _snap_device_group!(set.phase_shifters, data, ts)
     _ctrl_solve!(pf, data, ts; kwargs...) && return true
     _restore_state!(data, ts, pre)
     ok = _restore_device_group!(set.taps, data, ts, cont_taps, pf, scratch_snap; kwargs...)
@@ -940,15 +953,12 @@ function snap_and_restore!(
         set.shunts, data, ts, cont_shunts, pf, scratch_snap; kwargs...)
     ok &= _restore_device_group!(
         set.facts, data, ts, cont_facts, pf, scratch_snap; kwargs...)
-    ok &= _restore_device_group!(
-        set.phase_shifters, data, ts, cont_pst, pf, scratch_snap; kwargs...)
     if !ok
         names = join(
             vcat(
                 [d.name for d in set.taps],
                 [d.name for d in set.shunts],
                 [d.name for d in set.facts],
-                [d.name for d in set.phase_shifters],
             ),
             ", ",
         )
@@ -977,13 +987,14 @@ function get_controlled_device_results(data)
     upper = Float64[]
     initial = Float64[]
     final = Float64[]
+    delivered_q_mvar = Union{Float64, Missing}[]
+    saturated = Bool[]
     set = get_controlled_devices(data)
     if !isnothing(set)
         for (fam, devices) in (
             ("TapTransformer", set.taps),
             ("SwitchedAdmittance", set.shunts),
             ("FACTSControlDevice", set.facts),
-            ("PhaseShiftingTransformer", set.phase_shifters),
         )
             for d in devices
                 lo, hi = parameter_limits(d)
@@ -993,6 +1004,8 @@ function get_controlled_device_results(data)
                 push!(upper, hi)
                 push!(initial, d.initial)
                 push!(final, d.current)
+                push!(delivered_q_mvar, result_delivered_q_mvar(d, data, 1))
+                push!(saturated, result_saturated(d))
             end
         end
     end
@@ -1003,5 +1016,7 @@ function get_controlled_device_results(data)
         "upper_limit" => upper,
         "initial" => initial,
         "final" => final,
+        "delivered_q_mvar" => delivered_q_mvar,
+        "saturated" => saturated,
     )
 end

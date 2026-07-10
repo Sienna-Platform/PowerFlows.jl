@@ -47,48 +47,33 @@ mutable struct ControlledSwitchedShunt <: AbstractShuntControl
     # initial_status meaningful). Determines how write_device_settings! sources Y/status.
 end
 
-"""Continuous phase-angle regulator (PAR) on a `PhaseShiftingTransformer` (ACTIVE_POWER_FLOW
-control). Drives the branch's own active-power flow (from→to) toward `p_target` by varying the
-phase-shift angle `α ∈ [angle_min, angle_max]` at fixed tap ratio. `apply_parameter!` mutates the
-Y-bus off-diagonals (Y11 = yt/|t|² is invariant under a pure phase change), so — like a tap — a
-step invalidates a fast-decoupled B″ factorization."""
-mutable struct ControlledPhaseShifter <: AbstractBranchControl
-    name::String
-    from_ix::Int
-    to_ix::Int
-    p_target::Float64                # active-power flow setpoint (p.u., from→to)
-    yt::ComplexF64                   # series admittance 1/(r+jx)
-    tap::Float64                     # fixed tap ratio (magnitude)
-    angle_min::Float64               # phase-angle band (radians)
-    angle_max::Float64
-    nz_offsets::NTuple{4, Int}       # nzval idx for Y11,Y12,Y21,Y22
-    initial::Float64                 # enrollment-time angle (reporting)
-    synced::Float64                  # angle reflected in the arc-admittance rows
-    current::Float64                 # current phase angle α (radians)
-end
-
-"""Continuous shunt SVC/STATCOM (`FACTSControlDevice`). Holds `vset` at its bus by varying a
-shunt susceptance `b ∈ [b_min, b_max]` (negative = inductive, positive = capacitive); the
-injected reactive power is `b·|V|²`. Applied through the constant-Z reactive-withdrawal slot
-(never the Y-bus), so a step does not invalidate a fast-decoupled B″ factorization. At a
-susceptance limit the clamp holds it there — the homotopy equivalent of the PV→PQ Q-limit
-release."""
+"""Continuous shunt SVC/STATCOM (`FACTSControlDevice`). Holds `vset` at `controlled_ix`
+(the regulated bus, possibly remote via FCREG) by varying a symmetric shunt susceptance
+`b ∈ [-b_lim, b_lim]` (negative = inductive, positive = capacitive); the injected reactive
+power is `b·|V|²`. Applied through the constant-Z reactive-withdrawal slot (never the
+Y-bus), so a step does not invalidate a fast-decoupled B″ factorization. `svc` selects the
+limit law (`_facts_b_limit`); `b_lim` is the current effective |b| bound, refreshed each
+outer iteration from the measured controlled-bus voltage. At a susceptance limit the clamp
+holds it there — the homotopy equivalent of the PV→PQ Q-limit release."""
 mutable struct ControlledFACTS <: AbstractShuntControl
     name::String
     bus_ix::Int
     controlled_ix::Int
     vset::Float64
-    b_min::Float64                   # max inductive susceptance (≤ 0)
-    b_max::Float64                   # max capacitive susceptance (≥ 0)
-    initial::Float64                 # enrollment-time susceptance (reporting)
-    current::Float64                 # current susceptance b
+    svc::Bool          # true ⇒ SVC (susceptance-bounded); false ⇒ STATCOM (current-limited)
+    rating::Float64    # SHMX/base_mva: SVC susceptance-at-unity bound, STATCOM current limit
+    q_cap::Float64     # independent MVA ceiling/base_mva (get_max_reactive_power)
+    b_lim::Float64     # current effective |b| bound (refreshed per iteration)
+    base_mva::Float64  # system base, to report delivered Q (b·|V|²) in MVA
+    initial::Float64   # enrollment-time susceptance (reporting)
+    current::Float64   # current susceptance b
+    saturated::Bool    # post-solve classification: held at the V-dependent |b| bound, off setpoint
 end
 
 struct ControlledDeviceSet
     taps::Vector{ControlledTap}
     shunts::Vector{ControlledSwitchedShunt}
     facts::Vector{ControlledFACTS}
-    phase_shifters::Vector{ControlledPhaseShifter}
     # Perf counters for the last `_control_continuation!` (counts, not wall-clock; the regression
     # harness). symbolic_factors stays O(1) per continuation with PolarNRCache reuse. See getters.
     inner_solves::Base.RefValue{Int}
@@ -99,14 +84,11 @@ function ControlledDeviceSet(
     taps::Vector{ControlledTap},
     shunts::Vector{ControlledSwitchedShunt},
     facts::Vector{ControlledFACTS},
-    phase_shifters::Vector{ControlledPhaseShifter},
 )
-    return ControlledDeviceSet(
-        taps, shunts, facts, phase_shifters, Ref(0), Ref(0), Ref(0))
+    return ControlledDeviceSet(taps, shunts, facts, Ref(0), Ref(0), Ref(0))
 end
 function Base.isempty(s::ControlledDeviceSet)
-    return isempty(s.taps) && isempty(s.shunts) && isempty(s.facts) &&
-           isempty(s.phase_shifters)
+    return isempty(s.taps) && isempty(s.shunts) && isempty(s.facts)
 end
 
 """Number of inner `_solve_with_q_limits!` calls the last discrete-control continuation
@@ -147,22 +129,28 @@ end
 controlled_bus_ix(d::ControlledTap) = d.controlled_ix
 controlled_bus_ix(d::ControlledSwitchedShunt) = d.controlled_ix
 controlled_bus_ix(d::ControlledFACTS) = d.controlled_ix
+
+# Result columns meaningful only for FACTS; taps/shunts report the neutral value so the
+# frame stays rectangular (dispatch, not an `isa` branch, over the mixed device loop).
+result_delivered_q_mvar(::AbstractControlledDevice, data, ts::Int) = missing
+result_delivered_q_mvar(d::ControlledFACTS, data, ts::Int) =
+    delivered_q_mvar(d, data.bus_magnitude[d.bus_ix, ts])
+result_saturated(::AbstractControlledDevice) = false
+result_saturated(d::ControlledFACTS) = d.saturated
 voltage_setpoint(d::ControlledTap) = d.vset
 voltage_setpoint(d::ControlledSwitchedShunt) = d.vset
 voltage_setpoint(d::ControlledFACTS) = d.vset
 parameter_limits(d::ControlledTap) = (d.p_min, d.p_max)
 parameter_limits(d::ControlledSwitchedShunt) = (d.b_min, d.b_max)
-parameter_limits(d::ControlledFACTS) = (d.b_min, d.b_max)
-parameter_limits(d::ControlledPhaseShifter) = (d.angle_min, d.angle_max)
+parameter_limits(d::ControlledFACTS) = (-d.b_lim, d.b_lim)
 current_parameter(d::ControlledTap) = d.current
 current_parameter(d::ControlledSwitchedShunt) = d.current
 current_parameter(d::ControlledFACTS) = d.current
-current_parameter(d::ControlledPhaseShifter) = d.current
 
 # The continuation drives `measured_value(d, data, ts)` toward `control_setpoint(d)`. Voltage
-# devices read the controlled-bus magnitude and target their `vset`; the phase shifter reads its
-# own active-power flow and targets `p_target`. This dispatched pair is the only quantity-specific
-# seam — the rest of the continuation engine is agnostic to what is being regulated.
+# devices read the controlled-bus magnitude and target their `vset`. This dispatched pair is
+# the only quantity-specific seam — the rest of the continuation engine is agnostic to what is
+# being regulated.
 measured_value(d::ControlledTap, data, ts::Int) =
     data.bus_magnitude[controlled_bus_ix(d), ts]
 measured_value(d::ControlledSwitchedShunt, data, ts::Int) =
@@ -172,17 +160,6 @@ measured_value(d::ControlledFACTS, data, ts::Int) =
 control_setpoint(d::ControlledTap) = voltage_setpoint(d)
 control_setpoint(d::ControlledSwitchedShunt) = voltage_setpoint(d)
 control_setpoint(d::ControlledFACTS) = voltage_setpoint(d)
-control_setpoint(d::ControlledPhaseShifter) = d.p_target
-
-# Active-power flow from→to on the PST from the converged bus state and the complex tap
-# t = ratio·e^{iα}: P = Re(V_f·conj(I_f)), I_f = (yt/|t|²)·V_f − (yt/conj(t))·V_t.
-function measured_value(d::ControlledPhaseShifter, data, ts::Int)
-    Vf = data.bus_magnitude[d.from_ix, ts] * cis(data.bus_angles[d.from_ix, ts])
-    Vt = data.bus_magnitude[d.to_ix, ts] * cis(data.bus_angles[d.to_ix, ts])
-    t = d.tap * cis(d.current)
-    If = (d.yt / abs2(t)) * Vf - (d.yt / conj(t)) * Vt
-    return real(Vf * conj(If))
-end
 
 # Seam: future implicit embedding dispatches here. Never called by the outer loop.
 stamp_control!(d::AbstractControlledDevice, args...) =
@@ -228,22 +205,6 @@ function apply_parameter!(d::ControlledTap, data, p::Float64, ::Int)
         # Y22 = Yt is tap-independent; no update needed.
     end
     d.current = p
-    return
-end
-
-# Pure phase change at fixed |t| = tap: Y11 = yt/|t|² and Y22 = yt are invariant, so only the
-# off-diagonals rotate. Delta-update (`+=`) preserves any parallel branch sharing the nzval slot;
-# `old` comes from `d.current` (the last applied angle), never read back from the lossy nzval.
-function apply_parameter!(d::ControlledPhaseShifter, data, alpha::Float64, ::Int)
-    A = data.power_network_matrix.data
-    old_t = d.tap * cis(d.current)
-    new_t = d.tap * cis(alpha)
-    o = d.nz_offsets
-    @inbounds begin
-        A.nzval[o[2]] += -d.yt / conj(new_t) - (-d.yt / conj(old_t))
-        A.nzval[o[3]] += -d.yt / new_t - (-d.yt / old_t)
-    end
-    d.current = alpha
     return
 end
 
@@ -332,29 +293,59 @@ function snap_to_discrete(d::ControlledSwitchedShunt, b::Float64)
     return best
 end
 
-# Continuous devices: no discrete grid, just clamp into the band.
-snap_to_discrete(d::ControlledFACTS, b::Float64) = clamp(b, d.b_min, d.b_max)
-snap_to_discrete(d::ControlledPhaseShifter, alpha::Float64) =
-    clamp(alpha, d.angle_min, d.angle_max)
+# Effective |b| bound at the measured controlled-bus voltage (Q = b·V²). SVC is
+# susceptance-bounded at `rating`, with an independent MVA ceiling `q_cap` that tightens the
+# bound as |Q|=b·V² approaches q_cap. STATCOM is current-limited (|Q|<=V·I_max => b<=I_max/V),
+# subject to the same MVA ceiling.
+function _facts_b_limit(d::ControlledFACTS, vmag::Float64)
+    v = max(vmag, 1e-3)
+    if d.svc
+        return min(d.rating, d.q_cap / v^2)
+    else
+        return min(d.rating / v, d.q_cap / v^2)
+    end
+end
 
-# The parameter-dependent from-side arc-admittance terms (ff, ft, tf) of a branch device;
-# the tt term (= yt) is parameter-independent for both device types.
+# Continuous devices: no discrete grid, just clamp into the refreshed voltage-dependent band.
+snap_to_discrete(d::ControlledFACTS, b::Float64) = clamp(b, -d.b_lim, d.b_lim)
+
+# Delivered reactive power Q = b·|V|² in MVA, evaluated at the device's own (sending) bus
+# voltage `vmag` — the susceptance sits there, not at the regulated bus (which may be remote).
+delivered_q_mvar(d::ControlledFACTS, vmag::Float64) = d.current * vmag^2 * d.base_mva
+
+# Post-solve classification of one FACTS endpoint against its final (voltage-dependent) bound
+# and setpoint. `saturated` = pinned at the |b| bound while off setpoint — the device cannot
+# supply the bus's reactive deficit (the homotopy analogue of a PV→PQ Q-limit release). A
+# device that reaches setpoint with headroom, or is at its limit AND at setpoint (exactly
+# enough), is not saturated. Mutates `d.saturated`; returns it. `@warn`s only on genuine
+# saturation so it stays quiet on the common regulating case.
+function classify_facts_saturation!(d::ControlledFACTS, vmag::Float64)
+    at_limit = abs(d.current) >= (1.0 - CONTROL_FACTS_LIMIT_RTOL) * d.b_lim
+    at_setpoint = abs(vmag - d.vset) <= CONTROL_FACTS_SETPOINT_BAND
+    d.saturated = at_limit && !at_setpoint
+    if d.saturated
+        law = d.svc ? "SVC" : "STATCOM"
+        @warn "ControlledFACTS \"$(d.name)\" saturated: |V−vset|=$(abs(vmag - d.vset)) at \
+            its $law susceptance limit (|b|=$(abs(d.current)) ≥ b_lim=$(d.b_lim)); the bus \
+            cannot be held to $(d.vset)."
+    end
+    return d.saturated
+end
+
+# The parameter-dependent from-side arc-admittance terms (ff, ft, tf) of a tap device;
+# the tt term (= yt) is tap-independent.
 @inline function _branch_terms(d::ControlledTap, p::Float64)
     t = p * cis(d.alpha)
-    return (d.yt / abs2(t), -d.yt / conj(t), -d.yt / t)
-end
-@inline function _branch_terms(d::ControlledPhaseShifter, alpha::Float64)
-    t = d.tap * cis(alpha)
     return (d.yt / abs2(t), -d.yt / conj(t), -d.yt / t)
 end
 
 # Delta-update the from/to arc-admittance rows to `d.current` (parallel branches sharing the arc
 # row are preserved; `d.synced` tracks the reflected value). Reported flows are computed from
-# these matrices post-loop, so an unsynced branch would report flows at its original tap/angle.
+# these matrices post-loop, so an unsynced branch would report flows at its original tap.
 function _sync_branch_arc_rows!(
     Yft::SparseArrays.SparseMatrixCSC,
     Ytf::SparseArrays.SparseMatrixCSC,
-    d::Union{ControlledTap, ControlledPhaseShifter},
+    d::ControlledTap,
     arc_row::Dict{Tuple{Int, Int}, Int},
     ix_to_number::Dict{Int, Int},
 )
@@ -392,22 +383,19 @@ function _sync_branch_arc_rows!(
     return
 end
 
-"""One-shot post-continuation sync: bring the arc-admittance rows of every moved branch
-device (taps, PARs) in line with its final parameter so the branch flows reported by
-`solve_power_flow!` match the network the voltages were solved on. Shunt-side devices
-never touch the arc matrices. No-op when the arc admittance matrices were not built."""
+"""One-shot post-continuation sync: bring the arc-admittance rows of every moved tap device
+in line with its final parameter so the branch flows reported by `solve_power_flow!` match
+the network the voltages were solved on. Shunt-side devices never touch the arc matrices.
+No-op when the arc admittance matrices were not built."""
 function _sync_arc_admittances!(data, set::ControlledDeviceSet)
     Yft = data.power_network_matrix.arc_admittance_from_to
     Ytf = data.power_network_matrix.arc_admittance_to_from
     (isnothing(Yft) || isnothing(Ytf)) && return
-    isempty(set.taps) && isempty(set.phase_shifters) && return
+    isempty(set.taps) && return
     bus_lookup = PNM.get_bus_lookup(Yft)
     ix_to_number = Dict{Int, Int}(v => k for (k, v) in bus_lookup)
     arc_row = get_arc_lookup(data)   # (from_no, to_no) => arc row index
     for d in set.taps
-        _sync_branch_arc_rows!(Yft.data, Ytf.data, d, arc_row, ix_to_number)
-    end
-    for d in set.phase_shifters
         _sync_branch_arc_rows!(Yft.data, Ytf.data, d, arc_row, ix_to_number)
     end
     return

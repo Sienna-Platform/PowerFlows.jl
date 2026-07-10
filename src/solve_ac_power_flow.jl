@@ -135,18 +135,17 @@ function write_device_settings!(system::PSY.System, data)
             end
         end
     end
-    for d in set.phase_shifters
-        ps = PSY.get_component(PSY.PhaseShiftingTransformer, system, d.name)
-        if isnothing(ps)
-            @warn "write_device_settings!: PhaseShiftingTransformer \"$(d.name)\" not \
-                found in the system; its solved angle $(d.current) was NOT written back."
+    for d in set.facts
+        fd = PSY.get_component(PSY.FACTSControlDevice, system, d.name)
+        if isnothing(fd)
+            @warn "write_device_settings!: FACTSControlDevice \"$(d.name)\" not found in \
+                the system; its solved reactive output was NOT written back."
             continue
         end
-        PSY.set_α!(ps, d.current)
+        # Delivered reactive power Q = b·|V_local|² (MVA) at the device's own bus.
+        PSY.set_reactive_power_required!(
+            fd, delivered_q_mvar(d, data.bus_magnitude[d.bus_ix, 1]))
     end
-    isempty(set.facts) ||
-        @debug "write_device_settings!: FACTS devices have no stored setting field in \
-            PSY; solved susceptances are available via get_controlled_device_results."
     return
 end
 

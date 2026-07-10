@@ -626,7 +626,6 @@ function _build_controlled_devices(
         PNM.get_bus_lookup(power_network_matrix),
         power_network_matrix;
         reverse_bus_search_map = PNM.get_reverse_bus_search_map(nrd),
-        include_experimental = get(pf.solver_settings, :experimental_controls, false)::Bool,
     )
     if isempty(set)
         return nothing

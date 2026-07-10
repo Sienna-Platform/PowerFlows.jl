@@ -142,17 +142,12 @@ end
 
 Per-device data problems (unresolvable buses, degenerate ranges, unsupported control
 modes) de-enroll the device with a `@warn` — the device stays at its current setting
-(a warn-and-lock posture) — and never abort construction.
-
-`include_experimental` gates the `ControlledFACTS` and `ControlledPhaseShifter` families,
-whose data sourcing is not yet production-validated (enable via
-`solver_settings[:experimental_controls] = true`)."""
+(a warn-and-lock posture) — and never abort construction."""
 function build_controlled_device_set(
     sys,
     bus_lookup::Dict{Int, Int},
     ybus;
     reverse_bus_search_map::Dict{Int, Int} = Dict{Int, Int}(),
-    include_experimental::Bool = false,
 )
     taps = ControlledTap[]
     for tx in PSY.get_available_components(PSY.TapTransformer, sys)
@@ -289,32 +284,15 @@ function build_controlled_device_set(
     end
 
     facts = ControlledFACTS[]
-    phase_shifters = ControlledPhaseShifter[]
-    if include_experimental
-        _enroll_facts!(facts, sys, bus_lookup, reverse_bus_search_map)
-        _enroll_phase_shifters!(
-            phase_shifters, sys, bus_lookup, reverse_bus_search_map, ybus)
-    else
-        n_facts = length(PSY.get_available_components(PSY.FACTSControlDevice, sys))
-        n_pst = count(
-            ps ->
-                PSY.get_control_objective(ps) ==
-                PSY.TransformerControlObjective.ACTIVE_POWER_FLOW,
-            PSY.get_available_components(PSY.PhaseShiftingTransformer, sys),
-        )
-        if n_facts + n_pst > 0
-            @info "discrete control: $n_facts FACTS device(s) and $n_pst \
-                phase-shifter(s) present but not enrolled — FACTS/PAR control is \
-                experimental. Enable with solver_settings[:experimental_controls] = true."
-        end
-    end
+    _enroll_facts!(facts, sys, bus_lookup, reverse_bus_search_map)
 
-    return ControlledDeviceSet(taps, shunts, facts, phase_shifters)
+    return ControlledDeviceSet(taps, shunts, facts)
 end
 
-# EXPERIMENTAL: continuous shunt FACTS (SVC/STATCOM) voltage control. Data sourcing is
-# not yet production-validated (remote FCREG regulation and the |V|-dependent current
-# limit are not modeled); gated behind solver_settings[:experimental_controls].
+# Continuous shunt FACTS (SVC/STATCOM) voltage control. `rating` (SHMX) bounds the SVC
+# susceptance-at-unity or the STATCOM current; `q_cap` is an independent MVA ceiling. Both
+# combine into the |V|-dependent limit `_facts_b_limit`. FCREG (`regulated_bus_number`)
+# selects local vs. remote-bus regulation.
 function _enroll_facts!(
     facts::Vector{ControlledFACTS},
     sys,
@@ -338,85 +316,44 @@ function _enroll_facts!(
                 device not enrolled."
             continue
         end
-        # `max_shunt_current` is MVA at unity voltage ⇒ a symmetric susceptance band in
-        # p.u. on system base (Q = b·|V|², so at |V|=1 the MVA rating bounds |b|).
-        b_max = PSY.get_max_shunt_current(fd) / base_mva
-        if b_max <= 0.0
+        reg = PSY.get_regulated_bus_number(fd)
+        cix = bix
+        if !iszero(reg)
+            cix = _resolve_bus_ix(bus_lookup, reverse_bus_search_map, reg)
+        end
+        if isnothing(cix)
+            @warn "ControlledFACTS \"$name\": regulated bus $reg is not in the \
+                (reduced) network; device not enrolled."
+            continue
+        end
+        # `rating` (SHMX) is MVA at unity voltage ⇒ the SVC susceptance-at-unity bound or
+        # the STATCOM current limit, on system base. `q_cap` is an independent MVA ceiling.
+        rating = PSY.get_max_shunt_current(fd) / base_mva
+        q_cap = PSY.get_max_reactive_power(fd) / base_mva
+        svc = PSY.get_shunt_control_type(fd) == PSY.FACTSShuntControlType.SVC
+        if rating <= 0.0
             @warn "ControlledFACTS \"$name\": max_shunt_current must be positive \
                 (series-only FACTS records parse with 0.0); device not enrolled."
             continue
         end
         vset = PSY.get_voltage_setpoint(fd)
         _validate_vset("ControlledFACTS", name, vset) || continue
+        b0 = rating   # enrollment-time bound at unity voltage
         push!(
             facts,
             ControlledFACTS(
                 name,
                 bix,
-                bix,               # shunt regulates its own (sending) bus
+                cix,
                 vset,
-                -b_max,
-                b_max,
+                svc,
+                rating,
+                q_cap,
+                b0,
+                base_mva,
                 0.0,               # initial (reporting)
                 0.0,               # start neutral; the controller drives b from 0
-            ),
-        )
-    end
-    return
-end
-
-# EXPERIMENTAL: phase-angle regulator (PAR) active-power-flow control. The flow setpoint
-# and angle band are not persisted by the PSS/E parser (`pf` defaults to 0.0 and
-# RMI1/RMA1 are not mapped to phase_angle_limits), so enrollment requires explicitly
-# populated PSY fields; gated behind solver_settings[:experimental_controls].
-function _enroll_phase_shifters!(
-    phase_shifters::Vector{ControlledPhaseShifter},
-    sys,
-    bus_lookup::Dict{Int, Int},
-    reverse_bus_search_map::Dict{Int, Int},
-    ybus,
-)
-    for ps in PSY.get_available_components(PSY.PhaseShiftingTransformer, sys)
-        PSY.get_control_objective(ps) ==
-        PSY.TransformerControlObjective.ACTIVE_POWER_FLOW || continue
-        name = PSY.get_name(ps)
-        p_target = PSY.get_active_power_flow(ps)
-        if iszero(p_target)
-            # A raw-parsed PST always lands here (the parser never sets `pf`): a zero
-            # setpoint would command the PAR to erase its own flow — actively harmful.
-            @warn "ControlledPhaseShifter \"$name\": active_power_flow is 0.0, which is \
-                the parser default rather than a real flow setpoint; device not \
-                enrolled. Set a nonzero setpoint on the component to enable control."
-            continue
-        end
-        arc = PSY.get_arc(ps)
-        fb = PSY.get_number(PSY.get_from(arc))
-        tb = PSY.get_number(PSY.get_to(arc))
-        fix = _resolve_bus_ix(bus_lookup, reverse_bus_search_map, fb)
-        tix = _resolve_bus_ix(bus_lookup, reverse_bus_search_map, tb)
-        if isnothing(fix) || isnothing(tix) || fix == tix
-            @warn "ControlledPhaseShifter \"$name\": arc bus missing from the (reduced) \
-                network or collapsed by a reduction; device not enrolled."
-            continue
-        end
-        lims = PSY.get_phase_angle_limits(ps)
-        yt = 1.0 / (PSY.get_r(ps) + PSY.get_x(ps) * im)
-        alpha0 = PSY.get_α(ps)
-        push!(
-            phase_shifters,
-            ControlledPhaseShifter(
-                name,
-                fix,
-                tix,
-                p_target,
-                yt,
-                PSY.get_tap(ps),
-                lims.min,
-                lims.max,
-                _ybus_block_offsets(ybus, fix, tix),
-                alpha0,   # initial (reporting)
-                alpha0,   # synced (arc-admittance rows reflect this angle)
-                alpha0,   # current
+                false,             # saturated (set post-solve)
             ),
         )
     end
