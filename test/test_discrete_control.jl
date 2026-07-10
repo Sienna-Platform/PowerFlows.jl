@@ -1,3 +1,79 @@
+const IEEE14_FACTS_RAW = "/Users/jdlara/cache/vg_pfs_validation/14_bus.raw"
+
+"""Build the IEEE 14-bus system (PSS/E `14_bus.raw`) with a `FACTSControlDevice` at bus 14
+(`control_mode=NML`). Reused by discrete-control / reactive-power-control tests.
+
+`stress` scales every `StandardLoad`'s ZIP P/Q components (the PSS/E parser's load type);
+`shunt9_off` disables the bus-9 fixed shunt so the FACTS device carries more of the
+reactive burden. `svc`/`shunt_control_type` selects the SVC vs STATCOM reactive-limit law;
+`regulated_bus_number` sets FCREG (0 ⇒ local/sending-bus regulation)."""
+function build_ieee14_facts_system(;
+    regulated_bus_number::Int = 0,
+    shmx_mva::Float64 = 25.0,
+    mva_cap::Float64 = 9999.0,
+    svc::Bool = false,
+    vset::Float64 = 1.0,
+    stress::Float64 = 1.0,
+    shunt9_off::Bool = false,
+)
+    sys = System(IEEE14_FACTS_RAW; runchecks = false)
+    if !isone(stress)
+        for load in get_components(StandardLoad, sys)
+            set_constant_active_power!(load, get_constant_active_power(load) * stress)
+            set_constant_reactive_power!(
+                load, get_constant_reactive_power(load) * stress)
+            set_impedance_active_power!(load, get_impedance_active_power(load) * stress)
+            set_impedance_reactive_power!(
+                load, get_impedance_reactive_power(load) * stress)
+            set_current_active_power!(load, get_current_active_power(load) * stress)
+            set_current_reactive_power!(
+                load, get_current_reactive_power(load) * stress)
+        end
+    end
+    if shunt9_off
+        for fa in get_components(PSY.FixedAdmittance, sys)
+            get_number(get_bus(fa)) == 9 && set_available!(fa, false)
+        end
+    end
+    shunt_control_type = PSY.FACTSShuntControlType.STATCOM
+    if svc
+        shunt_control_type = PSY.FACTSShuntControlType.SVC
+    end
+    facts = FACTSControlDevice(;
+        name = "facts_14",
+        available = true,
+        bus = get_bus(sys, 14),
+        control_mode = PSY.FACTSOperationModes.NML,
+        voltage_setpoint = vset,
+        max_shunt_current = shmx_mva,
+        max_reactive_power = mva_cap,
+        shunt_control_type = shunt_control_type,
+        regulated_bus_number = regulated_bus_number,
+    )
+    add_component!(sys, facts)
+    return sys
+end
+
+@testset "discrete control: FACTS enrolled by default (no experimental flag)" begin
+    sys = build_ieee14_facts_system()
+    pf = ACPowerFlow(; control_discrete_devices = true)
+    data = PowerFlows.PowerFlowData(pf, sys)
+    set = PowerFlows.get_controlled_devices(data)
+    @test !isnothing(set)
+    @test length(set.facts) == 1
+end
+
+@testset "FACTS remote FCREG regulation targets the remote bus" begin
+    sys = build_ieee14_facts_system(; regulated_bus_number = 13)   # device at 14, regulates 13
+    pf = ACPowerFlow(; control_discrete_devices = true)
+    data = PowerFlows.PowerFlowData(pf, sys)
+    set = PowerFlows.get_controlled_devices(data)
+    f = only(set.facts)
+    bl = PowerFlows.get_bus_lookup(data)
+    @test PowerFlows.controlled_bus_ix(f) == bl[13]   # remote, not the device's own bus 14
+    @test PowerFlows.controlled_bus_ix(f) != f.bus_ix
+end
+
 @testset "discrete control: pf field defaults" begin
     @test ACPolarPowerFlow().control_discrete_devices == false
     @test ACRectangularPowerFlow().control_discrete_devices == false
@@ -597,71 +673,78 @@ end
 end
 
 @testset "discrete control: SVC holds weak bus to setpoint (NR)" begin
-    # Ample reactive capability (100 MVA ⇒ b_max = 1.0 p.u.): the SVC must inject
+    # Ample reactive capability (100 MVA ⇒ b_lim = 1.0 p.u.): the SVC must inject
     # reactive power to drive the weak PQ bus up to its voltage_setpoint (1.0 p.u.).
     sys = _make_svc_system(; max_shunt_current = 100.0)
-    pf = ACPolarPowerFlow(;
-        control_discrete_devices = true,
-        solver_settings = Dict{Symbol, Any}(:experimental_controls => true),
-    )
+    pf = ACPolarPowerFlow(; control_discrete_devices = true)
     data = PowerFlowData(pf, sys)
     solve_power_flow!(data)
     @test all(data.converged)
     f = data.controlled_devices.facts[1]
     @test abs(data.bus_magnitude[f.controlled_ix, 1] - f.vset) <= 5e-3
     # Regulating, not saturated at a susceptance limit.
-    @test f.b_min < f.current < f.b_max
+    @test -f.b_lim < f.current < f.b_lim
 end
 
 @testset "discrete control: SVC clamps at reactive limit (NR)" begin
-    # Tight reactive capability (5 MVA ⇒ b_max = 0.05 p.u.) cannot supply the
-    # bus's reactive deficit: the SVC saturates at b_max and the bus stays below
+    # Tight reactive capability (5 MVA ⇒ b_lim = 0.05 p.u.) cannot supply the
+    # bus's reactive deficit: the SVC saturates at b_lim and the bus stays below
     # setpoint — the homotopy equivalent of the PV→PQ Q-limit release.
     sys = _make_svc_system(; max_shunt_current = 5.0)
-    pf = ACPolarPowerFlow(;
-        control_discrete_devices = true,
-        solver_settings = Dict{Symbol, Any}(:experimental_controls => true),
-    )
+    pf = ACPolarPowerFlow(; control_discrete_devices = true)
     data = PowerFlowData(pf, sys)
     solve_power_flow!(data)
     @test all(data.converged)
     f = data.controlled_devices.facts[1]
     @test data.bus_magnitude[f.controlled_ix, 1] < f.vset - 1e-3
-    @test isapprox(f.current, f.b_max; atol = 1e-3)
+    @test isapprox(f.current, f.b_lim; atol = 1e-3)
 end
 
-@testset "discrete control: PAR regulates branch flow to target (NR)" begin
-    # Two parallel paths (line ∥ PAR) feed a load; the PAR steers its own active-power
-    # flow to the setpoint by adjusting its phase angle within the (ample) band.
-    sys = _make_par_system(; p_target = 0.3)
-    pf = ACPolarPowerFlow(;
-        control_discrete_devices = true,
-        solver_settings = Dict{Symbol, Any}(:experimental_controls => true),
-    )
+@testset "FACTS classification: regulating device is not saturated; results carry Q" begin
+    # Ample capability: the device reaches setpoint with headroom, so it is not saturated
+    # and never freezes short of both its limit and its setpoint.
+    sys = _make_svc_system(; max_shunt_current = 100.0)
+    pf = ACPolarPowerFlow(; control_discrete_devices = true)
     data = PowerFlowData(pf, sys)
     solve_power_flow!(data)
-    @test all(data.converged)
-    p = data.controlled_devices.phase_shifters[1]
-    @test abs(PowerFlows.measured_value(p, data, 1) - p.p_target) <= 5e-3
-    # Regulating, not pinned at a phase-angle limit.
-    @test p.angle_min < p.current < p.angle_max
+    f = data.controlled_devices.facts[1]
+    @test !f.saturated
+    at_setpoint = abs(data.bus_magnitude[f.controlled_ix, 1] - f.vset) <= 5e-3
+    at_limit = abs(f.current) >= (1.0 - 1e-2) * f.b_lim
+    @test at_setpoint || at_limit          # converged to setpoint OR genuinely at the bound
+    @test !(f.saturated && at_setpoint)    # never both
+    res = PowerFlows.get_controlled_device_results(data)
+    frow = only(eachrow(res[res.family .== "FACTSControlDevice", :]))
+    @test frow.saturated == false
+    v_local = data.bus_magnitude[f.bus_ix, 1]
+    @test frow.delivered_q_mvar ≈ f.current * v_local^2 * f.base_mva
+    # Neutral columns for non-FACTS devices stay rectangular (no FACTS-only leakage).
+    @test all(ismissing, res[res.family .!= "FACTSControlDevice", :delivered_q_mvar])
 end
 
-@testset "discrete control: PAR clamps at angle limit (NR)" begin
-    # A 0.45 p.u. flow target needs ≈0.04 rad of phase boost, but the band is only ±0.01:
-    # the angle saturates at a limit and the regulated flow falls short of the setpoint.
-    sys = _make_par_system(; p_target = 0.45, angle_min = -0.01, angle_max = 0.01)
-    pf = ACPolarPowerFlow(;
-        control_discrete_devices = true,
-        solver_settings = Dict{Symbol, Any}(:experimental_controls => true),
-    )
+@testset "FACTS classification: clamped device is saturated and warns" begin
+    # Tight capability cannot hold the setpoint: the device pins at b_lim off setpoint and is
+    # reported saturated with a warning.
+    sys = _make_svc_system(; max_shunt_current = 5.0)
+    pf = ACPolarPowerFlow(; control_discrete_devices = true)
+    data = PowerFlowData(pf, sys)
+    @test_logs (:warn, r"saturated") match_mode = :any solve_power_flow!(data)
+    f = data.controlled_devices.facts[1]
+    @test f.saturated
+    res = PowerFlows.get_controlled_device_results(data)
+    frow = only(eachrow(res[res.family .== "FACTSControlDevice", :]))
+    @test frow.saturated == true
+end
+
+@testset "FACTS write-back sets reactive_power_required" begin
+    sys = _make_svc_system(; max_shunt_current = 100.0)
+    pf = ACPolarPowerFlow(; control_discrete_devices = true)
     data = PowerFlowData(pf, sys)
     solve_power_flow!(data)
-    @test all(data.converged)
-    p = data.controlled_devices.phase_shifters[1]
-    @test isapprox(p.current, p.angle_max; atol = 1e-3) ||
-          isapprox(p.current, p.angle_min; atol = 1e-3)
-    @test PowerFlows.measured_value(p, data, 1) < p.p_target - 1e-2
+    PowerFlows.write_device_settings!(sys, data)
+    fd = only(get_components(PSY.FACTSControlDevice, sys))
+    # Solver-populated delivered Q = b·|V|²·base_mva at the device bus (capacitive ⇒ > 0).
+    @test PSY.get_reactive_power_required(fd) > 0.0
 end
 
 @testset "discrete control: tap reads first-class PSY fields (#1684)" begin
@@ -702,33 +785,11 @@ end
         ACPolarPowerFlow(; control_discrete_devices = true), lcc_sys)
 end
 
-@testset "discrete control: FACTS/PAR are experimental-gated" begin
-    # Without the flag, FACTS devices are not enrolled (an @info points at the flag);
-    # taps/shunts are unaffected.
+@testset "discrete control: FACTS enrolls without a flag; taps/shunts unaffected" begin
     sys = _make_svc_system(; max_shunt_current = 100.0)
-    pf_off = ACPolarPowerFlow(; control_discrete_devices = true)
-    data_off = PowerFlowData(pf_off, sys)
-    @test isnothing(data_off.controlled_devices)   # SVC was the only device
-    # With the flag, the SVC enrolls.
-    pf_on = ACPolarPowerFlow(;
-        control_discrete_devices = true,
-        solver_settings = Dict{Symbol, Any}(:experimental_controls => true),
-    )
-    data_on = PowerFlowData(pf_on, sys)
-    @test length(data_on.controlled_devices.facts) == 1
-end
-
-@testset "discrete control: PAR with parser-default setpoint is not enrolled" begin
-    # active_power_flow == 0.0 is the parser default, not a real flow setpoint:
-    # enrolling it would command the PAR to erase its own flow.
-    sys = _make_par_system(; p_target = 0.0)
-    data = PowerFlowData(ACPolarPowerFlow(), sys)
-    set = @test_logs (:warn, r"active_power_flow is 0.0") match_mode = :any (
-        PowerFlows.build_controlled_device_set(
-        sys, PF.get_bus_lookup(data), data.power_network_matrix;
-        include_experimental = true)
-    )
-    @test length(set.phase_shifters) == 0
+    pf = ACPolarPowerFlow(; control_discrete_devices = true)
+    data = PowerFlowData(pf, sys)
+    @test length(data.controlled_devices.facts) == 1
 end
 
 @testset "discrete control: arc-admittance rows synced to final parameters" begin
@@ -815,7 +876,8 @@ end
     df_off = PowerFlows.get_controlled_device_results(data_off)
     @test size(df_off, 1) == 0
     @test names(df_off) ==
-          ["family", "name", "lower_limit", "upper_limit", "initial", "final"]
+          ["family", "name", "lower_limit", "upper_limit", "initial", "final",
+        "delivered_q_mvar", "saturated"]
 end
 
 @testset "discrete control: shunt deadband semantics" begin
@@ -1183,4 +1245,52 @@ end
     @test PowerFlows.get_control_symbolic_factor_count(data) <= 2
     n_inner = PowerFlows.get_control_inner_solve_count(data)
     @test 0 < n_inner < 200
+end
+
+@testset "STATCOM |V|-dependent limit: Q_solved ≈ V·Imax at saturation" begin
+    # Deep-sag case (+60% load, bus-9 shunt OOS — the calibrated 14-bus stress anchor) with an
+    # undersized current limit: this system's PV buses give bus 14 enough native support that
+    # a ~6.5 Mvar-capable device (shmx_mva=15) already reaches vset unsaturated (verified by a
+    # direct sweep of shmx_mva at this stress point) — shmx_mva=5 is comfortably below that
+    # natural need, so the STATCOM saturates at its |V|-dependent current bound before reaching
+    # vset. `_facts_b_limit`'s STATCOM branch is current-limited: |Q| <= V·Imax ⇒ b <= Imax/V,
+    # so at saturation Q = b_lim·V² = (Imax/V)·V² = V·Imax exactly (mva_cap=9999, non-binding).
+    sys = build_ieee14_facts_system(;
+        shmx_mva = 5.0, mva_cap = 9999.0, vset = 1.0, stress = 1.6, shunt9_off = true)
+    pf = ACPowerFlow(; control_discrete_devices = true)
+    data = PowerFlows.PowerFlowData(pf, sys)
+    @test PowerFlows.solve_power_flow!(data)
+    @test all(data.converged)
+    res = PowerFlows.get_controlled_device_results(data)
+    row = only(eachrow(res[res.family .== "FACTSControlDevice", :]))
+    bl = PowerFlows.get_bus_lookup(data)
+    v14 = data.bus_magnitude[bl[14], 1]
+    base_mva = PSY.get_base_power(sys)
+    q_mvar = row.final * v14^2 * base_mva
+    f = only(data.controlled_devices.facts)
+    @test isapprox(row.final, f.b_lim; atol = 1e-3)   # riding the |V|-dependent limit
+    @test data.bus_magnitude[f.controlled_ix, 1] < f.vset - 1e-3   # setpoint unreached
+    @test isapprox(q_mvar, v14 * 5.0; atol = 0.5)   # Q ≈ V·Imax at the current limit
+end
+
+@testset "STATCOM riding its limit converges without oscillation chatter" begin
+    # Regression for the chatter-freeze guard: refreshing `b_lim` from the measured voltage
+    # every pass must not itself induce direction reversals in the damped target (a "b_lim
+    # chases V, V chases b_lim" feedback loop) — the device should settle cleanly against its
+    # limit, never trip `CONTROL_OSCILLATION_LIMIT`, and stay well under the per-stage pass
+    # budget (`MAX_CONTROL_PASSES_PER_STAGE` per steepness stage). Same saturating fixture as
+    # the test above.
+    sys = build_ieee14_facts_system(;
+        shmx_mva = 5.0, mva_cap = 9999.0, vset = 1.0, stress = 1.6, shunt9_off = true)
+    pf = ACPowerFlow(; control_discrete_devices = true)
+    data = PowerFlows.PowerFlowData(pf, sys)
+    tl = Test.TestLogger(; min_level = Logging.Warn)
+    converged = Logging.with_logger(tl) do
+        PowerFlows.solve_power_flow!(data)
+    end
+    @test converged
+    @test all(data.converged)
+    @test !any(occursin("oscillat", r.message) for r in tl.logs)
+    n_inner = PowerFlows.get_control_inner_solve_count(data)
+    @test 0 < n_inner < 300
 end

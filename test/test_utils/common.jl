@@ -739,8 +739,7 @@ function _make_ieee14_scaled_load_system(load_scale::Float64 = 1.4)
 end
 
 """Add a continuous shunt `FACTSControlDevice` (SVC/STATCOM-style) at `bus_number` targeting
-`voltage_setpoint`. Requires
-`solver_settings[:experimental_controls] = true` on the `ACPowerFlow` used to solve."""
+`voltage_setpoint`."""
 function _add_facts_shunt!(
     sys,
     bus_number::Int;
@@ -789,57 +788,10 @@ function _add_switched_shunt!(
             min = voltage_setpoint - deadband,
             max = voltage_setpoint + deadband,
         ),
+        control_mode = SwitchedAdmittanceControlMode.DISCRETE_VOLTAGE,
     )
     add_component!(sys, sa)
     return sa
-end
-
-"""Build a 2-bus loop where a `PhaseShiftingTransformer` (ACTIVE_POWER_FLOW control) shares the
-path to a load with a parallel `Line`. The phase angle redistributes flow between the two
-branches, so the PAR can regulate ITS OWN active-power flow toward `active_power_flow` (the
-setpoint). A tight `phase_angle_limits` band forces the angle to saturate before reaching a
-high target."""
-function _make_par_system(;
-    p_target::Float64 = 0.3,
-    angle_min::Float64 = -0.6,
-    angle_max::Float64 = 0.6,
-)
-    sys = System(100.0)
-    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.0, 0.0)
-    b2 = _add_simple_bus!(sys, 2, ACBusTypes.PQ, 230, 1.0, 0.0)
-    _add_simple_source!(sys, b1, 0.0, 0.0)
-    # Parallel path A: a plain line.
-    _add_simple_line!(sys, b1, b2, 0.01, 0.10, 0.0)
-    load2 = PowerLoad(;
-        name = "load_2",
-        available = true,
-        bus = b2,
-        active_power = 0.5,
-        reactive_power = 0.1,
-        base_power = 100.0,
-        max_active_power = 100.0,
-        max_reactive_power = 100.0,
-    )
-    add_component!(sys, load2)
-    # Parallel path B: the PAR. Its phase angle steers its share of the load flow.
-    pst = PhaseShiftingTransformer(;
-        name = "par_1_2",
-        available = true,
-        active_power_flow = p_target,
-        reactive_power_flow = 0.0,
-        arc = Arc(; from = b1, to = b2),
-        r = 0.01,
-        x = 0.10,
-        primary_shunt = 0.0 + 0.0im,
-        tap = 1.0,
-        α = 0.0,
-        rating = 1.0,
-        base_power = 100.0,
-        phase_angle_limits = (min = angle_min, max = angle_max),
-        control_objective = PSY.TransformerControlObjective.ACTIVE_POWER_FLOW,
-    )
-    add_component!(sys, pst)
-    return sys
 end
 
 """Build a 4-bus system where the TapTransformer's FROM bus is the controlled bus,

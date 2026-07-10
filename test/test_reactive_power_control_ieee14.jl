@@ -146,7 +146,6 @@ end
     pf = ACPolarPowerFlow(;
         check_reactive_power_limits = true,
         control_discrete_devices = true,
-        solver_settings = Dict(:experimental_controls => true),
     )
     data, converged = _ieee14_solve(sys, pf)
     @test converged
@@ -200,7 +199,6 @@ end
     pf = ACPolarPowerFlow(;
         check_reactive_power_limits = true,
         control_discrete_devices = true,
-        solver_settings = Dict(:experimental_controls => true),
     )
     data, converged = _ieee14_solve(sys, pf)
     @test converged
