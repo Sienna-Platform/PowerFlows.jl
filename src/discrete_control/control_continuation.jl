@@ -297,33 +297,21 @@ function _linear_plant_sign(d, data, ts::Int, ctx::_SensitivityContext)
     return -ctx.sol[2 * cbus - 1], true       # dy/dp = (dx/dp)[Vm(cbus)] = −sol[2·cbus−1]
 end
 
-# Incremental robust applicator: walk the parameter from `start = d.current`
-# toward `target` so NR stays converged.  The full move is tried FIRST (one
-# inner solve in the common case); only if it fails does the walk fall back to
-# bisection sub-stepping (growing on NR success, halving on failure, giving up
-# below `MIN_LAMBDA_STEP`).  Returns `(reached, moved)`:
-# the parameter actually reached (solver left converged there) and whether ANY
-# sub-step was applied — a requested move that could not budge at all must not
-# masquerade as a settled device.
-function _continuation_to!(d, data, ts::Int, target::Float64, pf, scratch_snap; kwargs...)
-    start = current_parameter(d)
-    abs(target - start) < _param_tol(d) && return start, true
-    _capture_state!(scratch_snap, data, ts)  # last converged state, restored on a failed trial
-    snap = scratch_snap
-    # Full move first: the damped target is usually within the warm-started solver's
-    # reach, so the common case costs ONE inner solve instead of a multi-sub-step walk.
-    apply_parameter!(d, data, target, ts)
-    _ctrl_solve!(pf, data, ts; kwargs...) && return target, true
-    apply_parameter!(d, data, start, ts)
-    _restore_state!(data, ts, snap)
-    # Bisection fallback: the full step failed, so retry from half the interval,
-    # growing on success and halving on failure.
-    done = 0.0                       # fraction of [start,target] applied so far
+# Shared bisection sub-step walk for the robust continuation applicators
+# (`_continuation_to!` and `_restore_one!`). The full move having failed, step from `start`
+# toward `target` (each interpolated point clamped to `[lo, hi]`), growing the step on NR
+# success and halving it on failure; give up below `MIN_LAMBDA_STEP`. On entry `snap` holds
+# the converged state at `start` and the device/data sit at `start`. Leaves the system at the
+# last converged iterate and returns `(reached, completed)`: the parameter reached (== `start`
+# if nothing budged) and whether the full `[start, target]` interval was traversed.
+function _bisection_walk!(d, data, ts::Int, start::Float64, target::Float64,
+    lo::Float64, hi::Float64, pf, snap; kwargs...)
+    done = 0.0                       # fraction of [start, target] applied so far
     step = 0.5
     reached = start
     while done < 1.0
         trial = min(1.0, done + step)
-        p = start + trial * (target - start)
+        p = clamp(start + trial * (target - start), lo, hi)
         apply_parameter!(d, data, p, ts)
         if _ctrl_solve!(pf, data, ts; kwargs...)
             done = trial
@@ -331,19 +319,45 @@ function _continuation_to!(d, data, ts::Int, target::Float64, pf, scratch_snap; 
             _capture_state!(snap, data, ts)
             step = min(step * CONTROL_STEP_GROWTH, MAX_LAMBDA_STEP)
         else
+            # Revert to the last converged parameter and state, not the failed trial.
             apply_parameter!(d, data, reached, ts)
             _restore_state!(data, ts, snap)
             step /= 2.0
-            if step < MIN_LAMBDA_STEP
-                if reached != start
-                    # Re-solve from the restored converged state (partial move applied).
-                    _ctrl_solve!(pf, data, ts; kwargs...)
-                end
-                return reached, reached != start
-            end
+            step < MIN_LAMBDA_STEP && return reached, false
         end
     end
     return reached, true
+end
+
+# Incremental robust applicator: walk the parameter from `start = d.current`
+# toward `target` so NR stays converged.  The full move is tried FIRST (one
+# inner solve in the common case); only if it fails does the walk fall back to
+# bisection sub-stepping (via `_bisection_walk!`).  Returns `(reached, moved)`:
+# the parameter actually reached (solver left converged there) and whether ANY
+# sub-step was applied — a requested move that could not budge at all must not
+# masquerade as a settled device.
+function _continuation_to!(d, data, ts::Int, target::Float64, pf, scratch_snap; kwargs...)
+    start = current_parameter(d)
+    abs(target - start) < _param_tol(d) && return start, true
+    lo, hi = parameter_limits(d)
+    _capture_state!(scratch_snap, data, ts)  # last converged state, restored on a failed trial
+    snap = scratch_snap
+    clamped = clamp(target, lo, hi)          # no-op here (damped target is pre-clamped)
+    # Full move first: the damped target is usually within the warm-started solver's
+    # reach, so the common case costs ONE inner solve instead of a multi-sub-step walk.
+    apply_parameter!(d, data, clamped, ts)
+    _ctrl_solve!(pf, data, ts; kwargs...) && return clamped, true
+    apply_parameter!(d, data, start, ts)
+    _restore_state!(data, ts, snap)
+    # Bisection fallback: the full step failed, so retry from half the interval.
+    reached, completed =
+        _bisection_walk!(d, data, ts, start, target, lo, hi, pf, snap; kwargs...)
+    completed && return reached, true
+    if reached != start
+        # Re-solve from the restored converged state (partial move applied).
+        _ctrl_solve!(pf, data, ts; kwargs...)
+    end
+    return reached, reached != start
 end
 
 # Adaptive under-relaxation. The damped iteration p ← p + ω·(σ(V(p)) − p) has local
@@ -874,28 +888,9 @@ function _restore_one!(
     _ctrl_solve!(pf, data, ts; kwargs...) && return true
     apply_parameter!(d, data, snapped, ts)
     _restore_state!(data, ts, snap)
-    done = 0.0
-    step = 0.5
-    last_good = snapped
-    while done < 1.0
-        trial = min(1.0, done + step)
-        p = clamp(snapped + trial * (continuous - snapped), lo, hi)
-        apply_parameter!(d, data, p, ts)
-        if _ctrl_solve!(pf, data, ts; kwargs...)
-            done = trial
-            last_good = p
-            _capture_state!(snap, data, ts)
-            step = min(step * CONTROL_STEP_GROWTH, MAX_LAMBDA_STEP)
-        else
-            # Revert to the last converged parameter and state, not the failed trial.
-            apply_parameter!(d, data, last_good, ts)
-            _restore_state!(data, ts, snap)
-            step /= 2.0
-            if step < MIN_LAMBDA_STEP
-                return false
-            end
-        end
-    end
+    _, completed =
+        _bisection_walk!(d, data, ts, snapped, continuous, lo, hi, pf, snap; kwargs...)
+    completed || return false
     return _ctrl_solve!(pf, data, ts; kwargs...)
 end
 

@@ -210,17 +210,10 @@ end
 
 # Delta-update (`+=`, not `=`): `_get_withdrawals!` accumulates all constant-Z devices on
 # this bus into one slot, so overwriting would drop co-located contributions. Only
-# susceptance is controlled; g0 is constant and stays in the baseline.
-function apply_parameter!(d::ControlledSwitchedShunt, data, b::Float64, ts::Int)
-    data.bus_reactive_power_constant_impedance_withdrawals[d.bus_ix, ts] +=
-        d.current - b
-    d.current = b
-    return
-end
-
-# Same constant-Z reactive-withdrawal delta as the switched shunt: raising the (capacitive)
-# susceptance lowers the bus's reactive withdrawal, injecting Q and raising the voltage.
-function apply_parameter!(d::ControlledFACTS, data, b::Float64, ts::Int)
+# susceptance is controlled; g0 is constant and stays in the baseline. Raising the
+# (capacitive) susceptance lowers the bus's reactive withdrawal, injecting Q and raising the
+# voltage. Shared by switched shunts and FACTS shunt compensators.
+function apply_parameter!(d::AbstractShuntControl, data, b::Float64, ts::Int)
     data.bus_reactive_power_constant_impedance_withdrawals[d.bus_ix, ts] +=
         d.current - b
     d.current = b

@@ -340,12 +340,16 @@ function _solve_with_q_limits!(
         end
     end
 
-    @error(
-        "could not enforce reactive power limits after $MAX_REACTIVE_POWER_ITERATIONS \
-        iterations; returning not-converged (bus types/Q were mutated by the final \
-        check without a re-solve)"
+    # Iteration cap reached: the last `_check_q_limit_bounds!` flipped one or more PV buses to
+    # PQ (and clamped their Q) without a follow-up solve, so `data`'s voltages no longer match
+    # its bus types. Pin that final PV/PQ assignment and solve once more so the returned state
+    # is self-consistent, and report that solve's convergence — the classic "fix-as-PQ after N
+    # iterations" resolution — rather than discarding a solution that does converge.
+    @warn(
+        "reactive power limits still oscillating after $MAX_REACTIVE_POWER_ITERATIONS \
+        iterations; pinning the final PV/PQ assignment and solving once more"
     )
-    return false
+    return _newton_power_flow(pf, data, time_step; kwargs...)
 end
 
 function _ac_power_flow(

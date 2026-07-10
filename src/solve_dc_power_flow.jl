@@ -216,14 +216,10 @@ function _run_aba_solve!(
     if !isnothing(data.arc_lossy_admittance_from_to)
         # DC assumption: all bus voltage magnitudes are 1.0 p.u., so V = e^(jθ).
         V = @. exp(1im * data.bus_angles)
-        arcs = get_arc_axis(data)
-        bus_lookup = get_bus_lookup(data)
-        fb_ix = [bus_lookup[first(arc)] for arc in arcs]
-        tb_ix = [bus_lookup[last(arc)] for arc in arcs]
         # Explicit dots (not `@.`) because the RHS embeds a matrix-vector product
         # (`admittance * V`), which `@.` would wrongly broadcast as element-wise.
-        Sft = V[fb_ix, :] .* conj.(data.arc_lossy_admittance_from_to * V)
-        Stf = V[tb_ix, :] .* conj.(data.arc_lossy_admittance_to_from * V)
+        Sft = V[scratch.fb_ix, :] .* conj.(data.arc_lossy_admittance_from_to * V)
+        Stf = V[scratch.tb_ix, :] .* conj.(data.arc_lossy_admittance_to_from * V)
         @. data.arc_active_power_flow_from_to = real(Sft)
         @. data.arc_active_power_flow_to_from = real(Stf)
         @. data.arc_active_power_losses =
