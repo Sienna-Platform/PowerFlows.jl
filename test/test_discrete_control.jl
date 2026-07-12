@@ -925,7 +925,7 @@ end
     # into the system so the stored branch flows stay self-consistent with the device
     # state (write_power_flow_solution! recomputes flows from the system components and
     # asserts they match the stored moved-device flows). Write-back is therefore automatic
-    # when controls are active, independent of the write_device_settings flag.
+    # when controls are active.
     sys = _make_solvable_tap_shunt_system()
     tx0 = first(PSY.get_components(PSY.TapTransformer, sys))
     tap_before = PSY.get_tap(tx0)
@@ -937,12 +937,6 @@ end
     @test solve_and_store_power_flow!(pf, sys)
     @test PSY.get_tap(tx0) != tap_before   # the fixture regulates away from tap = 1.0
     @test PSY.get_tap(tx0) in levels       # the written tap is a valid discrete level
-    # The explicit flag is the same behavior for a controlled solve.
-    sys2 = _make_solvable_tap_shunt_system()
-    tx2 = first(PSY.get_components(PSY.TapTransformer, sys2))
-    @test solve_and_store_power_flow!(pf, sys2; write_device_settings = true)
-    @test PSY.get_tap(tx2) != tap_before
-    @test PSY.get_tap(tx2) in levels
 end
 
 @testset "write-back round-trips the API shunt convention" begin

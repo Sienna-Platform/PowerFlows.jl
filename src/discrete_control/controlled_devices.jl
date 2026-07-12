@@ -126,9 +126,7 @@ function get_control_numeric_refactor_count(data)
     return data.controlled_devices.numeric_refactors[]
 end
 
-controlled_bus_ix(d::ControlledTap) = d.controlled_ix
-controlled_bus_ix(d::ControlledSwitchedShunt) = d.controlled_ix
-controlled_bus_ix(d::ControlledFACTS) = d.controlled_ix
+controlled_bus_ix(d::AbstractControlledDevice) = d.controlled_ix
 
 # Result columns meaningful only for FACTS; taps/shunts report the neutral value so the
 # frame stays rectangular (dispatch, not an `isa` branch, over the mixed device loop).
@@ -137,29 +135,19 @@ result_delivered_q_mvar(d::ControlledFACTS, data, ts::Int) =
     delivered_q_mvar(d, data.bus_magnitude[d.bus_ix, ts])
 result_saturated(::AbstractControlledDevice) = false
 result_saturated(d::ControlledFACTS) = d.saturated
-voltage_setpoint(d::ControlledTap) = d.vset
-voltage_setpoint(d::ControlledSwitchedShunt) = d.vset
-voltage_setpoint(d::ControlledFACTS) = d.vset
+voltage_setpoint(d::AbstractControlledDevice) = d.vset
 parameter_limits(d::ControlledTap) = (d.p_min, d.p_max)
 parameter_limits(d::ControlledSwitchedShunt) = (d.b_min, d.b_max)
 parameter_limits(d::ControlledFACTS) = (-d.b_lim, d.b_lim)
-current_parameter(d::ControlledTap) = d.current
-current_parameter(d::ControlledSwitchedShunt) = d.current
-current_parameter(d::ControlledFACTS) = d.current
+current_parameter(d::AbstractControlledDevice) = d.current
 
-# The continuation drives `measured_value(d, data, ts)` toward `control_setpoint(d)`. Voltage
-# devices read the controlled-bus magnitude and target their `vset`. This dispatched pair is
-# the only quantity-specific seam — the rest of the continuation engine is agnostic to what is
-# being regulated.
-measured_value(d::ControlledTap, data, ts::Int) =
+# The continuation drives `measured_value(d, data, ts)` toward `control_setpoint(d)`. Every
+# supported family regulates bus voltage, so these default to the controlled-bus magnitude and
+# `vset` on the supertype — the only quantity-specific seam, overridable per family for a future
+# non-voltage device; the rest of the continuation engine is agnostic to what is being regulated.
+measured_value(d::AbstractControlledDevice, data, ts::Int) =
     data.bus_magnitude[controlled_bus_ix(d), ts]
-measured_value(d::ControlledSwitchedShunt, data, ts::Int) =
-    data.bus_magnitude[controlled_bus_ix(d), ts]
-measured_value(d::ControlledFACTS, data, ts::Int) =
-    data.bus_magnitude[controlled_bus_ix(d), ts]
-control_setpoint(d::ControlledTap) = voltage_setpoint(d)
-control_setpoint(d::ControlledSwitchedShunt) = voltage_setpoint(d)
-control_setpoint(d::ControlledFACTS) = voltage_setpoint(d)
+control_setpoint(d::AbstractControlledDevice) = voltage_setpoint(d)
 
 # Seam: future implicit embedding dispatches here. Never called by the outer loop.
 stamp_control!(d::AbstractControlledDevice, args...) =

@@ -16,15 +16,15 @@ The bus types can be changed from PV to PQ if the reactive power limits are viol
 - `system::PSY.System`: The power system model, a [`PowerSystems.System`](@extref) struct.
 - `kwargs...`: Additional keyword arguments passed to the solver.
 
+When the solve ran with `control_discrete_devices`, the solved tap ratios / shunt admittances /
+phase-shifter angles are written back into the system (see [`write_device_settings!`](@ref)): the
+stored branch flows are only self-consistent with the mutated device settings, so the input
+system's controlled devices are updated to the solved values. With no controls active this is a
+no-op.
+
 ## Keyword Arguments
 - `tol`: Infinite norm of residuals under which convergence is declared. Default is `1e-9`.
 - `maxIterations`: Maximum number of Newton-Raphson iterations. Default is `30`.
-- `write_device_settings`: Write the solved tap ratios / shunt admittances / phase-shifter
-    angles back into the system (see [`write_device_settings!`](@ref)). Default is `false`.
-    Note: when the solve ran with `control_discrete_devices`, write-back happens regardless
-    of this flag — the stored branch flows are only self-consistent with the mutated device
-    settings written back, so the input system's controlled devices are updated to the
-    solved values. The flag additionally forces a (no-op) write-back when no controls ran.
 
 # Returns
 - `converged::Bool`: Indicates whether the power flow solution converged.
@@ -46,7 +46,6 @@ solve_and_store_power_flow!(pf, sys; maxIterations=100)
 function solve_and_store_power_flow!(
     pf::AbstractACPowerFlow{<:ACPowerFlowSolverType},
     system::PSY.System;
-    write_device_settings::Bool = false,
     kwargs...,
 )
     # converged must be defined in the outer scope to be visible for return
@@ -58,11 +57,9 @@ function solve_and_store_power_flow!(
 
         if converged
             # Write moved device settings back BEFORE write_power_flow_solution! recomputes flows —
-            # its consistency assertion compares against the stored (moved) flows. Unconditional
-            # under active controls (needed for a self-consistent system); a no-op otherwise.
-            if write_device_settings || !isnothing(get_controlled_devices(data))
-                write_device_settings!(system, data)
-            end
+            # its consistency assertion compares against the stored (moved) flows. Self-guards to a
+            # no-op when no discrete controls ran.
+            write_device_settings!(system, data)
             write_power_flow_solution!(
                 system,
                 pf,
@@ -86,22 +83,17 @@ tap ratios (`set_tap!`), switched-shunt admittances (`set_Y!`/`set_initial_statu
 convention-aware — see below), and phase-shifter angles (`set_α!`). FACTS devices
 carry no stored setting field in PSY and are skipped. A device no longer present
 in `system` is skipped with a `@warn` (its solved setting is not written back).
-Mutates the user's system — called by [`solve_and_store_power_flow!`](@ref)
-whenever the solve ran with active discrete controls (a self-consistent system
-requires it), and when `write_device_settings = true` otherwise.
+Mutates the user's system — called by [`solve_and_store_power_flow!`](@ref) after a
+converged solve; a no-op when no discrete controls ran.
 
-Switched shunts are sourced under one of two conventions (see
-`ControlledSwitchedShunt.psse_convention`): PSS/E-parsed components store `Y` as
-the TOTAL in-service admittance (BINIT) and `initial_status` is ignored by
-enrollment, so the solved total is written straight into `Y`. PSY API-built components keep `Y` as
-the fixed (non-switchable) base and encode the switched part in
-`initial_status`; writing the solved TOTAL into `Y` while leaving
-`initial_status` untouched would double-count that status on re-enrollment, so
-`Y` stays at the base and the last-snap `block_n` is written into
-`initial_status` instead. If the device was never snapped (continuous, or held
-in its deadband the whole solve) `block_n` may not reconstruct `d.current`; in
-that case the solved total is written into `Y` with `initial_status` zeroed,
-matching the parser convention for that one write.
+Switched shunts write back per their sourcing convention (see
+[Metadata sourcing](@ref discrete-control-metadata) for how `psse_convention` is
+determined): PSS/E-parsed (BINIT) components take the solved total straight into
+`Y`; PSY API-built components keep `Y` at the fixed base and write the last-snap
+`block_n` into `initial_status`, since overwriting `Y` would double-count the
+status on re-enrollment. A never-snapped API-built device (continuous, or held in
+its deadband the whole solve) whose `block_n` cannot reconstruct `d.current` falls
+back to the BINIT write (solved total into `Y`, `initial_status` zeroed).
 """
 function write_device_settings!(system::PSY.System, data)
     set = get_controlled_devices(data)
@@ -342,9 +334,10 @@ function _solve_with_q_limits!(
 
     # Iteration cap reached: the last `_check_q_limit_bounds!` flipped one or more PV buses to
     # PQ (and clamped their Q) without a follow-up solve, so `data`'s voltages no longer match
-    # its bus types. Pin that final PV/PQ assignment and solve once more so the returned state
-    # is self-consistent, and report that solve's convergence — the classic "fix-as-PQ after N
-    # iterations" resolution — rather than discarding a solution that does converge.
+    # its bus types. Pin that final PV/PQ assignment and solve once more so the returned state is
+    # self-consistent, then return THAT solve's actual convergence (not a forced `true`) — the
+    # classic "fix-as-PQ after N iterations" resolution, rather than discarding a solution that
+    # does converge.
     @warn(
         "reactive power limits still oscillating after $MAX_REACTIVE_POWER_ITERATIONS \
         iterations; pinning the final PV/PQ assignment and solving once more"

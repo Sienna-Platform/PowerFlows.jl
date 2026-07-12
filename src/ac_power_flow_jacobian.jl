@@ -105,20 +105,14 @@ J(time_step)  # Updates the Jacobian matrix stored internally in J.
 J.Jv  # Access the Jacobian matrix stored internally in J.
 ```
 """
-# Memoize the expensive Jacobian sparse-structure build (~3.2 MB on 2000 buses) in the
-# persistent `data.solver_cache` Ref so it is built once and reused across the Q-limit
-# inner loop and repeated PCM solves. The structure depends only on network topology, REF
-# layout, and slack-participation pattern — none change on the PV→PQ flips that drive the
-# Q-limit loop (colptr/rowval verified byte-identical across a flip). Cache key is the
-# network-matrix identity + slack nonzero pattern, so a distributed-slack participant drop
-# (which changes the pattern) correctly rebuilds. A full `copy` is returned so each
-# `ACPowerFlowJacobian` owns a fresh mutable buffer (the Newton loop mutates it in place;
-# Q-limit/PCM hold several live instances). Every nzval entry is rewritten by
-# `J(time_step)`, so the cached template stays pristine.
-# Reuse the cached structure on a matching key (network-matrix identity + slack nonzero pattern),
-# else `nothing` to signal a rebuild. The cache lives in its own `data.ac_jacobian_structure_cache`
-# field ([`ACJacobianStructureCache`](@ref)), so it never collides with the FastDecoupled/DC caches
-# in `data.solver_cache[]` (both can be live in a single FD-handoff-to-NR solve).
+# Memoize the expensive Jacobian sparse-structure build (~3.2 MB on 2000 buses) so it is built
+# once and reused across the Q-limit inner loop and repeated PCM solves. The structure is
+# invariant under the PV→PQ flips that drive the Q-limit loop (colptr/rowval verified byte-identical
+# across a flip); the cache key is the network-matrix identity + slack nonzero pattern, so a
+# distributed-slack participant drop correctly rebuilds. Returns a full `copy` so each
+# `ACPowerFlowJacobian` owns a fresh mutable buffer, or `nothing` to signal a rebuild. Lives in its
+# own `data.ac_jacobian_structure_cache` field ([`ACJacobianStructureCache`](@ref)) so it never
+# collides with the FastDecoupled/DC caches in `data.solver_cache[]`.
 _reuse_ac_jac_structure(::Nothing, matrix, nzind) = nothing
 _reuse_ac_jac_structure(e::ACJacobianStructureCache, matrix, nzind) =
     if e.matrix === matrix && e.nzind == nzind

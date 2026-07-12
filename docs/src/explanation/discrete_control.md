@@ -29,9 +29,9 @@ convergence safeguards are original to PowerFlows.jl):
 
   - The inner solver ([`NewtonRaphsonACPowerFlow`](@ref),
     [`TrustRegionACPowerFlow`](@ref)) is called without any modification.
-  - Between outer iterations only `data` is mutated: Y-bus `nzval` entries for
-    tap devices; the reactive constant-impedance withdrawal matrix for
-    shunt/FACTS devices.
+  - Between outer iterations only the following fields of `data` are mutated:
+    Y-bus `nzval` entries for tap devices; the reactive constant-impedance
+    withdrawal matrix for shunt/FACTS devices.
   - The outer loop is **formulation-agnostic**: it works identically for
     [`ACPolarPowerFlow`](@ref), [`ACRectangularPowerFlow`](@ref), and
     [`ACMixedPowerFlow`](@ref) because it calls `_solve_with_q_limits!`, the
@@ -78,7 +78,8 @@ Two abstract families sit under `AbstractControlledDevice`:
 
 The runtime container is `ControlledDeviceSet`, which holds one concretely
 typed `Vector` per family. All outer-loop traversal iterates each vector
-separately, so dispatch is monomorphic; the per-device kernels
+separately, so each element has a concrete type and no dynamic dispatch occurs;
+the per-device kernels
 (`apply_parameter!`, `snap_to_discrete`) are allocation-free (the outer loop
 itself allocates small snapshot buffers, which is immaterial next to the inner
 solves).
@@ -89,8 +90,9 @@ entries of the sparse Y-bus in place (Y11, Y12, Y21) using cached linear offsets
 is tap-independent and is skipped. The complex tap includes the winding-group
 phase shift `α = PSY.get_α(tx)`, matching PowerNetworkMatrices' stamping
 `t = p·e^{iα}`. The delta update `nzval[k] += Y_new − Y_old` preserves any
-parallel-branch contributions already in the shared slot; `d.current` (not the
-lossy `nzval`) is the authoritative source for the old parameter. For
+parallel-branch contributions already in the shared slot; the device's stored
+`current` value (not the lossy `nzval`) is the authoritative source for the old
+parameter. For
 `ControlledSwitchedShunt`, `apply_parameter!` applies the analogous reactive
 delta to `data.bus_reactive_power_constant_impedance_withdrawals[bus_ix, ts]`,
 so co-located constant-impedance contributions on the same bus are preserved.
@@ -105,10 +107,19 @@ quantity ``y`` (the controlled-bus voltage magnitude):
 ```
 
 The steepness ``S`` controls how closely the smooth sigmoid approximates the
-step function. It starts at `INITIAL_CONTROL_STEEPNESS = 100` and is ramped
-by `CONTROL_STEEPNESS_GROWTH = 2.0` after each settling phase, up to
-`MAX_CONTROL_STEEPNESS = 5000` (values from paper equation 10 / thesis). The
-ramp happens only after the devices have settled at the current ``S``, so the
+step function.
+
+```@eval
+using Markdown, PowerFlows
+Markdown.parse(
+    "It starts at `INITIAL_CONTROL_STEEPNESS = $(PowerFlows.INITIAL_CONTROL_STEEPNESS)` and is " *
+    "ramped by `CONTROL_STEEPNESS_GROWTH = $(PowerFlows.CONTROL_STEEPNESS_GROWTH)` after each " *
+    "settling phase, up to `MAX_CONTROL_STEEPNESS = $(PowerFlows.MAX_CONTROL_STEEPNESS)` " *
+    "(values from paper equation 10 / thesis).",
+)
+```
+
+The ramp happens only after the devices have settled at the current ``S``, so the
 solver is never asked to handle a stiff sigmoid before the network state is
 compatible with it.
 

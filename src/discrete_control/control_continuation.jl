@@ -3,11 +3,10 @@
 # It also bounds the relaxation factor itself: ω = (1−θ)/(1+gbound) ≤ 1−θ = 0.5.
 const CONTROL_CONTRACTION = 0.5
 
-# Snapshot/restore the state a rolled-back trial must not permanently change. Beyond V/θ this
-# includes `bus_type` (one-way PV→PQ flips), the injection columns (Q clamps, distributed-slack
-# updates baked into the next residual's setpoints), AND the VSC DC-network per-time-step state —
-# `_read_vsc_state!` writes the solver iterate into dcn.p_c/q_c/node_vdc on every residual
-# evaluation, so a diverged trial corrupts them exactly like bus state.
+# State a rolled-back trial must not permanently change: V/θ, `bus_type` (one-way PV→PQ flips), the
+# injection columns (Q clamps, distributed-slack setpoint updates), and the VSC DC-network state
+# (`_read_vsc_state!` writes the iterate into dcn.p_c/q_c/node_vdc every residual eval, so a
+# diverged trial corrupts it exactly like bus state).
 @inline function _dc_state_cols(data, ts::Int)
     dcn = get_dc_network(data)
     if has_dc_network(dcn)
@@ -127,18 +126,18 @@ end
 
 # ── Linearized plant sensitivities ───────────────────────────────────────────────────────
 # Differentiating F(x,p)=0 at the converged base: dx/dp = −J⁻¹·(∂F/∂p), and dy/dp is the
-# controlled-bus voltage component — no perturbation, one triangular solve per device on P1's
-# reused factorization instead of a full nonlinear solve. Polar + voltage-device (tap/shunt/FACTS)
+# controlled-bus voltage component — no perturbation, one triangular solve per device on the base
+# NR solve's reused factorization instead of a full nonlinear solve. Polar + voltage-device (tap/shunt/FACTS)
 # only (state layout x[2b−1]=Vm, x[2b]=Va and ∂F/∂p are polar-specific); rect/mixed formulations
 # fall back to the FD `_plant_sign`. Signs are validated against the FD probe in the tests.
 
 # Sensitivity context: residual+Jacobian built at the CURRENT converged base state and numerically
-# factored (reusing P1's persisted symbolic factorization). Built ONCE per continuation (probe
-# phase) and thereafter kept current by `_refresh_sensitivity_context!` (values-only, no rebuild)
-# after each batched-pass joint solve. `nothing` ⇒ the linear path is unavailable (non-polar
-# formulation, or the base Jacobian is singular) and the caller uses FD probes.
+# factored (reusing the base NR solve's persisted symbolic factorization). Built ONCE per
+# continuation (probe phase) and thereafter kept current by `_refresh_sensitivity_context!`
+# (values-only, no rebuild) after each batched-pass joint solve. `nothing` ⇒ the linear path is
+# unavailable (non-polar formulation, or the base Jacobian is singular) and the caller uses FD probes.
 struct _SensitivityContext{C, R, JT}
-    cache::C
+    lin_cache::C
     residual::R             # persisted; re-evaluated in place by _refresh_sensitivity_context!
     J::JT                   # persisted; re-evaluated in place by _refresh_sensitivity_context!
     rhs::Vector{Float64}    # ∂F/∂p scratch, refilled per device
@@ -159,10 +158,10 @@ function _sensitivity_context(pf::ACPolarPowerFlow, data, ts::Int; kwargs...)
     residual(x, ts)                       # evaluate at current state; fills P_net/Q_net
     J = ACPowerFlowJacobian(residual, ts)
     J(ts)                                 # Jacobian values at current state
-    cache =
+    lin_cache =
         _nr_linear_solver_cache!(data, J, backend, residual.bus_slack_participation_factors)
     try
-        numeric_refactor!(cache, J.Jv)
+        numeric_refactor!(lin_cache, J.Jv)
     catch e
         e isa LinearAlgebra.SingularException || rethrow()
         return                    # singular base Jacobian ⇒ fall back to FD probes
@@ -175,15 +174,15 @@ function _sensitivity_context(pf::ACPolarPowerFlow, data, ts::Int; kwargs...)
     _count_symbolic_factor!(data)
     n = length(residual.Rv)
     return _SensitivityContext(
-        cache, residual, J, zeros(n), zeros(n), copy(view(data.bus_type, :, ts)))
+        lin_cache, residual, J, zeros(n), zeros(n), copy(view(data.bus_type, :, ts)))
 end
 
-# Values-only refresh at a new converged base state: the Jacobian STRUCTURE depends only on
+# Values-only refresh at a new converged base state: the Jacobian sparsity depends only on
 # topology/REF layout (invariant across the continuation), so re-evaluating values + numeric
 # refactor into the persisted objects replaces a full rebuild — UNLESS a PV↔PQ flip has changed
-# the slack-participation/subnetwork structure the persisted `residual` baked in at construction
+# the slack-participation/subnetwork layout the persisted `residual` baked in at construction
 # (see `_SensitivityContext.bus_type`); that case, and a singular refactor, both return `false`
-# so the caller falls back to the sequential path (which always rebuilds fresh).
+# so the caller falls back to the sequential path (which rebuilds fresh).
 #
 # `P_net`/`Q_net`/`P_net_set` and the four constant-I/Z withdrawal vectors are all captured from
 # `data` ONCE at `ACPowerFlowResidual` construction and are NOT independently re-read by the
@@ -230,7 +229,7 @@ function _refresh_sensitivity_context!(ctx::_SensitivityContext, data, ts::Int):
     ctx.residual(x, ts)
     ctx.J(ts)
     try
-        numeric_refactor!(ctx.cache, ctx.J.Jv)
+        numeric_refactor!(ctx.lin_cache, ctx.J.Jv)
     catch e
         e isa LinearAlgebra.SingularException || rethrow()
         return false
@@ -239,9 +238,9 @@ function _refresh_sensitivity_context!(ctx::_SensitivityContext, data, ts::Int):
 end
 
 # ∂F/∂p into `rhs` (zeroed first). Returns `true` iff the family has an analytic polar form here;
-# `false` signals the caller to use the FD probe (no family currently returns `false`, but the
-# caller still handles it — see `_linear_plant_sign`). Row convention: F[2b−1] active, F[2b]
-# reactive balance at bus b (see `_update_residual_values!`).
+# the `false` path is reserved for a future family without one — the caller then uses the FD probe
+# (see `_linear_plant_sign`). Row convention: F[2b−1] active, F[2b] reactive balance at bus b
+# (see `_update_residual_values!`).
 function _dF_dp!(rhs::Vector{Float64}, d::ControlledTap, data, ts::Int)
     fill!(rhs, 0.0)
     f, t = d.from_ix, d.to_ix
@@ -293,7 +292,7 @@ function _linear_plant_sign(d, data, ts::Int, ctx::_SensitivityContext)
         return 0.0, true
     end
     copyto!(ctx.sol, ctx.rhs)
-    solve!(ctx.cache, ctx.sol)            # sol = J⁻¹·(∂F/∂p)
+    solve!(ctx.lin_cache, ctx.sol)        # sol = J⁻¹·(∂F/∂p)
     return -ctx.sol[2 * cbus - 1], true       # dy/dp = (dx/dp)[Vm(cbus)] = −sol[2·cbus−1]
 end
 
@@ -381,13 +380,11 @@ function _freeze_device!(frozen::Vector{Bool}, idx::Int, d, ts::Int, reason::Str
     return
 end
 
-# Refresh one ControlledFACTS's voltage-dependent susceptance bound (`_facts_b_limit`) from
-# its measured controlled-bus voltage, once per continuation pass, BEFORE this pass's damped
-# target/clamp reads `parameter_limits`. Chatter guard: `frozen` (this device's CURRENT
-# oscillation-freeze state, unrelated to any freeze this same pass may go on to trigger) holds
-# `b_lim` at its last refreshed value instead of continuing to track voltage — a frozen device
-# is never stepped again, so re-tracking voltage would only reopen/reclose the bound with no
-# corresponding parameter move (chatter with no corrective effect).
+# Refresh one ControlledFACTS's voltage-dependent susceptance bound (`_facts_b_limit`) from its
+# measured controlled-bus voltage, once per continuation pass, BEFORE this pass's damped
+# target/clamp reads `parameter_limits`. A `frozen` device holds `b_lim` at its last refreshed
+# value: it is never stepped again, so re-tracking voltage would only chatter the bound with no
+# corresponding parameter move.
 function _refresh_facts_limit!(d::ControlledFACTS, data, ts::Int, frozen::Bool)
     frozen && return d.b_lim
     d.b_lim = _facts_b_limit(d, measured_value(d, data, ts))
@@ -771,8 +768,8 @@ function _control_continuation!(
     # it calls `_restore_one!`, so it gets its own separate buffer, never this one.
     scratch_snap = _snapshot_state(data, ts)
 
-    # Build the linearized-sensitivity context ONCE (one numeric factorization reusing P1's
-    # symbolic factor); all device probes below are then triangular solves against it. `nothing`
+    # Build the linearized-sensitivity context ONCE (one numeric factorization reusing the base NR
+    # solve's symbolic factor); all device probes below are then triangular solves against it. `nothing`
     # for non-polar formulations or a singular base ⇒ each probe falls back to the FD solve.
     ctx = _sensitivity_context(pf, data, ts; kwargs...)
     _probe_device_signs!(
