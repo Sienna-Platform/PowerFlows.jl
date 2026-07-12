@@ -3,11 +3,12 @@ Per-iteration solver diagnostics (`log_solver_diagnostics`) and a fold /
 voltage-collapse bail-out (`stop_at_fold`).
 
 λ_min is taken on the bus-voltage Schur complement S = A − B·D⁻¹·C of the blocked
-Jacobian J = [A B; C D], whose LCC tail (4·n_lcc rows/cols) is the trailing block.
-The (1,1) block of J⁻¹ is exactly S⁻¹, so v ↦ (J⁻¹·[v; 0])[1:nb] applies S⁻¹ from
-the *existing* factorization of J — no second matrix or factorization. With no
-LCCs, S = J. The monitor line and the bail-out share one refactor and one
-eigensolve via `run_solver_diagnostics!`.
+Jacobian J = [A B; C D], whose non-bus tail (LCC + VSC + area interchange,
+`state_tail_length(data, dcn)` rows/cols) is the trailing block. The (1,1) block of
+J⁻¹ is exactly S⁻¹, so v ↦ (J⁻¹·[v; 0])[1:nb] applies S⁻¹ from the *existing*
+factorization of J — no second matrix or factorization. With no tail, S = J. The
+monitor line and the bail-out share one refactor and one eigensolve via
+`run_solver_diagnostics!`.
 =#
 
 """Round to 4 significant figures (one more digit than `siground`'s 3)."""
@@ -255,9 +256,10 @@ function run_solver_diagnostics!(
         return false
     end
 
-    n_lcc = size(data.lcc.p_set, 1)
     n_state = size(J.Jv, 1)
-    n_bus = n_state - 4 * n_lcc
+    # Trailing block is the FULL non-bus tail (LCC + VSC + area interchange), not just
+    # LCC: n_state on a VSC/area-interchange system is larger than 2*nbuses + 4*n_lcc.
+    n_bus = n_state - state_tail_length(data, get_dc_network(data))
     op = SchurInverseOperator(cache, n_bus, state.buffer)
     λ_min, converged = _schur_min_eigenvalue(op)
 
@@ -286,4 +288,36 @@ function run_solver_diagnostics!(
         return _decide_eig_sign_switch!(state, label, λ_min, converged)
     end
     return false
+end
+
+"""
+    _report_area_interchange_failure(data, time_step)
+
+Terminal-failure diagnostic (design spec §6 failure signature) for embedded area
+net-interchange control. Called by the greedy relax loop
+(`_ac_power_flow_with_area_relax!`, `solve_ac_power_flow.jl`) when it exhausts the enrolled
+set without converging — the FINAL failed solve has zero WORKING controlled areas left, so
+this reports against the PRISTINE tie set instead, over every area that was ORIGINALLY
+enrolled, at the last attempted iterate's bus state (`data.bus_magnitude`/`bus_angles`, left
+in place by the failed solve — see `_finalize_formulation!`). Reports the
+largest-magnitude interchange-row residual and its area's name, so a genuine network
+non-convergence (as opposed to a since-relaxed schedule) still names where the interchange
+tail was furthest from satisfied at the point the search gave up. A no-op if area
+interchange control was never enrolled on this `data`.
+"""
+function _report_area_interchange_failure(data::ACPowerFlowData, time_step::Int)
+    aid = data.area_interchange
+    isempty(aid.pristine_areas) && return
+    gaps = [
+        _area_net_interchange(aid.pristine_ties, area.tail_ix, data, time_step) - area.pdes
+        for area in aid.pristine_areas
+    ]
+    abs_max, ix = findmax(abs, gaps)
+    area = aid.pristine_areas[ix]
+    @warn "Area interchange: Newton did not converge after the greedy relax loop " *
+          "de-enrolled every controlled area (network non-convergence, not a relaxed " *
+          "schedule); the largest interchange-row residual at the last attempted " *
+          "iterate is area \"$(area.name)\" with |r| = $(_sf4(abs_max)) " *
+          "(target PDES = $(area.pdes))."
+    return
 end

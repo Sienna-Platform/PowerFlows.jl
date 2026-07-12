@@ -174,5 +174,25 @@ function initialize_power_flow_data!(
     # ZIP Loads, DC only: convert constant current and impedance components to constant
     # powers via assuming V = 1.0 p.u.
     handle_zip_loads!(data, pf)
+    # PSS/E-style embedded area net-interchange control: derive the enrolled
+    # ControlledArea/AreaTie set (guards in `area_interchange/enrollment.jl`) and populate
+    # the always-present, empty-by-default `data.area_interchange` in place. `PowerFlowData`
+    # is immutable, so `data.area_interchange` itself cannot be reassigned; its Vector
+    # fields are appended to instead (mirroring `lcc`). `delta_p` is a Matrix (per-area,
+    # per-time-step) — growing it in place would mean resizing rows, which `Matrix` doesn't
+    # support, so `AreaInterchangeData` is `mutable struct` and this field is reassigned
+    # directly to the fully-sized matrix `build_area_interchange_data` already built.
+    if get_area_interchange_control(pf)
+        aid = build_area_interchange_data(pf, sys, data)
+        append!(data.area_interchange.areas, aid.areas)
+        append!(data.area_interchange.ties, aid.ties)
+        append!(data.area_interchange.ni_scratch, aid.ni_scratch)
+        data.area_interchange.delta_p = aid.delta_p
+        # Greedy relax (design spec §6) bookkeeping: the PRISTINE copies are the full
+        # enrollment, never mutated once set here — see `AreaInterchangeData`'s docstring.
+        append!(data.area_interchange.pristine_areas, aid.pristine_areas)
+        append!(data.area_interchange.pristine_ties, aid.pristine_ties)
+        data.area_interchange.pristine_delta_p = aid.pristine_delta_p
+    end
     return data
 end

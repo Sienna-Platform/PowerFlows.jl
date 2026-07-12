@@ -251,6 +251,53 @@ end
 _considers_bustype(::AbstractACPowerFlow{<:ACPowerFlowSolverType}, ::PSY.ACBusTypes) = true
 _considers_bustype(::AbstractDCPowerFlow, bt::PSY.ACBusTypes) = (bt == PSY.ACBusTypes.REF)
 
+"""Voltage regulation is irrelevant to DC power flow, so the PQ demotion in
+`_normalize_slack_bustype` warns only for AC evaluation models; DC demotes silently."""
+function _warn_slack_demoted_to_pq(
+    ::AbstractACPowerFlow{<:ACPowerFlowSolverType},
+    bus_name::String,
+)
+    @warn(
+        "SLACK-designated bus $bus_name has no in-service voltage-regulating " *
+        "component; treating as PQ — it cannot serve as an area slack.",
+        maxlog = PF_MAX_LOG,
+    )
+    return
+end
+_warn_slack_demoted_to_pq(::AbstractDCPowerFlow, ::String) = nothing
+
+"""SLACK marks a bus for area-interchange redistribution (PSS/E ISW); it is not a
+formulation bus type and must never reach REF/PV/PQ dispatch. Normalize at ingestion:
+error if the bus cannot move active power (AC and DC alike), PV if it can also regulate
+voltage (same criterion as `can_be_PV`), PQ otherwise (silently for DC — see
+`_warn_slack_demoted_to_pq`)."""
+function _normalize_slack_bustype(
+    pf::PowerFlowEvaluationModel,
+    bt::PSY.ACBusTypes,
+    bus_no::Int,
+    bus_name::String,
+    possible_PV::Set{Int},
+    p_capable::Set{Int},
+)
+    if bt != PSY.ACBusTypes.SLACK
+        return bt
+    end
+    if !(bus_no in p_capable)
+        throw(
+            ArgumentError(
+                "SLACK-designated bus $bus_name has no in-service component capable " *
+                "of active power injection; an area slack bus must be able to adjust " *
+                "active power. Change the bus type or place an available injector there.",
+            ),
+        )
+    end
+    if bus_no in possible_PV
+        return PSY.ACBusTypes.PV
+    end
+    _warn_slack_demoted_to_pq(pf, bus_name)
+    return PSY.ACBusTypes.PQ
+end
+
 function _initialize_bus_data!(
     pf::PowerFlowEvaluationModel,
     bus_type::Vector{PSY.ACBusTypes},
@@ -273,6 +320,7 @@ function _initialize_bus_data!(
     # correct/validate the bus types.
     forced_PV = must_be_PV(sys)
     possible_PV = can_be_PV(sys)
+    p_capable = can_inject_active_power(sys)
     bus_numbers = PSY.get_bus_numbers(sys)
     temp_bus_types = Dict{Int, PSY.ACBusTypes}()
     sizehint!(temp_bus_types, length(bus_numbers))
@@ -283,6 +331,7 @@ function _initialize_bus_data!(
         bus_no = PSY.get_number(bus)
         bus_name = PSY.get_name(bus)
         temp_bus_map[bus_no] = bus_name
+        bt = _normalize_slack_bustype(pf, bt, bus_no, bus_name, possible_PV, p_capable)
         if bus_no in subnetwork_keys && bus_no != main_ref_bus
             bt = PSY.ACBusTypes.REF
             @warn("Island detected, containing $(summary(bus)).", maxlog = PF_MAX_LOG)

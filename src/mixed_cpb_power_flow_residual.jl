@@ -48,7 +48,7 @@ function ACMixedCPBResidual(data::ACPowerFlowData, time_step::Int64)
 
     offsets, block_sizes, total_bus_state = compute_mixed_bus_state_offsets(bus_type)
     validate_offsets = _pqpv_validate_offsets(bus_type, offsets)
-    total_state = total_bus_state + 4 * n_lccs + vsc_tail_length(get_dc_network(data))
+    total_state = total_bus_state + state_tail_length(data, get_dc_network(data))
 
     P_net_const = Vector{Float64}(undef, n_buses)
     Q_net_const = Vector{Float64}(undef, n_buses)

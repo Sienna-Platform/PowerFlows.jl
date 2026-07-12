@@ -37,6 +37,7 @@ struct ACJacobianStructureCache
     matrix::PNM.AC_Ybus_Matrix
     nzind::Vector{Int}
     structure::SparseMatrixCSC{Float64, J_INDEX_TYPE}
+    area_data::AreaInterchangeData
 end
 
 # Centralized so the multi-line warning text can't drift between the two
@@ -109,6 +110,63 @@ function _validate_discrete_control_settings(
         )
     end
     return
+end
+
+# Area interchange control (Phase 1) is validated only for NR/TR inner solvers: LM is
+# deferred to Phase 2 validation of the augmented least-squares residual; Robust Homotopy,
+# Gradient Descent, and Fast Decoupled have no natural home for the interchange border.
+# Centralized so the three formulation constructors cannot drift. NR/TR types are defined
+# later in this file — references resolve at call time. Multi-period is allowed (no
+# time_steps guard). Returns the (possibly floored) interchange_tolerance.
+function _validate_area_interchange_settings(
+    ::Type{ACSolver},
+    area_interchange_control::Bool,
+    interchange_tolerance::Float64,
+    tie_definition::Symbol,
+) where {ACSolver <: ACPowerFlowSolverType}
+    area_interchange_control || return interchange_tolerance
+    if !(ACSolver <: Union{NewtonRaphsonACPowerFlow, TrustRegionACPowerFlow})
+        throw(
+            ArgumentError(
+                "area_interchange_control=true requires a NewtonRaphsonACPowerFlow or " *
+                "TrustRegionACPowerFlow solver; got $(ACSolver). Levenberg-Marquardt is " *
+                "deferred to Phase 2 validation of the augmented least-squares residual; " *
+                "Robust Homotopy, Gradient Descent, and Fast Decoupled are not supported.",
+            ),
+        )
+    end
+    if tie_definition !== :lines_only
+        throw(
+            ArgumentError(
+                "tie_definition=$(tie_definition) is not supported; only :lines_only is " *
+                "implemented. :lines_and_loads (PSS/E control code 2) is reserved for a " *
+                "future phase.",
+            ),
+        )
+    end
+    if interchange_tolerance <= 0
+        @warn(
+            "interchange_tolerance=$(interchange_tolerance) is non-positive; flooring to " *
+            "MIN_INTERCHANGE_TOLERANCE=$(MIN_INTERCHANGE_TOLERANCE).",
+        )
+        return MIN_INTERCHANGE_TOLERANCE
+    end
+    return interchange_tolerance
+end
+
+# Phase 1 area interchange control is polar-only: reject immediately on the non-polar
+# formulations regardless of solver. Centralized so the rejection message can't drift.
+function _reject_area_interchange_on_nonpolar(
+    area_interchange_control::Bool,
+    formulation::String,
+)
+    area_interchange_control || return
+    throw(
+        ArgumentError(
+            "area_interchange_control=true is not supported by $(formulation): Phase 1 " *
+            "of area interchange control is polar-only. Use ACPolarPowerFlow.",
+        ),
+    )
 end
 
 """
@@ -290,6 +348,14 @@ with the specified solver type.
     Default is `false`.
 - `control_discrete_devices::Bool`: Whether to run discrete device control (tap changers, switched
     shunts) via λ-continuation. Default is `false`.
+- `area_interchange_control::Bool`: Whether to embed PSS/E-style per-area net-interchange
+    control in the AC Newton system (Phase 1: polar formulation, NR/TR solvers only).
+    Default is `false`.
+- `interchange_tolerance::Float64`: PTOL analogue (pu); used for validation and reporting only —
+    the embedded formulation targets each area's PDES exactly. Non-positive values are floored to
+    `MIN_INTERCHANGE_TOLERANCE` with a warning. Default is `DEFAULT_INTERCHANGE_TOLERANCE`.
+- `tie_definition::Symbol`: How area ties are identified. Only `:lines_only` is implemented;
+    `:lines_and_loads` (PSS/E control code 2) is reserved. Default is `:lines_only`.
 - `solver_settings::Dict{Symbol, Any}`: Additional keyword arguments to pass to the solver.
     Default is an empty dictionary.
 """
@@ -313,6 +379,9 @@ struct ACPolarPowerFlow{ACSolver <: ACPowerFlowSolverType} <: AbstractACPowerFlo
     time_step_names::Vector{String}
     correct_bustypes::Bool
     control_discrete_devices::Bool
+    area_interchange_control::Bool
+    interchange_tolerance::Float64
+    tie_definition::Symbol
     solver_settings::Dict{Symbol, Any}
 end
 
@@ -369,6 +438,9 @@ function ACPolarPowerFlow{ACSolver}(;
     time_step_names::Vector{String} = String[],
     correct_bustypes::Bool = false,
     control_discrete_devices::Bool = false,
+    area_interchange_control::Bool = false,
+    interchange_tolerance::Float64 = DEFAULT_INTERCHANGE_TOLERANCE,
+    tie_definition::Symbol = :lines_only,
     solver_settings::AbstractDict = Dict{Symbol, Any}(),
 ) where {ACSolver <: ACPowerFlowSolverType}
     settings = Dict{Symbol, Any}(solver_settings)
@@ -381,6 +453,12 @@ function ACPolarPowerFlow{ACSolver}(;
         time_steps,
     )
     _validate_discrete_control_settings(control_discrete_devices, ACSolver)
+    validated_interchange_tolerance = _validate_area_interchange_settings(
+        ACSolver,
+        area_interchange_control,
+        interchange_tolerance,
+        tie_definition,
+    )
     return ACPolarPowerFlow{ACSolver}(
         check_reactive_power_limits,
         exporter,
@@ -397,6 +475,9 @@ function ACPolarPowerFlow{ACSolver}(;
         time_step_names,
         correct_bustypes,
         control_discrete_devices,
+        area_interchange_control,
+        validated_interchange_tolerance,
+        tie_definition,
         settings,
     )
 end
@@ -436,6 +517,13 @@ get_log_solver_diagnostics(pf::AbstractACPowerFlow) = pf.log_solver_diagnostics
 get_control_discrete_devices(pf::AbstractACPowerFlow) = pf.control_discrete_devices
 get_control_discrete_devices(::PowerFlowEvaluationModel) = false
 
+get_area_interchange_control(pf::AbstractACPowerFlow) = pf.area_interchange_control
+get_area_interchange_control(::PowerFlowEvaluationModel) = false
+get_interchange_tolerance(pf::AbstractACPowerFlow) = pf.interchange_tolerance
+get_interchange_tolerance(::PowerFlowEvaluationModel) = DEFAULT_INTERCHANGE_TOLERANCE
+get_tie_definition(pf::AbstractACPowerFlow) = pf.tie_definition
+get_tie_definition(::PowerFlowEvaluationModel) = :lines_only
+
 """
     ACRectangularPowerFlow{ACSolver}(; kwargs...) where {ACSolver <: ACPowerFlowSolverType}
     ACRectangularPowerFlow(; kwargs...)
@@ -472,6 +560,8 @@ polar state layout and have no current-injection equivalent.
 - `correct_bustypes::Bool`: Default `false`.
 - `control_discrete_devices::Bool`: Whether to run discrete device control via λ-continuation.
     Default `false`.
+- `area_interchange_control::Bool`: Not supported on this formulation (Phase 1 is polar-only);
+    passing `true` throws `ArgumentError`. Default `false`.
 - `solver_settings::Dict{Symbol, Any}`: Default empty.
 """
 struct ACRectangularPowerFlow{ACSolver <: ACPowerFlowSolverType} <:
@@ -492,6 +582,9 @@ struct ACRectangularPowerFlow{ACSolver <: ACPowerFlowSolverType} <:
     time_step_names::Vector{String}
     correct_bustypes::Bool
     control_discrete_devices::Bool
+    area_interchange_control::Bool
+    interchange_tolerance::Float64
+    tie_definition::Symbol
     solver_settings::Dict{Symbol, Any}
 end
 
@@ -512,6 +605,9 @@ function ACRectangularPowerFlow{ACSolver}(;
     time_step_names::Vector{String} = String[],
     correct_bustypes::Bool = false,
     control_discrete_devices::Bool = false,
+    area_interchange_control::Bool = false,
+    interchange_tolerance::Float64 = DEFAULT_INTERCHANGE_TOLERANCE,
+    tie_definition::Symbol = :lines_only,
     solver_settings::Dict{Symbol, Any} = Dict{Symbol, Any}(),
 ) where {ACSolver <: ACPowerFlowSolverType}
     if ACSolver <: Union{
@@ -529,6 +625,10 @@ function ACRectangularPowerFlow{ACSolver}(;
         )
     end
     _reject_fd_decoupled_on_nonpolar(ACSolver, "ACRectangularPowerFlow")
+    _reject_area_interchange_on_nonpolar(
+        area_interchange_control,
+        "ACRectangularPowerFlow",
+    )
     _validate_slack_distribution_settings(
         distribute_slack_proportional_to_headroom,
         generator_slack_participation_factors,
@@ -548,6 +648,9 @@ function ACRectangularPowerFlow{ACSolver}(;
         time_step_names,
         correct_bustypes,
         control_discrete_devices,
+        area_interchange_control,
+        interchange_tolerance,
+        tie_definition,
         solver_settings,
     )
 end
@@ -591,6 +694,8 @@ polar state layout and have no mixed current-power equivalent.
 - `correct_bustypes::Bool`: Default `false`.
 - `control_discrete_devices::Bool`: Whether to run discrete device control via λ-continuation.
     Default `false`.
+- `area_interchange_control::Bool`: Not supported on this formulation (Phase 1 is polar-only);
+    passing `true` throws `ArgumentError`. Default `false`.
 - `solver_settings::Dict{Symbol, Any}`: Default empty.
 """
 struct ACMixedPowerFlow{ACSolver <: ACPowerFlowSolverType} <:
@@ -611,6 +716,9 @@ struct ACMixedPowerFlow{ACSolver <: ACPowerFlowSolverType} <:
     time_step_names::Vector{String}
     correct_bustypes::Bool
     control_discrete_devices::Bool
+    area_interchange_control::Bool
+    interchange_tolerance::Float64
+    tie_definition::Symbol
     solver_settings::Dict{Symbol, Any}
 end
 
@@ -631,6 +739,9 @@ function ACMixedPowerFlow{ACSolver}(;
     time_step_names::Vector{String} = String[],
     correct_bustypes::Bool = false,
     control_discrete_devices::Bool = false,
+    area_interchange_control::Bool = false,
+    interchange_tolerance::Float64 = DEFAULT_INTERCHANGE_TOLERANCE,
+    tie_definition::Symbol = :lines_only,
     solver_settings::Dict{Symbol, Any} = Dict{Symbol, Any}(),
 ) where {ACSolver <: ACPowerFlowSolverType}
     if ACSolver <: Union{
@@ -649,6 +760,7 @@ function ACMixedPowerFlow{ACSolver}(;
         )
     end
     _reject_fd_decoupled_on_nonpolar(ACSolver, "ACMixedPowerFlow")
+    _reject_area_interchange_on_nonpolar(area_interchange_control, "ACMixedPowerFlow")
     _validate_slack_distribution_settings(
         distribute_slack_proportional_to_headroom,
         generator_slack_participation_factors,
@@ -668,6 +780,9 @@ function ACMixedPowerFlow{ACSolver}(;
         time_step_names,
         correct_bustypes,
         control_discrete_devices,
+        area_interchange_control,
+        interchange_tolerance,
+        tie_definition,
         solver_settings,
     )
 end

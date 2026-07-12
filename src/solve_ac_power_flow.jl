@@ -269,7 +269,7 @@ function solve_power_flow!(
     validate_device_store_width(cd, get_time_steps(data))
     for (ts_pos, time_step) in enumerate(sorted_time_steps)
         load_device_state!(cd, data, time_step)
-        converged = _ac_power_flow(data, pf, time_step; merged_kwargs...)
+        converged = _ac_power_flow_with_area_relax!(data, pf, time_step; merged_kwargs...)
         save_device_state!(cd, data, time_step)
         ts_converged[ts_pos] = converged
         converged && _warn_vsc_limit_violations(data, time_step)
@@ -371,6 +371,94 @@ function _ac_power_flow(
         return _solve_with_q_limits!(pf, data, time_step; kwargs...)
     end
     return _control_continuation!(pf, data, time_step; kwargs...)
+end
+
+"""
+    _ac_power_flow_with_area_relax!(data, pf, time_step; kwargs...) -> Bool
+
+Wraps `_ac_power_flow` (itself already wrapping the Q-limit retry loop) with the
+greedy-relax handling for embedded area net-interchange control (design spec §6, USER
+DIRECTIVE — supersedes the spec's original "surface as non-convergence" posture): on a
+non-converged solve with at least one controlled area still enrolled, de-enroll the area
+with the largest `|r_a|` at the failed iterate (`_area_residual_gaps`/`_deenroll_area!`,
+`area_residual.jl`) and re-solve from scratch — a fresh Q-limit loop, warm-started off the
+current bus state, with surviving areas' `ΔP_a` re-seeded from their previous tail values
+(the `delta_p` mirror already holds them — see `AreaInterchangeData`'s docstring) — repeating
+until convergence or the enrolled set is exhausted. Zero enrolled areas left and still
+failing is genuine network non-convergence, reported exactly as today (attribution: the
+schedule was NOT the culprit) plus a terminal diagnostic naming the worst-missed area
+(`_report_area_interchange_failure`, `residual_condition_diagnostics.jl`).
+
+Converging after a relax still returns `true` — relaxation is never silent: an `@error` is
+raised at EACH de-enrollment (naming the area, its target, and its residual gap) and again
+as a solve-end summary if the time step converged only after relaxing; the results table
+(`post_processing.jl`) also carries a `:relaxed` status row per relaxed area. A `data` on
+which area interchange control was never enrolled at all (`pristine_areas` empty)
+short-circuits to a bare `_ac_power_flow` call — no relax bookkeeping, no pristine-reset
+check; this is the only zero-cost path (no allocation, no extra work) and is genuinely
+per-`data`-lifetime, unlike the check below.
+
+Resets to the FULL pristine enrollment before this time step's own attempt
+(`_ensure_pristine_area_set!`), so a PREVIOUS time step's relax on this same `data` never
+carries over — relax decisions are per time step. The short-circuit above deliberately tests
+the PRISTINE set, not the WORKING one: the WORKING set is exactly what a previous time
+step's greedy relax may have emptied (exhaustion, or a relax-to-zero-then-converge), and
+short-circuiting on IT would read that leftover empty state before
+`_ensure_pristine_area_set!` ever ran, permanently disabling area control for the rest of
+`data`'s lifetime instead of restoring it for this time step.
+"""
+function _ac_power_flow_with_area_relax!(
+    data::ACPowerFlowData,
+    pf::AbstractACPowerFlow{<:ACPowerFlowSolverType},
+    time_step::Int64;
+    kwargs...,
+)
+    aid = data.area_interchange
+    isempty(aid.pristine_areas) &&
+        return _ac_power_flow(data, pf, time_step; kwargs...)
+    _ensure_pristine_area_set!(data, time_step)
+    relaxed_this_step = RelaxedAreaRecord[]
+    converged = false
+    while true
+        converged = _ac_power_flow(data, pf, time_step; kwargs...)
+        converged && break
+        iszero(n_controlled_areas(data)) && break
+        gaps = _area_residual_gaps(data, time_step)
+        gap, worst_ix = findmax(abs, gaps)
+        area = data.area_interchange.areas[worst_ix]
+        @error "Area interchange: Newton did not converge with area \"$(area.name)\" " *
+               "controlled (target PDES = $(area.pdes), NI gap at the failed iterate = " *
+               "$gap); de-enrolling it and re-solving with the remaining " *
+               "$(n_controlled_areas(data) - 1) controlled area(s)."
+        push!(relaxed_this_step, RelaxedAreaRecord(area.name, area.pdes))
+        _deenroll_area!(data, worst_ix)
+    end
+    if !converged
+        _report_area_interchange_failure(data, time_step)
+        return converged
+    end
+    _sync_pristine_delta_p!(data, time_step)
+    _warn_area_violations(data, time_step)
+    isempty(relaxed_this_step) && return converged
+    data.area_interchange.relaxed[time_step] = relaxed_this_step
+    pristine_tail_of = Dict(a.name => a.tail_ix for a in aid.pristine_areas)
+    relaxed_detail = join(
+        (
+            let tail_ix = pristine_tail_of[r.name],
+                ni_solved =
+                    _area_net_interchange(aid.pristine_ties, tail_ix, data, time_step)
+
+                "$(r.name) (ni_solved=$(ni_solved), pdes=$(r.pdes), " *
+                "gap=$(ni_solved - r.pdes))"
+            end
+            for r in relaxed_this_step
+        ),
+        ", ",
+    )
+    @error "Area interchange: time step $time_step converged only after relaxing " *
+           "$(length(relaxed_this_step)) area(s): $relaxed_detail. Their schedules were " *
+           "infeasible given network/tie capacity."
+    return converged
 end
 
 function _check_q_limit_bounds!(

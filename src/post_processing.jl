@@ -1002,6 +1002,124 @@ empty_mtdc_line_results() = DataFrames.DataFrame(;
     P_losses = Float64[],
 )
 
+empty_area_interchange_results() = DataFrames.DataFrame(;
+    area = String[],
+    ni_solved = Float64[],
+    pdes = Float64[],
+    delta_p = Float64[],
+    schedule_status = Symbol[],
+    beyond_limits = Bool[],
+)
+
+"""
+    _area_beyond_limits(sys, bus, p_bus_effective) -> Bool
+
+Whether `p_bus_effective` (pu, the area's SOLVED slack-bus active-power injection) can be
+absorbed by the in-service machines physically present at `bus`, within their own
+`active_power_limits` — flag only (design spec deliverable, Phase 1: never clamp, no PSY
+write-back). Reuses the same device-set primitive `_power_redistribution_ref` apportions
+over (`_is_available_source`) and the same per-unit limit accessor
+(`get_active_power_limits_for_power_flow`), but as a cheap aggregate headroom check rather
+than a per-unit apportioning pass.
+
+`p_bus_effective` is NOT `data.bus_active_power_injections[slack_bus_ix, time_step]`
+directly — that field is a PV/SLACK-bus INPUT (the device's scheduled active power), never
+refreshed from the Newton solution (`_set_state_variables_at_bus`'s PV case only writes back
+`Q`/angle, matching every other PV bus in the model). The caller must add the area's
+converged `ΔP_a` (folded in through the Newton solve at the same seam the residual applies
+it — see `ac_power_flow_residual.jl`) to recover the TRUE solved injection before calling
+this. A slack bus with no in-service source at all cannot absorb anything nonzero — but that
+bus type would already have failed enrollment guard 1b (SLACK demoted to PQ), so this branch
+is unreached in practice; treated as `false` (no violation to flag) rather than throwing on
+an empty `sum`.
+"""
+function _area_beyond_limits(
+    sys::PSY.System,
+    bus::PSY.ACBus,
+    p_bus_effective::Float64,
+)
+    devices =
+        collect(
+            PSY.get_components(x -> _is_available_source(x, bus), PSY.StaticInjection, sys),
+        )
+    isempty(devices) && return false
+    limits = get_active_power_limits_for_power_flow.(devices)
+    p_max = sum(l.max for l in limits)
+    p_min = sum(l.min for l in limits)
+    return !(p_min - BOUNDS_TOLERANCE <= p_bus_effective <= p_max + BOUNDS_TOLERANCE)
+end
+
+"""
+    area_interchange_results_dataframe(sys, data, time_step) -> DataFrame
+
+Per-controlled-area results row (design spec deliverable): net interchange achieved vs.
+targeted, the converged `ΔP_a` state, whether the schedule was enforced by Newton or
+relaxed away by the greedy relax loop (`_ac_power_flow_with_area_relax!`,
+`solve_ac_power_flow.jl`), and a read-only flag for whether the area's `ΔP_a` fits within
+its slack bus's in-service machines' active-power headroom. One row per area ENROLLED AT
+CONSTRUCTION TIME (`data.area_interchange.pristine_areas`) — both areas still controlled at
+the end of the solve (`:enforced`) and areas the relax loop de-enrolled this time step
+(`:relaxed`, from `data.area_interchange.relaxed[time_step]`). Relaxed rows report
+`delta_p = 0.0` (no state — the area's tail no longer exists); `ni_solved` is recomputed
+directly from the tie-flow kernel against the PRISTINE tie list (`_area_net_interchange`)
+rather than trusted off a stale residual row, so it is correct for a relaxed area too, and
+`ni_solved - pdes` is that area's infeasibility certificate. An enforced row's `delta_p` is
+read from `aid.pristine_delta_p[area.tail_ix, time_step]` — the PRISTINE-tail_ix-indexed,
+per-time-step persistent mirror (`_sync_pristine_delta_p!`, `area_residual.jl`) — NEVER from
+the WORKING `aid.areas`/`aid.delta_p`, which reflect only whatever time step's relax state
+ran LAST on this `data` and are not indexed by the queried `time_step` at all; reading them
+here would KeyError (or silently mis-index) once ANY other time step in a multi-period solve
+has relaxed a different area. Empty when area interchange control was never enrolled on this
+`data`. Powers in MW/MVAr (matches every other table this function's caller assembles).
+"""
+function area_interchange_results_dataframe(
+    sys::PSY.System,
+    data::ACPowerFlowData,
+    time_step::Int,
+)
+    aid = data.area_interchange
+    isempty(aid.pristine_areas) && return empty_area_interchange_results()
+
+    sys_basepower = PSY.get_base_power(sys)
+    relaxed_names =
+        Set(r.name for r in get(aid.relaxed, time_step, RelaxedAreaRecord[]))
+    bus_axis = PNM.get_bus_axis(data.power_network_matrix)
+    bus_of_number = Dict{Int, PSY.ACBus}(
+        PSY.get_number(b) => b for b in PSY.get_components(PSY.ACBus, sys)
+    )
+
+    df = empty_area_interchange_results()
+    for area in aid.pristine_areas
+        ni_solved = _area_net_interchange(aid.pristine_ties, area.tail_ix, data, time_step)
+        schedule_status = :enforced
+        delta_p_pu = 0.0
+        if area.name in relaxed_names
+            schedule_status = :relaxed
+        else
+            delta_p_pu = aid.pristine_delta_p[area.tail_ix, time_step]
+        end
+        bus = bus_of_number[bus_axis[area.slack_bus_ix]]
+        # `delta_p_pu` is 0.0 for a relaxed area, so this correctly reduces to the bus's
+        # unaugmented (uncontrolled) input injection — see `_area_beyond_limits`'s docstring
+        # for why the raw field alone is not the solved value for an enforced area.
+        p_bus_effective =
+            data.bus_active_power_injections[area.slack_bus_ix, time_step] + delta_p_pu
+        beyond_limits = _area_beyond_limits(sys, bus, p_bus_effective)
+        push!(
+            df,
+            (
+                area = area.name,
+                ni_solved = sys_basepower * ni_solved,
+                pdes = sys_basepower * area.pdes,
+                delta_p = sys_basepower * delta_p_pu,
+                schedule_status = schedule_status,
+                beyond_limits = beyond_limits,
+            ),
+        )
+    end
+    return df
+end
+
 # Point-to-point `TwoTerminalVSCLine` results, one row per line. Mirrors the dcn→component mapping
 # in `_write_vsc_line_solution!`: a line is the DC branch joining its two point-to-point nodes.
 # `P_losses` = P_from_to + P_to_from (converter + DC-line loss). Powers in MW/MVAr.
@@ -1347,6 +1465,7 @@ function _allocate_results_data(
         "vsc_results" => empty_vsc_results(),
         "mtdc_results" => empty_mtdc_results(),
         "mtdc_line_results" => empty_mtdc_line_results(),
+        "area_interchange_results" => empty_area_interchange_results(),
     )
 end
 
@@ -1782,6 +1901,8 @@ function write_results(
         time_step,
     )
     _add_vsc_results!(results, sys, data, PSY.get_base_power(sys), time_step)
+    results["area_interchange_results"] =
+        area_interchange_results_dataframe(sys, data, time_step)
     return results
 end
 

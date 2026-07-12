@@ -45,7 +45,6 @@ Create an instance of `ACPowerFlowResidual` for a given time step.
 """
 function ACPowerFlowResidual(data::ACPowerFlowData, time_step::Int64)
     n_buses = first(size(data.bus_type))
-    n_lccs = size(data.lcc.p_set, 1)
     P_net = Vector{Float64}(undef, n_buses)
     Q_net = Vector{Float64}(undef, n_buses)
 
@@ -84,7 +83,7 @@ function ACPowerFlowResidual(data::ACPowerFlowData, time_step::Int64)
     return ACPowerFlowResidual(
         data,
         Vector{Float64}(undef,
-            2 * n_buses + 4 * n_lccs + vsc_tail_length(get_dc_network(data))),
+            2 * n_buses + state_tail_length(data, get_dc_network(data))),
         P_net,
         Q_net,
         P_net_set,
@@ -398,12 +397,41 @@ function _update_residual_values!(
         F[2 * ix] -= Q_net[ix]
     end
 
+    # PSS/E-style embedded area net-interchange control: ΔP_a couples into the P-balance
+    # row at each controlled area's slack bus, at the same seam the distributed-slack
+    # P_slack term enters above conceptually. Applied directly to `F` (not folded into
+    # `P_net[ix] += ΔP` before the balance loop) because `P_net[ix]` is NOT reset to a
+    # clean baseline every call once the slack bus is PQ (a PQ bus's ZIP-load dispatch does
+    # `P_net[ix] += ...` incrementally, relying on `P_net[ix]` carrying over from the
+    # PREVIOUS evaluation on this same `Residual` object — see
+    # `_set_state_variables_at_bus!(::Val{PQ})`). Adding ΔP into that same persistent
+    # buffer would silently accumulate an extra ΔP on every repeated evaluation after a
+    # PV->PQ Q-limit flip of the area slack bus. `F` is reset (`F .= 0.0`) at the top of
+    # every call, so applying ΔP here is exactly-once and bus-type-invariant (spec §4 item
+    # 1 / §5.6), matching the Jacobian's constant `-1.0` stamp at this same row.
+    if n_controlled_areas(data) > 0
+        area_off = area_tail_offset(data, dcn)
+        @inbounds for area in data.area_interchange.areas
+            ΔP = x[area_off + area.tail_ix]
+            # Mirror ΔP_a onto `data`, column-indexed by `time_step` (same seam as the LCC
+            # tap / `_read_vsc_state!` tail write-back below) so a warm re-solve's `x0` can
+            # recover the converged value for THIS time step without contaminating others —
+            # see `AreaInterchangeData.delta_p` and `update_state!`.
+            data.area_interchange.delta_p[area.tail_ix, time_step] = ΔP
+            F[2 * area.slack_bus_ix - 1] -= ΔP
+        end
+    end
+
     if num_lcc > 0
         _set_lcc_tail_residuals!(F, data, vsc_off - 4 * num_lcc, time_step)
     end
     if has_dc_network(dcn)
         _apply_vsc_bus_injections_polar!(F, dcn, time_step)
         _set_vsc_tail_residuals!(F, dcn, Vm, vsc_off, time_step)
+    end
+    if n_controlled_areas(data) > 0
+        area_off = area_tail_offset(data, dcn)
+        _set_area_tail_residuals!(F, x, data, area_off, time_step)
     end
     return
 end

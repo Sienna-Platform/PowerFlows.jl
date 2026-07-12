@@ -108,14 +108,14 @@ J.Jv  # Access the Jacobian matrix stored internally in J.
 # Memoize the expensive Jacobian sparse-structure build (~3.2 MB on 2000 buses) so it is built
 # once and reused across the Q-limit inner loop and repeated PCM solves. The structure is
 # invariant under the PV→PQ flips that drive the Q-limit loop (colptr/rowval verified byte-identical
-# across a flip); the cache key is the network-matrix identity + slack nonzero pattern, so a
-# distributed-slack participant drop correctly rebuilds. Returns a full `copy` so each
-# `ACPowerFlowJacobian` owns a fresh mutable buffer, or `nothing` to signal a rebuild. Lives in its
-# own `data.ac_jacobian_structure_cache` field ([`ACJacobianStructureCache`](@ref)) so it never
-# collides with the FastDecoupled/DC caches in `data.solver_cache[]`.
-_reuse_ac_jac_structure(::Nothing, matrix, nzind) = nothing
-_reuse_ac_jac_structure(e::ACJacobianStructureCache, matrix, nzind) =
-    if e.matrix === matrix && e.nzind == nzind
+# across a flip); the cache key is the network-matrix identity + slack nonzero pattern + area
+# interchange data, so a distributed-slack participant drop correctly rebuilds. Returns a full `copy`
+# so each `ACPowerFlowJacobian` owns a fresh mutable buffer, or `nothing` to signal a rebuild. Lives
+# in its own `data.ac_jacobian_structure_cache` field ([`ACJacobianStructureCache`](@ref)) so it
+# never collides with the FastDecoupled/DC caches in `data.solver_cache[]`.
+_reuse_ac_jac_structure(::Nothing, matrix, nzind, area_data) = nothing
+_reuse_ac_jac_structure(e::ACJacobianStructureCache, matrix, nzind, area_data) =
+    if e.matrix === matrix && e.nzind == nzind && e.area_data === area_data
         copy(e.structure)
     else
         nothing
@@ -129,12 +129,17 @@ function _get_or_build_jacobian_structure(
 )
     nzind = SparseArrays.nonzeroinds(slack_factors)
     reused = _reuse_ac_jac_structure(
-        data.ac_jacobian_structure_cache[], data.power_network_matrix, nzind)
+        data.ac_jacobian_structure_cache[], data.power_network_matrix, nzind,
+        data.area_interchange)
     isnothing(reused) || return reused
     Jv0 = _create_jacobian_matrix_structure(data, slack_factors, subnetworks, time_step)
-    # Cache a pristine copy; `Jv0` is about to be mutated by the Newton loop.
+    # Cache a pristine copy; `Jv0` is about to be mutated by the Newton loop. `area_data` is
+    # stored by IDENTITY (not copied) — a rebuilt `PowerFlowData` gets a fresh
+    # `AreaInterchangeData` object, forcing a rebuild; a Q-limit flip keeps the same object,
+    # so reuse still works (spec §5.4).
     data.ac_jacobian_structure_cache[] =
-        ACJacobianStructureCache(data.power_network_matrix, copy(nzind), copy(Jv0))
+        ACJacobianStructureCache(
+            data.power_network_matrix, copy(nzind), copy(Jv0), data.area_interchange)
     return Jv0
 end
 
@@ -487,6 +492,7 @@ function _create_jacobian_matrix_structure(
 
     _create_jacobian_matrix_structure_lcc(data, rows, columns, values, num_buses)
     _create_jacobian_matrix_structure_vsc(data, rows, columns, values, num_buses)
+    _create_jacobian_matrix_structure_area(data, rows, columns, values)
     Jv0 = SparseArrays.sparse(rows, columns, values)
     return Jv0
 end
@@ -942,6 +948,7 @@ function _update_jacobian_matrix_values!(
 
     _set_entries_for_lcc(data, Jv, num_buses, time_step)
     _set_entries_for_vsc(data, Jv, num_buses, time_step)
+    _set_entries_for_area(data, Jv, time_step)
     return
 end
 

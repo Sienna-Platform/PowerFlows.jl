@@ -173,7 +173,7 @@ function _create_rect_ci_jacobian_structure(
     n_buses = first(size(data.bus_type))
     n_lccs = size(data.lcc.p_set, 1)
     dcn = get_dc_network(data)
-    total_state = total_bus_state + 4 * n_lccs + vsc_tail_length(dcn)
+    total_state = total_bus_state + state_tail_length(data, dcn)
 
     sizehint!(rows, 4 * SparseArrays.nnz(Y_bus_eff) + 17 * n_lccs + 2 * n_buses)
     sizehint!(cols, 4 * SparseArrays.nnz(Y_bus_eff) + 17 * n_lccs + 2 * n_buses)
