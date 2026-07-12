@@ -8,16 +8,14 @@ and can be called as a function at the same time. Calling the instance as a func
 
 # Fields
 - `data::ACPowerFlowData`: The grid model data used for power flow calculations.
-- `Jf!::Function`: A function that calculates the Jacobian matrix inplace.
-- `Jv::SparseArrays.SparseMatrixCSC{Float64, $J_INDEX_TYPE}`: The Jacobian matrix, which is updated by the function `Jf!`.
+- `Jv::SparseArrays.SparseMatrixCSC{Float64, $J_INDEX_TYPE}`: The Jacobian matrix, which is updated by `_update_jacobian_matrix_values!`.
 - `diag_elements::MVector{4, Float64}`: Temporary storage for diagonal elements during Jacobian update.
 - `bus_slack_participation_factors::SparseVector{Float64, Int}`: Normalized per-bus slack participation factors for the current time step (from the `ACPowerFlowResidual`). Used for the distributed slack Jacobian entries.
 - `subnetworks::Dict{Int64, Vector{Int64}}`: Subnetwork mapping from REF bus to bus list (from the `ACPowerFlowResidual`). Used for the distributed slack Jacobian entries.
 """
 struct ACPowerFlowJacobian
     data::ACPowerFlowData
-    Jf!::Function   # This is the function that calculates the Jacobian matrix and updates Jv inplace
-    Jv::SparseArrays.SparseMatrixCSC{Float64, J_INDEX_TYPE}  # This is the Jacobian matrix, that is updated by the function Jf
+    Jv::SparseArrays.SparseMatrixCSC{Float64, J_INDEX_TYPE}  # This is the Jacobian matrix, updated in place by `_update_jacobian_matrix_values!`
     diag_elements::MVector{4, Float64}  # Temporary storage for diagonal elements during Jacobian update
     bus_slack_participation_factors::SparseVector{Float64, Int}
     subnetworks::Dict{Int64, Vector{Int64}}
@@ -30,7 +28,7 @@ end
 """
     (J::ACPowerFlowJacobian)(time_step::Int64)
 
-Update the Jacobian matrix `Jv` using the function `Jf!` and the provided data and time step.
+Update the Jacobian matrix `Jv` using `_update_jacobian_matrix_values!` and the provided data and time step.
 
 Defining this method allows an instance of `ACPowerFlowJacobian` to be called as a function, following the functor pattern.
 
@@ -45,7 +43,7 @@ J(time_step)  # Updates the Jacobian matrix Jv
 ```
 """
 function (J::ACPowerFlowJacobian)(time_step::Int64)
-    J.Jf!(J.Jv, J.data, time_step, J.diag_elements,
+    _update_jacobian_matrix_values!(J.Jv, J.data, time_step, J.diag_elements,
         J.bus_slack_participation_factors, J.subnetworks,
         J.bus_active_constant_I, J.bus_reactive_constant_I,
         J.bus_active_constant_Z, J.bus_reactive_constant_Z)
@@ -57,7 +55,7 @@ end
 
 Use the `ACPowerFlowJacobian` to update the provided Jacobian matrix `J` inplace.
 
-Update the internally stored Jacobian matrix `Jv` using the function `Jf!` and the provided data and time step, and write the updated Jacobian values to `J`.
+Update the internally stored Jacobian matrix `Jv` using `_update_jacobian_matrix_values!` and the provided data and time step, and write the updated Jacobian values to `J`.
 
 This method allows an instance of ACPowerFlowJacobian to be called as a function, following the functor pattern.
 
@@ -77,7 +75,7 @@ function (J::ACPowerFlowJacobian)(
     Jv::SparseArrays.SparseMatrixCSC{Float64, J_INDEX_TYPE},
     time_step::Int64,
 )
-    J.Jf!(J.Jv, J.data, time_step, J.diag_elements,
+    _update_jacobian_matrix_values!(J.Jv, J.data, time_step, J.diag_elements,
         J.bus_slack_participation_factors, J.subnetworks,
         J.bus_active_constant_I, J.bus_reactive_constant_I,
         J.bus_active_constant_Z, J.bus_reactive_constant_Z)
@@ -107,11 +105,44 @@ J(time_step)  # Updates the Jacobian matrix stored internally in J.
 J.Jv  # Access the Jacobian matrix stored internally in J.
 ```
 """
+# Memoize the expensive Jacobian sparse-structure build (~3.2 MB on 2000 buses) so it is built
+# once and reused across the Q-limit inner loop and repeated PCM solves. The structure is
+# invariant under the PV→PQ flips that drive the Q-limit loop (colptr/rowval verified byte-identical
+# across a flip); the cache key is the network-matrix identity + slack nonzero pattern, so a
+# distributed-slack participant drop correctly rebuilds. Returns a full `copy` so each
+# `ACPowerFlowJacobian` owns a fresh mutable buffer, or `nothing` to signal a rebuild. Lives in its
+# own `data.ac_jacobian_structure_cache` field ([`ACJacobianStructureCache`](@ref)) so it never
+# collides with the FastDecoupled/DC caches in `data.solver_cache[]`.
+_reuse_ac_jac_structure(::Nothing, matrix, nzind) = nothing
+_reuse_ac_jac_structure(e::ACJacobianStructureCache, matrix, nzind) =
+    if e.matrix === matrix && e.nzind == nzind
+        copy(e.structure)
+    else
+        nothing
+    end
+
+function _get_or_build_jacobian_structure(
+    data::ACPowerFlowData,
+    slack_factors::SparseVector{Float64, Int},
+    subnetworks::Dict{Int64, Vector{Int64}},
+    time_step::Int64,
+)
+    nzind = SparseArrays.nonzeroinds(slack_factors)
+    reused = _reuse_ac_jac_structure(
+        data.ac_jacobian_structure_cache[], data.power_network_matrix, nzind)
+    isnothing(reused) || return reused
+    Jv0 = _create_jacobian_matrix_structure(data, slack_factors, subnetworks, time_step)
+    # Cache a pristine copy; `Jv0` is about to be mutated by the Newton loop.
+    data.ac_jacobian_structure_cache[] =
+        ACJacobianStructureCache(data.power_network_matrix, copy(nzind), copy(Jv0))
+    return Jv0
+end
+
 function ACPowerFlowJacobian(
     residual::ACPowerFlowResidual,
     time_step::Int64,
 )
-    Jv0 = _create_jacobian_matrix_structure(
+    Jv0 = _get_or_build_jacobian_structure(
         residual.data,
         residual.bus_slack_participation_factors,
         residual.subnetworks,
@@ -119,7 +150,6 @@ function ACPowerFlowJacobian(
     )
     return ACPowerFlowJacobian(
         residual.data,
-        _update_jacobian_matrix_values!,
         Jv0,
         MVector{4, Float64}(undef),
         residual.bus_slack_participation_factors,
@@ -683,6 +713,11 @@ function _set_entries_for_lcc(data::ACPowerFlowData,
         idx_tap_to = offset_lcc + 2
         idx_angle_from = offset_lcc + 3
         idx_angle_to = offset_lcc + 4
+
+        # F_α = α − α_min has a constant unit self-derivative; write it each iteration so
+        # every nonzero is owned by the update path, not seeded only at construction.
+        Jv[idx_angle_from, idx_angle_from] = 1.0
+        Jv[idx_angle_to, idx_angle_to] = 1.0
 
         alpha_r = data.lcc.rectifier.thyristor_angle[i, time_step]
         alpha_i = data.lcc.inverter.thyristor_angle[i, time_step]

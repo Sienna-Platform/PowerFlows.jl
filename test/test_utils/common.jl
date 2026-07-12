@@ -496,6 +496,345 @@ function prepare_ts_data!(data::PowerFlowData, time_steps::Int64 = 24)
     return
 end
 
+"""Build a minimal 3-bus system with one `TapTransformer` (VOLTAGE control) and one
+`SwitchedAdmittance` for testing `build_controlled_device_set`."""
+function _make_tap_shunt_system()
+    sys = System(100.0)
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.0, 0.0)
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.PQ, 230, 1.0, 0.0)
+    b3 = _add_simple_bus!(sys, 3, ACBusTypes.PQ, 230, 1.0, 0.0)
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    _add_simple_load!(sys, b2, 0.1, 0.05)
+    _add_simple_load!(sys, b3, 0.1, 0.05)
+    # Line between buses 1 and 3 so the network is connected.
+    _add_simple_line!(sys, b1, b3, 1e-2, 1e-2, 0.0)
+    tap_arc = Arc(; from = b1, to = b2)
+    tx = TapTransformer(;
+        name = "tap_1_2",
+        available = true,
+        active_power_flow = 0.0,
+        reactive_power_flow = 0.0,
+        arc = tap_arc,
+        r = 0.01,
+        x = 0.10,
+        primary_shunt = 0.0 + 0.0im,
+        tap = 1.0,
+        rating = 1.0,
+        base_power = 100.0,
+        control_objective = PSY.TransformerControlObjective.VOLTAGE,
+    )
+    add_component!(sys, tx)
+    sa = SwitchedAdmittance(;
+        name = "shunt_3",
+        available = true,
+        bus = b3,
+        Y = 0.0 + 0.0im,
+        initial_status = [0],
+        number_of_steps = [4],
+        Y_increase = [0.0 + 0.05im],
+        admittance_limits = (min = 0.9, max = 1.1),
+        control_mode = PSY.SwitchedAdmittanceControlMode.DISCRETE_VOLTAGE,
+    )
+    add_component!(sys, sa)
+    return sys
+end
+
+"""Build a 3-bus system with one `TapTransformer` (VOLTAGE control) and one
+`SwitchedAdmittance`, designed so the AC base case converges cleanly.
+
+Bus 2 carries a significant load (0.5 pu on 100 MVA base) through a low-impedance
+transformer from the REF bus, so that the tap is the sole voltage-support mechanism
+for that bus.  Bus 3 is separately connected to the REF bus via a line and hosts the
+shunt.  Buses 2 and 3 are decoupled (both see the REF bus but not each other), so
+shunt adjustments do not perturb the tap-controlled bus and vice-versa.
+
+The tap has full authority over bus 2 (dV/dp ≈ -1.04) and V₂ = vset = 1.0 is
+reachable at tap ≈ 0.973, well inside [0.9, 1.1], so the damped steepness ramp
+runs to completion and the continuation regulates the controlled bus into the
+vset deadband before snapping.  Integration tests on this fixture assert both
+convergence AND tight voltage proximity (within one discrete tap spacing)."""
+function _make_solvable_tap_shunt_system()
+    sys = System(100.0)
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.0, 0.0)
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.PQ, 230, 1.0, 0.0)
+    b3 = _add_simple_bus!(sys, 3, ACBusTypes.PQ, 230, 1.0, 0.0)
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    # Significant load so the base case converges with a non-trivial solution.
+    load2 = PowerLoad(;
+        name = "load_2",
+        available = true,
+        bus = b2,
+        active_power = 0.5,
+        reactive_power = 0.25,
+        base_power = 100.0,
+        max_active_power = 100.0,
+        max_reactive_power = 100.0,
+    )
+    add_component!(sys, load2)
+    load3 = PowerLoad(;
+        name = "load_3",
+        available = true,
+        bus = b3,
+        active_power = 0.05,
+        reactive_power = 0.025,
+        base_power = 100.0,
+        max_active_power = 100.0,
+        max_reactive_power = 100.0,
+    )
+    add_component!(sys, load3)
+    # Bus 3 connected to REF bus; decoupled from bus 2.
+    _add_simple_line!(sys, b1, b3, 1e-2, 1e-2, 0.0)
+    tap_arc = Arc(; from = b1, to = b2)
+    tx = TapTransformer(;
+        name = "tap_1_2",
+        available = true,
+        active_power_flow = 0.0,
+        reactive_power_flow = 0.0,
+        arc = tap_arc,
+        r = 0.01,
+        x = 0.10,
+        primary_shunt = 0.0 + 0.0im,
+        tap = 1.0,
+        rating = 1.0,
+        base_power = 100.0,
+        control_objective = PSY.TransformerControlObjective.VOLTAGE,
+    )
+    add_component!(sys, tx)
+    sa = SwitchedAdmittance(;
+        name = "shunt_3",
+        available = true,
+        bus = b3,
+        Y = 0.0 + 0.0im,
+        initial_status = [0],
+        number_of_steps = [4],
+        Y_increase = [0.0 + 0.05im],
+        admittance_limits = (min = 0.9, max = 1.1),
+        control_mode = PSY.SwitchedAdmittanceControlMode.DISCRETE_VOLTAGE,
+    )
+    add_component!(sys, sa)
+    return sys
+end
+
+"""Build a 2-bus system with a weak PQ bus regulated by a `FACTSControlDevice` (SVC/STATCOM).
+
+REF(1) ─line(x=0.10)─ PQ(2); bus 2 carries a reactive load that pulls its voltage below
+1.0 p.u. The SVC at bus 2 (`voltage_setpoint=1.0`) injects reactive power to hold the bus.
+`max_shunt_current` (MVA at unity voltage) sets the reactive capability; a small value forces
+the SVC to saturate at its susceptance limit before reaching the setpoint."""
+function _make_svc_system(;
+    max_shunt_current::Float64 = 100.0,
+    control_mode = PSY.FACTSOperationModes.NML,
+    reactive_load::Float64 = 0.4,
+)
+    sys = System(100.0)
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.0, 0.0)
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.PQ, 230, 1.0, 0.0)
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    _add_simple_line!(sys, b1, b2, 0.01, 0.10, 0.0)
+    load2 = PowerLoad(;
+        name = "load_2",
+        available = true,
+        bus = b2,
+        active_power = 0.2,
+        reactive_power = reactive_load,
+        base_power = 100.0,
+        max_active_power = 100.0,
+        max_reactive_power = 100.0,
+    )
+    add_component!(sys, load2)
+    svc = FACTSControlDevice(;
+        name = "svc_2",
+        available = true,
+        bus = b2,
+        control_mode = control_mode,
+        voltage_setpoint = 1.0,
+        max_shunt_current = max_shunt_current,
+        reactive_power_required = 100.0,
+    )
+    add_component!(sys, svc)
+    return sys
+end
+
+"""Build a 2-bus system with an API-convention `SwitchedAdmittance` (empty `initial_status`,
+not the parser's zeroed-status BINIT marker) at a weak PQ bus, tuned so the controlled solve
+snaps the shunt to a NONZERO, non-saturated block count (`block_n = [3]` of 4 available steps)
+while landing inside the [vswlo, vswhi] deadband — exercising the PRIMARY (realizable) branch
+of `write_device_settings!`, not the never-snapped or unrealizable fallback."""
+function _make_shunt_snap_system()
+    sys = System(100.0)
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.0, 0.0)
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.PQ, 230, 1.0, 0.0)
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    _add_simple_line!(sys, b1, b2, 0.01, 0.10, 0.0)
+    load2 = PowerLoad(;
+        name = "load_2",
+        available = true,
+        bus = b2,
+        active_power = 0.2,
+        reactive_power = 0.28,
+        base_power = 100.0,
+        max_active_power = 100.0,
+        max_reactive_power = 100.0,
+    )
+    add_component!(sys, load2)
+    sa = SwitchedAdmittance(;
+        name = "shunt_2",
+        available = true,
+        bus = b2,
+        Y = 0.0 + 0.0im,
+        initial_status = Int[],
+        number_of_steps = [4],
+        Y_increase = [0.0 + 0.05im],
+        admittance_limits = (min = 0.98, max = 1.02),
+        control_mode = PSY.SwitchedAdmittanceControlMode.DISCRETE_VOLTAGE,
+    )
+    add_component!(sys, sa)
+    return sys
+end
+
+"""Build a 3-bus system with one voltage-controlling `TapTransformer` whose controllability is set
+through the FIRST-CLASS PSY fields (`tap_limits`, `number_of_tap_positions`, `regulated_bus_number`,
+`voltage_setpoint`) — no `ext` scrape — to exercise the post-#1684 builder path. The tap (b1→b2)
+remotely regulates b3."""
+function _make_field_controlled_tap_system()
+    sys = System(100.0)
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.0, 0.0)
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.PQ, 230, 1.0, 0.0)
+    b3 = _add_simple_bus!(sys, 3, ACBusTypes.PQ, 230, 1.0, 0.0)
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    _add_simple_line!(sys, b2, b3, 1e-2, 1e-2, 0.0)
+    tx = TapTransformer(;
+        name = "tap_1_2",
+        available = true,
+        active_power_flow = 0.0,
+        reactive_power_flow = 0.0,
+        arc = Arc(; from = b1, to = b2),
+        r = 0.01,
+        x = 0.10,
+        primary_shunt = 0.0 + 0.0im,
+        tap = 1.0,
+        rating = 1.0,
+        base_power = 100.0,
+        tap_limits = (min = 0.85, max = 1.15),
+        number_of_tap_positions = 17,
+        regulated_bus_number = 3,
+        voltage_setpoint = 1.02,
+        control_objective = PSY.TransformerControlObjective.VOLTAGE,
+    )
+    add_component!(sys, tx)
+    return sys
+end
+
+"""Build the IEEE 14-bus system (`PSB.PSITestSystems, "c_sys14"`) with every `PowerLoad`
+scaled by `load_scale`. Used for testing reactive power control logic: switched shunt and
+FACTS device adjustment."""
+function _make_ieee14_scaled_load_system(load_scale::Float64 = 1.4)
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    set_units_base_system!(sys, "SYSTEM_BASE")
+    for load in get_components(PowerLoad, sys)
+        set_active_power!(load, get_active_power(load) * load_scale)
+        set_reactive_power!(load, get_reactive_power(load) * load_scale)
+    end
+    return sys
+end
+
+"""Add a continuous shunt `FACTSControlDevice` (SVC/STATCOM-style) at `bus_number` targeting
+`voltage_setpoint`."""
+function _add_facts_shunt!(
+    sys,
+    bus_number::Int;
+    voltage_setpoint::Float64 = 1.0,
+    max_shunt_current::Float64 = 100.0,
+)
+    b = get_bus(sys, bus_number)
+    facts = FACTSControlDevice(;
+        name = "facts_$bus_number",
+        available = true,
+        bus = b,
+        control_mode = PSY.FACTSOperationModes.NML,
+        voltage_setpoint = voltage_setpoint,
+        max_shunt_current = max_shunt_current,
+        reactive_power_required = 100.0,
+    )
+    add_component!(sys, facts)
+    return facts
+end
+
+"""Add a discrete `SwitchedAdmittance` (PSS/E-style block-switched capacitor bank) at
+`bus_number`, built from `n_steps` blocks of `mvar_per_step` MVar each so the total capacity
+(`n_steps * mvar_per_step` MVar) doesn't saturate. `voltage_setpoint` becomes the midpoint of
+a narrow `admittance_limits` deadband (`± deadband`, in p.u.) — narrow enough that the
+discrete continuation drives the bus close to `voltage_setpoint` rather than stopping as soon
+as voltage enters a wide PSS/E-style VSWLO/VSWHI band."""
+function _add_switched_shunt!(
+    sys,
+    bus_number::Int;
+    voltage_setpoint::Float64 = 1.0,
+    n_steps::Int = 60,
+    mvar_per_step::Float64 = 1.0,
+    deadband::Float64 = 0.001,
+)
+    base_power = get_base_power(sys)
+    b = get_bus(sys, bus_number)
+    sa = SwitchedAdmittance(;
+        name = "shunt_$bus_number",
+        available = true,
+        bus = b,
+        Y = 0.0 + 0.0im,
+        initial_status = [0],
+        number_of_steps = [n_steps],
+        Y_increase = [0.0 + (mvar_per_step / base_power) * im],
+        admittance_limits = (
+            min = voltage_setpoint - deadband,
+            max = voltage_setpoint + deadband,
+        ),
+        control_mode = SwitchedAdmittanceControlMode.DISCRETE_VOLTAGE,
+    )
+    add_component!(sys, sa)
+    return sa
+end
+
+"""Build a 4-bus system where the TapTransformer's FROM bus is the controlled bus,
+exercising the from-side control orientation (the plant-sign probe must measure the
+opposite dV/dp sign to the usual to-side wiring).
+
+Topology: REF(1) ─line─ PQ(2) ─tap─ PQ(3); REF(1) ─line─ PQ(4).
+Bus 2 is both the FROM bus of the tap and the controlled bus (set via `regulated_bus_number`).
+The tap has real authority over bus 2 voltage through the impedance seen by bus 2."""
+function _make_primary_controlled_tap_system()
+    sys = System(100.0)
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.0, 0.0)
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.PQ, 230, 1.0, 0.0)
+    b3 = _add_simple_bus!(sys, 3, ACBusTypes.PQ, 230, 1.0, 0.0)
+    b4 = _add_simple_bus!(sys, 4, ACBusTypes.PQ, 230, 1.0, 0.0)
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    _add_simple_load!(sys, b2, 0.3, 0.15)
+    _add_simple_load!(sys, b3, 0.1, 0.05)
+    _add_simple_load!(sys, b4, 0.05, 0.025)
+    # Line feeds bus 2 from REF.
+    _add_simple_line!(sys, b1, b2, 1e-2, 5e-2, 0.0)
+    # Bus 4 connected to REF (keeps network connected after b3 has only the tap).
+    _add_simple_line!(sys, b1, b4, 1e-2, 1e-2, 0.0)
+    tap_arc = Arc(; from = b2, to = b3)
+    tx = TapTransformer(;
+        name = "tap_2_3",
+        available = true,
+        active_power_flow = 0.0,
+        reactive_power_flow = 0.0,
+        arc = tap_arc,
+        r = 0.01,
+        x = 0.10,
+        primary_shunt = 0.0 + 0.0im,
+        tap = 1.0,
+        rating = 1.0,
+        base_power = 100.0,
+        control_objective = PSY.TransformerControlObjective.VOLTAGE,
+        regulated_bus_number = 2,  # controlled bus = bus 2 (FROM) → primary
+    )
+    add_component!(sys, tx)
+    return sys
+end
+
 function simple_lcc_system()
     sys = System(100.0)
     b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.1, 0.0)
@@ -633,6 +972,29 @@ function _get_or_make_arc(sys, from_bus, to_bus)
     arc = PSY.Arc(; from = from_bus, to = to_bus)
     PSY.add_component!(sys, arc)
     return arc
+end
+
+# Add a voltage-controlling TapTransformer between two existing AC buses (mirrors the
+# TapTransformer block in `_make_tap_shunt_system`), for fixtures that need a controlled
+# device layered on top of an otherwise-fixed system (e.g. a VSC system).
+function _add_control_tap!(sys, from_bus, to_bus; name = "tap_ctrl")
+    tap_arc = _get_or_make_arc(sys, from_bus, to_bus)
+    tx = PSY.TapTransformer(;
+        name = name,
+        available = true,
+        active_power_flow = 0.0,
+        reactive_power_flow = 0.0,
+        arc = tap_arc,
+        r = 0.01,
+        x = 0.10,
+        primary_shunt = 0.0 + 0.0im,
+        tap = 1.0,
+        rating = 1.0,
+        base_power = 100.0,
+        control_objective = PSY.TransformerControlObjective.VOLTAGE,
+    )
+    PSY.add_component!(sys, tx)
+    return tx
 end
 
 # ── Shared VSC test builders ────────────────────────────────────────────────────────────────────

@@ -510,6 +510,51 @@ end
     @test length(collect(PSY.get_components(PSY.TwoTerminalVSCLine, sys2))) == n0 + 1
 end
 
+@testset "PSSE Exporter FACTS: RMPCT from ext, FCREG/REMOT from regulated_bus_number (v33/v35)" begin
+    # `reactive_power_required` is now a solver OUTPUT, not the PSS/E RMPCT input: RMPCT must
+    # round-trip through `ext`, and FCREG/REMOT must come from the first-class
+    # `regulated_bus_number` field, not from `ext`.
+    sys = System(100.0)
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.0, 0.0)
+    b7 = _add_simple_bus!(sys, 7, ACBusTypes.PQ, 230, 1.0, 0.0)
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    _add_simple_line!(sys, b1, b7, 0.01, 0.10, 0.0)
+    facts = PSY.FACTSControlDevice(;
+        name = "facts_1",
+        available = true,
+        bus = b1,
+        control_mode = PSY.FACTSOperationModes.NML,
+        voltage_setpoint = 1.0,
+        max_shunt_current = 100.0,
+        regulated_bus_number = 7,
+        reactive_power_required = 42.0,  # solved output; must NOT be written as RMPCT
+        ext = Dict{String, Any}("RMPCT" => 55.0),
+    )
+    PSY.add_component!(sys, facts)
+
+    export_location = joinpath(test_psse_export_dir, "v33", "facts_rmpct_fcreg")
+    exporter = PSSEExporter(sys, :v33, export_location; write_comments = true)
+    write_export(exporter, "basic"; overwrite = true)
+    raw_path, metadata_path = get_psse_export_paths(joinpath(export_location, "basic"))
+
+    raw_lines = readlines(raw_path)
+    facts_line_idx = findfirst(l -> occursin("'facts_1'", l), raw_lines)
+    @test !isnothing(facts_line_idx)
+    isnothing(facts_line_idx) && return
+    facts_line = raw_lines[facts_line_idx]
+    fields = strip.(split(facts_line, ","))
+    # v33 record: NAME, I, J, MODE, PDES, QDES, VSET, SHMX, TRMX, VTMN, VTMX, VSMX, IMX, LINX,
+    # RMPCT, OWNER, SET1, SET2, VSREF, REMOT
+    @test fields[15] == "55.0"
+    @test fields[20] == "7"
+    @test !occursin("42.0", facts_line)
+
+    sys2 = read_system_with_metadata(raw_path, metadata_path)
+    facts2 = only(collect(PSY.get_components(PSY.FACTSControlDevice, sys2)))
+    @test PSY.get_regulated_bus_number(facts2) == 7
+    @test PF.get_ext_key_or_default(facts2, "RMPCT") == 55.0
+end
+
 @testset "PSSE Exporter RTS regression: TapTransformer and v35 default ratings" begin
     sys = with_logger(SimpleLogger(Error)) do
         build_system(PSISystems, "modified_RTS_GMLC_DA_sys"; force_build = true)
@@ -723,6 +768,29 @@ end
 
 @testset "PSSE Exporter with case24_sys.raw, v33 - NewtonRaphsonACPowerFlow" begin
     test_psse_exporter_inner(NewtonRaphsonACPowerFlow, "case24_sys_NR")
+end
+
+@testset "update_exporter!(::PowerFlowData) writes solved discrete-control settings" begin
+    # A controlled solve moves the tap; update_exporter! must write the solved tap into
+    # the exporter's (deepcopied) system without touching the caller's system.
+    sys = _make_solvable_tap_shunt_system()
+    tx = first(PSY.get_components(PSY.TapTransformer, sys))
+    tap_before = PSY.get_tap(tx)
+    pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; control_discrete_devices = true)
+    data = PowerFlowData(pf, sys)
+    @test PowerFlows.solve_power_flow!(data)
+    t = data.controlled_devices.taps[1]
+    @test t.current != tap_before
+
+    export_location = joinpath(test_psse_export_dir, "v33", "controlled_tap_update")
+    exporter = PSSEExporter(sys, :v33, export_location)
+    update_exporter!(exporter, data)
+    tx_exported = PSY.get_component(PSY.TapTransformer, exporter.system, t.name)
+    @test PSY.get_tap(tx_exported) == t.current
+    @test PSY.get_tap(tx_exported) != tap_before
+
+    tx_user = PSY.get_component(PSY.TapTransformer, sys, t.name)
+    @test PSY.get_tap(tx_user) == tap_before
 end
 
 @testset "Test exporter helper functions" begin

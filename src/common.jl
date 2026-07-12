@@ -69,7 +69,7 @@ function _compute_bus_active_power_range!(
         isfinite(range_k) || continue
         bus_ix = _get_bus_ix(bus_lookup, reverse_bus_search_map, PSY.get_number(bus))
         bus_active_power_range[bus_ix, 1] += range_k
-        if generator_headroom !== nothing
+        if !isnothing(generator_headroom)
             generator_headroom[(typeof(source), PSY.get_name(source))] = range_k
         end
     end
@@ -262,7 +262,7 @@ function _initialize_bus_data!(
     sys::PSY.System,
     correct_bustypes::Bool = false,
 )
-    # correct/validate the bus types. We don't care about PV vs PQ for DC power flow, 
+    # correct/validate the bus types. We don't care about PV vs PQ for DC power flow,
     # but due to the network reduction logic, it's simpler to handle the bus types the same
     # for both AC and DC [and just not error/warn for DC PV vs PQ problems].
     subnetworks = PNM.find_subnetworks(sys)
@@ -366,7 +366,7 @@ handle_zip_loads!(
 ##############################################################################
 # Matrix Methods #############################################################
 
-"""Matrix multiplication A*x. Written this way because a VirtualPTDF 
+"""Matrix multiplication A*x. Written this way because a VirtualPTDF
 matrix does not store all of its entries: instead, it calculates
 them (or retrieves them from cache), one element or one row at a time."""
 function my_mul_mt(
@@ -394,6 +394,29 @@ function my_mul_mt(
         mul!(view(Y, i, :), X', row_i)
     end
     return Y
+end
+
+# TODO: Consider Moving method to PNM to avoid type piracy. This is a performance optimization to avoid allocating a new matrix for each call to my_mul_mt.
+"""In-place A*X → Y where X is a matrix. Pre-allocated Y avoids per-call allocation."""
+function my_mul_mt!(
+    Y::Matrix{Float64},
+    A::PNM.VirtualPTDF,
+    X::Matrix{Float64},
+)
+    # Access cache directly to avoid allocation from A[arc, :] indexing
+    cache = PNM.get_ptdf_data(A)
+    arc_lookup = PNM.get_arc_lookup(A)  # maps arc tuple → row index
+    for (i, arc) in enumerate(A.axes[1])
+        row_ix = arc_lookup[arc]
+        # On first solve, cache may be empty - use getindex to trigger computation
+        if haskey(cache, row_ix)
+            row_i = cache[row_ix]
+        else
+            row_i = A[arc, :]
+        end
+        mul!(view(Y, i, :), X', row_i)
+    end
+    return
 end
 
 function _add_gspf_to_ijv!(

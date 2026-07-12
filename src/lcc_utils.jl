@@ -213,27 +213,31 @@ function _calculate_dQ_dα_lcc(
 end
 
 """
-    _d2P_lcc(V, t, α, I_dc, σ) -> NamedTuple
+    _d2P_lcc(V, t, α, I_dc, ϕ, σ) -> NamedTuple
 
-Second partials of the LCC active-power contribution `P_s` (rectifier or
-inverter side) with respect to its three state variables `(V_s, t_s,
-α_s)`. `σ = +1` for the rectifier, `σ = -1` for the inverter; this
-encodes the side convention `P_r = K·I·(V t cos α − β)` vs `P_i = −K·I·(V t
-cos α + β)`. `I_dc` is the positive DC current magnitude.
+Second partials of the LCC active-power contribution `P_s = K·I·V·t·cos ϕ_s`
+with respect to `(V_s, t_s, α_s)`. `σ = +1` rectifier, `σ = -1` inverter; `ϕ`
+is the side-specific phase angle (its `cos` carries the side sign, as in
+[`_d2Q_lcc`](@ref)).
 
-`P_s` is linear in the bilinear coordinate `V_s t_s` with an `α_s`-dependent
-coefficient, so four of the six second partials are simple trig and two
-are identically zero. The closed forms hold across both the interior and
-clamp regimes (no `sin ϕ` denominators appear).
+Interior regime: `cos ϕ_r = cos α − β/(Vt)` (inverter: `−cos α − β/(Vt)`), so
+`P_s` is linear in `V·t` with an α-dependent coefficient. Clamp regime
+(`sin ϕ < LCC_sinϕ_TOLERANCE`): `cos ϕ` is pinned at ±1, locally constant, so
+the mixed `V–t` partial `K·I·cos ϕ` is the only survivor and all α-partials
+vanish — matching the clamp-guarded first-derivative helpers.
 """
 function _d2P_lcc(
     V::Float64,
     t::Float64,
     α::Float64,
     I_dc::Float64,
+    ϕ::Float64,
     σ::Int,
 )
     KI = SQRT6_DIV_PI * I_dc
+    if sin(ϕ) < LCC_sinϕ_TOLERANCE
+        return (VV = 0.0, tt = 0.0, Vt = KI * cos(ϕ), Vα = 0.0, tα = 0.0, αα = 0.0)
+    end
     cα = cos(α)
     sα = sin(α)
     return (

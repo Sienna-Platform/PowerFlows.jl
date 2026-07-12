@@ -23,10 +23,21 @@ abstract type AbstractACPowerFlow{S <: ACPowerFlowSolverType} <: PowerFlowEvalua
 
 """An abstract supertype for the persistent per-solve caches stored in
 `PowerFlowData.solver_cache[]`. Concrete subtypes ([`DCSolverCache`](@ref) for the DC/PTDF path,
-`FastDecoupledCache` for the polar fast-decoupled solver) are type-disjoint, so the slot's
-type discriminates which path populated it — no sentinel tag is needed and a cross-use is a plain
+`FastDecoupledCache` for the polar fast-decoupled solver) are type-disjoint, so the slot's type
+discriminates which path populated it — no sentinel tag is needed and a cross-use is a plain
 `MethodError` rather than a silent reuse."""
 abstract type SolverCache end
+
+"""Memoized AC-Jacobian sparse structure, stored in its OWN `PowerFlowData` field (not the shared
+`solver_cache` slot): the NR/TR AC Jacobian and a [`SolverCache`](@ref) can both be live in one
+solve — e.g. a FastDecoupled solve that hands off to NR uses a `FastDecoupledCache` *and* this
+structure — so the two must not contend for a single slot. Cache key is the network-matrix
+identity + slack nonzero pattern (`nzind`); see `_get_or_build_jacobian_structure`."""
+struct ACJacobianStructureCache
+    matrix::PNM.AC_Ybus_Matrix
+    nzind::Vector{Int}
+    structure::SparseMatrixCSC{Float64, J_INDEX_TYPE}
+end
 
 # Centralized so the multi-line warning text can't drift between the two
 # formulation constructors.
@@ -70,6 +81,38 @@ function _reject_fd_decoupled_on_nonpolar(
                 "(classic B′/B″ half-iterations) is polar-only. Use " *
                 "FastDecoupledACPowerFlow{FDFixedJacobian, …} on this formulation, or run " *
                 "FDDecoupled on ACPolarPowerFlow.",
+            ),
+        )
+    end
+    return
+end
+
+# Discrete device control is validated only for NR/TR inner solvers and a single time step (FD
+# reuses stale B′/B″ after tap moves; LM/GD/Homotopy are unvalidated; device state has no per-ts
+# baseline yet). Centralized so the three formulation constructors cannot drift. NR/TR types are
+# defined later in this file — references resolve at call time.
+function _validate_discrete_control_settings(
+    control_discrete_devices::Bool,
+    ::Type{ACSolver},
+    time_steps::Int,
+) where {ACSolver <: ACPowerFlowSolverType}
+    control_discrete_devices || return
+    if !(ACSolver <: Union{NewtonRaphsonACPowerFlow, TrustRegionACPowerFlow})
+        throw(
+            ArgumentError(
+                "control_discrete_devices=true requires a NewtonRaphsonACPowerFlow or " *
+                "TrustRegionACPowerFlow solver; got $(ACSolver). Other solvers are not " *
+                "validated as continuation inner solvers (FastDecoupled would reuse " *
+                "stale B′/B″ factorizations after tap moves).",
+            ),
+        )
+    end
+    if time_steps > 1
+        throw(
+            ArgumentError(
+                "control_discrete_devices=true supports a single time step; got " *
+                "time_steps=$time_steps. Device state does not yet track per-time-step " *
+                "baselines (taps mutate the shared Y-bus; shunt deltas are per-column).",
             ),
         )
     end
@@ -253,6 +296,8 @@ with the specified solver type.
 - `time_step_names::Vector{String}`: Names for each time step. Default is an empty vector.
 - `correct_bustypes::Bool`: Whether to automatically correct bus types based on available generation.
     Default is `false`.
+- `control_discrete_devices::Bool`: Whether to run discrete device control (tap changers, switched
+    shunts) via λ-continuation. Default is `false`.
 - `solver_settings::Dict{Symbol, Any}`: Additional keyword arguments to pass to the solver.
     Default is an empty dictionary.
 """
@@ -275,6 +320,7 @@ struct ACPolarPowerFlow{ACSolver <: ACPowerFlowSolverType} <: AbstractACPowerFlo
     time_steps::Int
     time_step_names::Vector{String}
     correct_bustypes::Bool
+    control_discrete_devices::Bool
     solver_settings::Dict{Symbol, Any}
 end
 
@@ -330,6 +376,7 @@ function ACPolarPowerFlow{ACSolver}(;
     time_steps::Int = 1,
     time_step_names::Vector{String} = String[],
     correct_bustypes::Bool = false,
+    control_discrete_devices::Bool = false,
     solver_settings::AbstractDict = Dict{Symbol, Any}(),
 ) where {ACSolver <: ACPowerFlowSolverType}
     settings = Dict{Symbol, Any}(solver_settings)
@@ -341,6 +388,7 @@ function ACPolarPowerFlow{ACSolver}(;
         generator_slack_participation_factors,
         time_steps,
     )
+    _validate_discrete_control_settings(control_discrete_devices, ACSolver, time_steps)
     return ACPolarPowerFlow{ACSolver}(
         check_reactive_power_limits,
         exporter,
@@ -356,6 +404,7 @@ function ACPolarPowerFlow{ACSolver}(;
         time_steps,
         time_step_names,
         correct_bustypes,
+        control_discrete_devices,
         settings,
     )
 end
@@ -392,6 +441,9 @@ get_calculate_voltage_stability_factors(pf::ACPolarPowerFlow) =
 get_log_solver_diagnostics(::PowerFlowEvaluationModel) = false
 get_log_solver_diagnostics(pf::AbstractACPowerFlow) = pf.log_solver_diagnostics
 
+get_control_discrete_devices(pf::AbstractACPowerFlow) = pf.control_discrete_devices
+get_control_discrete_devices(::PowerFlowEvaluationModel) = false
+
 """
     ACRectangularPowerFlow{ACSolver}(; kwargs...) where {ACSolver <: ACPowerFlowSolverType}
     ACRectangularPowerFlow(; kwargs...)
@@ -426,6 +478,8 @@ polar state layout and have no current-injection equivalent.
 - `time_steps::Int`: Default `1`.
 - `time_step_names::Vector{String}`: Default empty.
 - `correct_bustypes::Bool`: Default `false`.
+- `control_discrete_devices::Bool`: Whether to run discrete device control via λ-continuation.
+    Default `false`.
 - `solver_settings::Dict{Symbol, Any}`: Default empty.
 """
 struct ACRectangularPowerFlow{ACSolver <: ACPowerFlowSolverType} <:
@@ -445,6 +499,7 @@ struct ACRectangularPowerFlow{ACSolver <: ACPowerFlowSolverType} <:
     time_steps::Int
     time_step_names::Vector{String}
     correct_bustypes::Bool
+    control_discrete_devices::Bool
     solver_settings::Dict{Symbol, Any}
 end
 
@@ -464,6 +519,7 @@ function ACRectangularPowerFlow{ACSolver}(;
     time_steps::Int = 1,
     time_step_names::Vector{String} = String[],
     correct_bustypes::Bool = false,
+    control_discrete_devices::Bool = false,
     solver_settings::Dict{Symbol, Any} = Dict{Symbol, Any}(),
 ) where {ACSolver <: ACPowerFlowSolverType}
     if ACSolver <: Union{
@@ -486,6 +542,7 @@ function ACRectangularPowerFlow{ACSolver}(;
         generator_slack_participation_factors,
         time_steps,
     )
+    _validate_discrete_control_settings(control_discrete_devices, ACSolver, time_steps)
     return ACRectangularPowerFlow{ACSolver}(
         check_reactive_power_limits,
         exporter,
@@ -498,6 +555,7 @@ function ACRectangularPowerFlow{ACSolver}(;
         time_steps,
         time_step_names,
         correct_bustypes,
+        control_discrete_devices,
         solver_settings,
     )
 end
@@ -539,6 +597,8 @@ polar state layout and have no mixed current-power equivalent.
 - `time_steps::Int`: Default `1`.
 - `time_step_names::Vector{String}`: Default empty.
 - `correct_bustypes::Bool`: Default `false`.
+- `control_discrete_devices::Bool`: Whether to run discrete device control via λ-continuation.
+    Default `false`.
 - `solver_settings::Dict{Symbol, Any}`: Default empty.
 """
 struct ACMixedPowerFlow{ACSolver <: ACPowerFlowSolverType} <:
@@ -558,6 +618,7 @@ struct ACMixedPowerFlow{ACSolver <: ACPowerFlowSolverType} <:
     time_steps::Int
     time_step_names::Vector{String}
     correct_bustypes::Bool
+    control_discrete_devices::Bool
     solver_settings::Dict{Symbol, Any}
 end
 
@@ -577,6 +638,7 @@ function ACMixedPowerFlow{ACSolver}(;
     time_steps::Int = 1,
     time_step_names::Vector{String} = String[],
     correct_bustypes::Bool = false,
+    control_discrete_devices::Bool = false,
     solver_settings::Dict{Symbol, Any} = Dict{Symbol, Any}(),
 ) where {ACSolver <: ACPowerFlowSolverType}
     if ACSolver <: Union{
@@ -600,6 +662,7 @@ function ACMixedPowerFlow{ACSolver}(;
         generator_slack_participation_factors,
         time_steps,
     )
+    _validate_discrete_control_settings(control_discrete_devices, ACSolver, time_steps)
     return ACMixedPowerFlow{ACSolver}(
         check_reactive_power_limits,
         exporter,
@@ -612,6 +675,7 @@ function ACMixedPowerFlow{ACSolver}(;
         time_steps,
         time_step_names,
         correct_bustypes,
+        control_discrete_devices,
         solver_settings,
     )
 end

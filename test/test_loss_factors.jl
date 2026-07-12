@@ -202,3 +202,21 @@ end
     solve_power_flow!(data_no_lf)
     @test isnothing(data_no_lf.loss_factors)
 end
+
+@testset "loss factors computed on a 0-iteration warm-converged polar solve" begin
+    # Regression: the deferred-Jacobian 0-iteration branch must still compute the
+    # loss/voltage-stability factors when the caller opted in — otherwise a solve that
+    # lands within tol at iteration 0 leaves them at their zero-initialized values.
+    sys = build_system(PSITestSystems, "c_sys14"; add_forecasts = false)
+    pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(; calculate_loss_factors = true)
+    data = PowerFlowData(pf, sys)
+    solve_power_flow!(data)                 # iterating solve populates the factors
+    lf_ref = copy(data.loss_factors)
+    @test !all(iszero, lf_ref)
+    # Re-solve on the same converged data ⇒ 0 NR iterations (warm start hits the deferred
+    # branch). Zero the factors first so the assertion discriminates: pre-fix they stay zero.
+    data.loss_factors .= 0.0
+    solve_power_flow!(data)
+    @test !all(iszero, data.loss_factors)
+    @test isapprox(data.loss_factors, lf_ref; atol = 1e-10)
+end

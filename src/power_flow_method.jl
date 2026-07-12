@@ -95,6 +95,7 @@ function _set_Δx_nr!(stateVector::StateVectorCache,
     refinement_threshold::Float64,
     refinement_eps::Float64)
     use_fallback = false
+    _count_numeric_refactor!(J.data)
     try
         numeric_refactor!(linSolveCache, J.Jv)
     catch e
@@ -132,7 +133,7 @@ function _set_Δx_nr!(stateVector::StateVectorCache,
         # values in place while the pattern holds (reusing the factorization); rebuild if it shifts.
         M_prev = stateVector.fallback_matrix[]
         cache_prev = stateVector.fallback_cache[]
-        if M_prev !== nothing && cache_prev !== nothing &&
+        if !isnothing(M_prev) && !isnothing(cache_prev) &&
            _refresh_singular_J_fallback!(M_prev, J.Jv, stateVector.x)
             M = M_prev
             cache = cache_prev
@@ -192,6 +193,7 @@ function _dogleg!(Δx_proposed::Vector{Float64},
     Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
     d::Vector{Float64},
     delta::Float64,
+    Jg::Vector{Float64},
 )
     nr_norm = wnorm(d, Δx_nr)
     @debug "Trust region: ||Δx_nr|| = $(siground(nr_norm)), δ = $(siground(delta))"
@@ -204,7 +206,8 @@ function _dogleg!(Δx_proposed::Vector{Float64},
         g = Δx_proposed
         LinearAlgebra.mul!(g, Jv', r)
         g .= g ./ d .^ 2
-        Δx_cauchy .= -wnorm(d, g)^2 / sum(abs2, Jv * g) .* g # Cauchy point
+        LinearAlgebra.mul!(Jg, Jv, g)
+        Δx_cauchy .= -wnorm(d, g)^2 / sum(abs2, Jg) .* g # Cauchy point
 
         cauchy_norm = wnorm(d, Δx_cauchy)
         @debug "Cauchy point: ||Δx_cauchy|| = $(siground(cauchy_norm))"
@@ -250,7 +253,7 @@ function _accept_trust_region_step!(
             stateVector.d[i] = max(0.1 * stateVector.d[i], norm(view(Jv, :, i)))
         end
     end
-    return nothing
+    return
 end
 
 """Attempt Iwamoto damping on a rejected trust region step.
@@ -264,13 +267,14 @@ function _iwamoto_fallback!(
     J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
     old_residual::Vector{Float64},
     old_residual_norm::Float64,
-    new_residual_norm::Float64,
     autoscale::Bool,
 )::Bool
     g0 = old_residual_norm
-    g1 = dot(old_residual, residual.Rv)
-    g2 = new_residual_norm
-    μ = _iwamoto_multiplier(g0, g1, g2)
+    # Quadratic model F(x+μΔx) = f₀ + μ·(J·Δx) + μ²·a along Δx_proposed. r_predict
+    # (= f₀ + J·Δx) from the ρ test gives a = F(x+Δx) − r_predict for free (no extra matvec).
+    c_fb, c_bb, c_fa, c_ba, c_aa =
+        _iwamoto_quadratic_dots(old_residual, stateVector.r_predict, residual.Rv)
+    μ = _iwamoto_multiplier(2.0 * c_fb, c_bb + 2.0 * c_fa, 2.0 * c_ba, c_aa)
     # Revert full step, apply damped step in a single fused pass.
     @. stateVector.x += (μ - 1.0) * stateVector.Δx_proposed
     residual(stateVector.x, time_step)
@@ -323,6 +327,7 @@ function _trust_region_step(time_step::Int,
         J.Jv,
         stateVector.d,
         delta,
+        stateVector.r_predict,  # scratch for J·g; overwritten with the true r_predict below
     )
     # find proposed next point.
     stateVector.x .+= stateVector.Δx_proposed
@@ -338,9 +343,17 @@ function _trust_region_step(time_step::Int,
     # Ratio of actual to predicted reduction
     LinearAlgebra.mul!(stateVector.r_predict, J.Jv, stateVector.Δx_proposed)
     stateVector.r_predict .+= stateVector.r
-    rho =
-        (sum(abs2, stateVector.r) - sum(abs2, residual.Rv)) /
-        (sum(abs2, stateVector.r) - sum(abs2, stateVector.r_predict))
+    predicted_reduction = old_residual_norm - sum(abs2, stateVector.r_predict)
+    # The dogleg model reduction is non-negative by construction; a non-positive value
+    # here is floating-point cancellation near convergence (‖r‖²≈0). Force a rejected-step
+    # ρ to shrink the trust region — standard recovery, matching the LM solver's guard.
+    rho = if predicted_reduction > 0.0
+        (old_residual_norm - new_residual_norm) / predicted_reduction
+    else
+        @debug "Non-positive predicted reduction $(siground(predicted_reduction)); \
+            rejecting step, shrinking trust region"
+        -Inf
+    end
 
     @debug "Trust region step: ρ = $(siground(rho)), η = $(siground(eta)), ||Δx|| = $(siground(norm(stateVector.Δx_proposed)))"
 
@@ -356,7 +369,7 @@ function _trust_region_step(time_step::Int,
         if iwamoto_fallback
             iwamoto_accepted = _iwamoto_fallback!(
                 time_step, stateVector, residual, J,
-                oldResidual, old_residual_norm, new_residual_norm, autoscale)
+                oldResidual, old_residual_norm, autoscale)
             if iwamoto_accepted
                 # Iwamoto accepted a damped step — shrink trust region since the
                 # full proposed step was rejected by rho. Do not use rho-based
@@ -390,28 +403,50 @@ function _trust_region_step(time_step::Int,
     return delta
 end
 
-"""Evaluate the Iwamoto objective g(μ) = ‖(1-μ)f₀ + μ²f₁‖² expanded as
-g(μ) = (1-μ)²g₀ + 2μ²(1-μ)g₁ + μ⁴g₂ where g₀=‖f₀‖², g₁=f₀ᵀf₁, g₂=‖f₁‖²."""
-@inline function _iwamoto_objective(
-    μ::Float64, g0::Float64, g1::Float64, g2::Float64,
-)::Float64
-    om = 1.0 - μ
-    μ2 = μ * μ
-    return om * om * g0 + 2.0 * μ2 * om * g1 + μ2 * μ2 * g2
+"""Inner products for the quadratic model `F(x+μΔx) = f₀ + μ·b + μ²·a` with
+`b = J·Δx`, `a = F(x+Δx) − f₀ − b`. From `f₀`, `rpred = f₀ + b`, and `rv = F(x+Δx)`
+returns `(f₀·b, b·b, f₀·a, b·a, a·a)`."""
+@inline function _iwamoto_quadratic_dots(
+    f0::Vector{Float64}, rpred::Vector{Float64}, rv::Vector{Float64},
+)::NTuple{5, Float64}
+    c_fb = 0.0
+    c_bb = 0.0
+    c_fa = 0.0
+    c_ba = 0.0
+    c_aa = 0.0
+    @inbounds @simd for i in eachindex(f0, rpred, rv)
+        b = rpred[i] - f0[i]
+        a = rv[i] - rpred[i]
+        c_fb += f0[i] * b
+        c_bb += b * b
+        c_fa += f0[i] * a
+        c_ba += b * a
+        c_aa += a * a
+    end
+    return c_fb, c_bb, c_fa, c_ba, c_aa
 end
 
-"""If μ ∈ [IWAMOTO_MU_MIN, IWAMOTO_MU_MAX] and g(μ) < best_g, return the
-improved (μ, g(μ)); otherwise return (best_μ, best_g) unchanged."""
+"""Iwamoto objective minus its μ-independent constant:
+`g̃(μ) = q₁μ + q₂μ² + q₃μ³ + q₄μ⁴`. Dropping the constant preserves the minimizer."""
+@inline function _iwamoto_objective(
+    μ::Float64, q1::Float64, q2::Float64, q3::Float64, q4::Float64,
+)::Float64
+    return μ * (q1 + μ * (q2 + μ * (q3 + μ * q4)))
+end
+
+"""If μ ∈ [IWAMOTO_MU_MIN, IWAMOTO_MU_MAX] and g̃(μ) < best_g, return the
+improved (μ, g̃(μ)); otherwise return (best_μ, best_g) unchanged."""
 @inline function _try_iwamoto_candidate(
     μ::Float64,
     best_μ::Float64,
     best_g::Float64,
-    g0::Float64,
-    g1::Float64,
-    g2::Float64,
+    q1::Float64,
+    q2::Float64,
+    q3::Float64,
+    q4::Float64,
 )::Tuple{Float64, Float64}
     if IWAMOTO_MU_MIN <= μ <= IWAMOTO_MU_MAX
-        gval = _iwamoto_objective(μ, g0, g1, g2)
+        gval = _iwamoto_objective(μ, q1, q2, q3, q4)
         if gval < best_g
             return μ, gval
         end
@@ -419,23 +454,23 @@ improved (μ, g(μ)); otherwise return (best_μ, best_g) unchanged."""
     return best_μ, best_g
 end
 
-"""Compute the optimal Iwamoto step multiplier μ ∈ [IWAMOTO_MU_MIN, IWAMOTO_MU_MAX]
-by minimizing g(μ) = (1-μ)²g₀ + 2μ²(1-μ)g₁ + μ⁴g₂.
-
-The stationary points satisfy the cubic g'(μ)/2 = 2g₂μ³ - 3g₁μ² + (g₀+2g₁)μ - g₀ = 0.
-All real roots are found analytically via the depressed-cubic trigonometric/Cardano form,
-and the global minimizer of g over the domain is returned. O(1), zero-allocation."""
-function _iwamoto_multiplier(g0::Float64, g1::Float64, g2::Float64)::Float64
+"""Optimal Iwamoto multiplier μ ∈ [IWAMOTO_MU_MIN, IWAMOTO_MU_MAX] minimizing
+`g̃(μ) = q₁μ + q₂μ² + q₃μ³ + q₄μ⁴` (coefficients from [`_iwamoto_quadratic_dots`](@ref)).
+Stationary points solve the cubic `g̃'(μ) = 4q₄μ³ + 3q₃μ² + 2q₂μ + q₁ = 0`, found
+analytically (depressed-cubic Cardano/trig form). Exact for the dogleg step;
+reduces to classical Iwamoto & Tamura (1981) when `b = −f₀` (Newton step)."""
+function _iwamoto_multiplier(q1::Float64, q2::Float64, q3::Float64, q4::Float64)::Float64
     # Initialize best candidate from domain boundaries.
     best_μ = IWAMOTO_MU_MIN
-    best_g = _iwamoto_objective(IWAMOTO_MU_MIN, g0, g1, g2)
-    best_μ, best_g = _try_iwamoto_candidate(IWAMOTO_MU_MAX, best_μ, best_g, g0, g1, g2)
+    best_g = _iwamoto_objective(IWAMOTO_MU_MIN, q1, q2, q3, q4)
+    best_μ, best_g =
+        _try_iwamoto_candidate(IWAMOTO_MU_MAX, best_μ, best_g, q1, q2, q3, q4)
 
     # Cubic coefficients: c₃μ³ + c₂μ² + c₁μ + c₀ = 0
-    c3 = 2.0 * g2
-    c2 = -3.0 * g1
-    c1 = g0 + 2.0 * g1
-    c0 = -g0
+    c3 = 4.0 * q4
+    c2 = 3.0 * q3
+    c1 = 2.0 * q2
+    c0 = q1
 
     if abs(c3) < IWAMOTO_DEGENERACY_TOL
         # Degenerate: solve quadratic c₂μ² + c₁μ + c₀ = 0
@@ -444,11 +479,13 @@ function _iwamoto_multiplier(g0::Float64, g1::Float64, g2::Float64)::Float64
             if disc >= 0.0
                 sq = sqrt(disc)
                 for μ in ((-c1 + sq) / (2.0 * c2), (-c1 - sq) / (2.0 * c2))
-                    best_μ, best_g = _try_iwamoto_candidate(μ, best_μ, best_g, g0, g1, g2)
+                    best_μ, best_g =
+                        _try_iwamoto_candidate(μ, best_μ, best_g, q1, q2, q3, q4)
                 end
             end
         elseif abs(c1) > IWAMOTO_DEGENERACY_TOL
-            best_μ, best_g = _try_iwamoto_candidate(-c0 / c1, best_μ, best_g, g0, g1, g2)
+            best_μ, best_g =
+                _try_iwamoto_candidate(-c0 / c1, best_μ, best_g, q1, q2, q3, q4)
         end
         return best_μ
     end
@@ -471,29 +508,35 @@ function _iwamoto_multiplier(g0::Float64, g1::Float64, g2::Float64)::Float64
         for k in 0:2
             best_μ, best_g = _try_iwamoto_candidate(
                 m * cos(φ3 - 2.0 * π * k / 3.0) - p3,
-                best_μ, best_g, g0, g1, g2)
+                best_μ, best_g, q1, q2, q3, q4)
         end
     elseif Δ < 0.0
         # One real root — Cardano's formula.
         sqD = sqrt(max(-Δ / 108.0, 0.0))
         best_μ, best_g = _try_iwamoto_candidate(
             cbrt(-B / 2.0 + sqD) + cbrt(-B / 2.0 - sqD) - p3,
-            best_μ, best_g, g0, g1, g2)
+            best_μ, best_g, q1, q2, q3, q4)
     else
         # Δ ≈ 0 — repeated roots.
         if abs(A) < IWAMOTO_DEGENERACY_TOL
             # Triple root at t = 0.
-            best_μ, best_g = _try_iwamoto_candidate(-p3, best_μ, best_g, g0, g1, g2)
+            best_μ, best_g = _try_iwamoto_candidate(-p3, best_μ, best_g, q1, q2, q3, q4)
         else
             # Simple root t₁ = 3B/A and double root t₂ = -3B/(2A).
             for t in (3.0 * B / A, -3.0 * B / (2.0 * A))
                 best_μ, best_g = _try_iwamoto_candidate(
-                    t - p3, best_μ, best_g, g0, g1, g2)
+                    t - p3, best_μ, best_g, q1, q2, q3, q4)
             end
         end
     end
 
     return best_μ
+end
+
+"""Classical Iwamoto & Tamura (1981) multiplier for the Newton step (`b = −f₀`),
+with `g₀ = ‖f₀‖²`, `g₁ = f₀ᵀf₁`, `g₂ = ‖f₁‖²`, `f₁ = F(x+Δx)`."""
+@inline function _iwamoto_multiplier(g0::Float64, g1::Float64, g2::Float64)::Float64
+    return _iwamoto_multiplier(-2.0 * g0, g0 + 2.0 * g1, -2.0 * g1, g2)
 end
 
 """Does a single iteration of `NewtonRaphsonACPowerFlow`. Updates the `r` and `x`
@@ -750,7 +793,7 @@ function _run_power_flow_method(time_step::Int,
     if autoscale
         for i in 1:length(stateVector.x)
             stateVector.d[i] = norm(view(J.Jv, :, i))
-            if stateVector.d[i] == 0.0
+            if iszero(stateVector.d[i])
                 stateVector.d[i] = 1.0
             end
         end
@@ -826,7 +869,6 @@ function _finalize_power_flow(
     time_step::Int64,
 )
     if converged
-        @info("The $solver_name solver converged after $i iterations.")
         _warn_small_lcc_angles(data, time_step)
         if get_calculate_loss_factors(data)
             _calculate_loss_factors(data, Jv, time_step)
@@ -868,7 +910,7 @@ even direct Newton hitting one of these bounds is a sign the input data
 is non-physical."""
 function _warn_small_lcc_angles(data::ACPowerFlowData, time_step::Int)
     n_lcc = size(data.lcc.p_set, 1)
-    n_lcc == 0 && return
+    iszero(n_lcc) && return
     lo = LCC_SMALL_ANGLE_THRESHOLD
     hi = π / 2 - LCC_SMALL_ANGLE_THRESHOLD
     for i in 1:n_lcc
@@ -929,6 +971,143 @@ function _finalize_formulation!(
     return
 end
 
+# Persistent NR/TR cache reusing the symbolic factorization across solves on one `data` (Q-limit
+# loop, continuation, PCM steps). The sparsity pattern is invariant across NR iterations and
+# PV↔PQ flips (as `ACJacobianStructureCache` relies on), so symbolic analysis runs once and
+# `numeric_refactor!` refreshes values. Keyed on network-matrix identity + slack nonzero pattern
+# + backend type; an in-place tap/PAR Y-bus edit keeps identity, so the cache correctly survives it.
+struct PolarNRCache{M, B, C} <: SolverCache
+    matrix::M
+    nzind::Vector{Int}
+    backend::B
+    linSolveCache::C
+end
+
+# Backend compared by TYPE (mirrors `_reuse_dc_cache`): a change of backend rebuilds.
+_reuse_polar_nr_cache(::Nothing, matrix, nzind, backend) = nothing
+_reuse_polar_nr_cache(e::PolarNRCache, matrix, nzind, backend) =
+    if e.matrix === matrix && e.nzind == nzind && typeof(e.backend) === typeof(backend)
+        e.linSolveCache
+    else
+        nothing
+    end
+
+# Return the persisted symbolic-factored cache when the structure+backend match; otherwise build
+# it (make + symbolic_factor!), store it, and count the symbolic factorization. `nzind` is the
+# slack-participation nonzero pattern — the same key component `_get_or_build_jacobian_structure`
+# uses — so this cache and the structure cache always agree on a rebuild.
+function _get_or_build_polar_nr_cache!(
+    data::ACPowerFlowData,
+    Jv::SparseArrays.SparseMatrixCSC{Float64, J_INDEX_TYPE},
+    backend,
+    slack_factors::SparseVector{Float64, Int},
+)
+    nzind = SparseArrays.nonzeroinds(slack_factors)
+    reused = _reuse_polar_nr_cache(
+        data.polar_nr_cache[],
+        data.power_network_matrix,
+        nzind,
+        backend,
+    )
+    isnothing(reused) || return reused
+    linSolveCache = make_linear_solver_cache(backend, Jv)
+    symbolic_factor!(linSolveCache, Jv)
+    _count_symbolic_factor!(data)
+    data.polar_nr_cache[] =
+        PolarNRCache(data.power_network_matrix, copy(nzind), backend, linSolveCache)
+    return linSolveCache
+end
+
+# Polar: the Jacobian sparsity is invariant across NR iterations and PV↔PQ flips, so reuse the
+# persisted symbolic factorization (see `PolarNRCache`).
+_nr_linear_solver_cache!(
+    data::ACPowerFlowData, J::ACPowerFlowJacobian, backend,
+    slack_factors::SparseVector{Float64, Int}) =
+    _get_or_build_polar_nr_cache!(data, J.Jv, backend, slack_factors)
+
+# Rectangular / mixed CB: a PV↔PQ flip changes the per-bus variable count / block pattern, so the
+# sparsity structure is NOT flip-invariant across the Q-limit loop — build + symbolically factor
+# fresh each call (the pre-P1 behavior for these formulations).
+function _nr_linear_solver_cache!(
+    data::ACPowerFlowData,
+    J::Union{ACRectangularCIJacobian, ACMixedCPBJacobian},
+    backend,
+    ::SparseVector{Float64, Int},
+)
+    linSolveCache = make_linear_solver_cache(backend, J.Jv)
+    symbolic_factor!(linSolveCache, J.Jv)
+    _count_symbolic_factor!(data)
+    return linSolveCache
+end
+
+# Polar: defer the Jacobian entirely — a 0-iteration warm start must not pay for a
+# Jacobian evaluation + sparse-structure copy. The caller builds J only when the
+# convergence check fails.
+function _nr_initialize_with_jacobian_deferred(
+    pf::ACPolarPowerFlow, data::ACPowerFlowData, time_step::Int64; kwargs...,
+)
+    residual, x0 = _initialize_residual_x0(pf, data, time_step; kwargs...)
+    return residual, nothing, x0
+end
+
+# Rectangular/mixed: J is structure-only (no value evaluation), cheap enough to build eagerly.
+# These formulations do not call J(time_step) in their setup, so the cost is just the
+# sparse-structure allocation (~1-2 MB), not the full evaluation.
+function _nr_initialize_with_jacobian_deferred(
+    pf::ACRectangularPowerFlow{T},
+    data::ACPowerFlowData,
+    time_step::Int64;
+    x0::Union{Vector{Float64}, Nothing} = nothing,
+    validate_voltage_magnitudes::Bool = DEFAULT_VALIDATE_VOLTAGES,
+    vm_validation_range::MinMax = DEFAULT_VALIDATION_RANGE,
+    _ignored...,
+) where {T <: ACPowerFlowSolverType}
+    residual = ACRectangularCIResidual(data, time_step)
+    if isnothing(x0)
+        x0_computed = improve_x0(pf, data, residual, time_step)
+    else
+        x0_computed = copy(x0)
+        @warn "Using caller-provided x0; skipping improve_x0."
+        residual(x0_computed, time_step)
+    end
+    _log_initial_residual(residual)
+    J = ACRectangularCIJacobian(residual, time_step)
+    return residual, J, x0_computed
+end
+
+function _nr_initialize_with_jacobian_deferred(
+    pf::ACMixedPowerFlow{T},
+    data::ACPowerFlowData,
+    time_step::Int64;
+    x0::Union{Vector{Float64}, Nothing} = nothing,
+    validate_voltage_magnitudes::Bool = DEFAULT_VALIDATE_VOLTAGES,
+    vm_validation_range::MinMax = DEFAULT_VALIDATION_RANGE,
+    _ignored...,
+) where {T <: ACPowerFlowSolverType}
+    residual = ACMixedCPBResidual(data, time_step)
+    if isnothing(x0)
+        x0_computed = improve_x0(pf, data, residual, time_step)
+    else
+        x0_computed = copy(x0)
+        @warn "Using caller-provided x0; skipping improve_x0."
+        residual(x0_computed, time_step)
+    end
+    _log_initial_residual(residual)
+    J = ACMixedCPBJacobian(residual, time_step)
+    return residual, J, x0_computed
+end
+
+# Build the Jacobian when the deferred path (polar) needs it after a failed convergence check.
+# Rectangular/mixed already have J from setup.
+function _nr_build_jacobian(
+    ::ACPolarPowerFlow, residual::ACPowerFlowResidual, ::Nothing, time_step::Int64,
+)
+    J = ACPowerFlowJacobian(residual, time_step)
+    J(time_step)
+    return J
+end
+_nr_build_jacobian(::AbstractACPowerFlow, residual, J, time_step::Int64) = J
+
 function _newton_power_flow(
     pf::AbstractACPowerFlow{T},
     data::ACPowerFlowData,
@@ -964,16 +1143,22 @@ function _newton_power_flow(
     else
         (; validate_voltage_magnitudes, vm_validation_range, x0)
     end
-    residual, J, x0_init = initialize_power_flow_variables(
+    # Build residual + x0 WITHOUT the Jacobian: a 0-iteration warm start (already converged)
+    # must not pay for a Jacobian evaluation + sparse-structure copy. The Jacobian is built
+    # lazily only when the convergence check fails.
+    residual, J_or_nothing, x0_init = _nr_initialize_with_jacobian_deferred(
         pf, data, time_step; init_kwargs...)
     converged = norm(residual.Rv, Inf) < tol
 
     i = 0
     x_final = x0_init
     if !converged
+        J = _nr_build_jacobian(pf, residual, J_or_nothing, time_step)
         backend = resolve_linear_solver_backend(linear_solver)
-        linSolveCache = make_linear_solver_cache(backend, J.Jv)
-        symbolic_factor!(linSolveCache, J.Jv)
+        # Polar reuses the persisted symbolic factor; rect/mixed build fresh (structure not
+        # flip-invariant). See `_nr_linear_solver_cache!` / `PolarNRCache`.
+        linSolveCache = _nr_linear_solver_cache!(
+            data, J, backend, residual.bus_slack_participation_factors)
         stateVector = StateVectorCache(x0_init, residual.Rv)
         converged, i = _run_power_flow_method(
             time_step,
@@ -996,7 +1181,19 @@ function _newton_power_flow(
             stop_at_fold,
         )
         x_final = stateVector.x
+        _finalize_formulation!(pf, data, x_final, residual, time_step)
+        return _finalize_power_flow(
+            converged, i, string(T), residual, data, J.Jv, time_step)
     end
     _finalize_formulation!(pf, data, x_final, residual, time_step)
-    return _finalize_power_flow(converged, i, string(T), residual, data, J.Jv, time_step)
+    # 0-iteration warm start: skip the Jacobian-dependent post-processing UNLESS the caller
+    # opted into loss / voltage-stability factors — those need J even at 0 iterations, or a
+    # first solve that lands within tol would leave them at their zero-initialized values.
+    if get_calculate_loss_factors(data) || get_calculate_voltage_stability_factors(data)
+        J = _nr_build_jacobian(pf, residual, J_or_nothing, time_step)
+        return _finalize_power_flow(
+            converged, i, string(T), residual, data, J.Jv, time_step)
+    end
+    return _finalize_power_flow(
+        converged, i, string(T), residual, data, nothing, time_step)
 end

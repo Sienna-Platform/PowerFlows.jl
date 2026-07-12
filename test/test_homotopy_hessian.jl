@@ -147,6 +147,38 @@ end
     )
 end
 
+@testset "RH method: hessian at intermediate t" begin
+    # At 0 < t < 1 the assembled Hessian Hv must be the Jacobian (in x) of the
+    # homotopy gradient G(x) = ∇ F_value = (1−t)·diag(PQ)·(x−1) + t·Jᵀ F. Verify
+    # [G(x+Δx) − G(x)] − Hv·Δx → 0 at O(‖Δx‖²). This pins the sign/scaling of the
+    # F-weighted second-derivative term together with the JᵀJ and (1−t) terms.
+    time_step = 1
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14")
+    pf = ACPowerFlow{NewtonRaphsonACPowerFlow}()
+    data = PowerFlowData(pf, sys)
+    hess = PF.HomotopyHessian(data, time_step)
+    t_k = 0.5
+
+    x0 = PF.calculate_x0(data, time_step)
+    n = size(x0, 1)
+    u = rand(Float64, n) .- 0.5
+    u /= LinearAlgebra.norm(u)
+    hess(x0, t_k, time_step)
+    Hv = copy(hess.Hv)
+    errors = Float64[]
+    Δx_mags = collect(10.0^k for k in -3:-1:-6)
+    for Δx_mag in Δx_mags
+        x1 = x0 .+ Δx_mag .* u
+        g0 = similar(x0)
+        g1 = similar(x0)
+        PF.gradient_value!(g0, hess, t_k, x0, time_step)
+        PF.gradient_value!(g1, hess, t_k, x1, time_step)
+        push!(errors, norm((g1 - g0) - Hv * (x1 - x0)) / Δx_mag)
+    end
+    ratios = [err / Δx_mag for (err, Δx_mag) in zip(errors, Δx_mags)]
+    @test all(isapprox(r, ratios[1]; rtol = 0.2) for r in ratios)
+end
+
 @testset "RH method: sparse structure" begin
     # hessian's sparse structure shouldn't change.
     time_step = 1
@@ -167,6 +199,58 @@ end
     t_k = 1.0
     hess(x0, t_k, time_step)
     @test hess.Hv.rowval == rowval && hess.Hv.colptr == colptr
+end
+
+@testset "homotopy_x0 rectifier start is interior" begin
+    # Deep-commutation regime β_r ≥ V·t: force it directly on the data so the
+    # test doesn't depend on how simple_lcc_system()'s defaults happen to land.
+    time_step = 1
+    sys, _ = simple_lcc_system()
+    pf = ACPowerFlow{NewtonRaphsonACPowerFlow}()
+    data = PowerFlowData(pf, sys)
+    for i in 1:length(data.lcc.i_dc[:, time_step])
+        # β_r = x_t·I_dc/√2; with V ≈ t ≈ 1 at flat start, this puts
+        # β_r/(V·t) = 1.5, squarely inside the deep-commutation regime.
+        data.lcc.i_dc[i, time_step] = 1.0
+        data.lcc.rectifier.transformer_reactance[i] = 1.5 * sqrt(2)
+    end
+    x = PF.homotopy_x0(data, time_step)
+
+    n_lcc = size(data.lcc.p_set, 1)
+    num_buses = first(size(PF.get_bus_type(data)))
+    for i in 1:n_lcc
+        # Offset computation copied verbatim from homotopy_x0's own loop.
+        offset_lcc = num_buses * 2 + (i - 1) * 4
+        t_r = x[offset_lcc + 1]
+        α_r = x[offset_lcc + 3]
+        V_fb = PF._bus_V(data, first(data.lcc.bus_indices[i]), time_step)
+        β_r =
+            data.lcc.rectifier.transformer_reactance[i] * data.lcc.i_dc[i, time_step] /
+            sqrt(2)
+        u_r = cos(α_r) - β_r / (V_fb * t_r)
+        @test -1.0 < u_r < 1.0
+    end
+end
+
+@testset "homotopy_x0 rectifier start is non-negative under deep commutation" begin
+    # β_r/(V·t) ≈ 3: the interior window for α_r is empty (max_α_r_interior < 0).
+    # The fallback must clamp to a non-negative angle, never a negative one.
+    time_step = 1
+    sys, _ = simple_lcc_system()
+    pf = ACPowerFlow{NewtonRaphsonACPowerFlow}()
+    data = PowerFlowData(pf, sys)
+    for i in 1:length(data.lcc.i_dc[:, time_step])
+        data.lcc.i_dc[i, time_step] = 1.0
+        data.lcc.rectifier.transformer_reactance[i] = 3.0 * sqrt(2)
+    end
+    x = PF.homotopy_x0(data, time_step)
+
+    n_lcc = size(data.lcc.p_set, 1)
+    num_buses = first(size(PF.get_bus_type(data)))
+    for i in 1:n_lcc
+        offset_lcc = num_buses * 2 + (i - 1) * 4
+        @test x[offset_lcc + 3] >= 0.0
+    end
 end
 
 @testset "RH method: gradient" begin

@@ -52,7 +52,7 @@
         σ = +1
         ϕ = ϕ_lcc(V, t, α, x_t, I_dc, σ)
 
-        d2P = PF._d2P_lcc(V, t, α, I_dc, σ)
+        d2P = PF._d2P_lcc(V, t, α, I_dc, ϕ, σ)
         d2Q = PF._d2Q_lcc(V, t, α, x_t, I_dc, ϕ, σ)
 
         P_at = (a, b, c) -> P_lcc(a, b, c, x_t, I_dc, σ)
@@ -88,7 +88,7 @@
         σ = -1
         ϕ = ϕ_lcc(V, t, α, x_t, I_dc, σ)
 
-        d2P = PF._d2P_lcc(V, t, α, I_dc, σ)
+        d2P = PF._d2P_lcc(V, t, α, I_dc, ϕ, σ)
         d2Q = PF._d2Q_lcc(V, t, α, x_t, I_dc, ϕ, σ)
 
         P_at = (a, b, c) -> P_lcc(a, b, c, x_t, I_dc, σ)
@@ -119,5 +119,13 @@
         @test sin(ϕ) < PF.LCC_sinϕ_TOLERANCE
         d2Q = PF._d2Q_lcc(V, t, α, x_t, I_dc, ϕ, +1)
         @test d2Q == (VV = 0.0, tt = 0.0, Vt = 0.0, Vα = 0.0, tα = 0.0, αα = 0.0)
+
+        # Clamp regime: cos ϕ pinned at ±1 ⇒ only the V–t mixed partial survives.
+        ϕ_clamped = Float64(π)   # sin(ϕ) = 0 < LCC_sinϕ_TOLERANCE, cos(ϕ) = −1
+        d2p = PF._d2P_lcc(1.0, 1.0, 0.3, 1.2, ϕ_clamped, +1)
+        KI = PF.SQRT6_DIV_PI * 1.2
+        @test iszero(d2p.VV) && iszero(d2p.tt)
+        @test d2p.Vt ≈ KI * cos(ϕ_clamped)
+        @test iszero(d2p.Vα) && iszero(d2p.tα) && iszero(d2p.αα)
     end
 end

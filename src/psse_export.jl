@@ -303,6 +303,11 @@ Update the `PSSEExporter` with new `data`.
     [`PowerSystems.System`](@extref) with which the exporter was constructed.
 """
 function update_exporter!(exporter::PSSEExporter, data::PowerFlowData)
+    if !isnothing(get_controlled_devices(data))
+        # exporter.system is a deepcopy: applying the solved device settings here keeps
+        # the exported case self-consistent without touching the user's system.
+        write_device_settings!(exporter.system, data)
+    end
     # NOTE this relies on exporter.system being a deepcopy of the original system so we're not changing that one here
     update_system!(exporter.system, data)
 end
@@ -1370,7 +1375,7 @@ function _compute_generator_powers(
     return with_units_base(exporter.system, PSY.UnitSystem.NATURAL_UNITS) do
         pg, qg = get_active_and_reactive_power_from_generator(generator)
         gen_sign = hvdc_end == "TO" ? -1.0 : 1.0
-        if hvdc_end !== nothing
+        if !isnothing(hvdc_end)
             pg *= gen_sign * base_power
             qg *= base_power
         end
@@ -1388,7 +1393,7 @@ function _compute_reactive_power_limits(
     return with_units_base(
         () -> begin
             limits = get_reactive_power_limits_for_power_flow(generator)
-            if hvdc_end !== nothing
+            if !isnothing(hvdc_end)
                 scaled_limits = (
                     min = limits.min * base_power,
                     max = limits.max * base_power,
@@ -1412,7 +1417,7 @@ function _compute_active_power_limits(
     return with_units_base(
         () -> begin
             limits = get_active_power_limits_for_power_flow(generator)
-            if hvdc_end !== nothing
+            if !isnothing(hvdc_end)
                 scaled_limits = (
                     min = limits.min * base_power,
                     max = limits.max * base_power,
@@ -2965,14 +2970,14 @@ function write_to_buffers!(
         VSMX = get_ext_key_or_default(facts, "VSMX")
         IMX = get_ext_key_or_default(facts, "IMX")
         LINX = get_ext_key_or_default(facts, "LINX")
-        RMPCT = PSY.get_reactive_power_required(facts)
+        RMPCT = get_ext_key_or_default(facts, "RMPCT")
         OWNER = PSSE_DEFAULT
         SET1 = get_ext_key_or_default(facts, "SET1")
         SET2 = get_ext_key_or_default(facts, "SET2")
         VSREF = get_ext_key_or_default(facts, "VSREF")
-        FCREG = get_ext_key_or_default(facts, "FCREG")
+        FCREG = PSY.get_regulated_bus_number(facts)
         NREG = get_ext_key_or_default(facts, "NREG")
-        REMOT = get_ext_key_or_default(facts, "REMOT")
+        REMOT = PSY.get_regulated_bus_number(facts)
         MNAME = get_ext_key_or_default(facts, "MNAME", "")
         MNAME = _psse_quote_string(String(MNAME))
 

@@ -2,6 +2,48 @@ const MAX_INIT_RESIDUAL = 10.0
 const BOUNDS_TOLERANCE = 1e-6
 const INFINITE_BOUND = 1e6 # used as default when a branch has rating 0.0, as implied by the PSSE Manual
 const MAX_REACTIVE_POWER_ITERATIONS = 10
+
+# Discrete control device λ-continuation outer loop.
+# Pass budget PER STEEPNESS STAGE (each of the ~7 stages settles independently; one
+# global budget let a slow early stage starve the stiff later ones).
+const MAX_CONTROL_PASSES_PER_STAGE = 20
+const CONTROL_PARAM_TOL = 1e-5
+# Relative floor of the settle tolerance: tol_d = max(CONTROL_PARAM_TOL, RTOL·range).
+const CONTROL_PARAM_RTOL = 1e-4
+# A device whose full parameter range moves the regulated quantity by less than this
+# (|dy/dp|·(hi−lo), e.g. p.u. voltage) is ineffective: freeze it instead of letting the
+# steep sigmoid slam it to a rail with no feedback (PV-pinned controlled buses probe 0).
+const CONTROL_GAIN_FLOOR = 1e-4
+# Inner-solve tolerance for intermediate steepness stages (full accuracy only matters at
+# the final stage and in snap/restore); a tighter user tolerance is respected there.
+const CONTROL_STAGE_TOL = 1e-6
+# |Δy| below this is solver noise (intermediate stages converge only to
+# CONTROL_STAGE_TOL=1e-6): skip the secant gain refresh — a noise-signed sample must not
+# trip the reverse-action freeze.
+const CONTROL_MEASUREMENT_FLOOR = 1e-5
+const MIN_LAMBDA_STEP = 1e-3
+const MAX_LAMBDA_STEP = 1.0
+const CONTROL_STEP_GROWTH = 1.5
+const INITIAL_CONTROL_STEEPNESS = 1.0e2   # paper eq.10: start (S−λ_S)≈100
+const MAX_CONTROL_STEEPNESS = 5.0e3       # paper: full S≈5000
+const CONTROL_STEEPNESS_GROWTH = 2.0
+const CONTROL_OSCILLATION_LIMIT = 3
+# Post-solve saturation classification band for a continuous FACTS device: |V−vset| within
+# this is "at setpoint". A device pinned at its V-dependent susceptance bound with |V−vset|
+# above this is reported saturated (the homotopy analogue of a PV→PQ Q-limit release). Matches
+# the codebase's "setpoint unreached" threshold used elsewhere in the reactive-control tests.
+const CONTROL_FACTS_SETPOINT_BAND = 1e-3
+# "At the |b| bound" tolerance for the same classification, RELATIVE to the bound: the final
+# clamped `current` can sit a small fraction below the last-refreshed `b_lim` (the bound is
+# refreshed from the final voltage after the last clamp), so an absolute settle tolerance is
+# too tight to recognize a saturated device. A regulating device sits well below the bound.
+const CONTROL_FACTS_LIMIT_RTOL = 2e-2
+# Voltage setpoints outside this band are treated as data errors and lock the device
+# (PSY's `admittance_limits` carries the PSS/E VSWLO/VSWHI *voltage* band only by parser
+# convention; an API-built component holding actual admittance bounds there would
+# otherwise silently drive |V| toward a garbage setpoint).
+const CONTROL_VSET_MIN = 0.5
+const CONTROL_VSET_MAX = 1.5
 const DEFAULT_MAX_REDISTRIBUTION_ITERATIONS = 10
 const LARGE_RESIDUAL = 10 # threshold for "bad initial guess": default
 # norm(residual, 1)/length(residual) > 10.

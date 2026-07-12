@@ -16,6 +16,12 @@ The bus types can be changed from PV to PQ if the reactive power limits are viol
 - `system::PSY.System`: The power system model, a [`PowerSystems.System`](@extref) struct.
 - `kwargs...`: Additional keyword arguments passed to the solver.
 
+When the solve ran with `control_discrete_devices`, the solved tap ratios / shunt admittances /
+phase-shifter angles are written back into the system (see [`write_device_settings!`](@ref)): the
+stored branch flows are only self-consistent with the mutated device settings, so the input
+system's controlled devices are updated to the solved values. With no controls active this is a
+no-op.
+
 ## Keyword Arguments
 - `tol`: Infinite norm of residuals under which convergence is declared. Default is `1e-9`.
 - `maxIterations`: Maximum number of Newton-Raphson iterations. Default is `30`.
@@ -50,6 +56,10 @@ function solve_and_store_power_flow!(
         converged = solve_power_flow!(data; kwargs...)
 
         if converged
+            # Write moved device settings back BEFORE write_power_flow_solution! recomputes flows —
+            # its consistency assertion compares against the stored (moved) flows. Self-guards to a
+            # no-op when no discrete controls ran.
+            write_device_settings!(system, data)
             write_power_flow_solution!(
                 system,
                 pf,
@@ -63,6 +73,72 @@ function solve_and_store_power_flow!(
     end
 
     return converged
+end
+
+"""
+    write_device_settings!(system, data)
+
+Write the solved discrete-control device settings back into the `PSY.System`:
+tap ratios (`set_tap!`), switched-shunt admittances (`set_Y!`/`set_initial_status!`,
+convention-aware — see below), and phase-shifter angles (`set_α!`). FACTS devices
+carry no stored setting field in PSY and are skipped. A device no longer present
+in `system` is skipped with a `@warn` (its solved setting is not written back).
+Mutates the user's system — called by [`solve_and_store_power_flow!`](@ref) after a
+converged solve; a no-op when no discrete controls ran.
+
+Switched shunts write back per their sourcing convention (see
+[Metadata sourcing](@ref discrete-control-metadata) for how `psse_convention` is
+determined): PSS/E-parsed (BINIT) components take the solved total straight into
+`Y`; PSY API-built components keep `Y` at the fixed base and write the last-snap
+`block_n` into `initial_status`, since overwriting `Y` would double-count the
+status on re-enrollment. A never-snapped API-built device (continuous, or held in
+its deadband the whole solve) whose `block_n` cannot reconstruct `d.current` falls
+back to the BINIT write (solved total into `Y`, `initial_status` zeroed).
+"""
+function write_device_settings!(system::PSY.System, data)
+    set = get_controlled_devices(data)
+    isnothing(set) && return
+    for d in set.taps
+        tx = PSY.get_component(PSY.TapTransformer, system, d.name)
+        if isnothing(tx)
+            @warn "write_device_settings!: TapTransformer \"$(d.name)\" not found in the \
+                system; its solved tap ratio $(d.current) was NOT written back."
+            continue
+        end
+        PSY.set_tap!(tx, d.current)
+    end
+    for d in set.shunts
+        sa = PSY.get_component(PSY.SwitchedAdmittance, system, d.name)
+        if isnothing(sa)
+            @warn "write_device_settings!: SwitchedAdmittance \"$(d.name)\" not found in \
+                the system; its solved susceptance $(d.current) was NOT written back."
+            continue
+        end
+        if d.psse_convention
+            PSY.set_Y!(sa, Complex(d.g0, d.current))
+        else
+            realizable = d.b0 + sum(d.block_n .* d.block_dB; init = 0.0)
+            if abs(realizable - d.current) <= BOUNDS_TOLERANCE
+                PSY.set_Y!(sa, Complex(d.g0, d.b0))
+                PSY.set_initial_status!(sa, copy(d.block_n))
+            else
+                PSY.set_Y!(sa, Complex(d.g0, d.current))
+                PSY.set_initial_status!(sa, zeros(Int, length(d.block_n)))
+            end
+        end
+    end
+    for d in set.facts
+        fd = PSY.get_component(PSY.FACTSControlDevice, system, d.name)
+        if isnothing(fd)
+            @warn "write_device_settings!: FACTSControlDevice \"$(d.name)\" not found in \
+                the system; its solved reactive output was NOT written back."
+            continue
+        end
+        # Delivered reactive power Q = b·|V_local|² (MVA) at the device's own bus.
+        PSY.set_reactive_power_required!(
+            fd, delivered_q_mvar(d, data.bus_magnitude[d.bus_ix, 1]))
+    end
+    return
 end
 
 """
@@ -239,9 +315,9 @@ function solve_power_flow!(
     return all(data.converged)
 end
 
-function _ac_power_flow(
-    data::ACPowerFlowData,
+function _solve_with_q_limits!(
     pf::AbstractACPowerFlow{<:ACPowerFlowSolverType},
+    data::ACPowerFlowData,
     time_step::Int64;
     kwargs...,
 )
@@ -256,10 +332,30 @@ function _ac_power_flow(
         end
     end
 
-    @error(
-        "could not enforce reactive power limits after $MAX_REACTIVE_POWER_ITERATIONS"
+    # Iteration cap reached: the last `_check_q_limit_bounds!` flipped one or more PV buses to
+    # PQ (and clamped their Q) without a follow-up solve, so `data`'s voltages no longer match
+    # its bus types. Pin that final PV/PQ assignment and solve once more so the returned state is
+    # self-consistent, then return THAT solve's actual convergence (not a forced `true`) — the
+    # classic "fix-as-PQ after N iterations" resolution, rather than discarding a solution that
+    # does converge.
+    @warn(
+        "reactive power limits still oscillating after $MAX_REACTIVE_POWER_ITERATIONS \
+        iterations; pinning the final PV/PQ assignment and solving once more"
     )
-    return converged
+    return _newton_power_flow(pf, data, time_step; kwargs...)
+end
+
+function _ac_power_flow(
+    data::ACPowerFlowData,
+    pf::AbstractACPowerFlow{<:ACPowerFlowSolverType},
+    time_step::Int64;
+    kwargs...,
+)
+    cd = data.controlled_devices
+    if isnothing(cd) || isempty(cd)
+        return _solve_with_q_limits!(pf, data, time_step; kwargs...)
+    end
+    return _control_continuation!(pf, data, time_step; kwargs...)
 end
 
 function _check_q_limit_bounds!(

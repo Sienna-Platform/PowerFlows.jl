@@ -17,6 +17,8 @@ pages = OrderedDict(
     "Welcome Page" => "index.md",
     "Tutorials" => Any[
         "Solving a Power Flow" => "tutorials/generated_solving_a_power_flow.md",
+        "Discrete Shunt Voltage Control" => "tutorials/generated_discrete_control_14bus.md",
+        "HVDC Converters (VSC & LCC)" => "tutorials/generated_hvdc_converters_14bus.md",
     ],
     "How-to-Guides" => Any[
         "How to choose an AC formulation and solver" => "how-tos/choose_ac_formulation_and_solver.md",
@@ -30,6 +32,7 @@ pages = OrderedDict(
         "LCC Model Implementation" => "explanation/lcc_model.md",
         "LCC Second Derivatives (Hessian Blocks)" => "explanation/lcc_hessian.md",
         "VSC Model Implementation" => "explanation/vsc_model.md",
+        "Discrete Control via λ-Continuation" => "explanation/discrete_control.md",
     ],
     "Reference" => Any[
         "Public API Reference" => "reference/api/public.md",
@@ -47,8 +50,10 @@ makedocs(;
     format = Documenter.HTML(;
         prettyurls = haskey(ENV, "GITHUB_ACTIONS"),
         mathengine = Documenter.MathJax(),
-        size_threshold = 500 * 1024,
-        size_threshold_warn = 300 * 1024,
+        # The auto-generated internal `@autodocs` pages exceed Documenter's default 200 KiB
+        # hard limit and keep growing with the codebase; raise the ceiling for them.
+        size_threshold = 500 * 2^10,
+        size_threshold_warn = 300 * 2^10,
     ),
     sitename = "PowerFlows.jl",
     pages = Any[p for p in pages],
