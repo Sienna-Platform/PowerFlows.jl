@@ -1,4 +1,4 @@
-const IEEE14_FACTS_RAW = "/Users/jdlara/cache/vg_pfs_validation/14_bus.raw"
+const IEEE14_FACTS_RAW = joinpath(TEST_DATA_DIR, "14_bus.raw")
 
 """Build the IEEE 14-bus system (PSS/E `14_bus.raw`) with a `FACTSControlDevice` at bus 14
 (`control_mode=NML`). Reused by discrete-control / reactive-power-control tests.
