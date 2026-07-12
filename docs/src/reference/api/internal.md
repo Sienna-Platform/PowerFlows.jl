@@ -81,6 +81,43 @@ Pages = [
 ]
 ```
 
+# Area Interchange Control
+
+## Types
+
+```@autodocs
+Modules = [PowerFlows]
+Public = false
+Private = true
+Pages = [
+    "area_interchange/area_types.jl",
+]
+```
+
+## Tie Detection and Enrollment
+
+```@autodocs
+Modules = [PowerFlows]
+Public = false
+Private = true
+Pages = [
+    "area_interchange/tie_set.jl",
+    "area_interchange/enrollment.jl",
+]
+```
+
+## Residuals and Jacobian
+
+```@autodocs
+Modules = [PowerFlows]
+Public = false
+Private = true
+Pages = [
+    "area_interchange/area_residual.jl",
+    "area_interchange/area_jacobian.jl",
+]
+```
+
 # AC Power Flow
 
 ## Residuals

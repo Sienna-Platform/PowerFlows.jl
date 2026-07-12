@@ -213,3 +213,65 @@ end
     )
     verify_jacobian(sys; pf = pf, label = "polar c_sys14 distributed-slack")
 end
+
+# Task 7: bordered Jacobian tail for embedded PSS/E-style area net-interchange control.
+# `true` iff the sparse structure has a STORED entry at (i, j) -- unlike `A[i, j] == 0.0`,
+# this distinguishes "structurally absent" from "present but numerically zero" (e.g. a PV
+# endpoint's Vm column, spec's union pattern).
+function _has_stored_entry(A::SparseMatrixCSC, i::Int, j::Int)
+    for k in SparseArrays.nzrange(A, j)
+        SparseArrays.rowvals(A)[k] == i && return true
+    end
+    return false
+end
+
+# Runs the shared area-interchange Jacobian assertions (spec §2 bordered block) against a
+# system enrolled with `area_interchange_control = true`: (1) no (area_row, area_col)
+# diagonal entry in the structure (the border's zero diagonal, spec: KLU full pivoting
+# handles it); (2) the -1.0 column entry at each area's slack-bus P-mismatch row; (3) the
+# full asymptotic FD sweep over EVERY state entry, including the area tail.
+function _verify_area_jacobian(sys::PSY.System, label::String)
+    pf = PF.ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+        correct_bustypes = true,
+        area_interchange_control = true,
+    )
+    data = PF.PowerFlowData(pf, sys)
+    @test PF.n_controlled_areas(data) >= 1
+    time_step = 1
+    residual = PF.ACPowerFlowResidual(data, time_step)
+    J = PF.ACPowerFlowJacobian(residual, time_step)
+    x0 = PF.calculate_x0(data, time_step)
+    Random.seed!(42)
+    x0 .+= 0.02 .* randn(length(x0))
+    residual(x0, time_step)
+    J(time_step)
+
+    dcn = PF.get_dc_network(data)
+    area_off = PF.area_tail_offset(data, dcn)
+    Jv = J.Jv
+    for area in data.area_interchange.areas
+        row = area_off + area.tail_ix
+        @test !_has_stored_entry(Jv, row, row)
+        @test Jv[2 * area.slack_bus_ix - 1, area_off + area.tail_ix] == -1.0
+    end
+
+    verify_jacobian_asymptotic(residual, deepcopy(Jv), x0, time_step; label = label)
+    return
+end
+
+@testset "Jacobian verification with area interchange control (2-area, 1 controlled)" begin
+    sys = _make_two_area_system()
+    _set_slack!(sys, "Bus 6")
+    _add_area_interchange!(sys, "Area2", "Area1", 0.3; name = "A2_A1")
+    _verify_area_jacobian(sys, "polar area interchange (1 controlled area)")
+end
+
+@testset "Jacobian verification with area interchange control (3-area, degree-4 boundary)" begin
+    sys = _three_area_transfer_fixture(; slack_area3 = true)
+    _verify_area_jacobian(sys, "polar area interchange (2 controlled areas, degree-4 bus)")
+end
+
+@testset "Jacobian verification with area interchange control (3W transformer tie, polluted star-bus diagonal)" begin
+    sys = _make_3w_boundary_fixture()
+    _verify_area_jacobian(sys, "polar area interchange (3W winding tie)")
+end

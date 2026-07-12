@@ -342,6 +342,69 @@ function _add_simple_line!(
 end
 
 """
+    _add_simple_transformer_3w!(sys, bus_p, bus_s, bus_t, star_number; kwargs...)
+    Simplified function to create and add a `Transformer3W` (plus its own star `ACBus`,
+    which this helper creates and attaches -- `add_component!` requires it to already be
+    a system component, and auto-adds the 3 primary/secondary/tertiary-to-star `Arc`s
+    itself). `star_number` must be a bus number not already used in `sys`. Terminal buses
+    `bus_p`/`bus_s`/`bus_t` must already be added. `available_tertiary = false` by default
+    (2-winding-equivalent use is the common test case); pass `true` and real
+    `r_tertiary`/`x_tertiary` to exercise the third winding.
+"""
+function _add_simple_transformer_3w!(
+    sys::System,
+    bus_p::ACBus,
+    bus_s::ACBus,
+    bus_t::ACBus,
+    star_number::Int;
+    r_primary::Float64 = 0.01,
+    x_primary::Float64 = 0.08,
+    r_secondary::Float64 = 0.01,
+    x_secondary::Float64 = 0.06,
+    r_tertiary::Float64 = 0.01,
+    x_tertiary::Float64 = 0.05,
+    available_tertiary::Bool = false,
+)
+    star_bus = _add_simple_bus!(sys, star_number, ACBusTypes.PQ, get_base_voltage(bus_p))
+    xfmr = Transformer3W(;
+        name = _check_name(
+            sys,
+            "xfmr3w_$(get_number(bus_p))_$(get_number(bus_s))_$(get_number(bus_t))",
+            Transformer3W),
+        available = true,
+        primary_star_arc = Arc(; from = bus_p, to = star_bus),
+        secondary_star_arc = Arc(; from = bus_s, to = star_bus),
+        tertiary_star_arc = Arc(; from = bus_t, to = star_bus),
+        star_bus = star_bus,
+        active_power_flow_primary = 0.0,
+        reactive_power_flow_primary = 0.0,
+        active_power_flow_secondary = 0.0,
+        reactive_power_flow_secondary = 0.0,
+        active_power_flow_tertiary = 0.0,
+        reactive_power_flow_tertiary = 0.0,
+        r_primary = r_primary,
+        x_primary = x_primary,
+        r_secondary = r_secondary,
+        x_secondary = x_secondary,
+        r_tertiary = r_tertiary,
+        x_tertiary = x_tertiary,
+        rating = 1.0,
+        r_12 = r_primary + r_secondary,
+        x_12 = x_primary + x_secondary,
+        r_23 = r_secondary + r_tertiary,
+        x_23 = x_secondary + x_tertiary,
+        r_13 = r_primary + r_tertiary,
+        x_13 = x_primary + x_tertiary,
+        base_power_12 = 100.0,
+        base_power_23 = 100.0,
+        base_power_13 = 100.0,
+        available_tertiary = available_tertiary,
+    )
+    add_component!(sys, xfmr)
+    return xfmr
+end
+
+"""
     Simplified function to create and add a standard load to the system with the given parameters.
 """
 function _add_simple_zip_load!(
@@ -1373,5 +1436,84 @@ function _build_mtdc_system()
         )
         PSY.add_component!(sys, dcl)
     end
+    return sys
+end
+
+"""Two-area version of `c_sys14` (IEEE 14-bus): buses 1-5 -> "Area1", buses 6-14 ->
+"Area2". The area boundary crosses exactly three branches (Trans1: 4-9, Trans2: 5-6,
+Trans3: 4-7) — small and hand-checkable, reused by the area-interchange enrollment
+tasks (Task 4 onward)."""
+function _make_two_area_system()
+    sys = deepcopy(PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false))
+    area1 = PSY.Area(; name = "Area1")
+    area2 = PSY.Area(; name = "Area2")
+    PSY.add_component!(sys, area1)
+    PSY.add_component!(sys, area2)
+    area1_buses = Set(1:5)
+    for bus in PSY.get_components(PSY.ACBus, sys)
+        if PSY.get_number(bus) in area1_buses
+            PSY.set_area!(bus, area1)
+        else
+            PSY.set_area!(bus, area2)
+        end
+    end
+    return sys
+end
+
+"""Three-area variant of `_make_two_area_system()`: peels bus 9 alone off "Area2" into a
+new singleton "Area3", so bus 9 (a tie endpoint of Trans1, Line11, Line12, and Line16)
+has boundary degree 4 in the tie graph. Boundary branches: Trans1 (4-9, Area1/Area3),
+Trans2 (5-6, Area1/Area2), Trans3 (4-7, Area1/Area2), Line11 (9-10, Area3/Area2), Line12
+(9-14, Area3/Area2), Line16 (7-9, Area2/Area3)."""
+function _make_three_area_system()
+    sys = _make_two_area_system()
+    area3 = PSY.Area(; name = "Area3")
+    PSY.add_component!(sys, area3)
+    bus9 = PSY.get_component(PSY.ACBus, sys, "Bus 9")
+    PSY.set_area!(bus9, area3)
+    return sys
+end
+
+"""Two electrically DISCONNECTED islands (no inter-island branch), each with its own REF
+bus, built so area "Span" genuinely spans both -- exercising enrollment guard 4 (area spans
+multiple islands) through the real production path (`_bus_island_map` ->
+`_find_subnetworks_for_reference_buses`), not a fabricated `island_of` dict.
+
+Island 1: REF `bus1` ("Home1") -- line -- `bus2` ("Span", SLACK, with an in-service
+generator so it is not normalized to PQ). Island 2: REF `bus3` ("Home2") -- line --
+`bus4` ("Span", PQ with a load). Each island's line is a genuine intra-island tie
+(Home1/Span and Home2/Span respectively); "Span" owns one non-REF bus in each island, so
+`_find_subnetworks_for_reference_buses` sees two valid single-REF subnetworks and guard 4's
+`unique(island_of[ix] for ix in resolved)` for "Span" has length 2."""
+function _make_two_island_spanning_area_system()
+    sys = System(100.0)
+    home1 = PSY.Area(; name = "Home1")
+    home2 = PSY.Area(; name = "Home2")
+    span = PSY.Area(; name = "Span")
+    PSY.add_component!(sys, home1)
+    PSY.add_component!(sys, home2)
+    PSY.add_component!(sys, span)
+
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230)
+    # `ACBus(; bustype = SLACK, ...)` is auto-normalized to REF at construction time
+    # (`PowerSystems.check_bus_params`); build as PV first, then promote via the
+    # `set_bustype!` setter (mirrors this file's own `_set_slack!` idiom) to get a real
+    # SLACK bus without silently doubling up REF within island 1.
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.PV, 230)
+    PSY.set_area!(b1, home1)
+    PSY.set_area!(b2, span)
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    _add_simple_thermal_standard!(sys, b2, 0.1, 0.0)
+    _add_simple_line!(sys, b1, b2)
+    PSY.set_bustype!(b2, ACBusTypes.SLACK)
+
+    b3 = _add_simple_bus!(sys, 3, ACBusTypes.REF, 230)
+    b4 = _add_simple_bus!(sys, 4, ACBusTypes.PQ, 230)
+    PSY.set_area!(b3, home2)
+    PSY.set_area!(b4, span)
+    _add_simple_source!(sys, b3, 0.0, 0.0)
+    _add_simple_load!(sys, b4, 0.05, 0.025)
+    _add_simple_line!(sys, b3, b4)
+
     return sys
 end
