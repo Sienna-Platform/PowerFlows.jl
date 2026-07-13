@@ -118,6 +118,22 @@ end
     @test s.vset == (0.9 + 1.1) / 2
 end
 
+@testset "discrete control: per-ts store width validation" begin
+    sys = _make_tap_shunt_system()
+    data = PowerFlowData(ACPolarPowerFlow(), sys)
+    # Default n_time_steps=1: matches single-ts data, rejects any other horizon.
+    set = PowerFlows.build_controlled_device_set(
+        sys,
+        PF.get_bus_lookup(data),
+        data.power_network_matrix,
+    )
+    @test PowerFlows.store_time_steps(set) == 1
+    @test PowerFlows.validate_device_store_width(set, 1) === nothing
+    @test_throws ErrorException PowerFlows.validate_device_store_width(set, 3)
+    # No discrete control enrolled: validation is a dispatched no-op.
+    @test PowerFlows.validate_device_store_width(nothing, 3) === nothing
+end
+
 @testset "discrete control: MODSW gating" begin
     function _build(mode)
         sys = _make_tap_shunt_system()
@@ -772,9 +788,10 @@ end
         control_discrete_devices = true)
     @test_throws ArgumentError ACMixedPowerFlow{LevenbergMarquardtACPowerFlow}(;
         control_discrete_devices = true)
-    # Device state does not track per-time-step baselines yet.
-    @test_throws ArgumentError ACPolarPowerFlow(;
-        control_discrete_devices = true, time_steps = 2)
+    # Construction is permissive: every device family supports time_steps>1 (taps via
+    # reset-to-baseline), so a multi-step solver builds without inspecting the device mix.
+    @test ACPolarPowerFlow(;
+        control_discrete_devices = true, time_steps = 2) isa ACPolarPowerFlow
     # NR/TR with a single time step construct fine.
     @test ACPolarPowerFlow{TrustRegionACPowerFlow}(;
         control_discrete_devices = true) isa ACPolarPowerFlow
@@ -783,6 +800,20 @@ end
     lcc_sys, _ = simple_lcc_system()
     @test_throws ArgumentError PowerFlowData(
         ACPolarPowerFlow(; control_discrete_devices = true), lcc_sys)
+    # Tap-controlled transformers support multiple time steps via the reset-to-baseline
+    # design (each step resets the shared Y-bus to the tap's enrollment value before
+    # regulating): construction succeeds and the solve converges.
+    tap_sys = _make_tap_shunt_system()
+    tap_data = PowerFlowData(
+        ACPolarPowerFlow(; control_discrete_devices = true, time_steps = 2), tap_sys)
+    @test tap_data isa PowerFlowData
+    @test solve_power_flow!(tap_data)
+    # A shunt-ONLY (no taps) set supports multiple time steps and does NOT throw.
+    shunt_sys = _make_multiperiod_shunt_system()
+    @test PowerFlowData(
+        ACPolarPowerFlow(; control_discrete_devices = true, time_steps = 2),
+        shunt_sys,
+    ) isa PowerFlowData
 end
 
 @testset "discrete control: FACTS enrolls without a flag; taps/shunts unaffected" begin
@@ -876,8 +907,8 @@ end
     df_off = PowerFlows.get_controlled_device_results(data_off)
     @test size(df_off, 1) == 0
     @test names(df_off) ==
-          ["family", "name", "lower_limit", "upper_limit", "initial", "final",
-        "delivered_q_mvar", "saturated"]
+          ["family", "name", "time_step", "lower_limit", "upper_limit", "initial",
+        "final", "delivered_q_mvar", "saturated"]
 end
 
 @testset "discrete control: shunt deadband semantics" begin
