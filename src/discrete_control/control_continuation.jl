@@ -853,8 +853,8 @@ function _control_continuation!(
     for d in set.facts
         classify_facts_saturation!(d, measured_value(d, data, ts))
     end
-    # Reported branch flows are computed from the arc-admittance matrices AFTER the
-    # time-step loop (`solve_power_flow!`); bring the moved branch devices' rows in
+    # Reported branch flows are computed from the arc-admittance matrices right after
+    # this time step in `solve_power_flow!`; bring the moved branch devices' rows in
     # line with their final parameters so flows match the solved network.
     _sync_arc_admittances!(data, set)
     return ok
@@ -965,16 +965,21 @@ end
 """
     get_controlled_device_results(data) -> DataFrames.DataFrame
 
-Solved discrete-control device settings: one row per enrolled device with its family,
-name, control band, enrollment-time (`initial`) and solved (`final`) parameter. The
-solved settings are written back to the `PSY.System` by
-[`solve_and_store_power_flow!`](@ref) under active controls, and applied to PSS/E
-exports by [`update_exporter!`](@ref). Returns an empty frame when the data was built
-without discrete control.
+Solved discrete-control device settings: one row per enrolled device per time step, with
+its family, name, time step, control band, enrollment-time (`initial`) and solved
+(`final`) parameter for that step. Every family (including taps) reports its own
+per-time-step state. For a single-time-step solve (`time_steps == 1`), the solved
+settings are also written back to
+the `PSY.System` by [`solve_and_store_power_flow!`](@ref) under active controls, and
+applied to PSS/E exports by [`update_exporter!`](@ref) — see
+[`write_device_settings!`](@ref). For `time_steps > 1`, a PSY component cannot hold a
+per-time-step schedule, so this DataFrame is the only place the full per-step results
+are available. Returns an empty frame when the data was built without discrete control.
 """
 function get_controlled_device_results(data)
     family = String[]
     name = String[]
+    time_step = Int[]
     lower = Float64[]
     upper = Float64[]
     initial = Float64[]
@@ -983,27 +988,31 @@ function get_controlled_device_results(data)
     saturated = Bool[]
     set = get_controlled_devices(data)
     if !isnothing(set)
-        for (fam, devices) in (
-            ("TapTransformer", set.taps),
-            ("SwitchedAdmittance", set.shunts),
-            ("FACTSControlDevice", set.facts),
-        )
-            for d in devices
-                lo, hi = parameter_limits(d)
-                push!(family, fam)
-                push!(name, d.name)
-                push!(lower, lo)
-                push!(upper, hi)
-                push!(initial, d.initial)
-                push!(final, d.current)
-                push!(delivered_q_mvar, result_delivered_q_mvar(d, data, 1))
-                push!(saturated, result_saturated(d))
+        for ts in 1:get_time_steps(data)
+            for (fam, devices) in (
+                ("TapTransformer", set.taps),
+                ("SwitchedAdmittance", set.shunts),
+                ("FACTSControlDevice", set.facts),
+            )
+                for (i, d) in enumerate(devices)
+                    lo, hi = stored_parameter_limits(set, d, i, ts)
+                    push!(family, fam)
+                    push!(name, d.name)
+                    push!(time_step, ts)
+                    push!(lower, lo)
+                    push!(upper, hi)
+                    push!(initial, d.initial)
+                    push!(final, stored_current(set, d, i, ts))
+                    push!(delivered_q_mvar, stored_delivered_q_mvar(set, d, i, data, ts))
+                    push!(saturated, stored_saturated(set, d, i, ts))
+                end
             end
         end
     end
     return DataFrames.DataFrame(
         "family" => family,
         "name" => name,
+        "time_step" => time_step,
         "lower_limit" => lower,
         "upper_limit" => upper,
         "initial" => initial,

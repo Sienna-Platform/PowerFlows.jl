@@ -94,10 +94,21 @@ determined): PSS/E-parsed (BINIT) components take the solved total straight into
 status on re-enrollment. A never-snapped API-built device (continuous, or held in
 its deadband the whole solve) whose `block_n` cannot reconstruct `d.current` falls
 back to the BINIT write (solved total into `Y`, `initial_status` zeroed).
+
+No-op for `time_steps > 1`: a PSY component holds a single scalar setting, but a
+multiperiod solve produces one setting per time step, so there is no single value to
+write back without silently discarding all but the last-processed step. Per-time-step
+results remain available via [`get_controlled_device_results`](@ref).
 """
 function write_device_settings!(system::PSY.System, data)
     set = get_controlled_devices(data)
     isnothing(set) && return
+    if get_time_steps(data) > 1
+        @warn "write_device_settings!: skipped — a PSY component holds a single scalar and \
+            cannot round-trip a per-time-step schedule. Use get_controlled_device_results \
+            for per-time-step device settings." maxlog = 1
+        return
+    end
     for d in set.taps
         tx = PSY.get_component(PSY.TapTransformer, system, d.name)
         if isnothing(tx)
@@ -207,13 +218,11 @@ The power flow solver settings are taken from the `ACPowerFlow` object stored in
 This function solves the AC power flow problem for each time step specified in `data`.
 It preallocates memory for the results and iterates over the sorted time steps.
     For each time step, it calls the `_ac_power_flow` function to solve the power flow equations and updates the `data` object with the results.
-    If the power flow converges, it updates the active and reactive power injections, as well as the voltage magnitudes and angles for different bus types (REF, PV, PQ).
+    If the power flow converges, it updates the active and reactive power injections, as well as the voltage magnitudes and angles for different bus types (REF, PV, PQ), and calculates that time step's branch power flows.
     If the power flow does not converge, it sets the corresponding entries in `data` to `NaN`.
-    Finally, it calculates the branch power flows and updates the `data` object.
 
 # Notes
-- If the grid topology changes (e.g., tap positions of transformers or in-service status of branches), the admittance matrices `Yft` and `Ytf` must be updated.
-- If `Yft` and `Ytf` change between time steps, the branch flow calculations must be moved inside the loop.
+- If the grid topology changes (e.g., tap positions of transformers or in-service status of branches), the admittance matrices `Yft` and `Ytf` must be updated before that time step's branch flows are computed.
 
 # Examples
 ```julia
@@ -253,9 +262,13 @@ function solve_power_flow!(
     tb_ix = [bus_lookup[bus_no] for bus_no in last.(arcs)]   # to bus indices
     @assert length(fb_ix) == length(arcs)
 
-    for time_step in sorted_time_steps
+    cd = get_controlled_devices(data)
+    validate_device_store_width(cd, get_time_steps(data))
+    for (ts_pos, time_step) in enumerate(sorted_time_steps)
+        load_device_state!(cd, data, time_step)
         converged = _ac_power_flow(data, pf, time_step; merged_kwargs...)
-        ts_converged[time_step] = converged
+        save_device_state!(cd, data, time_step)
+        ts_converged[ts_pos] = converged
         converged && _warn_vsc_limit_violations(data, time_step)
 
         if OVERWRITE_NON_CONVERGED && !converged
@@ -291,28 +304,27 @@ function solve_power_flow!(
                     imag(S_inverter)
             end
         end
+
+        # Per-step branch flows (not batched after the loop) so a future per-step Yft/Ytf
+        # (e.g. varying tap positions) is used correctly.
+        # NOTE PNM's structs use ComplexF32, while the system objects store Float64's.
+        #      so if you set the system bus angles/voltages to match these fields, then repeat
+        #      this math using the system voltages, you'll see differences in the flows, ~1e-4.
+        step_V =
+            data.bus_magnitude[:, time_step] .* exp.(1im .* data.bus_angles[:, time_step])
+        Sft = step_V[fb_ix] .* conj.(Yft.data * step_V)
+        Stf = step_V[tb_ix] .* conj.(Ytf.data * step_V)
+        data.arc_active_power_flow_from_to[:, time_step] .= real.(Sft)
+        data.arc_reactive_power_flow_from_to[:, time_step] .= imag.(Sft)
+        data.arc_active_power_flow_to_from[:, time_step] .= real.(Stf)
+        data.arc_reactive_power_flow_to_from[:, time_step] .= imag.(Stf)
+
+        _compute_arc_angle_differences_from_indices!(data, fb_ix, tb_ix, time_step)
     end
 
-    # write branch flows
-    # NOTE PNM's structs use ComplexF32, while the system objects store Float64's.
-    #      so if you set the system bus angles/voltages to match these fields, then repeat 
-    #      this math using the system voltages, you'll see differences in the flows, ~1e-4.
-    ts_V =
-        data.bus_magnitude[:, sorted_time_steps] .*
-        exp.(1im .* data.bus_angles[:, sorted_time_steps])
+    data.converged[sorted_time_steps] .= ts_converged
 
-    Sft = ts_V[fb_ix, :] .* conj.(Yft.data * ts_V)
-    Stf = ts_V[tb_ix, :] .* conj.(Ytf.data * ts_V)
-    data.arc_active_power_flow_from_to .= real.(Sft)
-    data.arc_reactive_power_flow_from_to .= imag.(Sft)
-    data.arc_active_power_flow_to_from .= real.(Stf)
-    data.arc_reactive_power_flow_to_from .= imag.(Stf)
-
-    _compute_arc_angle_differences_from_indices!(data, fb_ix, tb_ix, sorted_time_steps)
-
-    data.converged .= ts_converged
-
-    return all(data.converged)
+    return all(ts_converged)
 end
 
 function _solve_with_q_limits!(
