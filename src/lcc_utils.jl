@@ -10,7 +10,15 @@ function _calculate_ϕ_lcc(
     x_t::Float64,
     Vm::Float64,
 )::Float64
-    raw = sign(I_dc) * (cos(α) - (x_t * I_dc) / (sqrt(2) * Vm * t))
+    # Commutation-drop term uses abs(I_dc): the drop x_t·|I_dc| always REDUCES the
+    # ideal DC voltage, on both sides. The inverter is called with I_dc = −i_dc, so
+    # sign(I_dc) flips only the outer convention (cos ϕ_i < 0), giving
+    # cos ϕ_i = −(cos γ − commutation). Using the signed I_dc in the commutation term
+    # instead would add the drop on the inverter (cos ϕ_i = −(cos γ + commutation)),
+    # which is non-physical and drives ϕ_i past π for any realistic small γ.
+    # The matching inverter derivatives carry this sign too: the first-derivative helpers via
+    # −xtr_i at their call sites, and the second-derivative _d2Q_lcc via its σ (see there).
+    raw = sign(I_dc) * (cos(α) - (x_t * abs(I_dc)) / (sqrt(2) * Vm * t))
     if raw < -1.0 || raw > 1.0
         @warn "LCC ϕ argument outside [-1, 1] (got $raw); clamping. \
                Derivative formulas in lcc_utils.jl are singular on this boundary \
@@ -278,7 +286,12 @@ function _d2Q_lcc(
         return (VV = 0.0, tt = 0.0, Vt = 0.0, Vα = 0.0, tα = 0.0, αα = 0.0)
     end
     KI = SQRT6_DIV_PI * I_dc
-    β = x_t * I_dc / sqrt(2)
+    # σ·x_t carries the commutation sign: the corrected inverter (σ = −1) subtracts the
+    # commutation drop, so its β-LINEAR curvature terms flip vs the rectifier form derived
+    # here (β² terms are even in β and unchanged). This is the second-derivative analogue of
+    # the −xtr_i passed to the first-derivative helpers; keying on σ keeps the fix inside
+    # this helper (the homotopy Hessian assembly needs no change).
+    β = σ * x_t * I_dc / sqrt(2)
     β² = β * β
     C = cos(ϕ)
     S² = S * S
@@ -522,6 +535,12 @@ function _lcc_jacobian_scalars(
     phi_i = data.lcc.inverter.phi[i, time_step]
     xtr_r = data.lcc.rectifier.transformer_reactance[i]
     xtr_i = data.lcc.inverter.transformer_reactance[i]
+    # The corrected inverter ϕ subtracts the commutation drop (cos ϕ_i = −(cos γ − comm)),
+    # so ∂ϕ_i/∂{V,t} — and every commutation-chain term in the true-ϕ dP/dQ helpers — has
+    # the opposite sign to the rectifier form the helpers assume. Each such term is linear
+    # in x_t and x_t is absent from the leading/α terms, so passing −xtr_i flips exactly the
+    # commutation-chain terms and nothing else.
+    xtr_i_deriv = -xtr_i
     cos_alpha_r = cos(alpha_r)
     sin_alpha_r = sin(alpha_r)
     cos_alpha_i = cos(alpha_i)
@@ -532,17 +551,14 @@ function _lcc_jacobian_scalars(
     common_tap_i = tap_i * SQRT6_DIV_PI * (-i_dc) * cos_alpha_i
     common_alpha_r = -common_fb * tap_r * sin_alpha_r
     common_alpha_i = -common_tb * tap_i * sin_alpha_i
-    # True-ϕ derivatives of P_lcc_{from, to} for the tail × tail block.
-    # Inverter signs:
-    #   ∂P_lcc_to/∂tap_i: the helper returns the rectifier-style formula;
-    #     for the inverter `phi_i ≈ π − α_i` makes `cos(phi_i) < 0`, so the
-    #     helper already returns the correct negative coefficient — no sign
-    #     flip needed here.
-    #   ∂P_lcc_to/∂α_i: ϕ_i convention flips `∂ϕ_i/∂α_i`, so negate the helper.
+    # True-ϕ derivatives of P_lcc_{from, to} for the tail × tail block. Inverter uses
+    # xtr_i_deriv (= −xtr_i) so the commutation-chain term carries the inverter sign; the
+    # leading `cos ϕ_i` term is x_t-free and stays correct (cos ϕ_i < 0). ∂P_lcc_to/∂α_i is
+    # x_t-free too; its ϕ_i-convention sign flip is handled by negating the α helper below.
     dP_dV_fb = _calculate_dP_dV_lcc(tap_r, i_dc, xtr_r, Vm_fb, phi_r)
-    dP_dV_tb = _calculate_dP_dV_lcc(tap_i, i_dc, xtr_i, Vm_tb, phi_i)
+    dP_dV_tb = _calculate_dP_dV_lcc(tap_i, i_dc, xtr_i_deriv, Vm_tb, phi_i)
     dP_dt_fb = _calculate_dP_dt_lcc(tap_r, i_dc, xtr_r, Vm_fb, phi_r)
-    dP_dt_tb = _calculate_dP_dt_lcc(tap_i, i_dc, xtr_i, Vm_tb, phi_i)
+    dP_dt_tb = _calculate_dP_dt_lcc(tap_i, i_dc, xtr_i_deriv, Vm_tb, phi_i)
     dP_dα_fb = _calculate_dP_dα_lcc(tap_r, i_dc, Vm_fb, alpha_r, phi_r)
     # Negated: inverter ϕ_i ≈ π − α_i flips ∂ϕ_i/∂α_i vs the helper's rectifier form (see above).
     dP_dα_tb = -_calculate_dP_dα_lcc(tap_i, i_dc, Vm_tb, alpha_i, phi_i)

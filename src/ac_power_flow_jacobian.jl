@@ -783,8 +783,10 @@ function _set_entries_for_lcc(data::ACPowerFlowData,
             _calculate_dQ_dα_lcc(s.tap_r, s.i_dc, xtr_r, Vm_fb, phi_r, alpha_r) # ∂Q_fb/∂α_fb
         Jv[idx_p_tb, idx_tap_to] = dP_dt_tb # ∂P_tb/∂t_tb
         Jv[idx_p_tb, idx_angle_to] = s.dP_dα_tb # ∂P_tb/∂α_tb
+        # Inverter dQ: −xtr_i flips the commutation-chain term to the inverter sign
+        # (see _lcc_jacobian_scalars); the leading sin ϕ_i term is x_t-free.
         Jv[idx_q_tb, idx_tap_to] =
-            _calculate_dQ_dt_lcc(s.tap_i, s.i_dc, xtr_i, Vm_tb, phi_i) # ∂Q_tb/∂t_tb
+            _calculate_dQ_dt_lcc(s.tap_i, s.i_dc, -xtr_i, Vm_tb, phi_i) # ∂Q_tb/∂t_tb
         # φ_i convention flips sign of ∂φ_i/∂α_i vs the rectifier; negate helper output.
         Jv[idx_q_tb, idx_angle_to] =
             -_calculate_dQ_dα_lcc(s.tap_i, s.i_dc, xtr_i, Vm_tb, phi_i, alpha_i) # ∂Q_tb/∂α_tb
@@ -802,7 +804,7 @@ function _set_entries_for_lcc(data::ACPowerFlowData,
         if bus_type_tb == PSY.ACBusTypes.PQ
             Jv[idx_p_tb, idx_p_tb] += dP_dV_tb # ∂P_tb/∂V_tb
             Jv[idx_q_tb, idx_p_tb] +=
-                _calculate_dQ_dV_lcc(s.tap_i, s.i_dc, xtr_i, Vm_tb, phi_i) # ∂Q_tb/∂V_tb
+                _calculate_dQ_dV_lcc(s.tap_i, s.i_dc, -xtr_i, Vm_tb, phi_i) # ∂Q_tb/∂V_tb (−xtr_i: inverter commutation sign)
             # ∂F_t_fb/∂V_tb is nonzero only with an inverter-side set point.
             Jv[idx_tap_from, idx_p_tb] = s.d_Ft_fb_d_V_tb # ∂F_t_fb/∂V_tb
             Jv[idx_tap_to, idx_p_tb] = dP_dV_tb # ∂F_t_tb/∂V_tb
