@@ -974,6 +974,7 @@ empty_vsc_results() = DataFrames.DataFrame(;
     bus_from = Int[],
     bus_to = Int[],
     P_from_to = Float64[],
+    P_to_from = Float64[],
     Q_from_to = Float64[],
     Q_to_from = Float64[],
     dc_current = Float64[],
@@ -1047,6 +1048,7 @@ function vsc_results_dataframe(
                 bus_from = from_number,
                 bus_to = to_number,
                 P_from_to = sys_basepower * (-dcn.p_c[cf, time_step]),
+                P_to_from = sys_basepower * (-dcn.p_c[ct, time_step]),
                 Q_from_to = sys_basepower * dcn.q_c[cf, time_step],
                 Q_to_from = sys_basepower * dcn.q_c[ct, time_step],
                 dc_current = -_vsc_pdc(dcn, cf, Vm_from, time_step) / Vdc_from,
@@ -1240,6 +1242,48 @@ function lcc_results_dataframe(
         Q_losses = sys_basepower .* (Q_from_to .+ Q_to_from),
     )
     return lcc_df
+end
+
+function _stamp_time_steps(build_frame::Function, n_time_steps::Int)
+    return reduce(
+        vcat,
+        [
+            DataFrames.insertcols!(build_frame(t), 1, :time_step => t) for
+            t in 1:n_time_steps
+        ],
+    )
+end
+
+"""
+    get_hvdc_results(sys::PSY.System, data::ACPowerFlowData)
+
+Per-time-step HVDC results from a solved AC power flow, as a NamedTuple of DataFrames:
+`lcc` ([`PowerSystems.TwoTerminalLCCLine`](@extref) lines), `vsc` (point-to-point
+[`PowerSystems.TwoTerminalVSCLine`](@extref) lines), `mtdc_converters`
+([`PowerSystems.InterconnectingConverter`](@extref)), and `mtdc_lines`
+([`PowerSystems.TModelHVDCLine`](@extref) DC branches). Each table is the corresponding
+single-time-step results frame with a `time_step` column prepended, concatenated over
+`1:get_time_steps(data)`; a family absent from the system yields an empty table. Powers are in
+MW/MVAr; voltages, currents, and taps in p.u.; angles in radians. `sys` is required because
+component names are not stored in the solved data. Symmetric to
+[`get_controlled_device_results`](@ref) for discrete-control devices.
+"""
+function get_hvdc_results(sys::PSY.System, data::ACPowerFlowData)
+    sys_basepower = PSY.get_base_power(sys)
+    dcn = get_dc_network(data)
+    nrd = PNM.get_network_reduction_data(get_power_network_matrix(data))
+    lcc_names = get_lcc_names(data, sys)
+    n = get_time_steps(data)
+    return (
+        lcc = _stamp_time_steps(
+            t -> lcc_results_dataframe(data, lcc_names, sys_basepower, t), n),
+        vsc = _stamp_time_steps(
+            t -> vsc_results_dataframe(sys, data, dcn, nrd, sys_basepower, t), n),
+        mtdc_converters = _stamp_time_steps(
+            t -> mtdc_results_dataframe(sys, data, dcn, sys_basepower, t), n),
+        mtdc_lines = _stamp_time_steps(
+            t -> mtdc_line_results_dataframe(sys, dcn, sys_basepower, t), n),
+    )
 end
 
 function _allocate_results_data(
