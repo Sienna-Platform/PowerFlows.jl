@@ -138,7 +138,8 @@ end
 
 `bus_lookup` maps PSY bus number → network index in the (possibly reduced) network;
 `reverse_bus_search_map` maps reduction-merged bus numbers to their surviving parent;
-`ybus` is the assembled `AC_Ybus_Matrix` from `data.power_network_matrix`.
+`ybus` is the assembled `AC_Ybus_Matrix` from `data.power_network_matrix`. `n_time_steps`
+sizes the returned set's per-ts shunt/FACTS state store (see `ControlledDeviceSet`).
 
 Per-device data problems (unresolvable buses, degenerate ranges, unsupported control
 modes) de-enroll the device with a `@warn` — the device stays at its current setting
@@ -148,6 +149,7 @@ function build_controlled_device_set(
     bus_lookup::Dict{Int, Int},
     ybus;
     reverse_bus_search_map::Dict{Int, Int} = Dict{Int, Int}(),
+    n_time_steps::Int = 1,
 )
     taps = ControlledTap[]
     for tx in PSY.get_available_components(PSY.TapTransformer, sys)
@@ -286,7 +288,7 @@ function build_controlled_device_set(
     facts = ControlledFACTS[]
     _enroll_facts!(facts, sys, bus_lookup, reverse_bus_search_map)
 
-    return ControlledDeviceSet(taps, shunts, facts)
+    return ControlledDeviceSet(taps, shunts, facts, n_time_steps)
 end
 
 # Continuous shunt FACTS (SVC/STATCOM) voltage control. `rating` (SHMX) bounds the SVC
