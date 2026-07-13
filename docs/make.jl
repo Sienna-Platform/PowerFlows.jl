@@ -33,6 +33,7 @@ pages = OrderedDict(
         "LCC Second Derivatives (Hessian Blocks)" => "explanation/lcc_hessian.md",
         "VSC Model Implementation" => "explanation/vsc_model.md",
         "Discrete Control via λ-Continuation" => "explanation/discrete_control.md",
+        "Area Interchange Control" => "explanation/area_interchange.md",
     ],
     "Reference" => Any[
         "Public API Reference" => "reference/api/public.md",
