@@ -79,17 +79,17 @@ function compare_systems_loosely(sys1::PSY.System, sys2::PSY.System;
         PSY.InterruptibleStandardLoad,
         PSY.Line,
         PSY.LoadZone,
-        PSY.PhaseShiftingTransformer,
-        PSY.PhaseShiftingTransformer3W,
         PSY.StandardLoad,
         PSY.SwitchedAdmittance,
-        PSY.TapTransformer,
         PSY.ThermalStandard,
-        PSY.Transformer2W,
-        PSY.Transformer3W,
+        PSY.ThreeWindingTransformer,
+        PSY.TwoWindingTransformer,
         PSY.TwoTerminalLCCLine,
         PSY.TwoTerminalVSCLine,
     ],
+    # Winding-level fields (rating/flow/control/winding_group_number/units_info) are compared
+    # by recursion into the `winding`/`*_winding` sub-structs; excludes apply per field name at
+    # every level (see `IS.compare_values`).
     # TODO when possible, don't exclude so many fields
     exclude_fields = Set([
         :ext,
@@ -98,7 +98,7 @@ function compare_systems_loosely(sys1::PSY.System, sys2::PSY.System;
         :services,
         :angle_limits,
         :winding_group_number,
-        :control_objective_primary,
+        :units_info,
     ]),
     exclude_fields_for_type = Dict(
         PSY.ThermalStandard => Set([
@@ -116,21 +116,16 @@ function compare_systems_loosely(sys1::PSY.System, sys2::PSY.System;
             :active_power_flow,
             :reactive_power_flow,
         ]),
-        PSY.TapTransformer => Set([
+        PSY.TwoWindingTransformer => Set([
             :active_power_flow,
             :reactive_power_flow,
         ]),
-        PSY.Transformer2W => Set([
-            :active_power_flow,
-            :reactive_power_flow,
-        ]),
-        PSY.Transformer3W => Set([
+        PSY.ThreeWindingTransformer => Set([
             :active_power_flow,
             :reactive_power_flow,
             :rating,  # TODO why don't ratings match?
-            :rating_primary,
-            :rating_secondary,
-            :rating_tertiary,
+            :rating_b,
+            :rating_c,
         ]),
     ),
     generator_comparison_fns = [  # TODO rating
@@ -455,13 +450,11 @@ end
     end
     isnothing(sys) && return
 
-    undefined_obj =
-        PSY.TransformerControlObjectiveModule.TransformerControlObjective.UNDEFINED
-    tap_transformers = collect(PSY.get_components(PSY.TapTransformer, sys))
+    tap_transformers = collect(PSY.get_components(PSY.TwoWindingTransformer, sys))
     target_tap_idx = findfirst(
-        t ->
-            PSY.get_control_objective(t) == undefined_obj &&
-                !isapprox(PSY.get_tap(t), 1.0),
+        t -> let w = PSY.get_winding(t)
+            isnothing(PSY.get_control(w)) && !isapprox(PSY.get_tap(w), 1.0)
+        end,
         tap_transformers,
     )
     @test !isnothing(target_tap_idx)
@@ -609,6 +602,393 @@ end
 
     md = JSON3.read(metadata_path, Dict)
     @test isempty(md["branch_name_mapping"])
+end
+
+# An uncontrolled unity-tap zero-shift TwoWindingTransformer is a plain series branch and must
+# export as a non-transformer branch record whose B is the total charging: the magnetizing
+# susceptance sits entirely on the primary side, PSS/E splits B half to each end, so writing
+# imag(magnetizing_shunt) * 2 makes the from-side value round-trip.
+@testset "PSSE Exporter: uncontrolled unity-tap 2W transformer exports as line" begin
+    mag_b = 0.02
+    sys = System(100.0)
+    b1 = ACBus(; number = 1, name = "b1", available = true, bustype = ACBusTypes.REF,
+        angle = 0.0, magnitude = 1.0, voltage_limits = (0.0, 2.0), base_voltage = 138.0,
+    )
+    b2 = ACBus(; number = 2, name = "b2", available = true, bustype = ACBusTypes.PV,
+        angle = 0.0, magnitude = 1.0, voltage_limits = (0.0, 2.0), base_voltage = 138.0,
+    )
+    add_component!(sys, b1)
+    add_component!(sys, b2)
+    t = PSY.TwoWindingTransformer(nothing)
+    PSY.set_name!(t, "T1")
+    w = PSY.get_winding(t)
+    PSY.set_arc!(w, Arc(b1, b2))
+    PSY.set_rating!(w, 1.0 * PSY.DU)
+    PSY.set_base_voltage!(w, 138.0)
+    PSY.set_r!(t, 0.01 * PSY.DU)
+    PSY.set_x!(t, 0.1 * PSY.DU)
+    PSY.set_magnetizing_shunt!(t, (0.0 + mag_b * im) * PSY.DU)
+    add_component!(sys, t)
+
+    # Precondition: the transformer matches the export-as-line predicate.
+    @test isnothing(PSY.get_control(w))
+    @test PSY.get_tap(w) == 1.0
+    @test iszero(PSY.get_α(w))
+
+    export_location = joinpath(test_psse_export_dir, "v33", "unity_tap_2w_as_line")
+    exporter = PSSEExporter(sys, :v33, export_location; overwrite = true)
+    write_export(exporter, "line_export"; overwrite = true)
+    raw_path, metadata_path =
+        get_psse_export_paths(joinpath(export_location, "line_export"))
+    @test isfile(raw_path)
+    @test isfile(metadata_path)
+
+    # (a) The transformer lands in the branch section, not Transformer Data.
+    md = JSON3.read(metadata_path, Dict)
+    @test isempty(md["transformer_ckt_mapping"])
+    @test md["branch_name_mapping"] == Dict("1-2_T1" => "T1")
+
+    # (b) The written B is the doubled magnetizing susceptance.
+    raw_lines = readlines(raw_path)
+    record_idx = findfirst(l -> startswith(l, "1, 2, 'T1'"), raw_lines)
+    @test !isnothing(record_idx)
+    isnothing(record_idx) && return
+    fields = strip.(split(raw_lines[record_idx], ","))
+    @test parse(Float64, fields[6]) ≈ mag_b * 2
+
+    # Re-parsing with PFFP recovers the primary-side shunt on the from end (B split in half),
+    # exercising the CW/CZ/CM-free branch-path round-trip.
+    sys2 = with_logger(SimpleLogger(Error)) do
+        make_system(PFP.PowerModelsData(raw_path); runchecks = false)
+    end
+    @test isempty(PSY.get_components(PSY.TwoWindingTransformer, sys2))
+    reparsed = only(PSY.get_components(PSY.Line, sys2))
+    @test PSY.get_r(reparsed, PSY.SU) ≈ 0.01
+    @test PSY.get_x(reparsed, PSY.SU) ≈ 0.1
+    @test PSY.get_b(reparsed, PSY.SU).from ≈ mag_b
+    @test PSY.get_b(reparsed, PSY.SU).to ≈ mag_b
+end
+
+# For a transformer with no ext WINDV keys the WINDV defaults must encode the winding tap:
+# an off-nominal tap exports in the CW = 1 pu form (WINDV1 = tap, WINDV2 = 1), while a
+# unity-tap transformer keeps the kV reconstruction (CW = 2 when the winding bases match
+# the bus bases).
+@testset "PSSE Exporter: ext-less 2W WINDV defaults encode the winding tap" begin
+    tap_val = 1.03
+    sys = System(100.0)
+    buses = [
+        ACBus(; number = n, name = "b$n", available = true,
+            bustype = n == 1 ? ACBusTypes.REF : ACBusTypes.PV,
+            angle = 0.0, magnitude = 1.0, voltage_limits = (0.0, 2.0),
+            base_voltage = 138.0,
+        ) for n in 1:4
+    ]
+    foreach(b -> add_component!(sys, b), buses)
+
+    # Off-nominal tap, no control, no ext: must not export as effective unity.
+    t_tap = PSY.TwoWindingTransformer(nothing)
+    PSY.set_name!(t_tap, "TAP")
+    w_tap = PSY.get_winding(t_tap)
+    PSY.set_arc!(w_tap, Arc(buses[1], buses[2]))
+    PSY.set_tap!(w_tap, tap_val)
+    PSY.set_available!(w_tap, true)
+    PSY.set_rating!(w_tap, 1.0 * PSY.DU)
+    PSY.set_base_voltage!(w_tap, 138.0)
+    PSY.set_base_voltage_secondary!(t_tap, 138.0)
+    PSY.set_x!(t_tap, 0.05 * PSY.DU)
+    add_component!(sys, t_tap)
+
+    # Unity tap with a FIXED control (stays a transformer record): kV reconstruction,
+    # CW = 2. A voltage-controlling objective would be inconsistent with pu limits under
+    # CW = 2 (PSS/E RMA/RMI are then in kV), so FIXED is the self-consistent choice here.
+    t_unity = PSY.TwoWindingTransformer(nothing)
+    t_unity.name = "UNITY"
+    w_unity = PSY.get_winding(t_unity)
+    PSY.set_arc!(w_unity, Arc(buses[3], buses[4]))
+    PSY.set_control!(
+        w_unity,
+        PSY.TransformerControl(;
+            objective = PSY.TransformerControlObjective.FIXED,
+            regulated_bus_number = 4,
+            limits = (min = 0.9, max = 1.1),
+            controlled_quantity_limits = (min = 0.95, max = 1.05),
+            number_of_tap_positions = 33,
+        ),
+    )
+    PSY.set_available!(w_unity, true)
+    PSY.set_rating!(w_unity, 1.0 * PSY.DU)
+    PSY.set_base_voltage!(w_unity, 138.0)
+    PSY.set_base_voltage_secondary!(t_unity, 138.0)
+    PSY.set_x!(t_unity, 0.05 * PSY.DU)
+    add_component!(sys, t_unity)
+
+    export_location = joinpath(test_psse_export_dir, "v33", "extless_2w_windv")
+    exporter = PSSEExporter(sys, :v33, export_location; overwrite = true)
+    write_export(exporter, "windv"; overwrite = true)
+    raw_path, _ = get_psse_export_paths(joinpath(export_location, "windv"))
+    raw_lines = readlines(raw_path)
+
+    # Record 1 fields: I, J, K, CKT, CW, CZ, CM, ...; record 3 starts with WINDV1;
+    # record 4 starts with WINDV2.
+    tap_rec1 = findfirst(l -> startswith(l, "1, 2, 0, "), raw_lines)
+    @test !isnothing(tap_rec1)
+    isnothing(tap_rec1) && return
+    tap_fields1 = strip.(split(raw_lines[tap_rec1], ","))
+    @test tap_fields1[5] == "1"
+    tap_fields3 = strip.(split(raw_lines[tap_rec1 + 2], ","))
+    @test parse(Float64, tap_fields3[1]) == tap_val
+    tap_fields4 = strip.(split(raw_lines[tap_rec1 + 3], ","))
+    @test parse(Float64, tap_fields4[1]) == 1.0
+
+    unity_rec1 = findfirst(l -> startswith(l, "3, 4, 0, "), raw_lines)
+    @test !isnothing(unity_rec1)
+    isnothing(unity_rec1) && return
+    unity_fields1 = strip.(split(raw_lines[unity_rec1], ","))
+    @test unity_fields1[5] == "2"
+    unity_fields3 = strip.(split(raw_lines[unity_rec1 + 2], ","))
+    @test parse(Float64, unity_fields3[1]) == 138.0
+    unity_fields4 = strip.(split(raw_lines[unity_rec1 + 3], ","))
+    @test parse(Float64, unity_fields4[1]) == 138.0
+
+    sys2 = with_logger(SimpleLogger(Error)) do
+        make_system(PFP.PowerModelsData(raw_path); runchecks = false)
+    end
+    taps_by_from_bus = Dict(
+        PSY.get_number(PSY.get_from_bus(t)) => PSY.get_tap(PSY.get_winding(t))
+        for t in PSY.get_components(PSY.TwoWindingTransformer, sys2)
+    )
+    @test taps_by_from_bus[1] ≈ tap_val
+    @test taps_by_from_bus[3] ≈ 1.0
+end
+
+"""Per-winding COD/CONT/RMA/RMI/VMA/VMI/NTP from a `PowerFlowFileParser` `import_all`
+parse's raw branch/`3w_transformer` entry, for winding `suffix`."""
+_control_block(v::Dict, suffix::Int) = (
+    COD = v["COD$suffix"], CONT = v["CONT$suffix"], RMA = v["RMA$suffix"],
+    RMI = v["RMI$suffix"], VMA = v["VMA$suffix"], VMI = v["VMI$suffix"],
+    NTP = v["NTP$suffix"],
+)
+
+"""Same per-winding control block, read off a `PSY.TransformerControl`."""
+_control_block(c::PSY.TransformerControl) = (
+    COD = PSY.get_objective(c).value, CONT = PSY.get_regulated_bus_number(c),
+    RMA = PSY.get_limits(c).max, RMI = PSY.get_limits(c).min,
+    VMA = PSY.get_controlled_quantity_limits(c).max,
+    VMI = PSY.get_controlled_quantity_limits(c).min,
+    NTP = PSY.get_number_of_tap_positions(c),
+)
+
+function _two_winding_control_blocks(data::Dict)
+    entries = Dict{Tuple{Int, Int}, NamedTuple}()
+    for (_, v) in data["branch"]
+        get(v, "transformer", false) || continue
+        entries[(v["f_bus"], v["t_bus"])] = _control_block(v, 1)
+    end
+    return entries
+end
+
+function _three_winding_control_blocks(data::Dict)
+    entries = Dict{Tuple{Int, Int, Int}, NTuple{3, NamedTuple}}()
+    for (_, v) in data["3w_transformer"]
+        entries[(v["i"], v["j"], v["k"])] =
+            Tuple(_control_block(v, suffix) for suffix in 1:3)
+    end
+    return entries
+end
+
+# Proves the per-winding transformer control fields survive raw → System → export → raw
+# unchanged. `pti_case14_with_pst3w_sys` carries both 2W and 3W PSSE-parsed transformers
+# with real (non-UNDEFINED) control blocks; this asserts the first-class control keys,
+# read off the typed `TransformerControl` and off the exported-then-reparsed raw, both
+# equal the values in the ORIGINAL raw file, key by key.
+@testset "PSSE Exporter: typed-control round-trip (COD/CONT/RMA/RMI/VMA/VMI/NTP)" begin
+    sys = load_test_system("pti_case14_with_pst3w_sys")
+    isnothing(sys) && return
+
+    descriptor = PSB.get_system_descriptor(
+        PSB.PSSEParsingTestSystems,
+        PSB.SystemCatalog(),
+        "pti_case14_with_pst3w_sys",
+    )
+    original = PFP.parse_file(
+        PSB.get_raw_data(descriptor);
+        import_all = true,
+        validate = false,
+    )
+    orig_2w = _two_winding_control_blocks(original)
+    orig_3w = _three_winding_control_blocks(original)
+    @test !isempty(orig_2w)
+    @test !isempty(orig_3w)
+
+    # Leg 1: raw → PSY typed control. Every PSSE-parsed winding carries a real
+    # `TransformerControl` (never `nothing`, the UNDEFINED-sentinel analog).
+    for t in PSY.get_components(PSY.TwoWindingTransformer, sys)
+        w = PSY.get_winding(t)
+        arc = PSY.get_arc(w)
+        bus_tuple = (PSY.get_number(PSY.get_from(arc)), PSY.get_number(PSY.get_to(arc)))
+        haskey(orig_2w, bus_tuple) || continue
+        c = PSY.get_control(w)
+        @test !isnothing(c)
+        isnothing(c) && continue
+        @test _control_block(c) == orig_2w[bus_tuple]
+    end
+    for t in PSY.get_components(PSY.ThreeWindingTransformer, sys)
+        windings = PSY.get_windings(t)
+        bus_tuple = Tuple(PSY.get_number(PSY.get_from(PSY.get_arc(w))) for w in windings)
+        haskey(orig_3w, bus_tuple) || continue
+        for (w, expected) in zip(windings, orig_3w[bus_tuple])
+            c = PSY.get_control(w)
+            @test !isnothing(c)
+            isnothing(c) && continue
+            @test _control_block(c) == expected
+        end
+    end
+
+    # Leg 2: PSY → export → raw. Re-parsing the exported file must recover the same
+    # per-winding control blocks as the original raw.
+    export_location = joinpath(test_psse_export_dir, "v33", "pst3w_control_roundtrip")
+    exporter = PSSEExporter(sys, :v33, export_location; overwrite = true)
+    write_export(exporter, "roundtrip"; overwrite = true)
+    raw_path, metadata_path =
+        get_psse_export_paths(joinpath(export_location, "roundtrip"))
+    @test isfile(raw_path)
+    reexported = PFP.parse_file(raw_path; import_all = true, validate = false)
+    reexp_2w = _two_winding_control_blocks(reexported)
+    reexp_3w = _three_winding_control_blocks(reexported)
+
+    @test Set(keys(orig_2w)) == Set(keys(reexp_2w))
+    for (bus_tuple, expected) in orig_2w
+        @test reexp_2w[bus_tuple] == expected
+    end
+    @test Set(keys(orig_3w)) == Set(keys(reexp_3w))
+    for (bus_tuple, expected) in orig_3w
+        @test reexp_3w[bus_tuple] == expected
+    end
+
+    # Leg 3: mutate ONE winding's control in-memory to pairwise-distinct non-default
+    # values and assert each exported key reflects the mutation, with the sibling
+    # windings untouched. The fixture's all-alike control blocks cannot distinguish
+    # RMA from VMA or one winding from another; these values can.
+    t3w = first(PSY.get_components(PSY.ThreeWindingTransformer, sys))
+    mutated_bus_tuple =
+        Tuple(PSY.get_number(PSY.get_from(PSY.get_arc(w))) for w in PSY.get_windings(t3w))
+    other_bus = mutated_bus_tuple[3]
+    mutated = PSY.TransformerControl(;
+        objective = PSY.TransformerControlObjective.VOLTAGE,
+        regulated_bus_number = other_bus,
+        limits = (min = 0.93, max = 1.07),
+        controlled_quantity_limits = (min = 0.96, max = 1.04),
+        number_of_tap_positions = 17,
+    )
+    PSY.set_control!(PSY.get_secondary_winding(t3w), mutated)
+    mut_exporter = PSSEExporter(sys, :v33, export_location; overwrite = true)
+    write_export(mut_exporter, "roundtrip_mutated"; overwrite = true)
+    mut_raw_path, _ =
+        get_psse_export_paths(joinpath(export_location, "roundtrip_mutated"))
+    mut_3w = _three_winding_control_blocks(
+        PFP.parse_file(mut_raw_path; import_all = true, validate = false),
+    )
+    @test mut_3w[mutated_bus_tuple][2] == (
+        COD = 1, CONT = other_bus, RMA = 1.07, RMI = 0.93,
+        VMA = 1.04, VMI = 0.96, NTP = 17,
+    )
+    @test mut_3w[mutated_bus_tuple][1] == orig_3w[mutated_bus_tuple][1]
+    @test mut_3w[mutated_bus_tuple][3] == orig_3w[mutated_bus_tuple][3]
+end
+
+# The VSC DC line section of the exporter reads the converter control modes off the
+# `VSCDCControlModes`/`VSCACControlModes` enum fields: MODE = 1 for AC_VOLTAGE else 2,
+# and converter TYPE = 1 on the (single) DC-voltage-regulating side, 2 on the other.
+# No fixture-built system carries a VSC record through a running export test, so this
+# builds one synthetically: two lines with mirrored control assignments cover both
+# mode combinations on both the from and to sides, and both branches of the TYPE
+# orientation logic. PFFP re-parses the section (it errors unless exactly one side
+# regulates DC voltage, which the PSS/E format requires anyway), so the assertions
+# read the re-parsed first-class fields rather than raw text. REMOT/RMPCT stay
+# ext-sourced in the exporter and are populated here because PFFP cannot parse the
+# empty-field default the exporter writes when they are absent.
+@testset "PSSE Exporter: VSC DC line converter control modes" begin
+    sys = System(100.0)
+    area = Area(; name = "1")
+    zone = LoadZone(; name = "1", peak_active_power = 0.0, peak_reactive_power = 0.0)
+    add_component!(sys, area)
+    add_component!(sys, zone)
+    function _vsc_test_bus!(sys, n, bustype)
+        b = ACBus(; number = n, name = "b$n", available = true, bustype = bustype,
+            angle = 0.0, magnitude = 1.0, voltage_limits = (0.0, 2.0),
+            base_voltage = 230.0, area = area, load_zone = zone)
+        add_component!(sys, b)
+        return b
+    end
+    b1 = _vsc_test_bus!(sys, 1, ACBusTypes.REF)
+    b2 = _vsc_test_bus!(sys, 2, ACBusTypes.PQ)
+    b3 = _vsc_test_bus!(sys, 3, ACBusTypes.PQ)
+    b4 = _vsc_test_bus!(sys, 4, ACBusTypes.PQ)
+    function _vsc_test_line(name, bf, bt; dc_from, ac_from, dc_to, ac_to)
+        TwoTerminalVSCLine(;
+            name, available = true, arc = Arc(bf, bt),
+            active_power_flow = 0.2, rating = 1.0,
+            active_power_limits_from = (min = -1.0, max = 1.0),
+            active_power_limits_to = (min = -1.0, max = 1.0),
+            dc_control_from = dc_from, ac_control_from = ac_from,
+            dc_setpoint_from = dc_from == VSCDCControlModes.DC_VOLTAGE ? 230.0 : 20.0,
+            ac_setpoint_from = 1.02,
+            dc_control_to = dc_to, ac_control_to = ac_to,
+            dc_setpoint_to = dc_to == VSCDCControlModes.DC_VOLTAGE ? 230.0 : 20.0,
+            ac_setpoint_to = 0.98,
+            rating_from = 1.0, rating_to = 1.0,
+            max_dc_current_from = 1.0, max_dc_current_to = 1.0,
+            reactive_power_limits_from = (min = -1.0, max = 1.0),
+            reactive_power_limits_to = (min = -1.0, max = 1.0),
+            ext = Dict{String, Any}("REMOT_FROM" => 0, "REMOT_TO" => 0,
+                "RMPCT_FROM" => 100.0, "RMPCT_TO" => 100.0),
+        )
+    end
+    add_component!(sys,
+        _vsc_test_line("VSC_A", b1, b2;
+            dc_from = VSCDCControlModes.DC_VOLTAGE,
+            ac_from = VSCACControlModes.AC_VOLTAGE,
+            dc_to = VSCDCControlModes.DC_POWER,
+            ac_to = VSCACControlModes.AC_REACTIVE_POWER))
+    add_component!(sys,
+        _vsc_test_line("VSC_B", b3, b4;
+            dc_from = VSCDCControlModes.DC_POWER,
+            ac_from = VSCACControlModes.AC_REACTIVE_POWER,
+            dc_to = VSCDCControlModes.DC_VOLTAGE,
+            ac_to = VSCACControlModes.AC_VOLTAGE))
+
+    export_location = joinpath(test_psse_export_dir, "v33", "vsc_control_modes")
+    exporter = PSSEExporter(sys, :v33, export_location; overwrite = true)
+    write_export(exporter, "vsc"; overwrite = true)
+    raw_path, _ = get_psse_export_paths(joinpath(export_location, "vsc"))
+    @test isfile(raw_path)
+
+    reparsed = PFP.parse_file(raw_path; import_all = true, validate = false)
+    vsclines = Dict(
+        (v["f_bus"], v["t_bus"]) => v for v in values(reparsed["vscline"])
+    )
+    @test Set(keys(vsclines)) == Set([(1, 2), (3, 4)])
+
+    # VSC_A: from regulates DC voltage and AC voltage → TYPE=1/MODE=1; to is the
+    # power-dispatching, reactive-power-controlling side → TYPE=2/MODE=2.
+    va = vsclines[(1, 2)]
+    @test va["ext"]["TYPE_FROM"] == 1
+    @test va["ext"]["MODE_FROM"] == 1
+    @test va["ext"]["TYPE_TO"] == 2
+    @test va["ext"]["MODE_TO"] == 2
+    @test va["dc_setpoint_from"] == 230.0
+    @test va["dc_setpoint_to"] == 20.0
+    @test va["ac_setpoint_from"] == 1.02
+    @test va["ac_setpoint_to"] == 0.98
+
+    # VSC_B: mirrored orientation exercises the other branch of the TYPE logic.
+    vb = vsclines[(3, 4)]
+    @test vb["ext"]["TYPE_FROM"] == 2
+    @test vb["ext"]["MODE_FROM"] == 2
+    @test vb["ext"]["TYPE_TO"] == 1
+    @test vb["ext"]["MODE_TO"] == 1
+    @test vb["dc_setpoint_from"] == 20.0
+    @test vb["dc_setpoint_to"] == 230.0
 end
 
 function test_psse_exporter_inner(

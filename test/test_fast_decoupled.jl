@@ -483,7 +483,7 @@ end
 # STEP 1 — phase-shifter gate. Closes the one WP1 coverage gap before the :decoupled loop
 # relies on B′: c_sys14 / WECC240 have NO phase shifters, so the phase-retention path
 # (|τ|=1 in B′ but phase shift retained) is otherwise untested. Build a small
-# system WITH a PhaseShiftingTransformer (constructed directly via PowerSystems) plus a
+# system WITH a phase-shifting TwoWindingTransformer (constructed directly via PowerSystems) plus a
 # FixedAdmittance shunt, and assert:
 #   (a) restamp(_recover_arc_params) ≈ original Ybus within ComplexF32 noise,
 #   (b) B′ is ASYMMETRIC (phase shifter retained) while B″ is SYMMETRIC (phase dropped).
@@ -500,20 +500,23 @@ function _phase_shifter_system()
     _add_simple_line!(sys, b1, b2, 0.01, 0.10, 0.02)
     _add_simple_line!(sys, b1, b3, 0.01, 0.12, 0.02)
     # A phase-shifting transformer between b2 and b3 (nonzero α ⇒ asymmetric B′).
-    pst = PSY.PhaseShiftingTransformer(;
-        name = "pst_2_3",
-        available = true,
-        active_power_flow = 0.0,
-        reactive_power_flow = 0.0,
+    winding = PSY.TransformerWinding(;
         arc = PSY.Arc(; from = b2, to = b3),
-        r = 0.005,
-        x = 0.08,
-        primary_shunt = 0.0,
         tap = 1.0,
         α = 0.15,           # nonzero phase shift
+        available = true,
         rating = 2.0,
+        active_power_flow = 0.0,
+        reactive_power_flow = 0.0,
         base_power = 100.0,
-        phase_angle_limits = (min = -0.7, max = 0.7),
+    )
+    pst = PSY.TwoWindingTransformer(;
+        name = "pst_2_3",
+        winding = winding,
+        r = 0.005,
+        x = 0.08,
+        magnetizing_shunt = 0.0 + 0.0im,
+        base_power = 100.0,
     )
     add_component!(sys, pst)
     # A fixed-admittance shunt at b3 so the per-bus shunt-residual path is exercised too.

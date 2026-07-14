@@ -1,6 +1,15 @@
 const SYSTEM_REIMPORT_COMPARISON_TOLERANCE = 1e-10
 const POWERFLOW_COMPARISON_TOLERANCE = 3e-4  # TODO refine -- most comparisons can be made much tighter
 
+"""Active/reactive power flow off a `PSY.Branch`, reading a `TwoWindingTransformer`'s flow
+off its winding since the parent type carries no flow fields of its own."""
+_branch_active_power_flow(br, units) = PSY.get_active_power_flow(br, units)
+_branch_active_power_flow(br::TwoWindingTransformer, units) =
+    PSY.get_active_power_flow(PSY.get_winding(br), units)
+_branch_reactive_power_flow(br, units) = PSY.get_reactive_power_flow(br, units)
+_branch_reactive_power_flow(br::TwoWindingTransformer, units) =
+    PSY.get_reactive_power_flow(PSY.get_winding(br), units)
+
 power_flow_match_fn(
     a::T,
     b::T,
@@ -394,8 +403,8 @@ function _add_simple_vsc!(
         g = 0.0,
         dc_current = 0.0,
         reactive_power_from = 0.0,
-        dc_voltage_control_from = false,
-        ac_voltage_control_from = false,
+        dc_control_from = VSCDCControlModes.DC_POWER,
+        ac_control_from = VSCACControlModes.AC_REACTIVE_POWER,
         dc_setpoint_from = 0.0,
         ac_setpoint_from = 1.0,
         converter_loss_from = LinearCurve(loss_coefficient),
@@ -405,8 +414,8 @@ function _add_simple_vsc!(
         power_factor_weighting_fraction_from = 0.0,
         voltage_limits_from = (min = 0.9, max = 1.1),
         reactive_power_to = 0.0,
-        dc_voltage_control_to = false,
-        ac_voltage_control_to = false,
+        dc_control_to = VSCDCControlModes.DC_POWER,
+        ac_control_to = VSCACControlModes.AC_REACTIVE_POWER,
         dc_setpoint_to = 0.0,
         ac_setpoint_to = 1.0,
         converter_loss_to = LinearCurve(loss_coefficient),

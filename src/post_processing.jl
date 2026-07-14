@@ -1252,7 +1252,7 @@ function write_results(
     ### non time-dependent variables
 
     buses = _get_buses(data)
-    if length(PSY.get_components(PSY.Transformer3W, sys)) > 0
+    if length(PSY.get_components(PSY.ThreeWindingTransformer, sys)) > 0
         @info "3-winding transformers included in the results export: bus-to-star flows " *
               "reported with names like 'TransformerName-primary', " *
               "'TransformerName-secondary', and 'TransformerName-tertiary'."
@@ -1329,7 +1329,7 @@ function write_results(
     # NOTE: this may be different than get_bus_numbers(sys) if there's a network reduction!
     bus_numbers = PNM.get_bus_axis(data.power_network_matrix)
 
-    if length(PSY.get_components(PSY.Transformer3W, sys)) > 0
+    if length(PSY.get_components(PSY.ThreeWindingTransformer, sys)) > 0
         @info "3-winding transformers included in the results export: bus-to-star flows " *
               "reported with names like 'TransformerName-primary', " *
               "'TransformerName-secondary', and 'TransformerName-tertiary'."

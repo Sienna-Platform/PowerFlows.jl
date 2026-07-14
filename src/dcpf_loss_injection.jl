@@ -4,21 +4,15 @@
 # Helpers to extract tap ratio and phase shift from direct branches,
 # following the same dispatch pattern as PNM._get_tap in Ybus.jl.
 _branch_tap(::PSY.ACBranch) = 1.0
-_branch_tap(br::PSY.TwoWindingTransformer) = PSY.get_tap(br)
-_branch_tap(::PSY.Transformer2W) = 1.0
+_branch_tap(br::PSY.TwoWindingTransformer) = PSY.get_tap(PSY.get_winding(br))
 
 _branch_shift(::PSY.ACBranch) = 0.0
-_branch_shift(br::PSY.PhaseShiftingTransformer) = PSY.get_α(br)
+_branch_shift(br::PSY.TwoWindingTransformer) = PSY.get_α(PSY.get_winding(br))
 
-# Helpers for three-winding transformer tap and shift.
-# Only PhaseShiftingTransformer3W windings carry tap/shift; regular Transformer3W defaults to 1.0/0.0.
-_winding_tap(w::PNM.ThreeWindingTransformerWinding{PSY.PhaseShiftingTransformer3W}) =
-    PNM.get_equivalent_tap(w)
-_winding_tap(::PNM.ThreeWindingTransformerWinding) = 1.0
-
-_winding_shift(w::PNM.ThreeWindingTransformerWinding{PSY.PhaseShiftingTransformer3W}) =
-    PNM.get_equivalent_α(w)
-_winding_shift(::PNM.ThreeWindingTransformerWinding) = 0.0
+# Helpers for three-winding transformer tap and shift, delegating to the winding
+# wrapper's own accessors.
+_winding_tap(w::PNM.ThreeWindingTransformerWinding) = PNM.get_equivalent_tap(w)
+_winding_shift(w::PNM.ThreeWindingTransformerWinding) = PNM.get_equivalent_α(w)
 
 _added_impedance_rx(z::Number) = (real(z), imag(z))
 _added_impedance_rx(z::PSY.GenericArcImpedance) = (z.r, z.x)

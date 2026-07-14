@@ -115,10 +115,8 @@ function _summation_dc_loss_factors(sys, data)
     for line in get_components(PSY.Line, sys)
         Rs[PNM.get_arc_tuple(line)] = get_r(line, PSY.SU)
     end
-    for comp_type in (PSY.TapTransformer, PSY.Transformer2W)
-        for line in get_components(comp_type, sys)
-            Rs[PNM.get_arc_tuple(line)] = PSY.get_r(line, PSY.SU)
-        end
+    for line in get_components(PSY.TwoWindingTransformer, sys)
+        Rs[PNM.get_arc_tuple(line)] = PSY.get_r(line, PSY.SU)
     end
     ptdf = data.power_network_matrix
     n_buses = length(get_components(PSY.ACBus, sys))

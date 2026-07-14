@@ -96,13 +96,14 @@ end
             else
                 results = solve_power_flow(pf, sys)
             end
-            @assert !isempty(PSY.get_components(PSY.Transformer3W, sys))
+            @assert !isempty(PSY.get_components(PSY.ThreeWindingTransformer, sys))
             if supported
                 arc_flows = results["flow_results"]
                 # Look up 3WT winding flows by bus_from/bus_to (arc endpoints).
                 temp_nrd = PNM.get_network_reduction_data(
                     PNM.Ybus(sys; network_reductions = deepcopy(v)))
-                test_trf = first(collect(PSY.get_components(PSY.Transformer3W, sys)))
+                test_trf =
+                    first(collect(PSY.get_components(PSY.ThreeWindingTransformer, sys)))
                 trf_arc_flows = zeros(ComplexF32, 3)
                 for (arc, winding) in PNM.get_transformer3W_map(temp_nrd)
                     PNM.get_transformer(winding) !== test_trf && continue
@@ -118,36 +119,20 @@ end
                 @test solve_and_store_power_flow!(pf, sys)
                 base_power = PSY.get_base_power(sys, PSY.NU)
                 # check that transformer bus-to-star entries are there.
-                @test isapprox(
-                    PSY.get_active_power_flow_primary(test_trf, PSY.SU),
-                    real(trf_arc_flows[1]) / base_power;
-                    atol = 1e-5,
-                )
-                @test isapprox(
-                    PSY.get_reactive_power_flow_primary(test_trf, PSY.SU),
-                    imag(trf_arc_flows[1]) / base_power;
-                    atol = 1e-5,
-                )
-                @test isapprox(
-                    PSY.get_active_power_flow_secondary(test_trf, PSY.SU),
-                    real(trf_arc_flows[2]) / base_power;
-                    atol = 1e-5,
-                )
-                @test isapprox(
-                    PSY.get_reactive_power_flow_secondary(test_trf, PSY.SU),
-                    imag(trf_arc_flows[2]) / base_power;
-                    atol = 1e-5,
-                )
-                @test isapprox(
-                    PSY.get_active_power_flow_tertiary(test_trf, PSY.SU),
-                    real(trf_arc_flows[3]) / base_power;
-                    atol = 1e-5,
-                )
-                @test isapprox(
-                    PSY.get_reactive_power_flow_tertiary(test_trf, PSY.SU),
-                    imag(trf_arc_flows[3]) / base_power;
-                    atol = 1e-5,
-                )
+                trf_windings = PSY.get_windings(test_trf)
+                for wnum in 1:3
+                    w = trf_windings[wnum]
+                    @test isapprox(
+                        PSY.get_active_power_flow(w, PSY.SU),
+                        real(trf_arc_flows[wnum]) / base_power;
+                        atol = 1e-5,
+                    )
+                    @test isapprox(
+                        PSY.get_reactive_power_flow(w, PSY.SU),
+                        imag(trf_arc_flows[wnum]) / base_power;
+                        atol = 1e-5,
+                    )
+                end
             else
                 @warn "Skipping testing AC post-processing with unsupported reduction $k"
             end
@@ -183,9 +168,9 @@ function compare_power_flows(
     unreduced_active_flow = unreduced.arc_active_power_flow_from_to[arc_ix, 1]
     unreduced_reactive_flow = unreduced.arc_reactive_power_flow_from_to[arc_ix, 1]
     reduced_active_flow =
-        PSY.get_active_power_flow(PSY.get_component(PSY.Branch, sys, name), PSY.SU)
+        _branch_active_power_flow(PSY.get_component(PSY.Branch, sys, name), PSY.SU)
     reduced_reactive_flow =
-        PSY.get_reactive_power_flow(PSY.get_component(PSY.Branch, sys, name), PSY.SU)
+        _branch_reactive_power_flow(PSY.get_component(PSY.Branch, sys, name), PSY.SU)
     @test isapprox(unreduced_active_flow, reduced_active_flow; atol = 1e-3)
     @test isapprox(unreduced_reactive_flow, reduced_reactive_flow; atol = 1e-3)
 end
@@ -240,8 +225,8 @@ end
         for br in branches
             @assert PNM.get_arc_tuple(br) == (from_bus_no, to_bus_no)
             total_flow +=
-                PSY.get_active_power_flow(br, PSY.SU) +
-                im * PSY.get_reactive_power_flow(br, PSY.SU)
+                _branch_active_power_flow(br, PSY.SU) +
+                im * _branch_reactive_power_flow(br, PSY.SU)
         end
         if reversed
             @test isapprox(net_from_to_from, total_flow; atol = 1e-3)

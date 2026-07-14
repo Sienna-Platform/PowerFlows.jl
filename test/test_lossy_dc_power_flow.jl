@@ -160,3 +160,28 @@ end
     solve_power_flow!(data)
     _compare_arc_flows_to_psse_csv(data, sys, psse_csv_path; atol = 1e-6, rtol = 2e-6)
 end
+
+@testset "Lossy DCLF: transformer3W_map branch of _get_arc_branch_params" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "case10_radial_series_reductions")
+    data = PowerFlowData(DCPowerFlow(; correct_bustypes = true, lossy_flows = true), sys)
+    solve_power_flow!(data)
+    @test all(data.converged)
+    @test all(isfinite, data.arc_active_power_flow_from_to)
+    @test all(isfinite, data.arc_active_power_flow_to_from)
+    @test all(isfinite, data.bus_angles)
+
+    nrd = PF.get_network_reduction_data(data)
+    transformer3W_map = PNM.get_transformer3W_map(nrd)
+    @test !isempty(transformer3W_map)
+
+    arc_ax = PF.get_arc_axis(data)
+    rs, xs, taps, shifts = PF._get_arc_branch_params(data)
+    for (arc, winding) in transformer3W_map
+        ix = findfirst(==(arc), arc_ax)
+        @test !isnothing(ix)
+        @test isapprox(rs[ix], PNM.get_equivalent_r(winding))
+        @test isapprox(xs[ix], PNM.get_equivalent_x(winding))
+        @test isapprox(taps[ix], PNM.get_equivalent_tap(winding))
+        @test isapprox(shifts[ix], PNM.get_equivalent_α(winding))
+    end
+end

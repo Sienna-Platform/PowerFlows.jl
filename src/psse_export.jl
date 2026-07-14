@@ -20,42 +20,6 @@ const WINDING_CATEGORIES = [
     (PSY.WindingCategory.TERTIARY_WINDING, "3"),
 ]
 
-# Accessor functions for each winding category
-const WINDING_ACCESSORS = Dict(
-    PSY.WindingCategory.PRIMARY_WINDING => (
-        get_base_voltage = PSY.get_base_voltage_primary,
-        get_turns_ratio = PSY.get_primary_turns_ratio,
-        get_angle = PSY.get_α_primary,
-        get_rating = PSY.get_rating_primary,
-        get_group_number = PSY.get_primary_group_number,
-    ),
-    PSY.WindingCategory.SECONDARY_WINDING => (
-        get_base_voltage = PSY.get_base_voltage_secondary,
-        get_turns_ratio = PSY.get_secondary_turns_ratio,
-        get_angle = PSY.get_α_secondary,
-        get_rating = PSY.get_rating_secondary,
-        get_group_number = PSY.get_secondary_group_number,
-    ),
-    PSY.WindingCategory.TERTIARY_WINDING => (
-        get_base_voltage = PSY.get_base_voltage_tertiary,
-        get_turns_ratio = PSY.get_tertiary_turns_ratio,
-        get_angle = PSY.get_α_tertiary,
-        get_rating = PSY.get_rating_tertiary,
-        get_group_number = PSY.get_tertiary_group_number,
-    ),
-)
-
-# Winding categories representing different types of transformer windings
-const WINDING_GROUP_NUMBER_TO_DEGREES = Dict(
-    -99 => PSSE_DEFAULT,   # UNDEFINED, export as default
-    0 => 0,              # GROUP_0: 0 Degrees
-    1 => -30,            # GROUP_1: -30 Degrees
-    5 => -150,           # GROUP_5: -150 Degrees
-    6 => 180,            # GROUP_6: 180 Degrees
-    7 => 150,            # GROUP_7: 150 Degrees
-    11 => 30,             # GROUP_11: 30 Degrees
-)
-
 # Each of the groups in the PSS/E v33 standard
 const PSSE_GROUPS = [
     "Case Identification Data",
@@ -472,10 +436,12 @@ branch_to_bus_numbers(branch::PSY.Branch) =
 function branch_to_bus_numbers(
     branch::PSY.ThreeWindingTransformer,
 )
-    p = PSY.get_number(PSY.get_from(PSY.get_primary_star_arc(branch)))
-    s = PSY.get_number(PSY.get_from(PSY.get_secondary_star_arc(branch)))
-    t = PSY.get_number(PSY.get_from(PSY.get_tertiary_star_arc(branch)))
-    return (p, s, t)
+    p, s, t = PSY.get_windings(branch)
+    return (
+        PSY.get_number(PSY.get_from(PSY.get_arc(p))),
+        PSY.get_number(PSY.get_from(PSY.get_arc(s))),
+        PSY.get_number(PSY.get_from(PSY.get_arc(t))),
+    )
 end
 
 "Throw a `NotImplementedError` if the `psse_version` is not supported"
@@ -823,10 +789,8 @@ serialize_component_ids(id_mapping::Dict{Tuple{Tuple{Int64, Int64}, String}, Str
 # Helper functions for Transformer Data export
 # ============================================================================
 
-_get_mag_defaults(t::PSY.ThreeWindingTransformer) =
-    (PSY.get_g(t, PSY.SU), PSY.get_b(t, PSY.SU))
-_get_mag_defaults(t::PSY.TwoWindingTransformer) =
-    (real(PSY.get_primary_shunt(t, PSY.SU)), imag(PSY.get_primary_shunt(t, PSY.SU)))
+_get_mag_defaults(t::Union{PSY.TwoWindingTransformer, PSY.ThreeWindingTransformer}) =
+    (real(PSY.get_magnetizing_shunt(t, PSY.SU)), imag(PSY.get_magnetizing_shunt(t, PSY.SU)))
 
 """Write the first record line for a 2-winding transformer."""
 function _write_2w_transformer_record1!(
@@ -887,49 +851,58 @@ function _write_2w_transformer_record2!(
     @fastprintdelim_unroll(io, true, R1_2, X1_2, SBASE1_2)
 end
 
-_get_2w_ang1(t::PSY.PhaseShiftingTransformer) = rad2deg(PSY.get_α(t))
-_get_2w_ang1(t::Union{PSY.Transformer2W, PSY.TapTransformer}) =
-    get(
-        WINDING_GROUP_NUMBER_TO_DEGREES,
-        PSY.get_winding_group_number(t).value,
-        PSSE_DEFAULT,
-    )
-_get_2w_ang1(::PSY.TwoWindingTransformer) = 0.0
+_get_2w_ang1(t::PSY.TwoWindingTransformer) = rad2deg(PSY.get_α(PSY.get_winding(t)))
 
-_resolve_cod1_val(
-    cod1_val::PSY.TransformerControlObjectiveModule.TransformerControlObjective,
-    transformer,
-) =
-    if cod1_val ==
-       PSY.TransformerControlObjectiveModule.TransformerControlObjective.UNDEFINED
-        get_ext_key_or_default(transformer, "COD1")
-    else
-        cod1_val.value
-    end
-_resolve_cod1_val(cod1_val, _) = cod1_val
-
-function _get_2w_cod1(
-    transformer::Union{PSY.TapTransformer, PSY.PhaseShiftingTransformer},
+# COD/CONT/RMA/RMI/VMA/VMI/NTP for one winding: read the typed `TransformerControl` when the
+# winding carries one, else fall back to the PSS/E defaults sourced from `ext` (the state a
+# data source with no control block produces). NOD/CR/CX/CNXA are never part of the typed
+# control and stay `ext`-sourced at the call site.
+function _winding_control_fields(
+    w::PSY.TransformerWinding,
+    owner::PSY.Component,
+    prefix::String,
 )
-    cod1_val = get_ext_key_or_default(
-        transformer,
-        "COD1",
-        PSY.get_control_objective(transformer),
+    c = PSY.get_control(w)
+    isnothing(c) && return (
+        COD = get_ext_key_or_default(owner, "COD$prefix"),
+        CONT = get_ext_key_or_default(owner, "CONT$prefix"),
+        RMA = get_ext_key_or_default(owner, "RMA$prefix"),
+        RMI = get_ext_key_or_default(owner, "RMI$prefix"),
+        VMA = get_ext_key_or_default(owner, "VMA$prefix"),
+        VMI = get_ext_key_or_default(owner, "VMI$prefix"),
+        NTP = _permissive_parse_int(get_ext_key_or_default(owner, "NTP$prefix")),
     )
-    return _resolve_cod1_val(cod1_val, transformer)
+    limits = PSY.get_limits(c)
+    cq_limits = PSY.get_controlled_quantity_limits(c)
+    return (
+        COD = PSY.get_objective(c).value,
+        CONT = PSY.get_regulated_bus_number(c),
+        RMA = limits.max,
+        RMI = limits.min,
+        VMA = cq_limits.max,
+        VMI = cq_limits.min,
+        NTP = PSY.get_number_of_tap_positions(c),
+    )
 end
-_get_2w_cod1(transformer::PSY.TwoWindingTransformer) =
-    get_ext_key_or_default(transformer, "COD1")
 
-_get_windv1_default(transformer::PSY.TapTransformer) = PSY.get_tap(transformer)
-_get_windv1_default(transformer::PSY.TwoWindingTransformer) =
-    PSY.get_base_voltage_primary(transformer)
+# WINDV defaults for a transformer without ext WINDV keys must encode the winding tap:
+# reconstructing winding kV (the CW = 2 form, WINDV in kV) can only express a unity ratio,
+# so an off-nominal tap uses the CW = 1 pu form — WINDV1 = tap, WINDV2 = 1. Ext-provided
+# WINDV/CW keys shadow all of these defaults.
+function _get_windv1_default(transformer::PSY.TwoWindingTransformer)
+    w = PSY.get_winding(transformer)
+    isapprox(PSY.get_tap(w), 1.0) || return PSY.get_tap(w)
+    return PSY.get_base_voltage(w)
+end
 
-_get_windv2_default(::PSY.TapTransformer) = 1.0
-_get_windv2_default(transformer::PSY.TwoWindingTransformer) =
-    PSY.get_base_voltage_secondary(transformer)
+function _get_windv2_default(transformer::PSY.TwoWindingTransformer)
+    isapprox(PSY.get_tap(PSY.get_winding(transformer)), 1.0) || return 1.0
+    return PSY.get_base_voltage_secondary(transformer)
+end
 
-function _get_cw_cz_cm_defaults(transformer::PSY.Transformer2W)
+function _get_cw_cz_cm_defaults(transformer::PSY.TwoWindingTransformer)
+    isapprox(PSY.get_tap(PSY.get_winding(transformer)), 1.0) ||
+        return (1, PSSE_DEFAULT, PSSE_DEFAULT)
     from_base_voltage = PSY.get_base_voltage(PSY.get_from(PSY.get_arc(transformer)))
     to_base_voltage = PSY.get_base_voltage(PSY.get_to(PSY.get_arc(transformer)))
     windv1 =
@@ -945,42 +918,6 @@ function _get_cw_cz_cm_defaults(transformer::PSY.Transformer2W)
 
     return (PSSE_DEFAULT, PSSE_DEFAULT, PSSE_DEFAULT)
 end
-
-function _get_cw_cz_cm_defaults(transformer::PSY.Transformer3W)
-    primary_base_voltage =
-        PSY.get_base_voltage(PSY.get_from(PSY.get_primary_star_arc(transformer)))
-    secondary_base_voltage =
-        PSY.get_base_voltage(PSY.get_from(PSY.get_secondary_star_arc(transformer)))
-    tertiary_base_voltage =
-        PSY.get_base_voltage(PSY.get_from(PSY.get_tertiary_star_arc(transformer)))
-
-    windv1 = get_ext_key_or_default(
-        transformer,
-        "WINDV1",
-        PSY.get_primary_turns_ratio(transformer),
-    )
-    windv2 = get_ext_key_or_default(
-        transformer,
-        "WINDV2",
-        PSY.get_secondary_turns_ratio(transformer),
-    )
-    windv3 = get_ext_key_or_default(
-        transformer,
-        "WINDV3",
-        PSY.get_tertiary_turns_ratio(transformer),
-    )
-
-    if windv1 isa Number && windv2 isa Number && windv3 isa Number &&
-       isapprox(windv1, primary_base_voltage) &&
-       isapprox(windv2, secondary_base_voltage) &&
-       isapprox(windv3, tertiary_base_voltage)
-        return (2, 2, 1)
-    end
-
-    return (PSSE_DEFAULT, PSSE_DEFAULT, PSSE_DEFAULT)
-end
-_get_cw_cz_cm_defaults(::PSY.TwoWindingTransformer) =
-    (PSSE_DEFAULT, PSSE_DEFAULT, PSSE_DEFAULT)
 _get_cw_cz_cm_defaults(::PSY.ThreeWindingTransformer) =
     (PSSE_DEFAULT, PSSE_DEFAULT, PSSE_DEFAULT)
 
@@ -990,6 +927,7 @@ function _write_2w_transformer_record3_winding1!(
     exporter::PSSEExporter,
     transformer::PSY.TwoWindingTransformer,
 )
+    winding = PSY.get_winding(transformer)
     WINDV1 = get_ext_key_or_default(
         transformer,
         "WINDV1",
@@ -998,20 +936,19 @@ function _write_2w_transformer_record3_winding1!(
     NOMV1 = get_ext_key_or_default(
         transformer,
         "NOMV1",
-        PSY.get_base_voltage_primary(transformer),
+        PSY.get_base_voltage(winding),
     )
 
     ANG1 = _get_2w_ang1(transformer)
-    COD1 = _get_2w_cod1(transformer)
-
-    RMA1 = get_ext_key_or_default(transformer, "RMA1")
-    RMI1 = get_ext_key_or_default(transformer, "RMI1")
-    VMA1 = get_ext_key_or_default(transformer, "VMA1")
-    VMI1 = get_ext_key_or_default(transformer, "VMI1")
-    # Set to default/actual value to integer, since by default is getting exported as float, causing an error when loaded into PSSE
-    NTP1 = _permissive_parse_int(get_ext_key_or_default(transformer, "NTP1"))
+    ctrl = _winding_control_fields(winding, transformer, "1")
+    COD1 = ctrl.COD
+    CONT1 = ctrl.CONT
+    RMA1 = ctrl.RMA
+    RMI1 = ctrl.RMI
+    VMA1 = ctrl.VMA
+    VMI1 = ctrl.VMI
+    NTP1 = ctrl.NTP
     NOD1 = get_ext_key_or_default(transformer, "NOD1")
-    CONT1 = get_ext_key_or_default(transformer, "CONT1")
 
     supp_attr = PSY.get_supplemental_attributes(transformer)
     TAB1 = !isempty(supp_attr) ? PSY.get_table_number(supp_attr[1]) : 0
@@ -1021,9 +958,9 @@ function _write_2w_transformer_record3_winding1!(
 
     if exporter.psse_version == :v35
         # Using 0.0 as default for rating exporter, since PSSEv35 does not allow blank values
-        RATA1 = _value_or_default(PSY.get_rating(transformer, PSY.NU), 0.0)
-        RATB1 = _value_or_default(PSY.get_rating_b(transformer, PSY.NU), 0.0)
-        RATC1 = _value_or_default(PSY.get_rating_c(transformer, PSY.NU), 0.0)
+        RATA1 = _value_or_default(PSY.get_rating(winding, PSY.NU), 0.0)
+        RATB1 = _value_or_default(PSY.get_rating_b(winding, PSY.NU), 0.0)
+        RATC1 = _value_or_default(PSY.get_rating_c(winding, PSY.NU), 0.0)
 
         rates_1 = [
             get_ext_key_or_default(transformer, "RATE11", RATA1),
@@ -1055,9 +992,9 @@ function _write_2w_transformer_record3_winding1!(
             CNXA1
         )
     else
-        RATA1 = _value_or_default(PSY.get_rating(transformer, PSY.NU), PSSE_DEFAULT)
-        RATB1 = _value_or_default(PSY.get_rating_b(transformer, PSY.NU), PSSE_DEFAULT)
-        RATC1 = _value_or_default(PSY.get_rating_c(transformer, PSY.NU), PSSE_DEFAULT)
+        RATA1 = _value_or_default(PSY.get_rating(winding, PSY.NU), PSSE_DEFAULT)
+        RATB1 = _value_or_default(PSY.get_rating_b(winding, PSY.NU), PSSE_DEFAULT)
+        RATC1 = _value_or_default(PSY.get_rating_c(winding, PSY.NU), PSSE_DEFAULT)
         @fastprintdelim_unroll(io, true, WINDV1, NOMV1, ANG1, RATA1,
             RATB1, RATC1, COD1, CONT1, RMA1, RMI1,
             VMA1, VMI1, NTP1, TAB1, CR1, CX1, CNXA1)
@@ -1091,13 +1028,13 @@ function _write_3w_transformer_record2!(
         get_ext_key_or_default(transformer, "R1-2", PSY.get_r_12(transformer, PSY.SU)),
     )
     X1_2 = get_ext_key_or_default(transformer, "X1-2", PSY.get_x_12(transformer, PSY.SU))
-    SBASE1_2 = PSY.get_base_power_12(transformer, PSY.NU)
+    SBASE1_2 = PSY.get_base_power_12(transformer)
     R2_3 = get_ext_key_or_default(transformer, "R2-3", PSY.get_r_23(transformer, PSY.SU))
     X2_3 = get_ext_key_or_default(transformer, "X2-3", PSY.get_x_23(transformer, PSY.SU))
-    SBAS2_3 = PSY.get_base_power_23(transformer, PSY.NU)
+    SBAS2_3 = PSY.get_base_power_23(transformer)
     R3_1 = get_ext_key_or_default(transformer, "R3-1", PSY.get_r_13(transformer, PSY.SU))
     X3_1 = get_ext_key_or_default(transformer, "X3-1", PSY.get_x_13(transformer, PSY.SU))
-    SBAS3_1 = PSY.get_base_power_13(transformer, PSY.NU)
+    SBAS3_1 = PSY.get_base_power_13(transformer)
     VMSTAR = get_ext_key_or_default(transformer, "VMSTAR")
     ANSTAR = get_ext_key_or_default(transformer, "ANSTAR")
 
@@ -1106,32 +1043,25 @@ function _write_3w_transformer_record2!(
     )
 end
 
-_get_3w_ang(acc, t::PSY.PhaseShiftingTransformer3W) =
-    _psse_round_val(rad2deg(acc.get_angle(t)))
-_get_3w_ang(acc, t::PSY.Transformer3W) =
-    get(WINDING_GROUP_NUMBER_TO_DEGREES, acc.get_group_number(t).value, PSSE_DEFAULT)
-_get_3w_ang(_, ::PSY.ThreeWindingTransformer) = 0.0
-
 """Collect winding data for a 3-winding transformer."""
 function _collect_3w_winding_data(
     exporter::PSSEExporter,
     transformer::PSY.ThreeWindingTransformer,
 )
     winding_data = Tuple[]
-    for (category, prefix) in WINDING_CATEGORIES
-        acc = WINDING_ACCESSORS[category]
+    for (w, (category, prefix)) in zip(PSY.get_windings(transformer), WINDING_CATEGORIES)
         NOMV = get_ext_key_or_default(
             transformer,
             "NOMV$prefix",
-            acc.get_base_voltage(transformer),
+            PSY.get_base_voltage(w),
         )
         WINDV = get_ext_key_or_default(
             transformer,
             "WINDV$prefix",
-            acc.get_turns_ratio(transformer),
+            PSY.get_tap(w),
         )
-        ANG = _get_3w_ang(acc, transformer)
-        RAT = acc.get_rating(transformer, PSY.NU)
+        ANG = _psse_round_val(rad2deg(PSY.get_α(w)))
+        RAT = PSY.get_rating(w, PSY.NU)
 
         if exporter.psse_version == :v35
             rates = [
@@ -1153,15 +1083,15 @@ function _collect_3w_winding_data(
             RATES = (RATA, RATB, RATC)
         end
 
-        COD = get_ext_key_or_default(transformer, "COD$prefix")
-        CONT = get_ext_key_or_default(transformer, "CONT$prefix")
+        ctrl = _winding_control_fields(w, transformer, prefix)
+        COD = ctrl.COD
+        CONT = ctrl.CONT
         NOD = get_ext_key_or_default(transformer, "NOD$prefix")
-        RMA = get_ext_key_or_default(transformer, "RMA$prefix")
-        RMI = get_ext_key_or_default(transformer, "RMI$prefix")
-        VMA = get_ext_key_or_default(transformer, "VMA$prefix")
-        VMI = get_ext_key_or_default(transformer, "VMI$prefix")
-        # Set to default/actual value to integer, since by default is getting exported as float, causing an error when loaded into PSSE
-        NTP = _permissive_parse_int(get_ext_key_or_default(transformer, "NTP$prefix"))
+        RMA = ctrl.RMA
+        RMI = ctrl.RMI
+        VMA = ctrl.VMA
+        VMI = ctrl.VMI
+        NTP = ctrl.NTP
         TAB = 0
         supp_attr = PSY.get_supplemental_attributes(transformer)
         for icd_tr in supp_attr
@@ -1772,12 +1702,18 @@ end
 
 """Calculate the STAT field for a 3-winding transformer based on per-winding availability."""
 function _calculate_3w_transformer_stat(transformer::PSY.ThreeWindingTransformer)
-    primary = PSY.get_available_primary(transformer)
-    secondary = PSY.get_available_secondary(transformer)
-    tertiary = PSY.get_available_tertiary(transformer)
-    # The STAT value is determined based on the availability of the windings
-    if (!primary && !secondary) || (!primary && !tertiary) || (!secondary && !tertiary)
+    primary, secondary, tertiary = PSY.get_available.(PSY.get_windings(transformer))
+    n_out = count(!, (primary, secondary, tertiary))
+    if n_out == 3
         return 0
+    elseif n_out == 2
+        throw(
+            ArgumentError(
+                "ThreeWindingTransformer $(PSY.get_name(transformer)) has exactly two " *
+                "windings out of service (primary=$primary, secondary=$secondary, " *
+                "tertiary=$tertiary); PSS/E STAT cannot represent two windings out.",
+            ),
+        )
     elseif !primary
         return 4
     elseif !secondary
@@ -1785,7 +1721,7 @@ function _calculate_3w_transformer_stat(transformer::PSY.ThreeWindingTransformer
     elseif !tertiary
         return 3
     else
-        return PSY.get_available(transformer) ? 1 : 0
+        return 1
     end
 end
 
@@ -1803,8 +1739,11 @@ function _write_regular_branch_record!(
     LEN = get_ext_key_or_default(branch, "LEN")
     R = PSY.get_r(branch, PSY.SU)
     X = PSY.get_x(branch, PSY.SU)
-    B = if branch isa PSY.TapTransformer
-        imag(PSY.get_primary_shunt(branch, PSY.SU)) * 2
+    B = if branch isa PSY.TwoWindingTransformer
+        # The magnetizing susceptance sits entirely on the primary side; a non-transformer
+        # branch record's B is the total charging that PSS/E splits half to each end, so the
+        # doubling makes the from-side value round-trip.
+        imag(PSY.get_magnetizing_shunt(branch, PSY.SU)) * 2
     else
         PSY.get_b(branch, PSY.SU).from + PSY.get_b(branch, PSY.SU).to
     end
@@ -1813,9 +1752,9 @@ function _write_regular_branch_record!(
     GJ = get_ext_key_or_default(branch, "GJ")
     BJ = get_ext_key_or_default(branch, "BJ")
 
-    RATEA = _value_or_default(PSY.get_rating(branch, PSY.NU), PSSE_DEFAULT)
-    RATEB = _value_or_default(PSY.get_rating_b(branch, PSY.NU), PSSE_DEFAULT)
-    RATEC = _value_or_default(PSY.get_rating_c(branch, PSY.NU), PSSE_DEFAULT)
+    RATEA = _value_or_default(_branch_export_rating(branch, PSY.NU), PSSE_DEFAULT)
+    RATEB = _value_or_default(_branch_export_rating_b(branch, PSY.NU), PSSE_DEFAULT)
+    RATEC = _value_or_default(_branch_export_rating_c(branch, PSY.NU), PSSE_DEFAULT)
     (RATEA, RATEB, RATEC) =
         (_fix_3w_transformer_rating(x) for x in (RATEA, RATEB, RATEC))
 
@@ -1877,12 +1816,25 @@ end
 _is_discrete_controlled(::PSY.DiscreteControlledACBranch) = true
 _is_discrete_controlled(::PSY.ACBranch) = false
 
-function _export_tap_transformer_as_branch(transformer::PSY.TapTransformer)
-    control_obj = PSY.get_control_objective(transformer)
-    return (
-        control_obj ==
-        PSY.TransformerControlObjectiveModule.TransformerControlObjective.UNDEFINED
-    ) && isapprox(PSY.get_tap(transformer), 1.0)
+# Rating access for the non-transformer branch writer. A `TwoWindingTransformer` exported as
+# a line carries its ratings on the winding, not the parent.
+_branch_export_rating(b::PSY.ACBranch, units) = PSY.get_rating(b, units)
+_branch_export_rating(t::PSY.TwoWindingTransformer, units) =
+    PSY.get_rating(PSY.get_winding(t), units)
+_branch_export_rating_b(b::PSY.ACBranch, units) = PSY.get_rating_b(b, units)
+_branch_export_rating_b(t::PSY.TwoWindingTransformer, units) =
+    PSY.get_rating_b(PSY.get_winding(t), units)
+_branch_export_rating_c(b::PSY.ACBranch, units) = PSY.get_rating_c(b, units)
+_branch_export_rating_c(t::PSY.TwoWindingTransformer, units) =
+    PSY.get_rating_c(PSY.get_winding(t), units)
+
+# A two-winding transformer that is uncontrolled, at unity tap, with no phase shift is a
+# plain series branch, so it is exported as a non-transformer branch.
+function _export_transformer_as_branch(transformer::PSY.TwoWindingTransformer)
+    w = PSY.get_winding(transformer)
+    return isnothing(PSY.get_control(w)) &&
+           isapprox(PSY.get_tap(w), 1.0) &&
+           iszero(PSY.get_α(w))
 end
 
 # WRITTEN TO SPEC: PSS/E 33.3/35.4 POM 5.2.1 Non-Transformer Branch Data
@@ -1900,8 +1852,8 @@ function write_to_buffers!(
         regular_branches = get_branches_with_numbers(exporter)
 
         transformer_as_branches = Tuple{PSY.ACBranch, Tuple{Int, Int}}[]
-        for transformer in PSY.get_components(PSY.TapTransformer, exporter.system)
-            if _export_tap_transformer_as_branch(transformer)
+        for transformer in PSY.get_components(PSY.TwoWindingTransformer, exporter.system)
+            if _export_transformer_as_branch(transformer)
                 bus_nums = branch_to_bus_numbers(transformer)
                 push!(transformer_as_branches, (transformer, bus_nums))
             end
@@ -2112,28 +2064,11 @@ function _psse_transformer_names(
     end
     return mapping
 end
-function _collect_control_objective!(
-    mapping::AbstractDict,
-    name::String,
-    t::Union{PSY.TapTransformer, PSY.PhaseShiftingTransformer},
-)
-    cod1 = PSY.get_control_objective(t)
-    cod1 ==
-    PSY.TransformerControlObjectiveModule.TransformerControlObjective.UNDEFINED &&
-        (mapping[name] = cod1.value)
-    return
-end
+# Control state (`control`, possibly `nothing`) and the winding group number live typed on
+# the `TransformerWinding` and serialize with the component, so there is nothing to record
+# here; `_build_transformer_metadata!` emits both mapping keys as empty dicts to keep the
+# metadata JSON schema stable.
 _collect_control_objective!(::AbstractDict, ::String, ::PSY.TwoWindingTransformer) = nothing
-
-function _collect_winding_group!(
-    mapping::AbstractDict,
-    name::String,
-    t::Union{PSY.TapTransformer, PSY.Transformer2W},
-)
-    ang1 = PSY.get_winding_group_number(t)
-    ang1 == PSY.WindingGroupNumber.UNDEFINED && (mapping[name] = ang1.value)
-    return
-end
 _collect_winding_group!(::AbstractDict, ::String, ::PSY.TwoWindingTransformer) = nothing
 
 """Build all transformer-related metadata mappings (names, control objectives, winding groups, impedance, taps)."""
@@ -2197,14 +2132,10 @@ function _load_transformer_components_and_mappings(exporter::PSSEExporter)
             collect(PSY.get_components(PSY.TwoWindingTransformer, exporter.system));
             by = branch_to_bus_numbers,
         )
-        # TapTransformers with UNDEFINED control objective and unity tap are exported as branches.
-        # Keep all others in transformer export.
-        filtered_transformers = filter(transformers) do transformer
-            if transformer isa PSY.TapTransformer
-                return !_export_tap_transformer_as_branch(transformer)
-            end
-            return true
-        end
+        # Uncontrolled unity-tap no-shift transformers are exported as non-transformer
+        # branches; keep all others in the transformer export.
+        filtered_transformers =
+            filter(t -> !_export_transformer_as_branch(t), transformers)
         [
             (transformer, branch_to_bus_numbers(transformer)) for
             transformer in filtered_transformers
@@ -2531,6 +2462,10 @@ function write_to_buffers!(
         (md["dcline_name_mapping"] = serialize_component_ids(dcline_name_mapping))
 end
 
+"""Whether a VSC DC-side control mode regulates DC voltage (droop included)."""
+_dc_voltage_controlling(mode::PSY.VSCDCControlModes) =
+    mode in (PSY.VSCDCControlModes.DC_VOLTAGE, PSY.VSCDCControlModes.DC_VOLTAGE_DROOP)
+
 """Compute VSC converter fields for one side (from or to) of a VSC DC line."""
 function _compute_vsc_converter_fields(
     exporter::PSSEExporter,
@@ -2546,7 +2481,7 @@ function _compute_vsc_converter_fields(
     TYPE = get_ext_key_or_default(vscline, "TYPE_$suffix", type_org)
 
     if side == :from
-        MODE = PSY.get_ac_voltage_control_from(vscline) ? 1 : 2
+        MODE = PSY.get_ac_control_from(vscline) == PSY.VSCACControlModes.AC_VOLTAGE ? 1 : 2
         DCSET = PSY.get_dc_setpoint_from(vscline)
         ACSET = PSY.get_ac_setpoint_from(vscline)
         converter_loss = PSY.get_converter_loss_from(vscline)
@@ -2555,7 +2490,7 @@ function _compute_vsc_converter_fields(
         PWF = PSY.get_power_factor_weighting_fraction_from(vscline)
         q_limits = PSY.get_reactive_power_limits_from(vscline, PSY.SU)
     else
-        MODE = PSY.get_ac_voltage_control_to(vscline) ? 1 : 2
+        MODE = PSY.get_ac_control_to(vscline) == PSY.VSCACControlModes.AC_VOLTAGE ? 1 : 2
         DCSET = PSY.get_dc_setpoint_to(vscline)
         ACSET = PSY.get_ac_setpoint_to(vscline)
         converter_loss = PSY.get_converter_loss_to(vscline)
@@ -2640,8 +2575,10 @@ function write_to_buffers!(
         vsc_line_name = string(split(PSY.get_name(vscline), "_")[end])
         NAME = _psse_quote_string(vsc_line_name)
         MDC = PSY.get_available(vscline) ? 1 : 0
-        if PSY.get_dc_voltage_control_from(vscline) &&
-           !PSY.get_dc_voltage_control_to(vscline)
+        dc_control_from = PSY.get_dc_control_from(vscline)
+        dc_control_to = PSY.get_dc_control_to(vscline)
+        if _dc_voltage_controlling(dc_control_from) &&
+           !_dc_voltage_controlling(dc_control_to)
             base_voltage = PSY.get_dc_setpoint_from(vscline)
         else
             base_voltage = PSY.get_dc_setpoint_to(vscline)
@@ -2656,12 +2593,12 @@ function write_to_buffers!(
         RDC = get_ext_key_or_default(vscline, "RDC", RDC_org)
 
         # Determine converter types based on DC voltage control configuration
-        if PSY.get_dc_voltage_control_from(vscline) &&
-           !PSY.get_dc_voltage_control_to(vscline)
+        if _dc_voltage_controlling(dc_control_from) &&
+           !_dc_voltage_controlling(dc_control_to)
             type1_org = 1
             type2_org = 2
-        elseif !PSY.get_dc_voltage_control_from(vscline) &&
-               PSY.get_dc_voltage_control_to(vscline)
+        elseif !_dc_voltage_controlling(dc_control_from) &&
+               _dc_voltage_controlling(dc_control_to)
             type1_org = 2
             type2_org = 1
         else

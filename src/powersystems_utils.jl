@@ -76,6 +76,13 @@ function set_power_flow!(br::PSY.ACTransmission, flow::Complex)
     return
 end
 
+function set_power_flow!(br::PSY.TwoWindingTransformer, flow::Complex)
+    w = PSY.get_winding(br)
+    PSY.set_active_power_flow!(w, real(flow) * PSY.SU)
+    PSY.set_reactive_power_flow!(w, imag(flow) * PSY.SU)
+    return
+end
+
 function set_power_flow!(br::PNM.BranchesParallel, flow::Complex)
     for segment in br
         weight = PNM.compute_parallel_multiplier(br, PSY.get_name(segment))
@@ -91,19 +98,11 @@ function set_power_flow!(br::PSY.TwoTerminalLCCLine, flow::Complex)
 end
 
 function set_power_flow!(winding::PNM.ThreeWindingTransformerWinding, flow::Complex)
-    (trf, num) = (PNM.get_transformer(winding), PNM.get_winding_number(winding))
-    if num == 1
-        PSY.set_active_power_flow_primary!(trf, real(flow) * PSY.SU)
-        PSY.set_reactive_power_flow_primary!(trf, imag(flow) * PSY.SU)
-    elseif num == 2
-        PSY.set_active_power_flow_secondary!(trf, real(flow) * PSY.SU)
-        PSY.set_reactive_power_flow_secondary!(trf, imag(flow) * PSY.SU)
-    elseif num == 3
-        PSY.set_active_power_flow_tertiary!(trf, real(flow) * PSY.SU)
-        PSY.set_reactive_power_flow_tertiary!(trf, imag(flow) * PSY.SU)
-    else
-        error("Invalid winding number: $num")
-    end
+    trf = PNM.get_transformer(winding)
+    num = PNM.get_winding_number(winding)
+    w = PSY.get_windings(trf)[num]
+    PSY.set_active_power_flow!(w, real(flow) * PSY.SU)
+    PSY.set_reactive_power_flow!(w, imag(flow) * PSY.SU)
     return
 end
 
