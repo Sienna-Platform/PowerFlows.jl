@@ -20,7 +20,10 @@ When the solve ran with `control_discrete_devices`, the solved tap ratios / shun
 phase-shifter angles are written back into the system (see [`write_device_settings!`](@ref)): the
 stored branch flows are only self-consistent with the mutated device settings, so the input
 system's controlled devices are updated to the solved values. With no controls active this is a
-no-op.
+no-op. This write-back only happens for single-period solves; for multiperiod solves
+(`time_steps > 1`) it is skipped with a warning, since a PSY component holds one scalar per
+setting and cannot round-trip a per-time-step schedule — use
+[`get_controlled_device_results`](@ref) for the per-time-step schedule instead.
 
 ## Keyword Arguments
 - `tol`: Infinite norm of residuals under which convergence is declared. Default is `1e-9`.
