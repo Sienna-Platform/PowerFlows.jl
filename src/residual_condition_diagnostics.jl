@@ -91,6 +91,19 @@ function _describe_lcc_residual_entry(data::ACPowerFlowData, tail_ix::Int)
     return "LCC $(from_no)→$(to_no) ($(_LCC_RESIDUAL_ROW_NAMES[row]))"
 end
 
+"""Describe a residual entry that falls in the area-interchange tail (1 row per
+controlled area, keyed by `tail_ix` rather than vector position so a mid-solve
+de-enrollment renumbering can't desync this from `_set_area_tail_residuals!`)."""
+function _describe_area_residual_entry(data::ACPowerFlowData, tail_ix::Int)
+    for area in data.area_interchange.areas
+        area.tail_ix == tail_ix && return "area $(area.name) (NI−PDES)"
+    end
+    error(
+        "area_interchange tail_ix=$tail_ix not found among " *
+        "$(length(data.area_interchange.areas)) controlled areas",
+    )
+end
+
 """`(bus index, 1-based row within that bus's block)` for variable-block
 formulations, from the `bus_state_offset` table."""
 function _locate_variable_block(offsets::AbstractVector, ix::Int)
@@ -99,7 +112,9 @@ function _locate_variable_block(offsets::AbstractVector, ix::Int)
 end
 
 # Formulation-aware label for the entry where ‖F‖∞ is attained. The bus block is
-# laid out first, the LCC tail last, in every formulation.
+# laid out first; the polar-only tail is `[LCC][VSC][area]` (area rows LAST, see
+# `area_tail_offset`) — rectangular/mixed never carry an area tail (area-interchange
+# control is rejected at construction for those formulations).
 function _describe_residual_entry(
     ::ACPowerFlowResidual,
     data::ACPowerFlowData,
@@ -110,6 +125,12 @@ function _describe_residual_entry(
     if ix <= n_bus_eqs
         bus_ix = div(ix - 1, 2) + 1
         return "bus $(_diag_bus_number(data, bus_ix)) ($(isodd(ix) ? "P" : "Q"))"
+    end
+    if n_controlled_areas(data) > 0
+        area_off = area_tail_offset(data, get_dc_network(data))
+        if ix > area_off
+            return _describe_area_residual_entry(data, ix - area_off)
+        end
     end
     return _describe_lcc_residual_entry(data, ix - n_bus_eqs)
 end
@@ -293,23 +314,19 @@ end
 """
     _report_area_interchange_failure(data, time_step)
 
-Terminal-failure diagnostic (design spec §6 failure signature) for embedded area
-net-interchange control. Called by the greedy relax loop
-(`_ac_power_flow_with_area_relax!`, `solve_ac_power_flow.jl`) when it exhausts the enrolled
-set without converging — the FINAL failed solve has zero WORKING controlled areas left, so
-this reports against the PRISTINE tie set instead, over every area that was ORIGINALLY
-enrolled, at the last attempted iterate's bus state (`data.bus_magnitude`/`bus_angles`, left
-in place by the failed solve — see `_finalize_formulation!`). Reports the
-largest-magnitude interchange-row residual and its area's name, so a genuine network
-non-convergence (as opposed to a since-relaxed schedule) still names where the interchange
-tail was furthest from satisfied at the point the search gave up. A no-op if area
-interchange control was never enrolled on this `data`.
+Terminal-failure diagnostic for embedded area net-interchange control, called when the
+greedy relax loop exhausts the enrolled set without converging. The WORKING set is empty
+at that point, so this reports against the PRISTINE tie/area set at the last attempted
+iterate's bus state, naming the area with the largest-magnitude interchange-row residual.
+No-op if area interchange control was never enrolled.
 """
 function _report_area_interchange_failure(data::ACPowerFlowData, time_step::Int)
     aid = data.area_interchange
     isempty(aid.pristine_areas) && return
     gaps = [
-        _area_net_interchange(aid.pristine_ties, area.tail_ix, data, time_step) - area.pdes
+        _area_net_interchange(
+            aid.pristine_ties, aid.pristine_dc_ties, area.tail_ix, data, time_step,
+        ) - area.pdes
         for area in aid.pristine_areas
     ]
     abs_max, ix = findmax(abs, gaps)
