@@ -445,6 +445,32 @@ function _set_lcc_tail_residuals!(
 end
 
 """
+    _lcc_ac_active_powers(data, i, time_step, Vm_fb, Vm_tb) -> (P_lcc_from, P_lcc_to)
+
+AC-side active power at LCC `i`'s two converter terminals, each signed as power flowing from
+that AC bus INTO the DC link (rectifier `> 0` draws, inverter `< 0` receives), so the DC-line
+balance reads `P_lcc_from + P_lcc_to = R·i_dc²`. Reads the tap/ϕ/i_dc state off `data.lcc`
+(refreshed from the iterate earlier in `_update_residual_values!`). Shared by the LCC tail
+residual and the area-interchange DC-tie residual so both evaluate the exact same expression.
+"""
+function _lcc_ac_active_powers(
+    data::PowerFlowData,
+    i::Int,
+    time_step::Int,
+    Vm_fb::Float64,
+    Vm_tb::Float64,
+)
+    tap_r = data.lcc.rectifier.tap[i, time_step]
+    tap_i = data.lcc.inverter.tap[i, time_step]
+    phi_r = data.lcc.rectifier.phi[i, time_step]
+    phi_i = data.lcc.inverter.phi[i, time_step]
+    i_dc = data.lcc.i_dc[i, time_step]
+    P_lcc_from = Vm_fb * tap_r * SQRT6_DIV_PI * i_dc * cos(phi_r)
+    P_lcc_to = Vm_tb * tap_i * SQRT6_DIV_PI * i_dc * cos(phi_i)
+    return (P_lcc_from, P_lcc_to)
+end
+
+"""
     _write_lcc_tail!(F, data, base_offset, time_step, i, fb, tb, Vm_fb, Vm_tb)
 
 Write LCC `i`'s four tail residual rows (P-setpoint, DC-line balance, rectifier α-limit,
@@ -464,11 +490,8 @@ inverter α-limit) into `F`.
     offset_lcc = base_offset + (i - 1) * 4
     tap_r = data.lcc.rectifier.tap[i, time_step]
     tap_i = data.lcc.inverter.tap[i, time_step]
-    phi_r = data.lcc.rectifier.phi[i, time_step]
-    phi_i = data.lcc.inverter.phi[i, time_step]
     i_dc = data.lcc.i_dc[i, time_step]
-    P_lcc_from = Vm_fb * tap_r * SQRT6_DIV_PI * i_dc * cos(phi_r)
-    P_lcc_to = Vm_tb * tap_i * SQRT6_DIV_PI * i_dc * cos(phi_i)
+    (P_lcc_from, P_lcc_to) = _lcc_ac_active_powers(data, i, time_step, Vm_fb, Vm_tb)
     if iszero(i_dc)
         # 0-current converter (0-MW transfer setpoint): P_lcc ≡ 0, so the
         # P-setpoint and DC-line-balance equations are vacuous (0 = 0) and the
@@ -716,7 +739,10 @@ function _write_lcc_state_to_x!(
     time_step::Int,
 )
     n = size(data.lcc.p_set, 1)
-    base = length(x) - 4 * n
+    # The LCC tail is anchored at 2·nbus in the [buses | LCC | VSC | area] layout, NOT the last
+    # 4·n slots: a VSC and/or area tail can follow it. Mirrors the residual's read offset
+    # (ac_power_flow_residual.jl: `lcc_end - 4·num_lcc` with `lcc_end = 2·nbus + 4·num_lcc`).
+    base = 2 * size(data.bus_type, 1)
     @inbounds for i in 1:n
         off = base + 4 * (i - 1)
         x[off + 1] = data.lcc.rectifier.tap[i, time_step]
@@ -789,7 +815,7 @@ end
     _lcc_i_dc_from_p_set(r, p) -> Float64
 
 DC current set point from the active-power set point `p` and total DC-side
-resistance `r`: the positive root of `r·I² + I − p = 0`. Have to special-case `r == 0`, 
+resistance `r`: the positive root of `r·I² + I − p = 0`. Have to special-case `r == 0`,
 where the quadratic formula gives `I = 0/0 = NaN` instead of `I = p`.
 """
 _lcc_i_dc_from_p_set(r::Float64, p::Float64) =
