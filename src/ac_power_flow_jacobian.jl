@@ -831,6 +831,25 @@ function _set_entries_for_lcc(data::ACPowerFlowData,
     return
 end
 
+"""
+Bus indices of swing (REF) buses that share an island with another swing. Each such swing
+carries its OWN slack (its P-slot self-balances, `∂F_P/∂x[2i−1] = −1`), instead of the single
+distributed island scalar (`−c_ref`); the distributed-slack cross-terms are also dropped for
+these islands. Single-swing islands return nothing here and keep the distributed-slack path.
+"""
+function _multi_swing_ref_indices(
+    bus_type::AbstractMatrix{PSY.ACBusTypes},
+    subnetworks::Dict{Int64, Vector{Int64}},
+    time_step::Int64,
+)
+    independent = Set{Int}()
+    for subnetwork_buses in values(subnetworks)
+        refs = filter(ix -> bus_type[ix, time_step] == PSY.ACBusTypes.REF, subnetwork_buses)
+        length(refs) > 1 && union!(independent, refs)
+    end
+    return independent
+end
+
 """Used to update Jv based on the bus voltages, angles, etc. in data."""
 function _update_jacobian_matrix_values!(
     Jv::SparseArrays.SparseMatrixCSC{Float64, J_INDEX_TYPE},
@@ -848,6 +867,7 @@ function _update_jacobian_matrix_values!(
     Vm = view(data.bus_magnitude, :, time_step)
     θ = view(data.bus_angles, :, time_step)
     num_buses = first(size(data.bus_type))
+    independent_ref = _multi_swing_ref_indices(data.bus_type, subnetworks, time_step)
 
     for bus_from in 1:num_buses
         row_from_p = 2 * bus_from - 1
@@ -928,7 +948,13 @@ function _update_jacobian_matrix_values!(
             Jv[row_from_p, col_from_va] = diag_elements[1]  # ∂P∂θ_from
             Jv[row_from_q, col_from_va] = diag_elements[2]  # ∂Q∂θ_from
         elseif data.bus_type[bus_from, time_step] == PSY.ACBusTypes.REF
-            Jv[row_from_p, col_from_vm] = -bus_slack_participation_factors[bus_from]
+            if bus_from in independent_ref
+                # Multi-swing island: this swing self-balances at its own P-slot, so
+                # ∂F_P/∂x[2i−1] = −1 (not the distributed −c_ref).
+                Jv[row_from_p, col_from_vm] = -1.0
+            else
+                Jv[row_from_p, col_from_vm] = -bus_slack_participation_factors[bus_from]
+            end
             Jv[row_from_q, col_from_va] = -1.0
         end
     end
@@ -937,6 +963,10 @@ function _update_jacobian_matrix_values!(
     # REF bus), the active power residual depends on the REF bus state variable
     # x[2*ref-1] through the slack distribution: ∂F_P_k/∂x[2*ref-1] = -c_k.
     for (ref_bus, subnetwork_buses) in subnetworks
+        # Multi-swing island: each swing self-balances at its own P-slot (handled in the
+        # per-bus diagonal fill above); there is no single distributed scalar to couple, so
+        # skip the cross-terms entirely.
+        ref_bus in independent_ref && continue
         col_ref = 2 * ref_bus - 1
         for bus_k in subnetwork_buses
             bus_k == ref_bus && continue

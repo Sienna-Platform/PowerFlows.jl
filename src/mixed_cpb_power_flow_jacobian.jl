@@ -25,6 +25,7 @@ struct ACMixedCPBJacobian
     Ii_acc::Vector{Float64}        # shared view into residual's Ii_acc (accumulated Im(I) per bus)
     bus_slack_participation_factors::SparseVector{Float64, Int}
     subnetworks::Dict{Int64, Vector{Int64}}
+    independent_ref::Set{Int}      # shared view into residual's independent_ref
     bus_state_offset::Vector{REC_INDEX_TYPE}
     bus_block_size::Vector{Int8}
     total_bus_state::Int
@@ -77,10 +78,12 @@ function ACMixedCPBJacobian(
             Jv0, residual.Y_bus_eff, residual.bus_state_offset,
             view(residual.data.bus_type, :, time_step),
         )
+    # REF status is fixed for the life of a solve; reuse the residual's
+    # already-computed set instead of reallocating it here.
     slack_nz_idx_e, slack_nz_idx_f, _, slack_c_k =
         _build_slack_nz_cache(
             Jv0, residual.bus_state_offset, residual.subnetworks,
-            residual.bus_slack_participation_factors,
+            residual.bus_slack_participation_factors, residual.independent_ref,
         )
     n_lccs = size(residual.data.lcc.p_set, 1)
     lcc_nz = _build_lcc_nz_cache(
@@ -106,6 +109,7 @@ function ACMixedCPBJacobian(
         residual.Ii_acc,
         residual.bus_slack_participation_factors,
         residual.subnetworks,
+        residual.independent_ref,
         residual.bus_state_offset,
         residual.bus_block_size,
         residual.total_bus_state,
@@ -128,7 +132,7 @@ function (J::ACMixedCPBJacobian)(time_step::Int64)
     _update_mixed_cpb_jacobian_values!(J.Jv, J.data, J.Y_diag,
         J.e_state, J.f_state, J.P_eff_cache, J.Q_eff_cache,
         J.const_I_P, J.const_I_Q, J.Ir_acc, J.Ii_acc,
-        J.bus_slack_participation_factors,
+        J.bus_slack_participation_factors, J.independent_ref,
         J.bus_state_offset, J.total_bus_state,
         J.diag_base_nz, J.offdiag_pv_nz, J.offdiag_pv_i, J.offdiag_pv_k, J.offdiag_pv_y,
         J.slack_nz_idx_e, J.slack_nz_idx_f, J.slack_c_k,
@@ -143,7 +147,7 @@ function (J::ACMixedCPBJacobian)(
     _update_mixed_cpb_jacobian_values!(J.Jv, J.data, J.Y_diag,
         J.e_state, J.f_state, J.P_eff_cache, J.Q_eff_cache,
         J.const_I_P, J.const_I_Q, J.Ir_acc, J.Ii_acc,
-        J.bus_slack_participation_factors,
+        J.bus_slack_participation_factors, J.independent_ref,
         J.bus_state_offset, J.total_bus_state,
         J.diag_base_nz, J.offdiag_pv_nz, J.offdiag_pv_i, J.offdiag_pv_k, J.offdiag_pv_y,
         J.slack_nz_idx_e, J.slack_nz_idx_f, J.slack_c_k,
@@ -183,14 +187,30 @@ function _create_mixed_cpb_jacobian_structure(
 
     Yrows = SparseArrays.rowvals(Y_bus_eff)
     bus_types_at_t = view(data.bus_type, :, time_step)
+    independent_ref = _multi_swing_ref_indices(data.bus_type, subnetworks, time_step)
     @inbounds for col in 1:n_buses
         col_off = Int(bus_state_offset[col])
         col_bs = bus_block_size[col]
         is_ref_col = bus_types_at_t[col] == PSY.ACBusTypes.REF
+        # Diagonal block unconditionally: a bus whose Ybus column has NO stored
+        # diagonal (an AC-isolated swing, e.g. a DC-tie voltage holder with zero
+        # AC branches) still needs its own block — its rows/columns otherwise
+        # never enter the pattern and the value writers hit "missing entry".
+        for r in 0:(Int(col_bs) - 1)
+            for c in 0:(Int(col_bs) - 1)
+                push!(rows, J_INDEX_TYPE(col_off + r))
+                push!(cols, J_INDEX_TYPE(col_off + c))
+                push!(vals, 0.0)
+            end
+        end
         for j in SparseArrays.nzrange(Y_bus_eff, col)
             row = Yrows[j]
+            # Diagonal block already pushed above.
+            if row == col
+                continue
+            end
             # REF columns hold (P_gen, Q_gen); neighbors' rows don't depend on them.
-            if is_ref_col && row != col
+            if is_ref_col
                 continue
             end
             row_off = Int(bus_state_offset[row])
@@ -215,6 +235,10 @@ function _create_mixed_cpb_jacobian_structure(
     # yet in the pattern for any non-self bus_k — push it here (gated only on
     # `bus_k != ref_bus`, since the REF diagonal block covers `bus_k == ref_bus`).
     for (ref_bus, subnetwork_buses) in subnetworks
+        # Multi-swing island: each swing self-balances at its own P-slot; there is
+        # no single distributed scalar to couple, so no cross-terms are structural
+        # here (mirrors polar's / rect's independent-REF handling).
+        ref_bus in independent_ref && continue
         ref_off = Int(bus_state_offset[ref_bus])
         for bus_k in subnetwork_buses
             bus_slack_participation_factors[bus_k] == 0.0 && continue
@@ -410,6 +434,7 @@ function _update_mixed_cpb_jacobian_values!(
     Ir_acc::Vector{Float64},
     Ii_acc::Vector{Float64},
     bus_slack_participation_factors::SparseVector{Float64, Int},
+    independent_ref::Set{Int},
     bus_state_offset::Vector{REC_INDEX_TYPE},
     total_bus_state::Int,
     diag_base_nz::Matrix{Int},
@@ -441,8 +466,14 @@ function _update_mixed_cpb_jacobian_values!(
             _update_mixed_pv_diag_block!(Jvnz, diag_base_nz, i, e_i, f_i,
                 Y_diag[i], Ir_acc[i], Ii_acc[i], const_I_P[i])
         elseif bt == PSY.ACBusTypes.REF
-            c_ref = bus_slack_participation_factors[i]
-            _update_ref_diag_block!(Jvnz, diag_base_nz, i, e_i, f_i, c_ref)
+            if i in independent_ref
+                # Multi-swing island: this swing self-balances at its own P-slot
+                # (P_gen = x[off]), i.e. identity distribution (c_ref = 1.0).
+                _update_ref_diag_block!(Jvnz, diag_base_nz, i, e_i, f_i, 1.0)
+            else
+                c_ref = bus_slack_participation_factors[i]
+                _update_ref_diag_block!(Jvnz, diag_base_nz, i, e_i, f_i, c_ref)
+            end
         end
     end
 

@@ -299,11 +299,24 @@ function _update_residual_values!(
     for (ref_bus, subnetwork_buses) in subnetworks
         slack_scalar = x[2 * ref_bus - 1] - P_net_set[ref_bus]
         n_sub = length(subnetwork_buses)
+        # An island with more than one swing (REF) bus holds each swing at its own fixed
+        # complex voltage, so each swing carries its OWN slack: its P-slot self-balances
+        # (P_net = x[2·ix−1]) instead of sharing one distributed island scalar. Single-swing
+        # islands keep the distributed-slack path unchanged.
+        n_ref = 0
+        @inbounds for k in 1:n_sub
+            bus_types[subnetwork_buses[k]] == PSY.ACBusTypes.REF && (n_ref += 1)
+        end
+        multi_swing = n_ref > 1
         # Write per-bus slack into P_slack_buf[1:n_sub]. SparseVector indexed
         # by a Vector{Int} allocates a fresh Vector; iterate manually instead.
         @inbounds for k in 1:n_sub
             ix = subnetwork_buses[k]
-            P_slack_buf[k] = slack_scalar * bus_slack_participation_factors[ix]
+            if multi_swing && bus_types[ix] == PSY.ACBusTypes.REF
+                P_slack_buf[k] = x[2 * ix - 1] - P_net_set[ix]
+            else
+                P_slack_buf[k] = slack_scalar * bus_slack_participation_factors[ix]
+            end
         end
 
         @inbounds for k in 1:n_sub
@@ -459,6 +472,34 @@ function _find_subnetworks_for_reference_buses(
 end
 
 """
+    _reject_multi_swing_islands(subnetworks, bus_type, formulation)
+
+Throw an informative error if any island holds more than one swing (REF) bus. Retained for
+formulations that do not implement independent-per-swing slack so a multi-swing system fails
+loudly at construction rather than solving to a wrong answer or silently diverging. The
+polar, rectangular-CI, and mixed-CPB formulations all support multi-swing (each swing
+self-balances at its own P slot); RobustHomotopy does not yet (it currently fails with an
+uninformative KeyError on a multi-swing island and should adopt this guard).
+"""
+function _reject_multi_swing_islands(
+    subnetworks::Dict{Int, Vector{Int}},
+    bus_type::AbstractVector{PSY.ACBusTypes},
+    formulation::String,
+)
+    for subnetwork_buses in values(subnetworks)
+        n_ref = count(ix -> bus_type[ix] == PSY.ACBusTypes.REF, subnetwork_buses)
+        n_ref > 1 && throw(
+            ArgumentError(
+                "$formulation does not support multiple swing (REF) buses in one island " *
+                "($n_ref found); use the polar Newton-Raphson / Trust-Region / Fast-Decoupled " *
+                "formulation for multi-swing systems.",
+            ),
+        )
+    end
+    return
+end
+
+"""
     _build_bus_slack_participation_factors(data, bus_type, subnetworks, time_step)
 
 Collect the per-bus generator-slack-participation factors (REF and PV buses
@@ -493,6 +534,26 @@ function _build_bus_slack_participation_factors(
         throw(ArgumentError("slack_participation_factors cannot be negative"))
     bus_slack_participation_factors = sparsevec(spf_idx, spf_val, n_buses)
     for subnetwork_buses in values(subnetworks)
+        # A multi-swing island holds each swing at its own fixed voltage and lets each carry
+        # its own slack (see `_update_residual_values!`); spreading slack onto non-swing buses
+        # of such an island is undefined (which swing's deviation would they absorb?). Reject
+        # distributed slack there rather than solve a mis-specified problem.
+        n_ref_sub = count(ix -> bus_type[ix] == PSY.ACBusTypes.REF, subnetwork_buses)
+        if n_ref_sub > 1
+            any(
+                ix ->
+                    bus_type[ix] != PSY.ACBusTypes.REF &&
+                        bus_slack_participation_factors[ix] != 0.0,
+                subnetwork_buses,
+            ) && throw(
+                ArgumentError(
+                    "distributed slack (participation factors on non-swing buses) is not " *
+                    "supported in an island containing $n_ref_sub swing (REF) buses: each " *
+                    "swing carries its own slack. Reduce the island to a single swing or " *
+                    "remove the non-swing participation factors.",
+                ),
+            )
+        end
         bspf_subnetwork = view(bus_slack_participation_factors, subnetwork_buses)
         sum_bspf = sum(bspf_subnetwork)
         sum_bspf == 0.0 && throw(

@@ -8,9 +8,12 @@ block (no PV→3 expansion).
 Non-obvious fields: `Y_bus_eff` folds in ZIP constant-Z; `P_net_const`/
 `Q_net_const` are the |V|-independent net injections; `const_I_P`/`const_I_Q`
 are the constant-current withdrawal coefficients; `P_net_set` is the initial
-P_net for the distributed-slack delta; `validate_offsets` are the precomputed
-PQ/PV `x`-offsets for the voltage-magnitude diagnostic. Remaining fields are
-named after their roles.
+P_net for the distributed-slack delta; `independent_ref` is the set of REF
+buses that share an island with another REF (multi-swing), precomputed once
+here (bus REF-status is fixed across a solve) so the hot per-iteration path
+never allocates a `Set`; `validate_offsets` are the precomputed PQ/PV `x`-
+offsets for the voltage-magnitude diagnostic. Remaining fields are named
+after their roles.
 """
 struct ACMixedCPBResidual
     data::ACPowerFlowData
@@ -23,6 +26,7 @@ struct ACMixedCPBResidual
     P_net_set::Vector{Float64}
     bus_slack_participation_factors::SparseVector{Float64, Int}
     subnetworks::Dict{Int64, Vector{Int64}}
+    independent_ref::Set{Int}
     bus_state_offset::Vector{REC_INDEX_TYPE}
     bus_block_size::Vector{Int8}
     total_bus_state::Int
@@ -58,6 +62,9 @@ function ACMixedCPBResidual(data::ACPowerFlowData, time_step::Int64)
 
     subnetworks =
         _find_subnetworks_for_reference_buses(data.power_network_matrix.data, bus_type)
+    # REF status is fixed for the life of a solve, so this is computed once here
+    # rather than per-iteration (see the `independent_ref` field docstring).
+    independent_ref = _multi_swing_ref_indices(data.bus_type, subnetworks, time_step)
 
     for ix in 1:n_buses
         # Constant-power net injection (no |V| dependence)
@@ -97,6 +104,7 @@ function ACMixedCPBResidual(data::ACPowerFlowData, time_step::Int64)
         P_net_set,
         bus_slack_participation_factors,
         subnetworks,
+        independent_ref,
         offsets,
         block_sizes,
         total_bus_state,
@@ -117,7 +125,7 @@ function (R::ACMixedCPBResidual)(
 )
     _update_mixed_cpb_residual_values!(R.Rv, x, R.Y_bus_eff, R.P_net_const, R.Q_net_const,
         R.const_I_P, R.const_I_Q, R.P_net_set,
-        R.bus_slack_participation_factors, R.subnetworks,
+        R.bus_slack_participation_factors, R.subnetworks, R.independent_ref,
         R.bus_state_offset, R.bus_block_size, R.total_bus_state,
         R.e_state, R.f_state, R.P_eff_cache, R.Q_eff_cache,
         R.data, time_step, R.Ir_acc, R.Ii_acc)
@@ -128,7 +136,7 @@ end
 function (R::ACMixedCPBResidual)(x::Vector{Float64}, time_step::Int64)
     _update_mixed_cpb_residual_values!(R.Rv, x, R.Y_bus_eff, R.P_net_const, R.Q_net_const,
         R.const_I_P, R.const_I_Q, R.P_net_set,
-        R.bus_slack_participation_factors, R.subnetworks,
+        R.bus_slack_participation_factors, R.subnetworks, R.independent_ref,
         R.bus_state_offset, R.bus_block_size, R.total_bus_state,
         R.e_state, R.f_state, R.P_eff_cache, R.Q_eff_cache,
         R.data, time_step, R.Ir_acc, R.Ii_acc)
@@ -155,6 +163,7 @@ function _update_mixed_cpb_residual_values!(
     P_net_set::Vector{Float64},
     bus_slack_participation_factors::SparseVector{Float64, Int},
     subnetworks::Dict{Int64, Vector{Int64}},
+    independent_ref::Set{Int},
     bus_state_offset::Vector{REC_INDEX_TYPE},
     bus_block_size::Vector{Int8},
     total_bus_state::Int,
@@ -200,6 +209,10 @@ function _update_mixed_cpb_residual_values!(
         Q_eff_cache[i] = Q_net_const[i] - const_I_Q[i] * Vm
     end
     for (ref_bus, subnetwork_buses) in subnetworks
+        # Multi-swing island: each swing self-balances at its own P-slot (handled in the
+        # REF branch below); there is no single distributed scalar to share with the rest
+        # of the island, so skip the distribution entirely.
+        ref_bus in independent_ref && continue
         ref_off = Int(bus_state_offset[ref_bus])
         P_slack_total = x[ref_off] - P_net_set[ref_bus]
         for bus_k in subnetwork_buses
@@ -257,9 +270,15 @@ function _update_mixed_cpb_residual_values!(
         if bt == PSY.ACBusTypes.REF
             # REF: copied VERBATIM from rect's REF branch (slots NOT swapped)
             # so rect's `_update_ref_diag_block!` is reusable.
-            c_ref = bus_slack_participation_factors[i]
-            P_slack_total = x[off] - P_net_set[i]
-            P_gen = P_net_set[i] + c_ref * P_slack_total
+            if i in independent_ref
+                # Multi-swing island: this swing self-balances at its own P-slot
+                # (∂P_gen/∂x[off] = 1), not the distributed c_ref share.
+                P_gen = x[off]
+            else
+                c_ref = bus_slack_participation_factors[i]
+                P_slack_total = x[off] - P_net_set[i]
+                P_gen = P_net_set[i] + c_ref * P_slack_total
+            end
             Q_gen = x[off + 1]
             Vm = sqrt(D)
             P_eff = P_gen - const_I_P[i] * Vm
