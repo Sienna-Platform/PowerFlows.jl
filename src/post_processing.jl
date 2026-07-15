@@ -1014,24 +1014,11 @@ empty_area_interchange_results() = DataFrames.DataFrame(;
 """
     _area_beyond_limits(sys, bus, p_bus_effective) -> Bool
 
-Whether `p_bus_effective` (pu, the area's SOLVED slack-bus active-power injection) can be
-absorbed by the in-service machines physically present at `bus`, within their own
-`active_power_limits` — flag only (design spec deliverable, Phase 1: never clamp, no PSY
-write-back). Reuses the same device-set primitive `_power_redistribution_ref` apportions
-over (`_is_available_source`) and the same per-unit limit accessor
-(`get_active_power_limits_for_power_flow`), but as a cheap aggregate headroom check rather
-than a per-unit apportioning pass.
-
-`p_bus_effective` is NOT `data.bus_active_power_injections[slack_bus_ix, time_step]`
-directly — that field is a PV/SLACK-bus INPUT (the device's scheduled active power), never
-refreshed from the Newton solution (`_set_state_variables_at_bus`'s PV case only writes back
-`Q`/angle, matching every other PV bus in the model). The caller must add the area's
-converged `ΔP_a` (folded in through the Newton solve at the same seam the residual applies
-it — see `ac_power_flow_residual.jl`) to recover the TRUE solved injection before calling
-this. A slack bus with no in-service source at all cannot absorb anything nonzero — but that
-bus type would already have failed enrollment guard 1b (SLACK demoted to PQ), so this branch
-is unreached in practice; treated as `false` (no violation to flag) rather than throwing on
-an empty `sum`.
+Whether `p_bus_effective` (pu, the solved slack-bus injection) exceeds the in-service
+machines' `active_power_limits` at `bus` — flag only, never clamp. `p_bus_effective` is
+NOT `bus_active_power_injections` directly (that is the PV/SLACK input, never refreshed
+from the Newton solution): the caller must add the area's converged `ΔP_a` first. A slack
+bus with no in-service source returns `false` rather than throwing on an empty `sum`.
 """
 function _area_beyond_limits(
     sys::PSY.System,
@@ -1052,25 +1039,15 @@ end
 """
     area_interchange_results_dataframe(sys, data, time_step) -> DataFrame
 
-Per-controlled-area results row (design spec deliverable): net interchange achieved vs.
-targeted, the converged `ΔP_a` state, whether the schedule was enforced by Newton or
-relaxed away by the greedy relax loop (`_ac_power_flow_with_area_relax!`,
-`solve_ac_power_flow.jl`), and a read-only flag for whether the area's `ΔP_a` fits within
-its slack bus's in-service machines' active-power headroom. One row per area ENROLLED AT
-CONSTRUCTION TIME (`data.area_interchange.pristine_areas`) — both areas still controlled at
-the end of the solve (`:enforced`) and areas the relax loop de-enrolled this time step
-(`:relaxed`, from `data.area_interchange.relaxed[time_step]`). Relaxed rows report
-`delta_p = 0.0` (no state — the area's tail no longer exists); `ni_solved` is recomputed
-directly from the tie-flow kernel against the PRISTINE tie list (`_area_net_interchange`)
-rather than trusted off a stale residual row, so it is correct for a relaxed area too, and
-`ni_solved - pdes` is that area's infeasibility certificate. An enforced row's `delta_p` is
-read from `aid.pristine_delta_p[area.tail_ix, time_step]` — the PRISTINE-tail_ix-indexed,
-per-time-step persistent mirror (`_sync_pristine_delta_p!`, `area_residual.jl`) — NEVER from
-the WORKING `aid.areas`/`aid.delta_p`, which reflect only whatever time step's relax state
-ran LAST on this `data` and are not indexed by the queried `time_step` at all; reading them
-here would KeyError (or silently mis-index) once ANY other time step in a multi-period solve
-has relaxed a different area. Empty when area interchange control was never enrolled on this
-`data`. Powers in MW/MVAr (matches every other table this function's caller assembles).
+Per-controlled-area results row: net interchange achieved vs. targeted, the converged
+`ΔP_a`, whether the schedule was `:enforced` or `:relaxed` by the greedy relax loop, and
+whether `ΔP_a` fits the slack bus's headroom. One row per area enrolled at construction
+(`pristine_areas`); relaxed rows report `delta_p = 0.0`. `ni_solved` is recomputed from
+the tie-flow kernels against the pristine AC and DC tie lists (`_area_net_interchange`),
+not trusted off a stale residual row, so it is correct for a relaxed area too;
+`ni_solved - pdes` is that area's infeasibility certificate. An enforced row's `delta_p`
+reads `pristine_delta_p` (never the WORKING `aid.delta_p`, which reflects whatever time
+step last relaxed on this `data`). Powers in MW/MVAr.
 """
 function area_interchange_results_dataframe(
     sys::PSY.System,
@@ -1090,7 +1067,9 @@ function area_interchange_results_dataframe(
 
     df = empty_area_interchange_results()
     for area in aid.pristine_areas
-        ni_solved = _area_net_interchange(aid.pristine_ties, area.tail_ix, data, time_step)
+        ni_solved = _area_net_interchange(
+            aid.pristine_ties, aid.pristine_dc_ties, area.tail_ix, data, time_step,
+        )
         schedule_status = :enforced
         delta_p_pu = 0.0
         if area.name in relaxed_names

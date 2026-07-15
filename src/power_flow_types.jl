@@ -112,12 +112,14 @@ function _validate_discrete_control_settings(
     return
 end
 
-# Area interchange control (Phase 1) is validated only for NR/TR inner solvers: LM is
-# deferred to Phase 2 validation of the augmented least-squares residual; Robust Homotopy,
-# Gradient Descent, and Fast Decoupled have no natural home for the interchange border.
-# Centralized so the three formulation constructors cannot drift. NR/TR types are defined
-# later in this file — references resolve at call time. Multi-period is allowed (no
-# time_steps guard). Returns the (possibly floored) interchange_tolerance.
+# Validated for NR/TR/LM/FastDecoupled: LM feeds the augmented rows through its
+# normal-equations residual; FDFixedJacobian carries the border in the frozen augmented
+# Jacobian; FDDecoupled corrects the tail via the bordered-Schur substep
+# (`_fd_area_substep!`). Gradient Descent has no natural home for the border;
+# RobustHomotopy is incompatible (its Hessian lacks exact curvature for the tie terms).
+# Centralized so the formulation constructors cannot drift; the solver types are defined
+# later in this file — references resolve at call time. Multi-period is allowed.
+# Returns the (possibly floored) interchange_tolerance.
 function _validate_area_interchange_settings(
     ::Type{ACSolver},
     area_interchange_control::Bool,
@@ -125,13 +127,22 @@ function _validate_area_interchange_settings(
     tie_definition::Symbol,
 ) where {ACSolver <: ACPowerFlowSolverType}
     area_interchange_control || return interchange_tolerance
-    if !(ACSolver <: Union{NewtonRaphsonACPowerFlow, TrustRegionACPowerFlow})
+    if !(
+        ACSolver <:
+        Union{
+            NewtonRaphsonACPowerFlow,
+            TrustRegionACPowerFlow,
+            LevenbergMarquardtACPowerFlow,
+            FastDecoupledACPowerFlow,
+        }
+    )
         throw(
             ArgumentError(
-                "area_interchange_control=true requires a NewtonRaphsonACPowerFlow or " *
-                "TrustRegionACPowerFlow solver; got $(ACSolver). Levenberg-Marquardt is " *
-                "deferred to Phase 2 validation of the augmented least-squares residual; " *
-                "Robust Homotopy, Gradient Descent, and Fast Decoupled are not supported.",
+                "area_interchange_control=true requires a NewtonRaphsonACPowerFlow, " *
+                "TrustRegionACPowerFlow, LevenbergMarquardtACPowerFlow, " *
+                "or FastDecoupledACPowerFlow solver; got " *
+                "$(ACSolver). RobustHomotopyPowerFlow and GradientDescentACPowerFlow " *
+                "are not supported.",
             ),
         )
     end
@@ -154,7 +165,7 @@ function _validate_area_interchange_settings(
     return interchange_tolerance
 end
 
-# Phase 1 area interchange control is polar-only: reject immediately on the non-polar
+# Area interchange control is polar-only: reject immediately on the non-polar
 # formulations regardless of solver. Centralized so the rejection message can't drift.
 function _reject_area_interchange_on_nonpolar(
     area_interchange_control::Bool,
@@ -349,7 +360,7 @@ with the specified solver type.
 - `control_discrete_devices::Bool`: Whether to run discrete device control (tap changers, switched
     shunts) via λ-continuation. Default is `false`.
 - `area_interchange_control::Bool`: Whether to embed PSS/E-style per-area net-interchange
-    control in the AC Newton system (Phase 1: polar formulation, NR/TR solvers only).
+    control in the AC solve (polar formulation; NR/TR/LM/FastDecoupled solvers).
     Default is `false`.
 - `interchange_tolerance::Float64`: PTOL analogue (pu); used for validation and reporting only —
     the embedded formulation targets each area's PDES exactly. Non-positive values are floored to
@@ -560,7 +571,7 @@ polar state layout and have no current-injection equivalent.
 - `correct_bustypes::Bool`: Default `false`.
 - `control_discrete_devices::Bool`: Whether to run discrete device control via λ-continuation.
     Default `false`.
-- `area_interchange_control::Bool`: Not supported on this formulation (Phase 1 is polar-only);
+- `area_interchange_control::Bool`: Not supported on this formulation (area interchange control is polar-only);
     passing `true` throws `ArgumentError`. Default `false`.
 - `solver_settings::Dict{Symbol, Any}`: Default empty.
 """
@@ -694,7 +705,7 @@ polar state layout and have no mixed current-power equivalent.
 - `correct_bustypes::Bool`: Default `false`.
 - `control_discrete_devices::Bool`: Whether to run discrete device control via λ-continuation.
     Default `false`.
-- `area_interchange_control::Bool`: Not supported on this formulation (Phase 1 is polar-only);
+- `area_interchange_control::Bool`: Not supported on this formulation (area interchange control is polar-only);
     passing `true` throws `ArgumentError`. Default `false`.
 - `solver_settings::Dict{Symbol, Any}`: Default empty.
 """

@@ -297,7 +297,6 @@ get_dc_network(pfd::PowerFlowData) = pfd.dc_network[]
 # pseudo getter.
 get_lcc_count(data::PowerFlowData) = length(data.lcc.rectifier.bus)
 
-# Area interchange getters.
 get_area_interchange_data(pfd::PowerFlowData) = pfd.area_interchange
 n_controlled_areas(pfd::PowerFlowData) = n_controlled_areas(pfd.area_interchange)
 
@@ -435,14 +434,16 @@ function PowerFlowData(
         AreaInterchangeData(
             ControlledArea[],
             AreaTie[],
+            DCTie[],
             get_interchange_tolerance(pf),
             Float64[],
             zeros(Float64, 0, n_time_steps),
             ControlledArea[],
             AreaTie[],
+            DCTie[],
             zeros(Float64, 0, n_time_steps),
             Dict{Int, Vector{RelaxedAreaRecord}}(),
-        ), # area_interchange (enrolled in Task 5, populated in initialize_power_flow_data!)
+        ), # area_interchange (populated in initialize_power_flow_data!)
         Base.RefValue{DCNetwork}(DCNetwork()), # dc_network (built in initialize_DCNetwork!)
         arc_lossy_admittance_from_to,
         arc_lossy_admittance_to_from,

@@ -11,9 +11,22 @@ function initialize_power_flow_data!(
     nrd = get_network_reduction_data(data)
     reverse_bus_search_map = PNM.get_reverse_bus_search_map(nrd)
     bus_reduction_map = PNM.get_bus_reduction_map(nrd)
-    removed_buses = PNM.get_removed_buses(nrd)
     bus_lookup = get_bus_lookup(data)
     n_buses = length(bus_lookup)
+    # `removed_buses` from PNM covers merged/radial reductions. Topologically isolated buses are
+    # also out of the power flow — excluded from `bus_lookup` with no merge representative — but
+    # are not in that set, so a device (e.g. a load) still attached to one would KeyError in the
+    # `_get_*` device loops. Fold them in so those loops skip them like any other removed bus.
+    removed_buses = union(
+        PNM.get_removed_buses(nrd),
+        Set(
+            PSY.get_number(b) for b in PSY.get_components(PSY.ACBus, sys) if
+            !haskey(
+                bus_lookup,
+                get(reverse_bus_search_map, PSY.get_number(b), PSY.get_number(b)),
+            )
+        ),
+    )
 
     # bus types, angles, magnitudes
     bus_type = Vector{PSY.ACBusTypes}(undef, n_buses)
@@ -174,24 +187,21 @@ function initialize_power_flow_data!(
     # ZIP Loads, DC only: convert constant current and impedance components to constant
     # powers via assuming V = 1.0 p.u.
     handle_zip_loads!(data, pf)
-    # PSS/E-style embedded area net-interchange control: derive the enrolled
-    # ControlledArea/AreaTie set (guards in `area_interchange/enrollment.jl`) and populate
-    # the always-present, empty-by-default `data.area_interchange` in place. `PowerFlowData`
-    # is immutable, so `data.area_interchange` itself cannot be reassigned; its Vector
-    # fields are appended to instead (mirroring `lcc`). `delta_p` is a Matrix (per-area,
-    # per-time-step) — growing it in place would mean resizing rows, which `Matrix` doesn't
-    # support, so `AreaInterchangeData` is `mutable struct` and this field is reassigned
-    # directly to the fully-sized matrix `build_area_interchange_data` already built.
+    # `PowerFlowData` is immutable but `area_interchange` is a mutable struct: `append!`
+    # grows its Vector fields in place (mirroring `lcc`); `delta_p` (a Matrix) can't grow
+    # rows in place, so it is reassigned wholesale from `build_area_interchange_data`.
     if get_area_interchange_control(pf)
         aid = build_area_interchange_data(pf, sys, data)
         append!(data.area_interchange.areas, aid.areas)
         append!(data.area_interchange.ties, aid.ties)
+        append!(data.area_interchange.dc_ties, aid.dc_ties)
         append!(data.area_interchange.ni_scratch, aid.ni_scratch)
         data.area_interchange.delta_p = aid.delta_p
-        # Greedy relax (design spec §6) bookkeeping: the PRISTINE copies are the full
-        # enrollment, never mutated once set here — see `AreaInterchangeData`'s docstring.
+        # The PRISTINE copies are the full enrollment, never mutated once set here —
+        # see `AreaInterchangeData`'s docstring.
         append!(data.area_interchange.pristine_areas, aid.pristine_areas)
         append!(data.area_interchange.pristine_ties, aid.pristine_ties)
+        append!(data.area_interchange.pristine_dc_ties, aid.pristine_dc_ties)
         data.area_interchange.pristine_delta_p = aid.pristine_delta_p
     end
     return data

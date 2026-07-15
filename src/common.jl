@@ -266,11 +266,9 @@ function _warn_slack_demoted_to_pq(
 end
 _warn_slack_demoted_to_pq(::AbstractDCPowerFlow, ::String) = nothing
 
-"""SLACK marks a bus for area-interchange redistribution (PSS/E ISW); it is not a
-formulation bus type and must never reach REF/PV/PQ dispatch. Normalize at ingestion:
-error if the bus cannot move active power (AC and DC alike), PV if it can also regulate
-voltage (same criterion as `can_be_PV`), PQ otherwise (silently for DC — see
-`_warn_slack_demoted_to_pq`)."""
+"""SLACK marks a bus for area-interchange redistribution (PSS/E ISW), not a formulation
+bus type; normalize at ingestion: error if it cannot move active power, PV if it can also
+regulate voltage, else PQ (DC demotes silently — see `_warn_slack_demoted_to_pq`)."""
 function _normalize_slack_bustype(
     pf::PowerFlowEvaluationModel,
     bt::PSY.ACBusTypes,

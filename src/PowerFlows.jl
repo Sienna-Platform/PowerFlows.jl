@@ -63,9 +63,8 @@ import LineSearches: BackTracking
 
 include("definitions.jl")
 # `AreaInterchangeData` is needed by `power_flow_types.jl`'s `ACJacobianStructureCache`
-# cache-key field (Task 7), so this include moves ahead of the rest of the
-# `area_interchange/` family (which still needs `powersystems_utils.jl`/PowerFlowData.jl
-# and stays in its original position below).
+# cache-key field, so this include moves ahead of the rest of the `area_interchange/`
+# family (which still needs `powersystems_utils.jl`/PowerFlowData.jl and stays below).
 include("area_interchange/area_types.jl")
 include("branch_flow_results.jl")
 include("psi_utils.jl")
