@@ -194,7 +194,8 @@ function HomotopyHessian(data::ACPowerFlowData, time_step::Int)
     SparseArrays.nonzeros(Hv) .= 0.0
     copyto!(SparseArrays.nonzeros(J.Jv), original_J_nzval)
     nbuses = size(get_bus_type(data), 1)
-    # dcn/area rejected at construction above, so state_tail_length(data, dcn) == 4 * n_lcc here.
+    # dcn and area interchange control both rejected at construction, so the tail here
+    # is LCC-only.
     n_state = 2 * nbuses + state_tail_length(data, dcn)
     bus_types = view(get_bus_type(data), :, time_step)
     PQ_mask = bus_types .== (PSY.ACBusTypes.PQ,)
