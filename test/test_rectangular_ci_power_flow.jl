@@ -345,3 +345,45 @@ end
     @test all(isfinite, residual.Rv)
     @test all(isfinite, J.Jv.nzval)
 end
+
+# Synthetic two-swing island (CEII: built in code, not parsed). Mirrors
+# test_jacobian.jl's polar `_two_swing_system()`; duplicated locally since
+# the rect and mixed-CPB multi-swing work is split across disjoint test files.
+function _rect_two_swing_system()
+    sys = System(100.0)
+    b1 = _add_simple_bus!(sys, 1, PSY.ACBusTypes.REF, 230, 1.06, 0.0)
+    b2 = _add_simple_bus!(sys, 2, PSY.ACBusTypes.REF, 230, 1.05, 0.05)
+    b3 = _add_simple_bus!(sys, 3, PSY.ACBusTypes.PQ, 230, 1.0, 0.0)
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    _add_simple_source!(sys, b2, 0.0, 0.0)
+    _add_simple_load!(sys, b3, 40, 15)
+    _add_simple_line!(sys, b1, b3, 5e-3, 5e-3, 1e-3)
+    _add_simple_line!(sys, b2, b3, 5e-3, 5e-3, 1e-3)
+    return sys
+end
+
+@testset "Rectangular CI Power Flow: multi-swing (two swings in one island)" begin
+    @testset "$(nameof(V))" for V in (NewtonRaphsonACPowerFlow, TrustRegionACPowerFlow)
+        sys_p = _rect_two_swing_system()
+        sys_r = deepcopy(sys_p)
+        pf_p = ACPowerFlow{V}()
+        pf_r = ACRectangularPowerFlow{V}(; solver_settings = _rect_pf_settings())
+        res_p = solve_power_flow(pf_p, sys_p)
+        res_r = solve_power_flow(pf_r, sys_r)
+        @test res_p !== missing
+        @test res_r !== missing
+        bus_p = sort(res_p["bus_results"], :bus_number)
+        bus_r = sort(res_r["bus_results"], :bus_number)
+        # Polar's self-balancing behavior is already validated in test_jacobian.jl.
+        @test maximum(abs.(bus_p.Vm - bus_r.Vm)) < 1e-7
+        @test maximum(abs.(bus_p.θ - bus_r.θ)) < 1e-7
+        @test maximum(abs.(bus_p.P_gen - bus_r.P_gen)) < 1e-7
+        @test maximum(abs.(bus_p.Q_gen - bus_r.Q_gen)) < 1e-7
+        r1 = findfirst(==(1), bus_r.bus_number)
+        r2 = findfirst(==(2), bus_r.bus_number)
+        @test bus_r.Vm[r1] ≈ 1.06 atol = 1e-9
+        @test bus_r.θ[r1] ≈ 0.0 atol = 1e-9
+        @test bus_r.Vm[r2] ≈ 1.05 atol = 1e-9
+        @test bus_r.θ[r2] ≈ 0.05 atol = 1e-9
+    end
+end

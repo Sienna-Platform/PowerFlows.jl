@@ -75,12 +75,9 @@ end
     )
 end
 
-# Task 12: `solve_power_flow!`'s time-step loop bookkeeping (`ts_converged`, the final
-# `data.converged .= ts_converged`, and the branch-flow write-back) indexed containers sized
-# to `length(sorted_time_steps)` (POSITIONAL) using the raw time-step VALUE instead of its
-# position in `sorted_time_steps`. An isolated non-leading subset like `time_steps = [2]`
-# throws `BoundsError` (a size-1 `ts_converged` indexed at 2); a non-contiguous subset like
-# `[1, 3]` is equally broken. RED (pre-fix): both subtests below throw `BoundsError`.
+# `solve_power_flow!`'s loop containers are sized to `length(sorted_time_steps)` but were
+# indexed by the raw time-step VALUE, not its position — isolated/non-contiguous subsets
+# like `[2]` or `[1, 3]` threw `BoundsError`.
 @testset "solve_power_flow! with an isolated/non-contiguous time_steps subset" begin
     @testset "isolated non-leading subset [2] on a 2-step fixture" begin
         sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
@@ -99,7 +96,6 @@ end
         flow_ts1_before = copy(data_sub.arc_active_power_flow_from_to[:, 1])
         @test solve_power_flow!(data_sub; time_steps = [2])
 
-        # ts=2 solved and matches the reference full solve.
         @test data_sub.converged[2]
         @test isapprox(data_sub.bus_magnitude[:, 2], data_full.bus_magnitude[:, 2];
             atol = 1e-9)
@@ -110,7 +106,6 @@ end
             atol = 1e-9,
         )
 
-        # ts=1 was never solved and must be left at its untouched initial state.
         @test !data_sub.converged[1]
         @test data_sub.bus_magnitude[:, 1] == magnitude_ts1_before
         @test data_sub.bus_angles[:, 1] == angles_ts1_before
@@ -141,7 +136,6 @@ end
                 atol = 1e-9)
         end
 
-        # ts=2 was never solved and must be left at its untouched initial state.
         @test !data_sub.converged[2]
         @test data_sub.bus_magnitude[:, 2] == magnitude_ts2_before
         @test data_sub.bus_angles[:, 2] == angles_ts2_before

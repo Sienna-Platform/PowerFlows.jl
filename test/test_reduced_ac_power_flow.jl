@@ -295,3 +295,21 @@ end
         end
     end
 end
+
+@testset "Load on a topologically isolated bus does not break PowerFlowData build" begin
+    # An available load can sit on a bus that is out of the power flow: topologically isolated
+    # (no in-service branch → excluded from the reduced Ybus, no merge representative). Its
+    # withdrawal must be skipped, not KeyError in the device-bus lookup.
+    sys = System(100.0)
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.0, 0.0)
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.PQ, 230, 1.0, 0.0)
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    _add_simple_load!(sys, b2, 30, 10)
+    _add_simple_line!(sys, b1, b2, 5e-3, 5e-3, 1e-3)
+    biso = _add_simple_bus!(sys, 99, ACBusTypes.ISOLATED, 230, 1.0, 0.0)
+    _add_simple_load!(sys, biso, 5, 2)
+    pf = PF.ACPowerFlow{NewtonRaphsonACPowerFlow}(; correct_bustypes = false)
+    data = PF.PowerFlowData(pf, sys)   # must not throw (isolated-bus load skipped)
+    @test !haskey(PF.get_bus_lookup(data), 99)
+    @test PF.solve_power_flow!(data)
+end

@@ -76,6 +76,36 @@ function get_logging_level_from_env(env_name::String, default)
     return IS.get_logging_level(level)
 end
 
+# Expected-@error allowlist for the stray-error gate: the area-interchange greedy-relax path
+# logs an infeasible-schedule Error BY DESIGN (_ac_power_flow_with_area_relax!), and those
+# already-@test_logs-asserted events still reach this global tracker under the full-suite
+# ReTest schedule, so the gate must exclude exactly them.
+const _AREA_RELAX_ERROR_MARKER = "Area interchange:"
+const _CONVERGENCE_FAILURE_MARKER = "solver failed to converge after"
+
+_is_area_relax_error(event) = occursin(_AREA_RELAX_ERROR_MARKER, event.message)
+_is_convergence_failure_error(event) =
+    occursin(_CONVERGENCE_FAILURE_MARKER, event.message)
+
+"""Error-level log events the stray-error gate should fail on: everything except the
+area-interchange greedy-relax sequence (and the pre-relax convergence failure it causes, which
+is excused only when a relax actually happened)."""
+function unexpected_error_events(tracker)
+    events = IS.get_log_events(tracker, Logging.Error)
+    saw_relax = any(_is_area_relax_error, events)
+    unexpected = Vector{eltype(events)}()
+    for event in events
+        if _is_area_relax_error(event)
+            continue
+        end
+        if saw_relax && _is_convergence_failure_error(event)
+            continue
+        end
+        push!(unexpected, event)
+    end
+    return unexpected
+end
+
 # See also `load_tests.jl` for running tests interactively with ReTest.jl
 function run_tests(args...; kwargs...)
     logger = global_logger()
@@ -106,7 +136,12 @@ function run_tests(args...; kwargs...)
             end
 
             @time retest(args...; kwargs...)
-            @test length(IS.get_log_events(multi_logger.tracker, Logging.Error)) == 0
+            unexpected = unexpected_error_events(multi_logger.tracker)
+            # Name the offenders: a bare count gives no way to find which site tripped the gate.
+            for event in unexpected
+                @warn "Unexpected error-level log event" event.file event.line event.count event.message
+            end
+            @test isempty(unexpected)
             @info IS.report_log_summary(multi_logger)
         end
     finally

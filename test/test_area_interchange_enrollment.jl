@@ -1,5 +1,3 @@
-# Shared context for the tie-enumeration tests: PowerFlowData artifacts plus the
-# bus-index -> area-tail map that Task 5's enrollment will eventually build.
 function _tie_test_context(sys::PSY.System, area_tail::Dict{String, Int})
     data = PowerFlowData(ACPowerFlow(), sys)
     bus_lookup = PF.get_bus_lookup(data)
@@ -37,21 +35,19 @@ end
     sys = _make_two_area_system()
     ctx = _tie_test_context(sys, Dict("Area1" => 1, "Area2" => 2))
 
-    ties = PF.build_area_ties(sys, ctx.bus_lookup, ctx.ybus, ctx.nrd, ctx.bus_area_map)
+    (ties, _dc_ties) = PF.build_area_ties(
+        sys, ctx.bus_lookup, ctx.ybus, ctx.nrd, ctx.bus_area_map)
 
-    # Boundary crosses exactly 3 branches: Trans1 (4-9), Trans2 (5-6), Trans3 (4-7).
     @test length(ties) == 3
 
     for tie in ties
         @test ctx.bus_area_map[tie.from_bus_ix] != ctx.bus_area_map[tie.to_bus_ix]
     end
 
-    # Metered end defaults to "from" for all three (no ext set).
     for tie in ties
         @test tie.metered_from == true
     end
 
-    # nz_offsets point at the correct Y-bus entries.
     A = ctx.ybus.data
     for tie in ties
         f, t = tie.from_bus_ix, tie.to_bus_ix
@@ -69,7 +65,8 @@ end
     PSY.get_ext(trans1)["metered_end"] = "to"
 
     ctx = _tie_test_context(sys, Dict("Area1" => 1, "Area2" => 2))
-    ties = PF.build_area_ties(sys, ctx.bus_lookup, ctx.ybus, ctx.nrd, ctx.bus_area_map)
+    (ties, _dc_ties) = PF.build_area_ties(
+        sys, ctx.bus_lookup, ctx.ybus, ctx.nrd, ctx.bus_area_map)
     @test length(ties) == 3
 
     trans1_tie = _find_tie(ties, ctx.bus_lookup[4], ctx.bus_lookup[9])
@@ -88,8 +85,8 @@ end
     PSY.set_available!(trans2, false)
 
     ctx = _tie_test_context(sys, Dict("Area1" => 1, "Area2" => 2))
-    ties = PF.build_area_ties(sys, ctx.bus_lookup, ctx.ybus, ctx.nrd, ctx.bus_area_map)
-    # Trans2 (5-6) excluded: only Trans1 (4-9) and Trans3 (4-7) remain.
+    (ties, _dc_ties) = PF.build_area_ties(
+        sys, ctx.bus_lookup, ctx.ybus, ctx.nrd, ctx.bus_area_map)
     @test length(ties) == 2
 
     trans2_fix = ctx.bus_lookup[5]
@@ -105,20 +102,19 @@ end
 @testset "area interchange tie three-area tails" begin
     sys = _make_three_area_system()
     ctx = _tie_test_context(sys, Dict("Area1" => 1, "Area2" => 2, "Area3" => 3))
-    ties = PF.build_area_ties(sys, ctx.bus_lookup, ctx.ybus, ctx.nrd, ctx.bus_area_map)
+    (ties, _dc_ties) = PF.build_area_ties(
+        sys, ctx.bus_lookup, ctx.ybus, ctx.nrd, ctx.bus_area_map)
 
-    # Boundary branches: Trans1 (4-9), Trans2 (5-6), Trans3 (4-7), Line11 (9-10),
-    # Line12 (9-14), Line16 (7-9).
     @test length(ties) == 6
 
     # Tail fields carry the owning areas' tail slots, matched to arc orientation.
     expected = Dict(
-        (4, 9) => (1, 3),   # Trans1: Area1 -> Area3
-        (5, 6) => (1, 2),   # Trans2: Area1 -> Area2
-        (4, 7) => (1, 2),   # Trans3: Area1 -> Area2
-        (9, 10) => (3, 2),  # Line11: Area3 -> Area2
-        (9, 14) => (3, 2),  # Line12: Area3 -> Area2
-        (7, 9) => (2, 3),   # Line16: Area2 -> Area3
+        (4, 9) => (1, 3),
+        (5, 6) => (1, 2),
+        (4, 7) => (1, 2),
+        (9, 10) => (3, 2),
+        (9, 14) => (3, 2),
+        (7, 9) => (2, 3),
     )
     for ((fb, tb), (tail_f, tail_t)) in expected
         tie = _find_tie(ties, ctx.bus_lookup[fb], ctx.bus_lookup[tb])
@@ -138,7 +134,8 @@ end
     # uncontrolled areas and must not be stored; every tie touching Area2 is kept
     # with tail 0 on the uncontrolled side.
     ctx = _tie_test_context(sys, Dict("Area2" => 1))
-    ties = PF.build_area_ties(sys, ctx.bus_lookup, ctx.ybus, ctx.nrd, ctx.bus_area_map)
+    (ties, _dc_ties) = PF.build_area_ties(
+        sys, ctx.bus_lookup, ctx.ybus, ctx.nrd, ctx.bus_area_map)
 
     @test length(ties) == 5
 
@@ -159,16 +156,15 @@ end
 
     # No enrolled areas -> every bus resolves to tail 0 (uncontrolled) via the
     # `get(..., 0)` default, so no ties are stored despite a real area boundary.
-    ties = PF.build_area_ties(sys, ctx.bus_lookup, ctx.ybus, ctx.nrd, ctx.bus_area_map)
+    (ties, _dc_ties) = PF.build_area_ties(
+        sys, ctx.bus_lookup, ctx.ybus, ctx.nrd, ctx.bus_area_map)
     @test isempty(ties)
 end
 
 @testset "area interchange tie three-winding transformer boundary" begin
-    # `case10_radial_series_reductions` (PSB) already carries a real Transformer3W
-    # (HV=101 -> star=1001, LV=103 -> star, MV=102 -> star). Re-area its terminals so
-    # the primary winding is interior (terminal + star share AreaA, mirroring PSS/E's
-    # own star-bus-inherits-primary's-area convention) and the secondary/tertiary
-    # windings straddle the AreaA/AreaB boundary through the star node.
+    # `case10_radial_series_reductions` (PSB) has a real Transformer3W; re-area so the
+    # primary winding stays interior (terminal + star share AreaA, per PSS/E's star-bus
+    # convention) while secondary/tertiary straddle the AreaA/AreaB boundary.
     sys = PSB.build_system(PSB.PSITestSystems, "case10_radial_series_reductions")
     trf = PSY.get_component(PSY.ThreeWindingTransformer, sys, "HV-LV-MV-i_1")
     star_bus = PSY.get_star_bus(trf)
@@ -186,17 +182,16 @@ end
     PSY.set_area!(tertiary_bus, areaB)
 
     ctx = _tie_test_context(sys, Dict("AreaA" => 1, "AreaB" => 2))
-    ties = PF.build_area_ties(sys, ctx.bus_lookup, ctx.ybus, ctx.nrd, ctx.bus_area_map)
+    (ties, _dc_ties) = PF.build_area_ties(
+        sys, ctx.bus_lookup, ctx.ybus, ctx.nrd, ctx.bus_area_map)
 
     star_ix = ctx.bus_lookup[PSY.get_number(star_bus)]
     primary_ix = ctx.bus_lookup[PSY.get_number(primary_bus)]
     secondary_ix = ctx.bus_lookup[PSY.get_number(secondary_bus)]
     tertiary_ix = ctx.bus_lookup[PSY.get_number(tertiary_bus)]
 
-    # The primary winding (terminal + star both AreaA) is interior: no tie.
     @test_throws ArgumentError _find_tie(ties, primary_ix, star_ix)
 
-    # The secondary and tertiary windings straddle AreaA/AreaB through the star bus.
     sec_tie = _find_tie(ties, secondary_ix, star_ix)
     tert_tie = _find_tie(ties, tertiary_ix, star_ix)
     A = ctx.ybus.data
@@ -212,10 +207,9 @@ end
 end
 
 @testset "area interchange tie discrete-controlled branch status" begin
-    # Mirror PNM's exact gate (`YbusACBranches.jl`): CLOSED contributes a tie candidate,
-    # OPEN does not — checked directly on `PF._tie_in_service` since constructing a full
-    # system with an open switch at a boundary (below) only exercises the CLOSED path
-    # implicitly (an open switch, correctly, produces no observable tie either way).
+    # Mirrors PNM's gate (`YbusACBranches.jl`): CLOSED contributes a tie, OPEN doesn't.
+    # Checked directly on `_tie_in_service` since a full system with an open boundary
+    # switch can't distinguish "no tie" from "path not exercised".
     sys = _make_two_area_system()
     bus1 = PSY.get_component(PSY.ACBus, sys, "Bus 1")
     bus6 = PSY.get_component(PSY.ACBus, sys, "Bus 6")
@@ -250,8 +244,8 @@ end
 
 @testset "area interchange tie discrete-controlled open switch at boundary" begin
     sys = _make_two_area_system()
-    bus1 = PSY.get_component(PSY.ACBus, sys, "Bus 1")   # Area1
-    bus6 = PSY.get_component(PSY.ACBus, sys, "Bus 6")   # Area2
+    bus1 = PSY.get_component(PSY.ACBus, sys, "Bus 1")
+    bus6 = PSY.get_component(PSY.ACBus, sys, "Bus 6")
     arc = PSY.Arc(; from = bus1, to = bus6)
     PSY.add_component!(sys, arc)
     sw = PSY.DiscreteControlledACBranch(;
@@ -269,10 +263,11 @@ end
     PSY.add_component!(sys, sw)
 
     ctx = _tie_test_context(sys, Dict("Area1" => 1, "Area2" => 2))
-    ties = PF.build_area_ties(sys, ctx.bus_lookup, ctx.ybus, ctx.nrd, ctx.bus_area_map)
+    (ties, _dc_ties) = PF.build_area_ties(
+        sys, ctx.bus_lookup, ctx.ybus, ctx.nrd, ctx.bus_area_map)
 
-    # The 3 original boundary branches (Trans1, Trans2, Trans3) are untouched; the open
-    # switch contributes no tie (and, critically, does not crash `_ybus_block_offsets`).
+    # Critically, the open switch contributes no tie and does not crash
+    # `_ybus_block_offsets`.
     @test length(ties) == 3
     bus1_ix = ctx.bus_lookup[1]
     bus6_ix = ctx.bus_lookup[6]
@@ -285,7 +280,7 @@ end
     PSY.get_ext(trans1)["metered_end"] = "From"   # wrong case: unrecognized, not silently coerced
 
     ctx = _tie_test_context(sys, Dict("Area1" => 1, "Area2" => 2))
-    ties =
+    (ties, _dc_ties) =
         @test_logs (:warn, r"metered_end.*neither.*from.*nor.*to") match_mode = :any PF.build_area_ties(
             sys,
             ctx.bus_lookup,
@@ -300,7 +295,7 @@ end
 
 @testset "area interchange tie parallel boundary branches deduplicated" begin
     sys = _make_two_area_system()
-    trans2 = PSY.get_component(PSY.TapTransformer, sys, "Trans2")   # 5 -> 6, Area1/Area2
+    trans2 = PSY.get_component(PSY.TapTransformer, sys, "Trans2")
     arc = PSY.get_arc(trans2)
     # A second transformer (not a `Line`: Trans2's terminals differ enough in nominal
     # voltage that PSY rejects a `Line` on that arc) in parallel on the SAME `Arc`.
@@ -321,10 +316,9 @@ end
     PSY.add_component!(sys, parallel_tx)
 
     ctx = _tie_test_context(sys, Dict("Area1" => 1, "Area2" => 2))
-    ties = PF.build_area_ties(sys, ctx.bus_lookup, ctx.ybus, ctx.nrd, ctx.bus_area_map)
+    (ties, _dc_ties) = PF.build_area_ties(
+        sys, ctx.bus_lookup, ctx.ybus, ctx.nrd, ctx.bus_area_map)
 
-    # Still exactly 3 boundary corridors: the parallel line does not add a 4th tie for
-    # the (5,6) pair already covered by Trans2.
     @test length(ties) == 3
     tie = _find_tie(ties, ctx.bus_lookup[5], ctx.bus_lookup[6])
     A = ctx.ybus.data
@@ -337,8 +331,6 @@ end
     @test A[t, f] == A.nzval[o[3]]
     @test A[t, t] == A.nzval[o[4]]
 end
-
-# ── Task 5: enrollment guards ───────────────────────────────────────────────────────────
 
 _set_slack!(sys, bus_name) =
     PSY.set_bustype!(PSY.get_component(PSY.ACBus, sys, bus_name), PSY.ACBusTypes.SLACK)
@@ -365,10 +357,9 @@ function _add_area_interchange!(
 end
 
 # Three-area fixture shared by the rule-9 (unenforceable-schedule) and happy-path tests.
-# Area1 (Bus 1-5) owns REF (Bus 1) and never gets a SLACK bus. Area2 (Bus 6) and Area3
-# (Bus 9, given a small generator so it is P-capable and PV-eligible) can each optionally
-# hold SLACK. Two AreaInterchange records make every area transfer-bearing: Area2->Area1
-# 0.3, Area3->Area1 0.2, so pdes(Area1) = -0.5, pdes(Area2) = 0.3, pdes(Area3) = 0.2 (pu).
+# Shared by rule-9 and happy-path tests. Area1 owns REF, never SLACK; Area2/Area3 can each
+# optionally hold SLACK (Area3's Bus 9 has a small gen so it's PV-eligible). AreaInterchange:
+# Area2->Area1 0.3, Area3->Area1 0.2 => pdes(Area1)=-0.5, pdes(Area2)=0.3, pdes(Area3)=0.2.
 function _three_area_transfer_fixture(; slack_area3::Bool = true)
     sys = _make_three_area_system()
     bus9 = PSY.get_component(PSY.ACBus, sys, "Bus 9")
@@ -415,10 +406,9 @@ end
     data = PowerFlowData(pf, sys)
     ix = PF.get_bus_lookup(data)[2]
     @test data.bus_type[ix, 1] == PSY.ACBusTypes.PV
-    # A real end-to-end PQ-demotion fixture needs an InterconnectingConverter/HybridSystem
-    # bus (see test_area_interchange_types.jl's "(c)" sub-case); poke the post-construction
-    # state directly instead -- exactly the precondition the guard checks ("at construction,
-    # pre-solve, before any Q-limit flip can occur").
+    # A real PQ-demotion fixture needs an InterconnectingConverter/HybridSystem bus (see
+    # test_area_interchange_types.jl's "(c)"); poke post-construction state directly instead
+    # -- exactly the precondition the guard checks (pre-solve, before any Q-limit flip).
     data.bus_type[ix, 1] = PSY.ACBusTypes.PQ
     aid = @test_logs(
         (:warn, r"Area \"Area1\": SLACK bus Bus 2 has no in-service voltage-regulating"),
@@ -459,13 +449,10 @@ end
 end
 
 @testset "area interchange enrollment rule 4 area spans multiple islands" begin
-    # A real "spans 2 islands" area can't be built end-to-end: PowerFlows requires exactly
-    # one REF bus per electrical island (`_find_subnetworks_for_reference_buses`), so a
-    # genuinely disconnected second island needs its own REF -- which, owned by the SAME
-    # area, would trip guard 3 (REF-containment) first, and owned by a DIFFERENT area,
-    # any available branch connecting the two islands is by definition a tie (not a
-    # disconnection). `_area_slack_candidate` takes `island_of` as an explicit argument for
-    # exactly this reason: unit-test it directly against a fabricated two-island map.
+    # A real "spans 2 islands" area can't be built end-to-end: a same-area second REF trips
+    # guard 3 first, and a different-area REF makes the connecting branch a tie, not a
+    # disconnection. `_area_slack_candidate` takes `island_of` as an explicit arg for this
+    # reason.
     sys = _make_two_area_system()
     _set_slack!(sys, "Bus 6")  # Area2, no REF
     pf = ACPolarPowerFlow(; area_interchange_control = true)
@@ -501,17 +488,11 @@ end
 end
 
 @testset "area interchange enrollment rule 4 area spans multiple islands (end-to-end)" begin
-    # Real fixture exercised through the PRODUCTION path (`_bus_island_map` ->
-    # `_find_subnetworks_for_reference_buses`), not a fabricated `island_of` dict: two
-    # genuinely disconnected islands, each with its own REF bus and its own genuine
-    # intra-island tie to area "Span" -- see `_make_two_island_spanning_area_system`.
     sys = _make_two_island_spanning_area_system()
     pf = ACPolarPowerFlow(; area_interchange_control = true)
-    # PNM's own `Ybus`/connectivity-check machinery also warns (more than once, with its
-    # own wording) that the raw system is genuinely disconnected -- expected, that's the
-    # whole point of this fixture -- so match_mode = :any (existing precedent: rule 9's
-    # tests) only asserts enrollment's own guard-4 warning is present, not the full,
-    # upstream-log-order-dependent sequence.
+    # PNM's own Ybus/connectivity checks also warn (different wording) that the raw system
+    # is disconnected -- expected, that's the point. match_mode = :any only asserts
+    # enrollment's own guard-4 warning is present.
     data = @test_logs(
         (:warn, r"span.*islands?"),
         min_level = Logging.Warn,
@@ -532,9 +513,88 @@ end
     )
 end
 
+"""An LCC whose inverter bus ("Area3") has NO AC branch at all -- only the LCC touches it.
+Proves DC-tie-only enumeration is real (not fabricated): `build_area_ties` on this genuinely
+AC-disconnected system returns an empty `ac_ties` and a `dc_ties` that touches Area3, driven
+entirely by a real `PowerFlowData`/`LCCParameters`/reduced-network build."""
+function _dc_tie_only_fixture()
+    sys = System(100.0)
+    area1 = PSY.Area(; name = "Area1")
+    area3 = PSY.Area(; name = "Area3")
+    PSY.add_component!(sys, area1)
+    PSY.add_component!(sys, area3)
+
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230)
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.PQ, 230)
+    b3 = _add_simple_bus!(sys, 3, ACBusTypes.PQ, 230)
+    PSY.set_area!(b1, area1)
+    PSY.set_area!(b2, area1)
+    PSY.set_area!(b3, area3)
+
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    _add_simple_load!(sys, b2, 10.0, 5.0)
+    _add_simple_load!(sys, b3, 60.0, 20.0)
+    _add_simple_line!(sys, b1, b2, 5e-3, 5e-3, 1e-3)
+
+    _add_simple_lcc!(sys, b2, b3, 0.05, 0.05, 0.08)
+    return sys
+end
+
+# DC ties count toward the `tied` bitvector in `build_area_interchange_data`, so a DC-tie-only
+# area can enroll where the old AC-only guard 5 would drop it. No real system exercises this
+# end-to-end: any path to REF makes guard 3 reject it first. This testset verifies the
+# tied-bitvector aggregation loop directly on `_dc_tie_only_fixture()`.
+@testset "area interchange enrollment: DC-tie-only area is tied; zero-tie (AC+DC) area is not" begin
+    sys = _dc_tie_only_fixture()
+    pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}()
+    data = PowerFlowData(pf, sys)
+    bus_lookup = PF.get_bus_lookup(data)
+    ybus = PF.get_power_network_matrix(data)
+    nrd = PF.get_network_reduction_data(data)
+    bus_area_map = Dict(bus_lookup[3] => 1)   # only Area3's own bus is a candidate (tail 1)
+
+    (ac_ties, dc_ties) = PF.build_area_ties(
+        sys, bus_lookup, ybus, nrd, bus_area_map, data.lcc, PF.get_dc_network(data))
+    @test isempty(ac_ties)
+    @test length(dc_ties) == 1
+    @test only(dc_ties).to_area_tail == 1
+
+    # Mirror of enrollment.jl's tied-bitvector loop (~:337-345), run on this REAL tie data.
+    function _tied_from_ties(n::Int, ac::Vector{PF.AreaTie}, dc::Vector{PF.DCTie})
+        tied = falses(n)
+        for tie in ac
+            iszero(tie.from_area_tail) || (tied[tie.from_area_tail] = true)
+            iszero(tie.to_area_tail) || (tied[tie.to_area_tail] = true)
+        end
+        for tie in dc
+            iszero(tie.from_area_tail) || (tied[tie.from_area_tail] = true)
+            iszero(tie.to_area_tail) || (tied[tie.to_area_tail] = true)
+        end
+        return tied
+    end
+    @test _tied_from_ties(1, ac_ties, dc_ties) == BitVector([true])
+    @test _tied_from_ties(1, PF.AreaTie[], PF.DCTie[]) == BitVector([false])
+
+    @test_logs(
+        (:warn, r"Area \"Area3\": zero in-service ties"),
+        min_level = Logging.Warn,
+        PF._warn_zero_tie_areas(["Area3"], _tied_from_ties(1, PF.AreaTie[], PF.DCTie[]))
+    )
+
+    # Area3's own bus has no electrical path to any REF, so PowerFlows auto-promotes it to
+    # REF; guard 3 (not guard 5) is what keeps this fixture from enrolling end-to-end.
+    pf_control =
+        ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; area_interchange_control = true)
+    data_control = PowerFlowData(pf_control, sys)
+    bus_lookup_control = PF.get_bus_lookup(data_control)
+    @test data_control.bus_type[bus_lookup_control[3], 1] == PSY.ACBusTypes.REF
+    aid = PF.build_area_interchange_data(pf_control, sys, data_control)
+    @test PF.n_controlled_areas(aid) == 0
+end
+
 @testset "area interchange enrollment rule 6 slack absorption limit" begin
     sys = _make_two_area_system()
-    _set_slack!(sys, "Bus 6")  # Area2, no REF
+    _set_slack!(sys, "Bus 6")
     pf = ACPolarPowerFlow(;
         area_interchange_control = true,
         generator_slack_participation_factors = Dict(
@@ -600,10 +660,9 @@ end
 end
 
 @testset "area interchange enrollment happy path: REF area de-enrolled, two enrolled" begin
-    # Area1 holds REF and never gets SLACK -> uncontrolled (rule 1, silent) and reported by
-    # rule 9's @info (see above). Area2 and Area3 both enroll: tail_ix 1,2 in sorted-name
-    # order, pdes(Area2)=0.3, pdes(Area3)=0.2 (hand-derived from the fixture's
-    # AreaInterchange records: Area2->Area1 0.3, Area3->Area1 0.2).
+    # Area1 (REF, no SLACK) stays uncontrolled; Area2/Area3 enroll with tail_ix 1,2 in
+    # sorted-name order. pdes values come from `_three_area_transfer_fixture`'s
+    # AreaInterchange records.
     sys = _three_area_transfer_fixture(; slack_area3 = true)
     pf = ACPolarPowerFlow(; area_interchange_control = true)
     data = PowerFlowData(pf, sys)

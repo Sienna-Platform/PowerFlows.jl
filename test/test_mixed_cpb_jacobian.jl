@@ -172,6 +172,22 @@ end
     end
 end
 
+@testset "Mixed CPB Jacobian: multi-swing (two independent REFs, one island)" begin
+    # Each swing's ∂F_P/∂x[off] = −1 (identity, not the distributed share); a wrong
+    # diagonal or cross-term shows as order-1 decay. Fixture: test_mixed_cpb_power_flow.jl.
+    sys = _two_swing_mixed_system()
+    pf_mixed = ACMixedPowerFlow{NewtonRaphsonACPowerFlow}(; correct_bustypes = false)
+    data = PF.PowerFlowData(pf_mixed, sys)
+    R = PF.ACMixedCPBResidual(data, 1)
+    x = Vector{Float64}(undef, length(R.Rv))
+    PF.mixed_initial_state!(x, data, R.bus_state_offset, R.bus_block_size, 1)
+    Random.seed!(2024)
+    x .+= 1e-3 .* randn(length(x))
+    R(x, 1)
+    J = PF.ACMixedCPBJacobian(R, 1)
+    verify_jacobian_asymptotic(R, copy(J.Jv), x, 1; label = "mixed CPB two-swing")
+end
+
 @testset "Mixed CPB Jacobian: zero allocation per Newton iteration" begin
     # Builds a populated MCPB Jacobian functor; mirrors the FD helper's setup.
     function _build_mixed_J(sys)

@@ -14,12 +14,7 @@
         area_interchange_control = true,
     )
 
-    for S in (
-        LevenbergMarquardtACPowerFlow,
-        RobustHomotopyPowerFlow,
-        GradientDescentACPowerFlow,
-        FastDecoupledACPowerFlow,
-    )
+    for S in (GradientDescentACPowerFlow, RobustHomotopyPowerFlow)
         @test_throws ArgumentError ACPolarPowerFlow{S}(; area_interchange_control = true)
     end
 
@@ -56,13 +51,54 @@
     end
 end
 
+@testset "area interchange LM constructor validation" begin
+    pf = ACPowerFlow{LevenbergMarquardtACPowerFlow}(; area_interchange_control = true)
+    @test PowerFlows.get_area_interchange_control(pf) == true
+
+    @test_throws ArgumentError ACRectangularPowerFlow{LevenbergMarquardtACPowerFlow}(;
+        area_interchange_control = true,
+    )
+
+    @test_throws r"GradientDescentACPowerFlow" ACPolarPowerFlow{
+        GradientDescentACPowerFlow,
+    }(;
+        area_interchange_control = true,
+    )
+end
+
+@testset "area interchange homotopy constructor validation" begin
+    @test_throws r"RobustHomotopyPowerFlow" ACPowerFlow{RobustHomotopyPowerFlow}(;
+        area_interchange_control = true,
+    )
+
+    @test_throws ArgumentError ACRectangularPowerFlow{RobustHomotopyPowerFlow}(;
+        area_interchange_control = true,
+    )
+end
+
+@testset "area interchange FD constructor validation" begin
+    pf = ACPowerFlow{FastDecoupledACPowerFlow{FDFixedJacobian, FDSchemeXB}}(;
+        area_interchange_control = true,
+    )
+    @test PowerFlows.get_area_interchange_control(pf) == true
+
+    bare_pf =
+        ACPowerFlow{FastDecoupledACPowerFlow}(; area_interchange_control = true)
+    @test PowerFlows.get_area_interchange_control(bare_pf) == true
+
+    @test_throws ArgumentError ACRectangularPowerFlow{
+        FastDecoupledACPowerFlow{FDFixedJacobian, FDSchemeXB},
+    }(;
+        area_interchange_control = true,
+    )
+end
+
 @testset "area interchange SLACK bus ingestion" begin
     base_sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
     pf = ACPowerFlow()
     ref_data = PowerFlowData(pf, base_sys)
     @test solve_power_flow!(ref_data)
 
-    # (a) SLACK on a bus with in-service generators normalizes to PV.
     sys_a = deepcopy(base_sys)
     bus_a = PSY.get_component(PSY.ACBus, sys_a, "Bus 2")
     PSY.set_bustype!(bus_a, PSY.ACBusTypes.SLACK)
@@ -73,15 +109,12 @@ end
     @test all(isapprox.(data_a.bus_magnitude, ref_data.bus_magnitude; atol = 1e-8))
     @test all(isapprox.(data_a.bus_angles, ref_data.bus_angles; atol = 1e-8))
 
-    # (b) SLACK on a bus with no in-service component capable of active power
-    # injection errors at construction: pure-load bus...
     sys_b = deepcopy(base_sys)
     bus_b = PSY.get_component(PSY.ACBus, sys_b, "Bus 14")
     PSY.set_bustype!(bus_b, PSY.ACBusTypes.SLACK)
     @test_throws ArgumentError PowerFlowData(pf, sys_b)
     @test_throws r"SLACK-designated bus Bus 14" PowerFlowData(pf, sys_b)
 
-    # ...and generator-backed bus whose generators are all out of service.
     sys_b2 = deepcopy(base_sys)
     bus_b2 = PSY.get_component(PSY.ACBus, sys_b2, "Bus 2")
     PSY.set_bustype!(bus_b2, PSY.ACBusTypes.SLACK)
@@ -122,12 +155,9 @@ end
     )
     @test bt_c_dc == PSY.ACBusTypes.PQ
 
-    # (e) the throw sub-case (rule 1, no active-power capability) still throws for a
-    # DC model.
     @test_throws ArgumentError PowerFlowData(dc_pf, sys_b)
     @test_throws r"SLACK-designated bus Bus 14" PowerFlowData(dc_pf, sys_b)
 
-    # Non-SLACK bus types pass through the helper unchanged.
     for bt in
         (PSY.ACBusTypes.REF, PSY.ACBusTypes.PV, PSY.ACBusTypes.PQ, PSY.ACBusTypes.ISOLATED)
         @test PF._normalize_slack_bustype(pf, bt, 99, "TestBus", Set{Int}(), Set{Int}()) ==
@@ -143,8 +173,9 @@ end
         PF.ControlledArea("Area2", 5, -0.1, 2),
     ]
     aid = PF.AreaInterchangeData(
-        areas, PF.AreaTie[], 0.05, zeros(2), zeros(2, 1),
-        areas, PF.AreaTie[], zeros(2, 1), Dict{Int, Vector{PF.RelaxedAreaRecord}}(),
+        areas, PF.AreaTie[], PF.DCTie[], 0.05, zeros(2), zeros(2, 1),
+        areas, PF.AreaTie[], PF.DCTie[], zeros(2, 1),
+        Dict{Int, Vector{PF.RelaxedAreaRecord}}(),
     )
     @test PF.area_tail_length(aid) == 2
     @test PF.n_controlled_areas(aid) == 2
@@ -153,11 +184,13 @@ end
         PF.AreaInterchangeData(
             PF.ControlledArea[],
             PF.AreaTie[],
+            PF.DCTie[],
             0.05,
             Float64[],
             zeros(Float64, 0, 1),
             PF.ControlledArea[],
             PF.AreaTie[],
+            PF.DCTie[],
             zeros(Float64, 0, 1),
             Dict{Int, Vector{PF.RelaxedAreaRecord}}(),
         )

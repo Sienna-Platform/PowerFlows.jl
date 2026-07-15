@@ -153,3 +153,49 @@ end
         solver_settings = _mixed_pf_settings())
     _mixed_polar_parity_data(pf_p, pf_h, sys_p, sys_h)
 end
+
+# Same topology as polar's `_two_swing_system()` (test_jacobian.jl), named distinctly
+# since ReTest merges every test_*.jl into one module. The nonzero swing-2 angle
+# exercises real off-diagonal ∂P/∂θ terms. Shared by test_mixed_cpb_jacobian.jl and
+# test_mixed_cpb_polar_parity.jl.
+function _two_swing_mixed_system()
+    sys = System(100.0)
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.06, 0.0)
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.REF, 230, 1.05, 0.05)
+    b3 = _add_simple_bus!(sys, 3, ACBusTypes.PQ, 230, 1.0, 0.0)
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    _add_simple_source!(sys, b2, 0.0, 0.0)
+    _add_simple_load!(sys, b3, 40, 15)
+    _add_simple_line!(sys, b1, b3, 5e-3, 5e-3, 1e-3)
+    _add_simple_line!(sys, b2, b3, 5e-3, 5e-3, 1e-3)
+    return sys
+end
+
+@testset "Mixed CPB Power Flow: multi-swing (two swings in one island each self-balance)" begin
+    @testset "$(V)" for V in (NewtonRaphsonACPowerFlow, TrustRegionACPowerFlow)
+        sys = _two_swing_mixed_system()
+        pf = ACMixedPowerFlow{V}(; correct_bustypes = false)
+        res = solve_power_flow(pf, sys)
+        @test res !== missing
+        bus_res = res["bus_results"]
+        vm1 = bus_res[bus_res.bus_number .== 1, :Vm][1]
+        va1 = bus_res[bus_res.bus_number .== 1, :θ][1]
+        vm2 = bus_res[bus_res.bus_number .== 2, :Vm][1]
+        va2 = bus_res[bus_res.bus_number .== 2, :θ][1]
+        @test vm1 ≈ 1.06 atol = 1e-6
+        @test va1 ≈ 0.0 atol = 1e-6
+        @test vm2 ≈ 1.05 atol = 1e-6
+        @test va2 ≈ 0.05 atol = 1e-6
+        # The fixture is asymmetric (swing 2 leads by 0.05 rad, driving circulating
+        # flow), so assert net P > load rather than a per-swing split.
+        p1 = bus_res[bus_res.bus_number .== 1, :P_gen][1]
+        p2 = bus_res[bus_res.bus_number .== 2, :P_gen][1]
+        @test p1 + p2 > 40.0
+        polar_res = solve_power_flow(
+            ACPowerFlow{V}(; correct_bustypes = false), _two_swing_mixed_system())
+        polar_bus = polar_res["bus_results"]
+        for col in (:Vm, :θ, :P_gen, :Q_gen)
+            @test isapprox(bus_res[!, col], polar_bus[!, col]; atol = 1e-6)
+        end
+    end
+end
