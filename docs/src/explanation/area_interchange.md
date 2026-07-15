@@ -84,8 +84,7 @@ through them are out of scope by definition, not a gap in the tie enumeration.
   - **Fast Decoupled, fixed-Jacobian variant**: the frozen Jacobian is the augmented one, so the
     border is factored once with everything else.
   - **Fast Decoupled, classic B′/B″ variant**: a bordered-Schur substep corrects ``\theta`` and
-    ``\Delta P_a`` each cycle against the fixed B′ factor. The *step* uses only the ``\partial
-    r_a/\partial\theta`` coupling (DC-tie and voltage cross-terms are dropped, consistent with the
+    ``\Delta P_a`` each cycle against the fixed B′ factor. The *step* uses only the ``\partial r_a/\partial\theta`` coupling (DC-tie and voltage cross-terms are dropped, consistent with the
     decoupling approximation), but the *target* is evaluated with the exact residual — including
     DC ties — so schedules are still met exactly at convergence.
 
