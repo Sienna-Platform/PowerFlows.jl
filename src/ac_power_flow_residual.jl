@@ -299,10 +299,9 @@ function _update_residual_values!(
     for (ref_bus, subnetwork_buses) in subnetworks
         slack_scalar = x[2 * ref_bus - 1] - P_net_set[ref_bus]
         n_sub = length(subnetwork_buses)
-        # An island with more than one swing (REF) bus holds each swing at its own fixed
-        # complex voltage, so each swing carries its OWN slack: its P-slot self-balances
-        # (P_net = x[2·ix−1]) instead of sharing one distributed island scalar. Single-swing
-        # islands keep the distributed-slack path unchanged.
+        # Multi-swing island: each swing self-balances at its own P-slot
+        # (P_net = x[2·ix−1]) instead of sharing one distributed island scalar;
+        # single-swing islands keep the distributed-slack path unchanged.
         n_ref = 0
         @inbounds for k in 1:n_sub
             bus_types[subnetwork_buses[k]] == PSY.ACBusTypes.REF && (n_ref += 1)
@@ -410,26 +409,19 @@ function _update_residual_values!(
         F[2 * ix] -= Q_net[ix]
     end
 
-    # PSS/E-style embedded area net-interchange control: ΔP_a couples into the P-balance
-    # row at each controlled area's slack bus, at the same seam the distributed-slack
-    # P_slack term enters above conceptually. Applied directly to `F` (not folded into
-    # `P_net[ix] += ΔP` before the balance loop) because `P_net[ix]` is NOT reset to a
-    # clean baseline every call once the slack bus is PQ (a PQ bus's ZIP-load dispatch does
-    # `P_net[ix] += ...` incrementally, relying on `P_net[ix]` carrying over from the
-    # PREVIOUS evaluation on this same `Residual` object — see
-    # `_set_state_variables_at_bus!(::Val{PQ})`). Adding ΔP into that same persistent
-    # buffer would silently accumulate an extra ΔP on every repeated evaluation after a
-    # PV->PQ Q-limit flip of the area slack bus. `F` is reset (`F .= 0.0`) at the top of
-    # every call, so applying ΔP here is exactly-once and bus-type-invariant (spec §4 item
-    # 1 / §5.6), matching the Jacobian's constant `-1.0` stamp at this same row.
+    # ΔP_a couples into the P-balance row at each area's slack bus. Applied directly to
+    # `F` (not folded into `P_net[ix]`) because `P_net[ix]` persists across calls once the
+    # slack bus is PQ (ZIP-load dispatch accumulates into it — see
+    # `_set_state_variables_at_bus!(::Val{PQ})`); adding ΔP there would double-count after
+    # a PV->PQ Q-limit flip. `F` is reset every call, so applying ΔP here is exactly-once,
+    # matching the Jacobian's constant `-1.0` stamp at this row.
     if n_controlled_areas(data) > 0
         area_off = area_tail_offset(data, dcn)
         @inbounds for area in data.area_interchange.areas
             ΔP = x[area_off + area.tail_ix]
-            # Mirror ΔP_a onto `data`, column-indexed by `time_step` (same seam as the LCC
-            # tap / `_read_vsc_state!` tail write-back below) so a warm re-solve's `x0` can
-            # recover the converged value for THIS time step without contaminating others —
-            # see `AreaInterchangeData.delta_p` and `update_state!`.
+            # Mirror ΔP_a onto `data` (time_step-indexed, same seam as the LCC tap /
+            # VSC tail write-back) so a warm re-solve's `x0` recovers this time step's
+            # converged value without contaminating others.
             data.area_interchange.delta_p[area.tail_ix, time_step] = ΔP
             F[2 * area.slack_bus_ix - 1] -= ΔP
         end
@@ -474,12 +466,9 @@ end
 """
     _reject_multi_swing_islands(subnetworks, bus_type, formulation)
 
-Throw an informative error if any island holds more than one swing (REF) bus. Retained for
-formulations that do not implement independent-per-swing slack so a multi-swing system fails
-loudly at construction rather than solving to a wrong answer or silently diverging. The
-polar, rectangular-CI, and mixed-CPB formulations all support multi-swing (each swing
-self-balances at its own P slot); RobustHomotopy does not yet (it currently fails with an
-uninformative KeyError on a multi-swing island and should adopt this guard).
+Throw if any island has more than one swing (REF) bus. Guards formulations without
+independent-per-swing slack support (currently only RobustHomotopy) so they fail loudly
+instead of solving a mis-specified problem.
 """
 function _reject_multi_swing_islands(
     subnetworks::Dict{Int, Vector{Int}},
@@ -534,10 +523,9 @@ function _build_bus_slack_participation_factors(
         throw(ArgumentError("slack_participation_factors cannot be negative"))
     bus_slack_participation_factors = sparsevec(spf_idx, spf_val, n_buses)
     for subnetwork_buses in values(subnetworks)
-        # A multi-swing island holds each swing at its own fixed voltage and lets each carry
-        # its own slack (see `_update_residual_values!`); spreading slack onto non-swing buses
-        # of such an island is undefined (which swing's deviation would they absorb?). Reject
-        # distributed slack there rather than solve a mis-specified problem.
+        # Multi-swing island: each swing carries its own slack (see
+        # `_update_residual_values!`); spreading slack onto non-swing buses is undefined
+        # there, so reject it.
         n_ref_sub = count(ix -> bus_type[ix] == PSY.ACBusTypes.REF, subnetwork_buses)
         if n_ref_sub > 1
             any(

@@ -133,10 +133,10 @@ function _get_or_build_jacobian_structure(
         data.area_interchange)
     isnothing(reused) || return reused
     Jv0 = _create_jacobian_matrix_structure(data, slack_factors, subnetworks, time_step)
-    # Cache a pristine copy; `Jv0` is about to be mutated by the Newton loop. `area_data` is
-    # stored by IDENTITY (not copied) — a rebuilt `PowerFlowData` gets a fresh
-    # `AreaInterchangeData` object, forcing a rebuild; a Q-limit flip keeps the same object,
-    # so reuse still works (spec §5.4).
+    # Cache a pristine copy; `Jv0` is about to be mutated by the Newton loop. `area_data`
+    # is stored by IDENTITY (not copied) — a rebuilt `PowerFlowData` gets a fresh
+    # `AreaInterchangeData`, forcing a rebuild; a Q-limit flip keeps the same object, so
+    # reuse still works.
     data.ac_jacobian_structure_cache[] =
         ACJacobianStructureCache(
             data.power_network_matrix, copy(nzind), copy(Jv0), data.area_interchange)
@@ -831,12 +831,9 @@ function _set_entries_for_lcc(data::ACPowerFlowData,
     return
 end
 
-"""
-Bus indices of swing (REF) buses that share an island with another swing. Each such swing
-carries its OWN slack (its P-slot self-balances, `∂F_P/∂x[2i−1] = −1`), instead of the single
-distributed island scalar (`−c_ref`); the distributed-slack cross-terms are also dropped for
-these islands. Single-swing islands return nothing here and keep the distributed-slack path.
-"""
+"""Bus indices of REF buses sharing an island with another REF (multi-swing). Each
+self-balances its own P-slot (`∂F_P/∂x[2i−1] = −1`) instead of the distributed island
+scalar; single-swing islands are excluded and keep the distributed-slack path."""
 function _multi_swing_ref_indices(
     bus_type::AbstractMatrix{PSY.ACBusTypes},
     subnetworks::Dict{Int64, Vector{Int64}},
