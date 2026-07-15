@@ -376,36 +376,19 @@ end
 """
     _ac_power_flow_with_area_relax!(data, pf, time_step; kwargs...) -> Bool
 
-Wraps `_ac_power_flow` (itself already wrapping the Q-limit retry loop) with the
-greedy-relax handling for embedded area net-interchange control (design spec §6, USER
-DIRECTIVE — supersedes the spec's original "surface as non-convergence" posture): on a
-non-converged solve with at least one controlled area still enrolled, de-enroll the area
-with the largest `|r_a|` at the failed iterate (`_area_residual_gaps`/`_deenroll_area!`,
-`area_residual.jl`) and re-solve from scratch — a fresh Q-limit loop, warm-started off the
-current bus state, with surviving areas' `ΔP_a` re-seeded from their previous tail values
-(the `delta_p` mirror already holds them — see `AreaInterchangeData`'s docstring) — repeating
-until convergence or the enrolled set is exhausted. Zero enrolled areas left and still
-failing is genuine network non-convergence, reported exactly as today (attribution: the
-schedule was NOT the culprit) plus a terminal diagnostic naming the worst-missed area
-(`_report_area_interchange_failure`, `residual_condition_diagnostics.jl`).
+Wraps `_ac_power_flow` with greedy-relax handling for embedded area net-interchange
+control: on non-convergence with areas still enrolled, de-enroll the worst-`|r_a|` area
+and re-solve, warm-started with surviving areas' `ΔP_a` re-seeded from the `delta_p`
+mirror; repeat until convergence or exhaustion. Exhaustion while still failing is genuine
+network non-convergence plus a terminal diagnostic (`_report_area_interchange_failure`).
+Relaxation is never silent: an `@error` at each de-enrollment and a solve-end summary;
+converging after a relax still returns `true`.
 
-Converging after a relax still returns `true` — relaxation is never silent: an `@error` is
-raised at EACH de-enrollment (naming the area, its target, and its residual gap) and again
-as a solve-end summary if the time step converged only after relaxing; the results table
-(`post_processing.jl`) also carries a `:relaxed` status row per relaxed area. A `data` on
-which area interchange control was never enrolled at all (`pristine_areas` empty)
-short-circuits to a bare `_ac_power_flow` call — no relax bookkeeping, no pristine-reset
-check; this is the only zero-cost path (no allocation, no extra work) and is genuinely
-per-`data`-lifetime, unlike the check below.
-
-Resets to the FULL pristine enrollment before this time step's own attempt
-(`_ensure_pristine_area_set!`), so a PREVIOUS time step's relax on this same `data` never
-carries over — relax decisions are per time step. The short-circuit above deliberately tests
-the PRISTINE set, not the WORKING one: the WORKING set is exactly what a previous time
-step's greedy relax may have emptied (exhaustion, or a relax-to-zero-then-converge), and
-short-circuiting on IT would read that leftover empty state before
-`_ensure_pristine_area_set!` ever ran, permanently disabling area control for the rest of
-`data`'s lifetime instead of restoring it for this time step.
+Resets to the full pristine enrollment before each time step's attempt
+(`_ensure_pristine_area_set!`) so a previous step's relax never carries over. The
+never-enrolled short-circuit deliberately tests the PRISTINE set, not the WORKING one —
+a previous time step's relax may have emptied the working set, and short-circuiting on it
+would permanently disable area control for the rest of `data`'s lifetime.
 """
 function _ac_power_flow_with_area_relax!(
     data::ACPowerFlowData,
@@ -445,8 +428,10 @@ function _ac_power_flow_with_area_relax!(
     relaxed_detail = join(
         (
             let tail_ix = pristine_tail_of[r.name],
-                ni_solved =
-                    _area_net_interchange(aid.pristine_ties, tail_ix, data, time_step)
+                ni_solved = _area_net_interchange(
+                    aid.pristine_ties, aid.pristine_dc_ties, tail_ix, data,
+                    time_step,
+                )
 
                 "$(r.name) (ni_solved=$(ni_solved), pdes=$(r.pdes), " *
                 "gap=$(ni_solved - r.pdes))"

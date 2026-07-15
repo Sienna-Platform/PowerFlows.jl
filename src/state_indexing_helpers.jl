@@ -97,13 +97,9 @@ function update_state!(x::Vector{Float64},
         x[state_variable_count] = dcn.node_vdc[k, time_step]
         state_variable_count += 1
     end
-    # Area-interchange tail (ΔP_a): mirrored on `data.area_interchange.delta_p`, written back
-    # every residual evaluation (`_update_residual_values!`) — read back here, column-indexed
-    # by `time_step`, exactly like the LCC tap / VSC tails above, so a warm re-solve on the
-    # SAME `data` and time step starts from the converged ΔP_a instead of resetting to 0 (and
-    # a different time step's converged ΔP_a cannot leak in). A freshly enrolled area's
-    # mirror starts at 0.0 (see `AreaInterchangeData` construction), so a genuine flat start
-    # is unaffected.
+    # Area-interchange tail (ΔP_a): mirrored on `delta_p` every residual evaluation and
+    # read back here (time-step indexed, like the LCC/VSC tails above) so a warm re-solve
+    # resumes from the converged ΔP_a instead of resetting to 0.
     for tail_ix in 1:n_controlled_areas(data.area_interchange)
         x[state_variable_count] = data.area_interchange.delta_p[tail_ix, time_step]
         state_variable_count += 1
