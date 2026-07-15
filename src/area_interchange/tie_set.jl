@@ -1,6 +1,6 @@
 # Pure tie-enumeration for PSS/E-style area interchange control (see `area_types.jl`).
-# Phase 1: AC branches only — `TwoTerminalHVDC` (LCC/VSC) is a Y-bus-less `ACBranch`
-# subtype (modeled as fixed injections elsewhere) and is excluded via `PSY.ACTransmission`.
+# AC-branch loop: `TwoTerminalHVDC` (LCC/VSC) is a Y-bus-less `ACBranch` subtype and is
+# excluded via `PSY.ACTransmission`; DC-line ties are enumerated separately (`build_dc_ties`).
 # `ThreeWindingTransformer` (abstract; concrete `Transformer3W`/`PhaseShiftingTransformer3W`)
 # has no `get_arc` and is handled by decomposing it into its three star-node windings —
 # see `_tie_arcs`.
@@ -45,20 +45,10 @@ _tie_in_service(br::PSY.DiscreteControlledACBranch) =
 _tie_arcs(branch::PSY.ACTransmission) = ((PSY.get_arc(branch), branch),)
 
 """Decompose a three-winding transformer into its three star-node windings — the same
-`Arc`s PNM stamps into the Y-bus per-winding (`YbusACBranches.jl`'s `_ybus!` for
-`ThreeWindingTransformer`, keyed through the same `bus_lookup`/`reverse_bus_search_map`
-this file already resolves against), gated by the SAME per-winding availability flags PNM
-gates on. The star bus is a real, resolvable network node — PSS/E parsing assigns it the
-PRIMARY terminal's area (`_create_starbus_from_transformer` in PowerSystems'
-`parsers/pm_io/psse.jl`), not an arealess singleton — so each winding is just a normal
-two-terminal tie candidate: a winding wholly inside one area (terminal and star share an
-area, e.g. the primary winding) contributes no tie, and a winding crossing an area
-boundary becomes a correctly metered tie. KCL at the star bus (zero net injection there)
-makes the sum over the boundary-crossing windings equal the transformer's true net export
-from each area, with no interior/boundary special-casing needed at the transformer level.
-Each winding is paired with the `PNM.ThreeWindingTransformerWinding` PNM itself uses to
-stamp that winding's Y11/Y22 into the aggregate Y-bus (`Ybus.jl`'s `_ybus!`), so
-`PNM.ybus_branch_entries` on it returns the SAME primitive PNM summed into the diagonal."""
+per-winding `Arc`s and availability gating PNM uses when stamping the Y-bus. The star bus
+is a real network node assigned the primary terminal's area, so each winding is a normal
+two-terminal tie candidate; KCL at the star bus makes the boundary-crossing windings sum
+to the transformer's true net export from each area."""
 function _tie_arcs(branch::PSY.ThreeWindingTransformer)
     arcs = Tuple{PSY.Arc, PNM.ThreeWindingTransformerWinding}[]
     PSY.get_available_primary(branch) && push!(
@@ -191,23 +181,144 @@ function _dedup_ties(candidates::Vector{_TieCandidate}, ybus)
     return ties
 end
 
-"""
-    build_area_ties(sys, bus_lookup, ybus, nrd, bus_area_map) -> Vector{AreaTie}
+"""Rebuild the SAME filtered, ordered `TwoTerminalLCCLine` list `initialize_LCCParameters!`
+built, so index `i` here lines up with `lcc.bus_indices[i]` (rectifier="from"/inverter="to"
+always; see `DCTie` docstring). A reduction merging both LCC terminals into one bus shows
+up as `fix == tix`: the tie vanishes (no boundary left to cross)."""
+function _lcc_dc_ties(
+    sys::PSY.System,
+    lcc::LCCParameters,
+    removed_buses::Set{Int},
+    bus_area_map::Dict{Int, Int},
+)
+    ties = DCTie[]
+    isempty(lcc.bus_indices) && return ties
+    lccs = collect(
+        PSY.get_available_components(
+            x -> x.arc.from.number ∉ removed_buses && x.arc.to.number ∉ removed_buses,
+            PSY.TwoTerminalLCCLine,
+            sys,
+        ),
+    )
+    @assert length(lccs) == length(lcc.bus_indices) "LCC DC-tie enumeration must see the \
+        SAME filtered TwoTerminalLCCLine list `initialize_LCCParameters!` built \
+        ($(length(lccs)) vs $(length(lcc.bus_indices)))."
+    for (i, branch) in enumerate(lccs)
+        (fix, tix) = lcc.bus_indices[i]
+        if fix == tix
+            @warn "$(PSY.summary(branch)): a zero-impedance reduction merged its rectifier \
+                and inverter buses; the boundary is evaluated on the reduced network and \
+                this LCC contributes no DC tie."
+            continue
+        end
+        tail_from = get(bus_area_map, fix, 0)
+        tail_to = get(bus_area_map, tix, 0)
+        tail_from == tail_to && continue
+        push!(
+            ties,
+            DCTie(DC_TIE_LCC, i, 0, 0, fix, tix, _metered_from(branch), tail_from, tail_to),
+        )
+    end
+    return ties
+end
 
-Enumerate AC-branch ties whose post-reduction endpoints straddle an area boundary.
+"""Rebuild the SAME `_available_vsc_lines` list `_lower_vsc_lines!` iterated when lowering
+`dcn`, so converter pair `(2i-1, 2i)` here matches line `i` there (from-side, to-side; see
+`DCNetwork`/`_lower_vsc_lines!`). `dcn.converter_ac_bus_ix` is already the reduced-network AC
+bus index. `iszero(n_vsc_converters(dcn))` with nonempty VSC lines means DC-network joint
+modeling was turned off (`solver_settings[:model_dc_network] = false`) — no `P_c` state
+exists to feed `NI_a` then, so no DC ties are enumerated (silent, mirrors "DC network off"
+already meaning "VSC ignored by the AC solve" elsewhere)."""
+function _vsc_dc_ties(
+    sys::PSY.System,
+    dcn::DCNetwork,
+    removed_buses::Set{Int},
+    bus_area_map::Dict{Int, Int},
+)
+    ties = DCTie[]
+    iszero(n_vsc_converters(dcn)) && return ties
+    lines = _available_vsc_lines(sys, removed_buses)
+    for (i, line) in enumerate(lines)
+        from_c = 2 * i - 1
+        to_c = 2 * i
+        arc = PSY.get_arc(line)
+        from_number = PSY.get_number(PSY.get_from(arc))
+        to_number = PSY.get_number(PSY.get_to(arc))
+        @assert dcn.converter_ac_bus_number[from_c] == from_number &&
+                dcn.converter_ac_bus_number[to_c] == to_number "VSC converter/line \
+            pairing mismatch for $(PSY.summary(line)); DC-tie enumeration order must match \
+            `_lower_vsc_lines!`."
+        fix = dcn.converter_ac_bus_ix[from_c]
+        tix = dcn.converter_ac_bus_ix[to_c]
+        if fix == tix
+            @warn "$(PSY.summary(line)): a zero-impedance reduction merged its two AC \
+                terminals; the boundary is evaluated on the reduced network and this VSC \
+                line contributes no DC tie."
+            continue
+        end
+        tail_from = get(bus_area_map, fix, 0)
+        tail_to = get(bus_area_map, tix, 0)
+        tail_from == tail_to && continue
+        push!(
+            ties,
+            DCTie(
+                DC_TIE_VSC,
+                0,
+                from_c,
+                to_c,
+                fix,
+                tix,
+                _metered_from(line),
+                tail_from,
+                tail_to,
+            ),
+        )
+    end
+    return ties
+end
+
+"""
+    build_dc_ties(sys, lcc, dcn, nrd, bus_area_map) -> Vector{DCTie}
+
+Enumerate DC-line ties: `PSY.TwoTerminalLCCLine` and point-to-point
+`PSY.TwoTerminalVSCLine` whose two AC terminals resolve to different areas on the reduced
+network. `PSY.InterconnectingConverter` (multi-terminal DC) is not enumerated — see `DCTie`
+docstring. Empty on any system with no cross-area DC converter, including every AC-only
+system (zero overhead / no behavior change).
+"""
+function build_dc_ties(
+    sys::PSY.System,
+    lcc::LCCParameters,
+    dcn::DCNetwork,
+    nrd,
+    bus_area_map::Dict{Int, Int},
+)
+    removed_buses = PNM.get_removed_buses(nrd)
+    ties = _lcc_dc_ties(sys, lcc, removed_buses, bus_area_map)
+    append!(ties, _vsc_dc_ties(sys, dcn, removed_buses, bus_area_map))
+    return ties
+end
+
+"""
+    build_area_ties(sys, bus_lookup, ybus, nrd, bus_area_map, lcc, dcn) -> (Vector{AreaTie}, Vector{DCTie})
+
+Enumerate AC-branch ties AND DC-line ties whose post-reduction endpoints straddle an
+area boundary.
 
 `bus_lookup` maps PSY bus number to reduced-network index; `ybus` is the assembled
 `AC_Ybus_Matrix`; `nrd` is the `PNM.NetworkReductionData` used to resolve merged buses.
 `bus_area_map` maps a reduced-network bus index to its enrolled area `tail_ix` (`0` for
 an uncontrolled or area-less bus); ties where both endpoints are `0` are not stored, since
-no residual row references that boundary.
+no residual row references that boundary. `lcc`/`dcn` are `data.lcc`/`get_dc_network(data)`.
 
 `nz_offsets` are cached via `_ybus_block_offsets` — offsets only, never admittance
 copies — so a controlled tap that is also a tie keeps feeding correct flows after
 `apply_parameter!` mutates the Y-bus in place. Out-of-service branches are excluded
 (`PSY.get_available_components` already filters on `available`; `_tie_in_service` filters
 the additional discrete-control CLOSED requirement). Parallel branches between the same
-reduced bus pair are deduplicated to one `AreaTie` (see `_dedup_ties`).
+reduced bus pair are deduplicated to one `AreaTie` (see `_dedup_ties`); DC ties are never
+paralleled (one `TwoTerminalLCCLine`/`TwoTerminalVSCLine` per DC-tie candidate) so need no
+analogous dedup pass.
 """
 function build_area_ties(
     sys::PSY.System,
@@ -215,6 +326,8 @@ function build_area_ties(
     ybus,
     nrd,
     bus_area_map::Dict{Int, Int},
+    lcc::LCCParameters = LCCParameters(0, 0),
+    dcn::DCNetwork = DCNetwork(),
 )
     reverse_bus_search_map = PNM.get_reverse_bus_search_map(nrd)
     candidates = _TieCandidate[]
@@ -265,5 +378,7 @@ function build_area_ties(
             )
         end
     end
-    return _dedup_ties(candidates, ybus)
+    ac_ties = _dedup_ties(candidates, ybus)
+    dc_ties = build_dc_ties(sys, lcc, dcn, nrd, bus_area_map)
+    return (ac_ties, dc_ties)
 end

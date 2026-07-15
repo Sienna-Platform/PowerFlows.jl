@@ -1,4 +1,4 @@
-# Polar residual for embedded PSS/E-style area net-interchange control (design spec §2-§3):
+# Polar residual for embedded PSS/E-style area net-interchange control:
 # the tie-flow kernel and the tail writer for the `r_a = NI_a - PDES_a` residual rows. The
 # ΔP_a <-> slack-bus P-balance coupling lives in `ac_power_flow_residual.jl` (same seam as
 # the distributed-slack `P_slack` term); this file only covers the tie-flow/NI side.
@@ -62,6 +62,38 @@ function _tie_metered_active_power(
 end
 
 """
+    _dc_tie_metered_active_power(data, dcn, tie, Vm, time_step) -> Float64
+
+Active power flowing out of `tie`'s METERED end over the DC link — the DC-line analogue of
+`_tie_metered_active_power`. For an LCC the metered terminal's `_lcc_ac_active_powers` value
+is already "power into the DC link" signed (rectifier `from` `> 0`, inverter `to` `< 0`), so
+it is returned as-is. For a VSC the converter's `P_c` state is bus-injection signed (into the
+AC bus), so power leaving the area is its negation. Dispatch is on `tie.kind` by equality (see
+`DCTie`), never `isa`.
+"""
+function _dc_tie_metered_active_power(
+    data::ACPowerFlowData,
+    dcn::DCNetwork,
+    tie::DCTie,
+    Vm::AbstractVector{Float64},
+    time_step::Int,
+)
+    if tie.kind == DC_TIE_LCC
+        (P_from, P_to) =
+            _lcc_ac_active_powers(data, tie.lcc_ix, time_step, Vm[tie.from_bus_ix],
+                Vm[tie.to_bus_ix])
+        if tie.metered_from
+            return P_from
+        end
+        return P_to
+    end
+    if tie.metered_from
+        return -dcn.p_c[tie.from_conv_ix, time_step]
+    end
+    return -dcn.p_c[tie.to_conv_ix, time_step]
+end
+
+"""
     _set_area_tail_residuals!(F, x, data, area_off, time_step)
 
 Write the area-interchange residual rows `F[area_off + a] = NI_a - PDES_a` for every
@@ -101,6 +133,21 @@ function _set_area_tail_residuals!(
         iszero(metered_tail) || (ni[metered_tail] += P_m)
         iszero(other_tail) || (ni[other_tail] -= P_m)
     end
+    if !isempty(aid.dc_ties)
+        dcn = get_dc_network(data)
+        @inbounds for tie in aid.dc_ties
+            P_conv = _dc_tie_metered_active_power(data, dcn, tie, Vm, time_step)
+            if tie.metered_from
+                metered_tail = tie.from_area_tail
+                other_tail = tie.to_area_tail
+            else
+                metered_tail = tie.to_area_tail
+                other_tail = tie.from_area_tail
+            end
+            iszero(metered_tail) || (ni[metered_tail] += P_conv)
+            iszero(other_tail) || (ni[other_tail] -= P_conv)
+        end
+    end
     @inbounds for area in aid.areas
         F[area_off + area.tail_ix] = ni[area.tail_ix] - area.pdes
     end
@@ -108,7 +155,7 @@ function _set_area_tail_residuals!(
 end
 
 # ---------------------------------------------------------------------------
-# Task 9: greedy relax loop mechanism (design spec §6, USER DIRECTIVE). The loop control
+# Greedy relax loop mechanism. The loop control
 # flow itself lives at the driver seam (`solve_ac_power_flow.jl`'s
 # `_ac_power_flow_with_area_relax!`); this section supplies the pure field-surgery and
 # NI-recomputation primitives it calls.
@@ -133,18 +180,17 @@ function _area_residual_gaps(data::ACPowerFlowData, time_step::Int)
 end
 
 """
-    _area_net_interchange(ties, tail_ix, data, time_step) -> Float64
+    _area_net_interchange(ties, dc_ties, tail_ix, data, time_step) -> Float64
 
-Net interchange for the area at `tail_ix` in `ties`'s OWN tail numbering, computed directly
-from the tie-flow kernel at `data`'s current bus state — independent of whether that area is
-still in `data.area_interchange.areas`. Passing `aid.pristine_ties` and an area's PRISTINE
-`tail_ix` lets the results table (`post_processing.jl`) report an achieved NI for a relaxed
-area, whose tail is translated to `0` (uncontrolled) out of the WORKING `ties` the moment it
-is de-enrolled. Mirrors `_set_area_tail_residuals!`'s per-tie accumulation without needing an
-`AreaInterchangeData`/`ni_scratch` to write into.
+Net interchange for the area at `tail_ix`, computed directly from the tie-flow kernels at
+`data`'s current bus state — independent of whether that area is still in
+`data.area_interchange.areas`. Used by the results table to report an achieved NI for a
+relaxed area (pass `aid.pristine_ties`/`pristine_dc_ties` with its PRISTINE `tail_ix`).
+`ties` and `dc_ties` must come from the SAME snapshot (both pristine or both working).
 """
 function _area_net_interchange(
     ties::Vector{AreaTie},
+    dc_ties::Vector{DCTie},
     tail_ix::Int,
     data::ACPowerFlowData,
     time_step::Int,
@@ -167,17 +213,33 @@ function _area_net_interchange(
         metered_tail == tail_ix && (ni += P_m)
         other_tail == tail_ix && (ni -= P_m)
     end
+    if !isempty(dc_ties)
+        dcn = get_dc_network(data)
+        @inbounds for tie in dc_ties
+            (tie.from_area_tail == tail_ix || tie.to_area_tail == tail_ix) || continue
+            P_conv = _dc_tie_metered_active_power(data, dcn, tie, Vm, time_step)
+            metered_tail = tie.from_area_tail
+            other_tail = tie.to_area_tail
+            if !tie.metered_from
+                metered_tail = tie.to_area_tail
+                other_tail = tie.from_area_tail
+            end
+            metered_tail == tail_ix && (ni += P_conv)
+            other_tail == tail_ix && (ni -= P_conv)
+        end
+    end
     return ni
 end
 
 """
     _ensure_pristine_area_set!(data, time_step)
 
-Reset the WORKING `areas`/`ties`/`ni_scratch`/`delta_p` to the full PRISTINE enrollment
-before a time step's own (potential) greedy relax loop runs, undoing any de-enrollment a
-PREVIOUS time step made on this same `data` object (design spec §6: relax decisions are per
-time step, never permanent). A no-op — no cache churn — when the working set already matches
-the pristine count (the common case: no relax has ever happened on this `data`).
+Reset the WORKING `areas`/`ties`/`dc_ties`/`ni_scratch`/`delta_p` to the full PRISTINE
+enrollment before a time step's own (potential) greedy relax loop runs, undoing any
+de-enrollment a PREVIOUS time step made on this same `data` object (relax decisions are
+per time step, never permanent). A no-op — no cache churn — when the working
+set already matches the pristine count (the common case: no relax has ever happened on this
+`data`).
 
 Explicitly invalidates the Jacobian-structure and NR symbolic-factorization caches
 (`data.ac_jacobian_structure_cache`/`data.polar_nr_cache`): both are keyed on
@@ -194,6 +256,8 @@ function _ensure_pristine_area_set!(data::ACPowerFlowData, time_step::Int)
     append!(aid.areas, aid.pristine_areas)
     empty!(aid.ties)
     append!(aid.ties, aid.pristine_ties)
+    empty!(aid.dc_ties)
+    append!(aid.dc_ties, aid.pristine_dc_ties)
     resize!(aid.ni_scratch, length(aid.areas))
     aid.delta_p = copy(aid.pristine_delta_p)
     data.ac_jacobian_structure_cache[] = nothing
@@ -225,13 +289,13 @@ end
 """
     _deenroll_area!(data, drop_tail_ix) -> ControlledArea
 
-Remove the WORKING area at `drop_tail_ix` from `data.area_interchange` (design spec §6
-greedy relax, user directive): the surviving areas' `tail_ix` are renumbered contiguously
-(the state vector has no room for gaps), `ties` referencing the dropped tail are translated
-to `0` (uncontrolled — the kernel already skips a zero tail), and `delta_p` is rebuilt at the
-new (smaller) size with each survivor's row carried over from its OLD `tail_ix`, for every
-time step column (so OTHER time steps' already-converged mirrors are not corrupted by a
-de-enrollment that only THIS time step's relax loop decided on).
+Remove the WORKING area at `drop_tail_ix` from `data.area_interchange` (greedy relax):
+the surviving areas' `tail_ix` are renumbered contiguously
+(the state vector has no room for gaps), `ties`/`dc_ties` referencing the dropped tail are
+translated to `0` (uncontrolled — the kernel already skips a zero tail), and `delta_p` is
+rebuilt at the new (smaller) size with each survivor's row carried over from its OLD
+`tail_ix`, for every time step column (so OTHER time steps' already-converged mirrors are
+not corrupted by a de-enrollment that only THIS time step's relax loop decided on).
 
 Mutates `data.area_interchange`'s FIELDS in place (`PowerFlowData` is immutable, so the
 field itself can't be reassigned — see `initialize_power_flow_data.jl`) and explicitly
@@ -262,6 +326,13 @@ function _deenroll_area!(data::ACPowerFlowData, drop_tail_ix::Int)
             tie.diag_pollution,
         ) for tie in aid.ties
     ]
+    new_dc_ties = [
+        DCTie(
+            tie.kind, tie.lcc_ix, tie.from_conv_ix, tie.to_conv_ix,
+            tie.from_bus_ix, tie.to_bus_ix, tie.metered_from,
+            _translate(tie.from_area_tail), _translate(tie.to_area_tail),
+        ) for tie in aid.dc_ties
+    ]
     n_ts = size(aid.delta_p, 2)
     new_delta_p = zeros(length(new_areas), n_ts)
     for area in aid.areas
@@ -272,6 +343,8 @@ function _deenroll_area!(data::ACPowerFlowData, drop_tail_ix::Int)
     append!(aid.areas, new_areas)
     empty!(aid.ties)
     append!(aid.ties, new_ties)
+    empty!(aid.dc_ties)
+    append!(aid.dc_ties, new_dc_ties)
     resize!(aid.ni_scratch, length(new_areas))
     aid.delta_p = new_delta_p
     data.ac_jacobian_structure_cache[] = nothing
@@ -282,7 +355,7 @@ end
 """
     _warn_area_violations(data, time_step)
 
-Solve-end diagnostic (design spec §6): `@warn` for any CURRENTLY enrolled (working) area
+Solve-end diagnostic: `@warn` for any CURRENTLY enrolled (working) area
 whose achieved NI still misses its target by more than `data.area_interchange.tolerance`
 after a converged solve. Defensive — the area residual row is driven to ~0 by the same
 Newton tolerance as every other row, so this should not normally fire — as opposed to the

@@ -1,6 +1,6 @@
 # Enrollment: derive the surviving `ControlledArea`/`AreaTie` set for embedded PSS/E-style
-# net-interchange control from a `PSY.System` + `PowerFlowData`, applying the guards from
-# the design spec (§3-§4). Runs once at `PowerFlowData` construction, gated on
+# net-interchange control from a `PSY.System` + `PowerFlowData`, applying the enrollment
+# guards below. Runs once at `PowerFlowData` construction, gated on
 # `get_area_interchange_control(pf)` (see `initialize_power_flow_data!`).
 
 # Group system buses by PSY area name; a bus with `area === nothing` is excluded (never
@@ -164,9 +164,8 @@ end
 # minus the sum of the corridor's OWN member primitives). It stays exact under a controlled
 # tap ON the corridor itself (the tap's own delta cancels against the live diagonal read),
 # but a device that is NOT a corridor member and mutates a tie-endpoint diagonal after
-# enrollment silently makes the cached constant stale. This is a fenced limitation
-# (Phase-2 would re-derive `diag_pollution` live or de-enroll); for now it is a warn-only
-# guard, not de-enrollment.
+# enrollment silently makes the cached constant stale. Fenced limitation: warn-only, not
+# de-enrollment.
 _tie_touches(bus_ix::Int, tie::AreaTie) =
     bus_ix == tie.from_bus_ix || bus_ix == tie.to_bus_ix
 _tie_corridor_member(fix::Int, tix::Int, tie::AreaTie) =
@@ -284,7 +283,7 @@ end
     build_area_interchange_data(pf, sys, data) -> AreaInterchangeData
 
 Derive the enrolled `ControlledArea`/`AreaTie` set for embedded PSS/E-style
-net-interchange control from `sys`, applying the enrollment guards (design spec §3-§4) in
+net-interchange control from `sys`, applying the enrollment guards in
 order. Called once, at `PowerFlowData` construction, gated on
 `get_area_interchange_control(pf)`; see `initialize_power_flow_data!` for how the result
 populates `data.area_interchange`.
@@ -332,9 +331,14 @@ function build_area_interchange_data(
             provisional_map[ix] = i
         end
     end
-    provisional_ties = build_area_ties(sys, bus_lookup, ybus, nrd, provisional_map)
+    (provisional_ties, provisional_dc_ties) = build_area_ties(
+        sys, bus_lookup, ybus, nrd, provisional_map, data.lcc, get_dc_network(data))
     tied = falses(length(candidate_names))
     for tie in provisional_ties
+        iszero(tie.from_area_tail) || (tied[tie.from_area_tail] = true)
+        iszero(tie.to_area_tail) || (tied[tie.to_area_tail] = true)
+    end
+    for tie in provisional_dc_ties
         iszero(tie.from_area_tail) || (tied[tie.from_area_tail] = true)
         iszero(tie.to_area_tail) || (tied[tie.to_area_tail] = true)
     end
@@ -360,6 +364,19 @@ function build_area_interchange_data(
             _translate_tail(tie.to_area_tail),
             tie.diag_pollution,
         ) for tie in provisional_ties
+    ]
+    dc_ties = [
+        DCTie(
+            tie.kind,
+            tie.lcc_ix,
+            tie.from_conv_ix,
+            tie.to_conv_ix,
+            tie.from_bus_ix,
+            tie.to_bus_ix,
+            tie.metered_from,
+            _translate_tail(tie.from_area_tail),
+            _translate_tail(tie.to_area_tail),
+        ) for tie in provisional_dc_ties
     ]
     _warn_diag_pollution_hazards(sys, ties, bus_lookup, reverse_bus_search_map)
 
@@ -395,11 +412,13 @@ function build_area_interchange_data(
     return AreaInterchangeData(
         areas,
         ties,
+        dc_ties,
         get_interchange_tolerance(pf),
         zeros(length(areas)),
         zeros(length(areas), n_time_steps),
         copy(areas),
         copy(ties),
+        copy(dc_ties),
         zeros(length(areas), n_time_steps),
         Dict{Int, Vector{RelaxedAreaRecord}}(),
     )
