@@ -206,7 +206,8 @@ end
 
 """
     rect_finalize_bus_injections!(data, x, bus_state_offset, P_net_set,
-                                  bus_slack_participation_factors, subnetworks, time_step)
+                                  bus_slack_participation_factors, subnetworks,
+                                  independent_ref, time_step)
 
 Distribute the converged subnetwork slack across participating buses and write
 `bus_active_power_injections` and `bus_reactive_power_injections` accordingly.
@@ -218,6 +219,11 @@ REF and PV bus, `P_gen = P_net_set[i] + c_i · P_slack_total`, where
 attribution is needed: `bus_active_power_injections` / `bus_reactive_power_injections`
 already hold the load setpoint from `PowerFlowData` construction.
 
+A multi-swing island (REF bus in `independent_ref`) holds each swing at its own
+fixed voltage and self-balances its own P-slot instead of sharing the island's
+distributed scalar (see `ACRectangularCIResidual`'s REF branch): such a REF's
+`P_gen = x[off]` directly, bypassing `c_k`/`P_slack_total` entirely.
+
 Called once per time step after the NR loop converges (not on every iteration),
 because the slack distribution is only meaningful at the converged x.
 """
@@ -228,6 +234,7 @@ function rect_finalize_bus_injections!(
     P_net_set::Vector{Float64},
     bus_slack_participation_factors::SparseVector{Float64, Int},
     subnetworks::Dict{Int64, Vector{Int64}},
+    independent_ref::Set{Int},
     time_step::Int64,
 )
     bus_types = view(data.bus_type, :, time_step)
@@ -239,7 +246,13 @@ function rect_finalize_bus_injections!(
             bt = bus_types[bus_k]
             off = Int(bus_state_offset[bus_k])
             if bt == PSY.ACBusTypes.REF
-                P_gen = P_net_set[bus_k] + c_k * P_slack_total
+                if bus_k in independent_ref
+                    # Multi-swing island: this swing self-balances at its own
+                    # P-slot; x[off] already IS P_gen (no c_k share to add).
+                    P_gen = x[off]
+                else
+                    P_gen = P_net_set[bus_k] + c_k * P_slack_total
+                end
                 Q_gen = x[off + 1]
                 data.bus_active_power_injections[bus_k, time_step] =
                     P_gen + data.bus_active_power_withdrawals[bus_k, time_step]

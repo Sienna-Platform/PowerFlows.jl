@@ -45,6 +45,11 @@ const CONTROL_FACTS_LIMIT_RTOL = 2e-2
 const CONTROL_VSET_MIN = 0.5
 const CONTROL_VSET_MAX = 1.5
 const DEFAULT_MAX_REDISTRIBUTION_ITERATIONS = 10
+
+# Area interchange control (PSS/E-style embedded formulation).
+const DEFAULT_INTERCHANGE_TOLERANCE = 0.05
+const MIN_INTERCHANGE_TOLERANCE = 0.02
+const AREA_SLACK_ABSORPTION_LIMIT = 0.9
 const LARGE_RESIDUAL = 10 # threshold for "bad initial guess": default
 # norm(residual, 1)/length(residual) > 10.
 
@@ -158,6 +163,8 @@ const ITypes = SparseArrays.CHOLMOD.ITypes
 # force arc names to be unique when reporting power flow results.
 const FORCE_UNIQUE_NAMES = true
 
+# SLACK is intentionally absent: `_normalize_slack_bustype` resolves it to PV/PQ (or
+# throws) at ingestion, so a KeyError here means a SLACK bus leaked past normalization.
 const BUS_TYPE_PRIORITIES = Dict{PSY.ACBusTypes, Int}(
     PSY.ACBusTypes.REF => 3,
     PSY.ACBusTypes.PV => 2,

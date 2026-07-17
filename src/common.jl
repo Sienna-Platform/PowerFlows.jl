@@ -251,6 +251,43 @@ end
 _considers_bustype(::AbstractACPowerFlow{<:ACPowerFlowSolverType}, ::PSY.ACBusTypes) = true
 _considers_bustype(::AbstractDCPowerFlow, bt::PSY.ACBusTypes) = (bt == PSY.ACBusTypes.REF)
 
+"""Voltage regulation is irrelevant to DC power flow, so the PQ demotion in
+`_normalize_slack_bustype` warns only for AC evaluation models; DC demotes silently."""
+function _warn_slack_demoted_to_pq(
+    ::AbstractACPowerFlow{<:ACPowerFlowSolverType},
+    bus_name::String,
+)
+    @warn(
+        "SLACK-designated bus $bus_name has no in-service voltage-regulating " *
+        "component; treating as PQ — it cannot serve as an area slack.",
+        maxlog = PF_MAX_LOG,
+    )
+    return
+end
+_warn_slack_demoted_to_pq(::AbstractDCPowerFlow, ::String) = nothing
+
+"""SLACK marks a bus for area-interchange redistribution (PSS/E ISW), not a formulation
+bus type; normalize it at ingestion like PV/REF: PV if the bus has an in-service
+voltage-regulating source, else PQ (DC demotes silently — see `_warn_slack_demoted_to_pq`).
+A SLACK bus that normalizes to PQ cannot serve as an area slack; the area-interchange
+enrollment guard then de-enrolls its area."""
+function _normalize_slack_bustype(
+    pf::PowerFlowEvaluationModel,
+    bt::PSY.ACBusTypes,
+    bus_no::Int,
+    bus_name::String,
+    possible_PV::Set{Int},
+)
+    if bt != PSY.ACBusTypes.SLACK
+        return bt
+    end
+    if bus_no in possible_PV
+        return PSY.ACBusTypes.PV
+    end
+    _warn_slack_demoted_to_pq(pf, bus_name)
+    return PSY.ACBusTypes.PQ
+end
+
 function _initialize_bus_data!(
     pf::PowerFlowEvaluationModel,
     bus_type::Vector{PSY.ACBusTypes},
@@ -283,6 +320,7 @@ function _initialize_bus_data!(
         bus_no = PSY.get_number(bus)
         bus_name = PSY.get_name(bus)
         temp_bus_map[bus_no] = bus_name
+        bt = _normalize_slack_bustype(pf, bt, bus_no, bus_name, possible_PV)
         if bus_no in subnetwork_keys && bus_no != main_ref_bus
             bt = PSY.ACBusTypes.REF
             @warn("Island detected, containing $(summary(bus)).", maxlog = PF_MAX_LOG)

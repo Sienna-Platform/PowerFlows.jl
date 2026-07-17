@@ -1,0 +1,211 @@
+@testset "area interchange constructor validation" begin
+    pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; area_interchange_control = true)
+    @test PowerFlows.get_area_interchange_control(pf) == true
+    @test PowerFlows.get_interchange_tolerance(pf) == 0.05
+    @test PowerFlows.get_tie_definition(pf) == :lines_only
+
+    default_pf = ACPolarPowerFlow()
+    @test PowerFlows.get_area_interchange_control(default_pf) == false
+
+    @test_throws ArgumentError ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
+        area_interchange_control = true,
+    )
+    @test_throws ArgumentError ACMixedPowerFlow{NewtonRaphsonACPowerFlow}(;
+        area_interchange_control = true,
+    )
+
+    for S in (GradientDescentACPowerFlow, RobustHomotopyPowerFlow)
+        @test_throws ArgumentError ACPolarPowerFlow{S}(; area_interchange_control = true)
+    end
+
+    @test_throws ArgumentError ACPolarPowerFlow(;
+        area_interchange_control = true,
+        tie_definition = :lines_and_loads,
+    )
+
+    floored_pf =
+        @test_logs (:warn, r"interchange_tolerance") match_mode = :any ACPolarPowerFlow(;
+            area_interchange_control = true,
+            interchange_tolerance = 0.0,
+        )
+    @test PowerFlows.get_interchange_tolerance(floored_pf) == 0.02
+
+    @test ACPolarPowerFlow(; area_interchange_control = false).area_interchange_control ==
+          false
+    @test ACRectangularPowerFlow(;
+        area_interchange_control = false,
+    ).area_interchange_control ==
+          false
+    @test ACMixedPowerFlow(; area_interchange_control = false).area_interchange_control ==
+          false
+    for S in (
+        LevenbergMarquardtACPowerFlow,
+        RobustHomotopyPowerFlow,
+        GradientDescentACPowerFlow,
+        FastDecoupledACPowerFlow,
+    )
+        @test ACPolarPowerFlow{S}(;
+            area_interchange_control = false,
+        ).area_interchange_control ==
+              false
+    end
+end
+
+@testset "area interchange LM constructor validation" begin
+    pf = ACPowerFlow{LevenbergMarquardtACPowerFlow}(; area_interchange_control = true)
+    @test PowerFlows.get_area_interchange_control(pf) == true
+
+    @test_throws ArgumentError ACRectangularPowerFlow{LevenbergMarquardtACPowerFlow}(;
+        area_interchange_control = true,
+    )
+
+    @test_throws r"GradientDescentACPowerFlow" ACPolarPowerFlow{
+        GradientDescentACPowerFlow,
+    }(;
+        area_interchange_control = true,
+    )
+end
+
+@testset "area interchange homotopy constructor validation" begin
+    @test_throws r"RobustHomotopyPowerFlow" ACPowerFlow{RobustHomotopyPowerFlow}(;
+        area_interchange_control = true,
+    )
+
+    @test_throws ArgumentError ACRectangularPowerFlow{RobustHomotopyPowerFlow}(;
+        area_interchange_control = true,
+    )
+end
+
+@testset "area interchange FD constructor validation" begin
+    pf = ACPowerFlow{FastDecoupledACPowerFlow{FDFixedJacobian, FDSchemeXB}}(;
+        area_interchange_control = true,
+    )
+    @test PowerFlows.get_area_interchange_control(pf) == true
+
+    bare_pf =
+        ACPowerFlow{FastDecoupledACPowerFlow}(; area_interchange_control = true)
+    @test PowerFlows.get_area_interchange_control(bare_pf) == true
+
+    @test_throws ArgumentError ACRectangularPowerFlow{
+        FastDecoupledACPowerFlow{FDFixedJacobian, FDSchemeXB},
+    }(;
+        area_interchange_control = true,
+    )
+end
+
+@testset "area interchange SLACK bus ingestion" begin
+    base_sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    pf = ACPowerFlow()
+    ref_data = PowerFlowData(pf, base_sys)
+    @test solve_power_flow!(ref_data)
+
+    # (a) A SLACK bus with a voltage-regulating source normalizes to PV and solves as REF.
+    sys_a = deepcopy(base_sys)
+    bus_a = PSY.get_component(PSY.ACBus, sys_a, "Bus 2")
+    PSY.set_bustype!(bus_a, PSY.ACBusTypes.SLACK)
+    data_a = PowerFlowData(pf, sys_a)
+    ix_a = PF.get_bus_lookup(data_a)[PSY.get_number(bus_a)]
+    @test data_a.bus_type[ix_a, 1] == PSY.ACBusTypes.PV
+    @test solve_power_flow!(data_a)
+    @test all(isapprox.(data_a.bus_magnitude, ref_data.bus_magnitude; atol = 1e-8))
+    @test all(isapprox.(data_a.bus_angles, ref_data.bus_angles; atol = 1e-8))
+
+    # (b) A SLACK bus with no voltage-regulating source normalizes to PQ. Bus 14 has no
+    # generator, so PQ is its native type and the solve matches the REF baseline.
+    sys_b = deepcopy(base_sys)
+    bus_b = PSY.get_component(PSY.ACBus, sys_b, "Bus 14")
+    PSY.set_bustype!(bus_b, PSY.ACBusTypes.SLACK)
+    data_b = PowerFlowData(pf, sys_b)
+    ix_b = PF.get_bus_lookup(data_b)[PSY.get_number(bus_b)]
+    @test data_b.bus_type[ix_b, 1] == PSY.ACBusTypes.PQ
+    @test solve_power_flow!(data_b)
+    @test all(isapprox.(data_b.bus_magnitude, ref_data.bus_magnitude; atol = 1e-8))
+    @test all(isapprox.(data_b.bus_angles, ref_data.bus_angles; atol = 1e-8))
+
+    # (b2) A SLACK bus whose only generator is unavailable normalizes to PQ.
+    sys_b2 = deepcopy(base_sys)
+    bus_b2 = PSY.get_component(PSY.ACBus, sys_b2, "Bus 2")
+    PSY.set_bustype!(bus_b2, PSY.ACBusTypes.SLACK)
+    for gen in PSY.get_components(PSY.Generator, sys_b2)
+        if PSY.get_number(PSY.get_bus(gen)) == PSY.get_number(bus_b2)
+            PSY.set_available!(gen, false)
+        end
+    end
+    data_b2 = PowerFlowData(pf, sys_b2)
+    ix_b2 = PF.get_bus_lookup(data_b2)[PSY.get_number(bus_b2)]
+    @test data_b2.bus_type[ix_b2, 1] == PSY.ACBusTypes.PQ
+
+    # (c) unit: no voltage-regulating source normalizes to PQ, with a warn (AC).
+    bt_c = @test_logs (:warn, r"SLACK-designated bus TestBus") PF._normalize_slack_bustype(
+        pf,
+        PSY.ACBusTypes.SLACK,
+        99,
+        "TestBus",
+        Set{Int}(),
+    )
+    @test bt_c == PSY.ACBusTypes.PQ
+
+    # (c') a voltage-regulating source normalizes to PV, no warn.
+    bt_cp = @test_logs min_level = Logging.Warn PF._normalize_slack_bustype(
+        pf, PSY.ACBusTypes.SLACK, 99, "TestBus", Set([99]))
+    @test bt_cp == PSY.ACBusTypes.PV
+
+    # (d) DC demotes to PQ silently: voltage regulation is irrelevant to DC power flow.
+    dc_pf = DCPowerFlow()
+    bt_c_dc = @test_logs(
+        min_level = Logging.Warn,
+        PF._normalize_slack_bustype(dc_pf, PSY.ACBusTypes.SLACK, 99, "TestBus", Set{Int}()),
+    )
+    @test bt_c_dc == PSY.ACBusTypes.PQ
+
+    # DC builds the no-source SLACK system.
+    @test PowerFlowData(dc_pf, sys_b) isa PowerFlowData
+
+    for bt in
+        (PSY.ACBusTypes.REF, PSY.ACBusTypes.PV, PSY.ACBusTypes.PQ, PSY.ACBusTypes.ISOLATED)
+        @test PF._normalize_slack_bustype(pf, bt, 99, "TestBus", Set{Int}()) == bt
+        @test PF._normalize_slack_bustype(dc_pf, bt, 99, "TestBus", Set{Int}()) == bt
+    end
+end
+
+@testset "area interchange AreaInterchangeData tail length" begin
+    areas = [
+        PF.ControlledArea("Area1", 1, 0.1, 1),
+        PF.ControlledArea("Area2", 5, -0.1, 2),
+    ]
+    aid = PF.AreaInterchangeData(
+        areas, PF.AreaTie[], PF.DCTie[], 0.05, zeros(2), zeros(2, 1),
+        areas, PF.AreaTie[], PF.DCTie[], zeros(2, 1),
+        Dict{Int, Vector{PF.RelaxedAreaRecord}}(),
+    )
+    @test PF.area_tail_length(aid) == 2
+    @test PF.n_controlled_areas(aid) == 2
+
+    empty_aid =
+        PF.AreaInterchangeData(
+            PF.ControlledArea[],
+            PF.AreaTie[],
+            PF.DCTie[],
+            0.05,
+            Float64[],
+            zeros(Float64, 0, 1),
+            PF.ControlledArea[],
+            PF.AreaTie[],
+            PF.DCTie[],
+            zeros(Float64, 0, 1),
+            Dict{Int, Vector{PF.RelaxedAreaRecord}}(),
+        )
+    @test PF.area_tail_length(empty_aid) == 0
+    @test PF.n_controlled_areas(empty_aid) == 0
+end
+
+@testset "area interchange empty tail is inert" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    for pf in (ACPolarPowerFlow(), ACRectangularPowerFlow(), ACMixedPowerFlow())
+        data = PowerFlowData(pf, sys)
+        @test PF.n_controlled_areas(data) == 0
+        @test isempty(PF.get_area_interchange_data(data).areas)
+        @test isempty(PF.get_area_interchange_data(data).ties)
+        @test solve_power_flow!(data)
+    end
+end

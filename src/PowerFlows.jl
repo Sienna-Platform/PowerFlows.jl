@@ -62,6 +62,10 @@ import Dates
 import LineSearches: BackTracking
 
 include("definitions.jl")
+# `AreaInterchangeData` is needed by `power_flow_types.jl`'s `ACJacobianStructureCache`
+# cache-key field, so this include moves ahead of the rest of the `area_interchange/`
+# family (which still needs `powersystems_utils.jl`/PowerFlowData.jl and stays below).
+include("area_interchange/area_types.jl")
 include("branch_flow_results.jl")
 include("psi_utils.jl")
 include("powersystems_utils.jl")
@@ -71,16 +75,20 @@ include("vsc_parameters.jl")
 include("discrete_control/controlled_devices.jl")
 include("discrete_control/control_metadata.jl")
 include("discrete_control/control_continuation.jl")
+include("area_interchange/tie_set.jl")
 include("PowerFlowData.jl")
 include("lcc_utils.jl")
 include("vsc_utils.jl")
 include("common.jl")
+include("area_interchange/enrollment.jl")
 include("initialize_power_flow_data.jl")
 include("psse_export.jl")
 include("linear_solver_backend.jl")
 include("dcpf_loss_injection.jl")
 include("solve_dc_power_flow.jl")
 include("state_indexing_helpers.jl")
+include("area_interchange/area_residual.jl")
+include("area_interchange/area_jacobian.jl")
 include("ac_power_flow_residual.jl")
 include("ac_power_flow_jacobian.jl")
 include("rectangular_ci_setup.jl")

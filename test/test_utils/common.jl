@@ -342,6 +342,65 @@ function _add_simple_line!(
 end
 
 """
+    _add_simple_transformer_3w!(sys, bus_p, bus_s, bus_t, star_number; kwargs...)
+    Creates a Transformer3W with its own star ACBus (auto-added, plus 3 star Arcs).
+    star_number must be unused; terminal buses must already exist. available_tertiary=false
+    by default (2-winding-equivalent).
+"""
+function _add_simple_transformer_3w!(
+    sys::System,
+    bus_p::ACBus,
+    bus_s::ACBus,
+    bus_t::ACBus,
+    star_number::Int;
+    r_primary::Float64 = 0.01,
+    x_primary::Float64 = 0.08,
+    r_secondary::Float64 = 0.01,
+    x_secondary::Float64 = 0.06,
+    r_tertiary::Float64 = 0.01,
+    x_tertiary::Float64 = 0.05,
+    available_tertiary::Bool = false,
+)
+    star_bus = _add_simple_bus!(sys, star_number, ACBusTypes.PQ, get_base_voltage(bus_p))
+    xfmr = Transformer3W(;
+        name = _check_name(
+            sys,
+            "xfmr3w_$(get_number(bus_p))_$(get_number(bus_s))_$(get_number(bus_t))",
+            Transformer3W),
+        available = true,
+        primary_star_arc = Arc(; from = bus_p, to = star_bus),
+        secondary_star_arc = Arc(; from = bus_s, to = star_bus),
+        tertiary_star_arc = Arc(; from = bus_t, to = star_bus),
+        star_bus = star_bus,
+        active_power_flow_primary = 0.0,
+        reactive_power_flow_primary = 0.0,
+        active_power_flow_secondary = 0.0,
+        reactive_power_flow_secondary = 0.0,
+        active_power_flow_tertiary = 0.0,
+        reactive_power_flow_tertiary = 0.0,
+        r_primary = r_primary,
+        x_primary = x_primary,
+        r_secondary = r_secondary,
+        x_secondary = x_secondary,
+        r_tertiary = r_tertiary,
+        x_tertiary = x_tertiary,
+        rating = 1.0,
+        r_12 = r_primary + r_secondary,
+        x_12 = x_primary + x_secondary,
+        r_23 = r_secondary + r_tertiary,
+        x_23 = x_secondary + x_tertiary,
+        r_13 = r_primary + r_tertiary,
+        x_13 = x_primary + x_tertiary,
+        base_power_12 = 100.0,
+        base_power_23 = 100.0,
+        base_power_13 = 100.0,
+        available_tertiary = available_tertiary,
+    )
+    add_component!(sys, xfmr)
+    return xfmr
+end
+
+"""
     Simplified function to create and add a standard load to the system with the given parameters.
 """
 function _add_simple_zip_load!(
@@ -1373,5 +1432,209 @@ function _build_mtdc_system()
         )
         PSY.add_component!(sys, dcl)
     end
+    return sys
+end
+
+"""Two-area version of c_sys14: buses 1-5 -> Area1, buses 6-14 -> Area2. Boundary crosses
+exactly three branches (Trans1 4-9, Trans2 5-6, Trans3 4-7) -- small and hand-checkable."""
+function _make_two_area_system()
+    sys = deepcopy(PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false))
+    area1 = PSY.Area(; name = "Area1")
+    area2 = PSY.Area(; name = "Area2")
+    PSY.add_component!(sys, area1)
+    PSY.add_component!(sys, area2)
+    area1_buses = Set(1:5)
+    for bus in PSY.get_components(PSY.ACBus, sys)
+        if PSY.get_number(bus) in area1_buses
+            PSY.set_area!(bus, area1)
+        else
+            PSY.set_area!(bus, area2)
+        end
+    end
+    return sys
+end
+
+"""Three-area variant of _make_two_area_system(): peels bus 9 off Area2 into singleton
+Area3 (bus 9 has boundary degree 4: Trans1, Line11, Line12, Line16). Full boundary set:
+Trans1, Trans2, Trans3, Line11, Line12, Line16."""
+function _make_three_area_system()
+    sys = _make_two_area_system()
+    area3 = PSY.Area(; name = "Area3")
+    PSY.add_component!(sys, area3)
+    bus9 = PSY.get_component(PSY.ACBus, sys, "Bus 9")
+    PSY.set_area!(bus9, area3)
+    return sys
+end
+
+"""Two electrically disconnected islands, each with its own REF bus; area Span owns one
+non-REF bus in each (bus2 SLACK w/ generator in island 1, bus4 PQ w/ load in island 2) so
+it genuinely spans both -- exercises enrollment guard 4 via the real production path, not
+a fabricated dict."""
+function _make_two_island_spanning_area_system()
+    sys = System(100.0)
+    home1 = PSY.Area(; name = "Home1")
+    home2 = PSY.Area(; name = "Home2")
+    span = PSY.Area(; name = "Span")
+    PSY.add_component!(sys, home1)
+    PSY.add_component!(sys, home2)
+    PSY.add_component!(sys, span)
+
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230)
+    # `ACBus(; bustype = SLACK, ...)` is auto-normalized to REF at construction time
+    # (`PowerSystems.check_bus_params`); build as PV first, then promote via the
+    # `set_bustype!` setter (mirrors this file's own `_set_slack!` idiom) to get a real
+    # SLACK bus without silently doubling up REF within island 1.
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.PV, 230)
+    PSY.set_area!(b1, home1)
+    PSY.set_area!(b2, span)
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    _add_simple_thermal_standard!(sys, b2, 0.1, 0.0)
+    _add_simple_line!(sys, b1, b2)
+    PSY.set_bustype!(b2, ACBusTypes.SLACK)
+
+    b3 = _add_simple_bus!(sys, 3, ACBusTypes.REF, 230)
+    b4 = _add_simple_bus!(sys, 4, ACBusTypes.PQ, 230)
+    PSY.set_area!(b3, home2)
+    PSY.set_area!(b4, span)
+    _add_simple_source!(sys, b3, 0.0, 0.0)
+    _add_simple_load!(sys, b4, 0.05, 0.025)
+    _add_simple_line!(sys, b3, b4)
+
+    return sys
+end
+
+# ── G2 (area interchange x DC-line ties): comprehensive validation fixture ─────────────────
+
+"""Comprehensive fixture (area interchange x DC-line ties): single AC island; Area1 (bus1
+REF) never enrolls, Area2/Area3 enroll via SLACK buses 2/3. Boundary ties: LCC (bus10-11),
+VSC (bus12-13), controlled tap+shunt (bus4-6), breaker (bus5-7), Transformer3W (bus8-9).
+lcc_metered_end picks rectifier- vs inverter-metered DC tie.
+"""
+function _comprehensive_area_dc_fixture(; lcc_metered_end::String = "from")
+    sys = System(100.0)
+    area1 = PSY.Area(; name = "Area1")
+    area2 = PSY.Area(; name = "Area2")
+    area3 = PSY.Area(; name = "Area3")
+    PSY.add_component!(sys, area1)
+    PSY.add_component!(sys, area2)
+    PSY.add_component!(sys, area3)
+
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230)
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.PV, 230)
+    b3 = _add_simple_bus!(sys, 3, ACBusTypes.PV, 230)
+    b4 = _add_simple_bus!(sys, 4, ACBusTypes.PQ, 230)
+    b5 = _add_simple_bus!(sys, 5, ACBusTypes.PQ, 230)
+    b6 = _add_simple_bus!(sys, 6, ACBusTypes.PQ, 230)
+    b7 = _add_simple_bus!(sys, 7, ACBusTypes.PQ, 230)
+    b8 = _add_simple_bus!(sys, 8, ACBusTypes.PQ, 230)
+    b9 = _add_simple_bus!(sys, 9, ACBusTypes.PQ, 230)
+    b10 = _add_simple_bus!(sys, 10, ACBusTypes.PQ, 230)
+    b11 = _add_simple_bus!(sys, 11, ACBusTypes.PQ, 230)
+    b12 = _add_simple_bus!(sys, 12, ACBusTypes.PQ, 230)
+    b13 = _add_simple_bus!(sys, 13, ACBusTypes.PQ, 230)
+
+    PSY.set_area!(b1, area1)
+    PSY.set_area!(b2, area2)
+    PSY.set_area!(b3, area3)
+    PSY.set_area!(b4, area1)
+    PSY.set_area!(b5, area2)
+    PSY.set_area!(b6, area2)
+    PSY.set_area!(b7, area3)
+    PSY.set_area!(b8, area1)
+    PSY.set_area!(b9, area2)
+    PSY.set_area!(b10, area1)
+    PSY.set_area!(b11, area3)
+    PSY.set_area!(b12, area2)
+    PSY.set_area!(b13, area3)
+
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    # Slack-capable machines in Area2/Area3 (distributed-slack element): promote to SLACK
+    # AFTER adding the generator, same idiom as `_make_two_island_spanning_area_system`.
+    _add_simple_thermal_standard!(sys, b2, 0.1, 0.0)
+    _add_simple_thermal_standard!(sys, b3, 0.1, 0.0)
+    PSY.set_bustype!(b2, ACBusTypes.SLACK)
+    PSY.set_bustype!(b3, ACBusTypes.SLACK)
+
+    _add_simple_load!(sys, b4, 0.05, 0.02)
+    _add_simple_load!(sys, b5, 0.05, 0.02)
+    _add_simple_load!(sys, b7, 0.05, 0.02)
+    _add_simple_load!(sys, b9, 0.05, 0.02)
+    _add_simple_load!(sys, b10, 10.0, 5.0)   # LCC hub load, mirrors simple_lcc_system's b2
+    _add_simple_load!(sys, b11, 60.0, 20.0)  # LCC hub load, mirrors simple_lcc_system's b3
+
+    # Interior/tie AC lines (default r=x=1e-3 unless noted).
+    _add_simple_line!(sys, b1, b4)                     # Area1 interior
+    _add_simple_line!(sys, b1, b2)                     # Area1/Area2 AC tie
+    _add_simple_line!(sys, b2, b5)                     # Area2 interior
+    _add_simple_line!(sys, b1, b8)                     # Area1 interior (3W primary hub)
+    _add_simple_line!(sys, b3, b7)                     # Area3 interior
+    _add_simple_line!(sys, b7, b13)                    # Area3 interior (VSC to-side hub)
+    _add_simple_line!(sys, b2, b12)                    # Area2 interior (VSC from-side hub)
+    _add_simple_line!(sys, b1, b10, 5e-3, 5e-3, 1e-3)  # Area1 interior, LCC from-side hub
+    _add_simple_line!(sys, b3, b11, 5e-3, 5e-3, 1e-3)  # Area3 interior, LCC to-side hub
+
+    _add_control_tap!(sys, b4, b6)
+    _add_switched_shunt!(sys, 6)
+
+    # DiscreteControlledACBranch (closed breaker) as a series-FACTS-style AC tie.
+    arc57 = Arc(; from = b5, to = b7)
+    PSY.add_component!(sys, arc57)
+    sw = PSY.DiscreteControlledACBranch(;
+        name = "series_facts_tie",
+        available = true,
+        active_power_flow = 0.0,
+        reactive_power_flow = 0.0,
+        arc = arc57,
+        r = 0.01,
+        x = 0.05,
+        rating = 1.0,
+        discrete_branch_type = PSY.DiscreteControlledBranchType.BREAKER,
+        branch_status = PSY.DiscreteControlledBranchStatus.CLOSED,
+    )
+    PSY.add_component!(sys, sw)
+
+    # Three-winding transformer: primary Area1 (b8), secondary Area2 (b9); tertiary
+    # disabled (dummy bus = b8, unused -- mirrors `_make_3w_boundary_fixture`).
+    xfmr = _add_simple_transformer_3w!(sys, b8, b9, b8, 99)
+    PSY.set_area!(PSY.get_star_bus(xfmr), area1)
+
+    # LCC bus10<->bus11: angle limits retuned off _add_simple_lcc!'s defaults (rectifier min
+    # 15deg, inverter min 20deg). _write_lcc_tail! pins alpha_r/alpha_i to the CONFIGURED
+    # .min angle unconditionally (verified via parameter sweep) -- no off-clamp point exists
+    # to tune into.
+    lcc = _add_simple_lcc!(sys, b10, b11, 0.05, 0.05, 0.08)
+    PSY.set_rectifier_delay_angle_limits!(lcc, (min = deg2rad(15.0), max = π / 2))
+    PSY.set_inverter_extinction_angle_limits!(lcc, (min = deg2rad(20.0), max = π / 2))
+    PSY.set_rectifier_delay_angle!(lcc, deg2rad(15.0))
+    PSY.set_inverter_extinction_angle!(lcc, deg2rad(20.0))
+    if lcc_metered_end == "to"
+        PSY.get_ext(lcc)["metered_end"] = "to"
+    end
+
+    # VSC: bus 12 (Area2) <-> bus 13 (Area3). AC-solve-compatible control config (mirrors
+    # `_build_vsc_pq_system` -- see docstring for why `_add_simple_vsc!` is wrong here).
+    vsc = TwoTerminalVSCLine(;
+        name = "VSC_area_tie",
+        available = true,
+        arc = Arc(; from = b12, to = b13),
+        active_power_flow = 0.2,
+        rating = 2.0,
+        active_power_limits_from = (min = -2.0, max = 2.0),
+        active_power_limits_to = (min = -2.0, max = 2.0),
+        g = 50.0,
+        dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
+        ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
+        dc_setpoint_from = 1.05,
+        reactive_power_from = 0.02,
+        dc_control_to = PSY.VSCDCControlModes.DC_POWER,
+        ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
+        dc_setpoint_to = 0.2,
+        reactive_power_to = 0.05,
+    )
+    PSY.add_component!(sys, vsc)
+
+    _add_area_interchange!(sys, "Area2", "Area1", 0.3; name = "A2_A1")
+    _add_area_interchange!(sys, "Area3", "Area1", 0.2; name = "A3_A1")
+
     return sys
 end

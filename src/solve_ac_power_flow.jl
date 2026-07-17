@@ -269,7 +269,7 @@ function solve_power_flow!(
     validate_device_store_width(cd, get_time_steps(data))
     for (ts_pos, time_step) in enumerate(sorted_time_steps)
         load_device_state!(cd, data, time_step)
-        converged = _ac_power_flow(data, pf, time_step; merged_kwargs...)
+        converged = _ac_power_flow_with_area_relax!(data, pf, time_step; merged_kwargs...)
         save_device_state!(cd, data, time_step)
         ts_converged[ts_pos] = converged
         converged && _warn_vsc_limit_violations(data, time_step)
@@ -371,6 +371,79 @@ function _ac_power_flow(
         return _solve_with_q_limits!(pf, data, time_step; kwargs...)
     end
     return _control_continuation!(pf, data, time_step; kwargs...)
+end
+
+"""
+    _ac_power_flow_with_area_relax!(data, pf, time_step; kwargs...) -> Bool
+
+Wraps `_ac_power_flow` with greedy-relax handling for embedded area net-interchange
+control: on non-convergence with areas still enrolled, de-enroll the worst-`|r_a|` area
+and re-solve, warm-started with surviving areas' `ΔP_a` re-seeded from the `delta_p`
+mirror; repeat until convergence or exhaustion. Exhaustion while still failing is genuine
+network non-convergence plus a terminal diagnostic (`_report_area_interchange_failure`).
+Relaxation is never silent: an `@error` at each de-enrollment and a solve-end summary;
+converging after a relax still returns `true`.
+
+Resets to the full pristine enrollment before each time step's attempt
+(`_ensure_pristine_area_set!`) so a previous step's relax never carries over. The
+never-enrolled short-circuit deliberately tests the PRISTINE set, not the WORKING one —
+a previous time step's relax may have emptied the working set, and short-circuiting on it
+would permanently disable area control for the rest of `data`'s lifetime.
+"""
+function _ac_power_flow_with_area_relax!(
+    data::ACPowerFlowData,
+    pf::AbstractACPowerFlow{<:ACPowerFlowSolverType},
+    time_step::Int64;
+    kwargs...,
+)
+    aid = data.area_interchange
+    isempty(aid.pristine_areas) &&
+        return _ac_power_flow(data, pf, time_step; kwargs...)
+    _ensure_pristine_area_set!(data, time_step)
+    relaxed_this_step = RelaxedAreaRecord[]
+    converged = false
+    while true
+        converged = _ac_power_flow(data, pf, time_step; kwargs...)
+        converged && break
+        iszero(n_controlled_areas(data)) && break
+        gaps = _area_residual_gaps(data, time_step)
+        gap, worst_ix = findmax(abs, gaps)
+        area = data.area_interchange.areas[worst_ix]
+        @error "Area interchange: Newton did not converge with area \"$(area.name)\" " *
+               "controlled (target PDES = $(area.pdes), NI gap at the failed iterate = " *
+               "$gap); de-enrolling it and re-solving with the remaining " *
+               "$(n_controlled_areas(data) - 1) controlled area(s)."
+        push!(relaxed_this_step, RelaxedAreaRecord(area.name, area.pdes))
+        _deenroll_area!(data, worst_ix)
+    end
+    if !converged
+        _report_area_interchange_failure(data, time_step)
+        return converged
+    end
+    _sync_pristine_delta_p!(data, time_step)
+    _warn_area_violations(data, time_step)
+    isempty(relaxed_this_step) && return converged
+    data.area_interchange.relaxed[time_step] = relaxed_this_step
+    pristine_tail_of = Dict(a.name => a.tail_ix for a in aid.pristine_areas)
+    relaxed_detail = join(
+        (
+            let tail_ix = pristine_tail_of[r.name],
+                ni_solved = _area_net_interchange(
+                    aid.pristine_ties, aid.pristine_dc_ties, tail_ix, data,
+                    time_step,
+                )
+
+                "$(r.name) (ni_solved=$(ni_solved), pdes=$(r.pdes), " *
+                "gap=$(ni_solved - r.pdes))"
+            end
+            for r in relaxed_this_step
+        ),
+        ", ",
+    )
+    @error "Area interchange: time step $time_step converged only after relaxing " *
+           "$(length(relaxed_this_step)) area(s): $relaxed_detail. Their schedules were " *
+           "infeasible given network/tie capacity."
+    return converged
 end
 
 function _check_q_limit_bounds!(

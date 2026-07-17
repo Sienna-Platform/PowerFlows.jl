@@ -690,11 +690,17 @@ function _vsc_r2(mode::VSCControlMode, dcn, c, Q, Vac, t)
 end
 
 # Copy the solved VSC tail (converter P_c, Q_c; node V_dc) from the network's state mirrors into
-# the trailing slots of the state vector — the inverse of `_read_vsc_state!`. Used by the FD
-# sequential converter sub-solve so `x` stays consistent before the next residual evaluation.
-function _write_vsc_state_to_x!(x::AbstractVector{Float64}, dcn::DCNetwork, time_step::Int)
+# the state vector at `vsc_off` — the exact inverse of `_read_vsc_state!` (same offset argument).
+# Used by the FD sequential converter sub-solve so `x` stays consistent before the next residual
+# evaluation. The VSC tail sits at `2·nbus + 4·n_lcc` in the [buses | LCC | VSC | area] layout, so
+# the caller passes that offset; it is NOT the last tail block when an area tail follows.
+function _write_vsc_state_to_x!(
+    x::AbstractVector{Float64},
+    dcn::DCNetwork,
+    vsc_off::Int,
+    time_step::Int,
+)
     nconv = n_vsc_converters(dcn)
-    vsc_off = length(x) - vsc_tail_length(dcn)
     @inbounds for c in 1:nconv
         x[vsc_off + 2 * c - 1] = dcn.p_c[c, time_step]
         x[vsc_off + 2 * c] = dcn.q_c[c, time_step]

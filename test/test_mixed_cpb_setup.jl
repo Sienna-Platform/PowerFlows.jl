@@ -86,7 +86,7 @@ end
     end
 
     PF.mixed_finalize_bus_injections!(
-        data, x, offs, spf, subnetworks,
+        data, x, offs, spf, subnetworks, Set{Int}(),
         e_state, f_state, 1,
     )
 

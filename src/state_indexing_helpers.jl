@@ -24,6 +24,26 @@ function partition_state(x::Vector{Float64},
     return (Va = Vas, Vm = Vms, P = Ps, Q = Qs)
 end
 
+"""
+Length of the shared non-bus state tail (LCC + VSC + area interchange), identical across
+polar/rectangular/mixed formulations. The ONLY place the tail composition is defined — every
+state/residual sizing site calls this.
+"""
+function state_tail_length(data::ACPowerFlowData, dcn::DCNetwork)
+    return 4 * size(data.lcc.p_set, 1) + vsc_tail_length(dcn) +
+           area_tail_length(data.area_interchange)
+end
+
+"""
+1-based `x`-index offset for the area-interchange tail in the polar state/residual layout:
+`ΔP_a` for tail slot `tail_ix` lives at `x[area_tail_offset(data, dcn) + tail_ix]`; residual
+row `r_a` at the same index.
+"""
+function area_tail_offset(data::ACPowerFlowData, dcn::DCNetwork)
+    n_buses = size(data.bus_type, 1)
+    return 2 * n_buses + 4 * size(data.lcc.p_set, 1) + vsc_tail_length(dcn)
+end
+
 """Update state vector based on values of fields of data."""
 function update_state!(x::Vector{Float64},
     data::ACPowerFlowData,
@@ -33,8 +53,7 @@ function update_state!(x::Vector{Float64},
     # bus types, bus power contributions [inj/widthdrawal], and bus voltages
     dcn = get_dc_network(data)
     @assert length(x) ==
-            2 * length(data.bus_type[:, 1]) + 4 * size(data.lcc.p_set, 1) +
-            vsc_tail_length(dcn)
+            2 * size(data.bus_type, 1) + state_tail_length(data, dcn)
     state_variable_count = 1
     for (ix, b) in enumerate(data.bus_type[:, time_step])
         if b == PSY.ACBusTypes.REF
@@ -59,7 +78,7 @@ function update_state!(x::Vector{Float64},
             throw(ArgumentError("$b not recognized as a bustype"))
         end
     end
-    @assert state_variable_count - 1 == length(data.bus_type[:, 1]) * 2
+    @assert state_variable_count - 1 == size(data.bus_type, 1) * 2
     for i in eachindex(data.lcc.p_set[:, time_step])
         x[state_variable_count] = data.lcc.rectifier.tap[i, time_step]
         x[state_variable_count + 1] = data.lcc.inverter.tap[i, time_step]
@@ -76,6 +95,13 @@ function update_state!(x::Vector{Float64},
     end
     for k in 1:n_dc_nodes(dcn)
         x[state_variable_count] = dcn.node_vdc[k, time_step]
+        state_variable_count += 1
+    end
+    # Area-interchange tail (ΔP_a): mirrored on `delta_p` every residual evaluation and
+    # read back here (time-step indexed, like the LCC/VSC tails above) so a warm re-solve
+    # resumes from the converged ΔP_a instead of resetting to 0.
+    for tail_ix in 1:n_controlled_areas(data.area_interchange)
+        x[state_variable_count] = data.area_interchange.delta_p[tail_ix, time_step]
         state_variable_count += 1
     end
     @assert state_variable_count - 1 == length(x)

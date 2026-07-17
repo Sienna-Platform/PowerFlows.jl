@@ -213,3 +213,119 @@ end
     )
     verify_jacobian(sys; pf = pf, label = "polar c_sys14 distributed-slack")
 end
+
+# Two-swing island: buses 1 and 2 are both REF in one island, bus 3 is a PQ load. The
+# second swing has a nonzero fixed angle so the check exercises real off-diagonal ∂P/∂θ terms.
+function _two_swing_system()
+    sys = System(100.0)
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.06, 0.0)
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.REF, 230, 1.05, 0.05)
+    b3 = _add_simple_bus!(sys, 3, ACBusTypes.PQ, 230, 1.0, 0.0)
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    _add_simple_source!(sys, b2, 0.0, 0.0)
+    _add_simple_load!(sys, b3, 40, 15)
+    _add_simple_line!(sys, b1, b3, 5e-3, 5e-3, 1e-3)
+    _add_simple_line!(sys, b2, b3, 5e-3, 5e-3, 1e-3)
+    return sys
+end
+
+@testset "Multi-swing: two swings in one island each self-balance (solve)" begin
+    sys = _two_swing_system()
+    pf = PF.ACPowerFlow{NewtonRaphsonACPowerFlow}(; correct_bustypes = false)
+    data = PF.PowerFlowData(pf, sys)
+    @test PF.solve_power_flow!(data; tol = 1e-9)
+    lookup = PF.get_bus_lookup(data)
+    vm = PF.get_bus_magnitude(data)
+    va = PF.get_bus_angles(data)
+    @test vm[lookup[1], 1] ≈ 1.06 atol = 1e-9
+    @test va[lookup[1], 1] ≈ 0.0 atol = 1e-9
+    @test vm[lookup[2], 1] ≈ 1.05 atol = 1e-9
+    @test va[lookup[2], 1] ≈ 0.05 atol = 1e-9
+end
+
+@testset "Jacobian verification with two swings (multi-swing)" begin
+    # Each swing's ∂F_P/∂x[2i−1] = −1 with no cross-terms; a wrong diagonal or stray
+    # cross-term shows as order-1 decay in the asymptotic check.
+    verify_jacobian(
+        _two_swing_system();
+        pf = PF.ACPowerFlow{NewtonRaphsonACPowerFlow}(; correct_bustypes = false),
+        label = "polar two-swing", perturbation = 0.01,
+    )
+end
+
+@testset "Multi-swing under Fast Decoupled ($(V))" for V in
+                                                       (FDFixedJacobian, FDDecoupled)
+    # fdfixed reuses the polar Jacobian (independent-swing diagonal); :decoupled uses the
+    # explicit-state sync, which must close each swing's own P/Q rows (not a rank-1 island sum).
+    pf = PF.ACPowerFlow{FastDecoupledACPowerFlow{V, FDSchemeXB}}(; correct_bustypes = false)
+    data = PF.PowerFlowData(pf, _two_swing_system())
+    @test PF.solve_power_flow!(data)
+    lookup = PF.get_bus_lookup(data)
+    vm = PF.get_bus_magnitude(data)
+    va = PF.get_bus_angles(data)
+    @test vm[lookup[1], 1] ≈ 1.06 atol = 1e-6
+    @test va[lookup[1], 1] ≈ 0.0 atol = 1e-6
+    @test vm[lookup[2], 1] ≈ 1.05 atol = 1e-6
+    @test va[lookup[2], 1] ≈ 0.05 atol = 1e-6
+end
+
+# `true` iff the sparse structure has a STORED entry at (i, j) -- unlike `A[i, j] == 0.0`,
+# this distinguishes "structurally absent" from "present but numerically zero" (e.g. a PV
+# endpoint's Vm column, spec's union pattern).
+function _has_stored_entry(A::SparseMatrixCSC, i::Int, j::Int)
+    for k in SparseArrays.nzrange(A, j)
+        SparseArrays.rowvals(A)[k] == i && return true
+    end
+    return false
+end
+
+# Runs the shared area-interchange Jacobian assertions against a system enrolled with
+# `area_interchange_control = true`: (1) no (area_row, area_col) diagonal entry in the
+# structure (the border's zero diagonal — KLU full pivoting handles it); (2) the -1.0
+# column entry at each area's slack-bus P-mismatch row; (3) the
+# full asymptotic FD sweep over EVERY state entry, including the area tail.
+function _verify_area_jacobian(sys::PSY.System, label::String)
+    pf = PF.ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+        correct_bustypes = true,
+        area_interchange_control = true,
+    )
+    data = PF.PowerFlowData(pf, sys)
+    @test PF.n_controlled_areas(data) >= 1
+    time_step = 1
+    residual = PF.ACPowerFlowResidual(data, time_step)
+    J = PF.ACPowerFlowJacobian(residual, time_step)
+    x0 = PF.calculate_x0(data, time_step)
+    Random.seed!(42)
+    x0 .+= 0.02 .* randn(length(x0))
+    residual(x0, time_step)
+    J(time_step)
+
+    dcn = PF.get_dc_network(data)
+    area_off = PF.area_tail_offset(data, dcn)
+    Jv = J.Jv
+    for area in data.area_interchange.areas
+        row = area_off + area.tail_ix
+        @test !_has_stored_entry(Jv, row, row)
+        @test Jv[2 * area.slack_bus_ix - 1, area_off + area.tail_ix] == -1.0
+    end
+
+    verify_jacobian_asymptotic(residual, deepcopy(Jv), x0, time_step; label = label)
+    return
+end
+
+@testset "Jacobian verification with area interchange control (2-area, 1 controlled)" begin
+    sys = _make_two_area_system()
+    _set_slack!(sys, "Bus 6")
+    _add_area_interchange!(sys, "Area2", "Area1", 0.3; name = "A2_A1")
+    _verify_area_jacobian(sys, "polar area interchange (1 controlled area)")
+end
+
+@testset "Jacobian verification with area interchange control (3-area, degree-4 boundary)" begin
+    sys = _three_area_transfer_fixture(; slack_area3 = true)
+    _verify_area_jacobian(sys, "polar area interchange (2 controlled areas, degree-4 bus)")
+end
+
+@testset "Jacobian verification with area interchange control (3W transformer tie, polluted star-bus diagonal)" begin
+    sys = _make_3w_boundary_fixture()
+    _verify_area_jacobian(sys, "polar area interchange (3W winding tie)")
+end

@@ -269,3 +269,12 @@ end
         solver = solver,
     )
 end
+
+@testset "Mixed CPB polar parity: multi-swing (two independent REFs, one island)" begin
+    # Fixture defined in test_mixed_cpb_power_flow.jl.
+    @testset "$(solver)" for solver in MIXED_PARITY_SOLVERS
+        sys_p = _two_swing_mixed_system()
+        sys_h = _two_swing_mixed_system()
+        _mixed_polar_parity(sys_p, sys_h; solver = solver, atol = 1e-6)
+    end
+end

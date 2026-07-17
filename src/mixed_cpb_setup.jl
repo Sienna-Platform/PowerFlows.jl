@@ -169,6 +169,7 @@ function mixed_finalize_bus_injections!(
     bus_state_offset::Vector{REC_INDEX_TYPE},
     bus_slack_participation_factors::SparseVector{Float64, Int},
     subnetworks::Dict{Int64, Vector{Int64}},
+    independent_ref::Set{Int},
     e_state::Vector{Float64},
     f_state::Vector{Float64},
     time_step::Int64,
@@ -221,7 +222,10 @@ function mixed_finalize_bus_injections!(
     for (ref_bus, subnetwork_buses) in subnetworks
         # pass 1: total slack. Buffer covers ALL REF/PV buses (pass 2 writes
         # even non-participating c_k==0 ones); slack accumulates only for c_k!=0.
+        # `P_net_k_buf` caches each participating bus's own physically-solved net
+        # injection, needed directly (not redistributed) by an independent REF below.
         P_net_set_polar = zeros(Float64, length(subnetwork_buses))
+        P_net_k_buf = zeros(Float64, length(subnetwork_buses))
         P_slack_total = 0.0
         for (idx, bus_k) in enumerate(subnetwork_buses)
             bt = bus_types[bus_k]
@@ -232,9 +236,20 @@ function mixed_finalize_bus_injections!(
                 get_bus_active_power_total_withdrawals(data, bus_k, time_step) +
                 data.bus_hvdc_net_power[bus_k, time_step]
             P_net_set_polar[idx] = P_net_set_polar_k
+            # Multi-swing island: this swing's deviation from its own set-point is
+            # entirely its own — it is not shared island slack (mirrors the residual/
+            # Jacobian: an independent REF never participates in the distributed pool).
+            # Must be cached BEFORE the participation-factor skip: an independent REF
+            # can carry c_k == 0 and still needs its physically-solved P in pass 2.
+            if bus_k in independent_ref
+                P_net_k_buf[idx] =
+                    e_state[bus_k] * YVr[bus_k] + f_state[bus_k] * YVi[bus_k]
+                continue
+            end
             bus_slack_participation_factors[bus_k] == 0.0 && continue
             # S_net,k = V_k · conj((Y_raw·V)_k); real part used here.
             P_net_k = e_state[bus_k] * YVr[bus_k] + f_state[bus_k] * YVi[bus_k]
+            P_net_k_buf[idx] = P_net_k
             P_slack_total += P_net_k - P_net_set_polar_k
         end
         # pass 2: distribute + write (P_slack_total must be complete first)
@@ -242,7 +257,12 @@ function mixed_finalize_bus_injections!(
             c_k = bus_slack_participation_factors[bus_k]
             bt = bus_types[bus_k]
             (bt == PSY.ACBusTypes.REF || bt == PSY.ACBusTypes.PV) || continue
-            P_net = P_net_set_polar[idx] + c_k * P_slack_total
+            P_net = if bus_k in independent_ref
+                # Own physically-solved net injection, not the redistributed share.
+                P_net_k_buf[idx]
+            else
+                P_net_set_polar[idx] + c_k * P_slack_total
+            end
             # Q_net,k = imag(V_k · conj((Y_raw·V)_k)).
             Q_net = f_state[bus_k] * YVr[bus_k] - e_state[bus_k] * YVi[bus_k]
             # Identical to polar `_setpq`.

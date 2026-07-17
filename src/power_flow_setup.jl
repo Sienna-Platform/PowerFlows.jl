@@ -168,10 +168,12 @@ end
 """Calculate x0 from data."""
 function calculate_x0(data::ACPowerFlowData,
     time_step::Int64)
-    n_buses = length(data.bus_type[:, 1])
-    n_lcc = size(data.lcc.p_set, 1)
+    n_buses = size(data.bus_type, 1)
+    dcn = get_dc_network(data)
     x0 = Vector{Float64}(undef,
-        2 * n_buses + 4 * n_lcc + vsc_tail_length(get_dc_network(data)))
+        2 * n_buses + state_tail_length(data, dcn))
+    # update_state! fills the area tail from `data.area_interchange.delta_p` (0.0 for a
+    # freshly enrolled area -> genuine flat start; the last-solved ΔP_a for a warm re-solve).
     update_state!(x0, data, time_step)
     return x0
 end

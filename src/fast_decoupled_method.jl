@@ -665,6 +665,21 @@ retrieval through the abstract `solver_cache` slot stays type-stable.
   materialized column is the key, so distinct PQ sets can never collide).
 - `bp_factor_count::Int`: number of B′ factorizations (must be 1 over the cache lifetime).
 - `bpp_factor_count::Int`: number of B″ factorizations (one per distinct PQ signature).
+- `pvpq_pos::Vector{Int}`: bus index → position in `pvpq` (`1:length(pvpq)`), `0` for a REF bus
+  or any bus not in `pvpq`. Length `nbus`; built once alongside the other `pvpq`-invariant
+  buffers. Used by the area-interchange bordered substep ([`_fd_area_substep!`](@ref)) to place
+  each tie endpoint's θ-partial into the right row of the border system without a per-call
+  `searchsortedfirst` over `pvpq`.
+- `area_W::Matrix{Float64}`: bordered-Schur scratch, `B′⁻¹·C` (size `length(pvpq) ×
+  n_controlled_areas`). Rebuilt (not just resized) if `n_controlled_areas(data)` changes mid-
+  lifetime (greedy relax de-enrollment) — see [`_fd_area_substep!`](@ref).
+- `area_S::Matrix{Float64}`: bordered-Schur scratch, the dense `Dᵀ·W` Schur complement
+  (`n_controlled_areas × n_controlled_areas`).
+- `area_g::Vector{Float64}`: bordered-Schur scratch, `Dᵀ·u − r_a` (length `n_controlled_areas`).
+- `area_u::Vector{Float64}`: bordered-Schur scratch, `B′⁻¹·rp` at the substep's current state
+  (length `length(pvpq)`).
+- `area_dtheta::Vector{Float64}`: bordered-Schur scratch, the final `Δθ = u − W·ΔP_a`
+  (length `length(pvpq)`).
 """
 mutable struct FastDecoupledCache{S <: FDScheme} <: SolverCache
     key::FDCacheKey{S}
@@ -676,6 +691,12 @@ mutable struct FastDecoupledCache{S <: FDScheme} <: SolverCache
     pq_data::Dict{Vector{PSY.ACBusTypes}, FDPQData}
     bp_factor_count::Int
     bpp_factor_count::Int
+    pvpq_pos::Vector{Int}
+    area_W::Matrix{Float64}
+    area_S::Matrix{Float64}
+    area_g::Vector{Float64}
+    area_u::Vector{Float64}
+    area_dtheta::Vector{Float64}
 end
 
 """
@@ -720,6 +741,12 @@ function _get_or_build_fd_cache!(
     theta_x_idx = [2 * i for i in fd.pvpq]
     p_row_idx = [2 * i - 1 for i in fd.pvpq]
     rp = Vector{Float64}(undef, length(fd.pvpq))
+    nbus = size(data.bus_type, 1)
+    pvpq_pos = zeros(Int, nbus)
+    @inbounds for (k, bus_ix) in enumerate(fd.pvpq)
+        pvpq_pos[bus_ix] = k
+    end
+    n_areas = n_controlled_areas(data)
     cache = FastDecoupledCache(
         key,
         fd,
@@ -730,6 +757,12 @@ function _get_or_build_fd_cache!(
         Dict{Vector{PSY.ACBusTypes}, FDPQData}(),
         1,   # bp_factor_count: build_fd_matrices factored B′ exactly once
         0,   # bpp_factor_count: bumped per distinct PQ signature in _get_pq_data!
+        pvpq_pos,
+        Matrix{Float64}(undef, length(fd.pvpq), n_areas),
+        Matrix{Float64}(undef, n_areas, n_areas),
+        Vector{Float64}(undef, n_areas),
+        Vector{Float64}(undef, length(fd.pvpq)),
+        Vector{Float64}(undef, length(fd.pvpq)),
     )
     data.solver_cache[] = cache
     return cache
@@ -798,7 +831,22 @@ function _sync_explicit_state!(
     Rv = residual.Rv
     bus_types = view(residual.data.bus_type, :, time_step)
     sign = FD_EXPLICIT_SYNC_SIGN
+    independent_ref =
+        _multi_swing_ref_indices(residual.data.bus_type, residual.subnetworks, time_step)
     for (ref_bus, subnet) in residual.subnetworks
+        if ref_bus in independent_ref
+            # Multi-swing island: each swing carries its own slack, so it closes its OWN P and Q
+            # rows (no rank-1 island sum, which would tie the swings' P together and mis-solve).
+            @inbounds for i in subnet
+                if bus_types[i] == PSY.ACBusTypes.REF
+                    x[2 * i - 1] -= sign * Rv[2 * i - 1]
+                    x[2 * i] -= sign * Rv[2 * i]
+                elseif bus_types[i] == PSY.ACBusTypes.PV
+                    x[2 * i - 1] -= sign * Rv[2 * i]
+                end
+            end
+            continue
+        end
         # Subnetwork slack scalar (the REF P slot): rank-1 update over all member P rows.
         slack_sum = 0.0
         @inbounds for i in subnet
@@ -857,9 +905,178 @@ function _fd_vsc_substep!(
 )
     dcn = get_dc_network(data)
     _vsc_warm_start!(dcn, view(data.bus_magnitude, :, time_step), time_step)
-    _write_vsc_state_to_x!(sv.x, dcn, time_step)
+    # VSC tail offset in the [buses | LCC | VSC | area] layout (same value the residual's
+    # `_read_vsc_state!` reads from) — front-anchored so a trailing area tail can't shift it.
+    vsc_off = 2 * size(data.bus_type, 1) + 4 * size(data.lcc.p_set, 1)
+    _write_vsc_state_to_x!(sv.x, dcn, vsc_off, time_step)
     _sync_explicit_state!(sv, residual, time_step)
     residual(sv.x, time_step)
+    return
+end
+
+# =====================================================================================
+# Area-interchange bordered Schur substep for the polar :decoupled loop.
+#
+# The B′/B″ half-steps never touch the ΔP_a tail (their RHS/Jacobian are restricted to the
+# ordinary bus P-θ/Q-V rows — see `_fd_lcc_substep!`/`_fd_vsc_substep!`'s docstrings for the
+# same structural reason with the LCC/VSC tail), so without this substep ΔP_a stays frozen at
+# its flat-start (or warm-started) value and the area residual `r_a = NI_a − PDES_a` never
+# converges. This substep drives `r_a → 0` by solving the bordered P-θ system
+#
+#   [ B′   C ] [Δθ  ]   [rp ]
+#   [ Dᵀ   0 ] [ΔP_a] = [ra ]
+#
+# (`fd.pvpq`/Δθ ordering throughout) via the Schur complement on the tiny, structurally-zero
+# (2,2) block, reusing the FIXED `fd.bp_cache` factorization (no `full_factor!`/refactor of
+# B′ — only extra back-solves through the already-factored matrix):
+#
+#   u = B′⁻¹·rp                    (1 back-solve)
+#   w_a = B′⁻¹·C[:,a]  ∀ area a    (n_areas back-solves)
+#   S = Dᵀ·W  (n_areas×n_areas dense);  g = Dᵀ·u − ra
+#   ΔP_a_step = S \ g              (dense n_areas solve, negligible — n_areas is small)
+#   Δθ = u − W·ΔP_a_step
+#
+# `C` column a is the constant `−1.0` at area a's slack-bus pvpq row (the same `−1.0` the
+# Jacobian border stamps at `F[2·slack−1]`, `_set_entries_for_area`). `Dᵀ` row a is `∂r_a/∂θ`
+# — the θ-part only of `_tie_metered_active_power_partials` at every tie endpoint incident to
+# area a, same `±σ` sign convention as `_accumulate_area_row!` (metered side `+1`, other side
+# `−1`); the |V| part is dropped (the FD approximation — the RESIDUAL `r_a` used to build `g`
+# is still the exact kernel, so the interchange target is met exactly at convergence; only the
+# STEP direction is FD-approximate). Both `[Δθ; ΔP_a_step]` are Newton STEPS under this
+# codebase's solve-then-negate convention (`_fd_decoupled_power_flow`'s file-header comment),
+# so BOTH are subtracted from the current state, mirroring the P half-step's `θ -= Δθ`.
+# =====================================================================================
+
+"""
+    _fd_area_substep!(sv, cache, residual, data, time_step)
+
+Bordered-Schur area-interchange correction for the polar `:decoupled` loop (see the file-header
+comment above for the full math): recompute the P-θ RHS `rp` at the CURRENT state (post half-
+steps / LCC-VSC substep — NOT the stale `rp` from the earlier P half-step, since Vm/θ have moved
+since then), solve the bordered system by Schur complement against the fixed `cache.fd.bp_cache`,
+update `θ` and the `ΔP_a` tail, then re-sync explicit rows and re-evaluate the residual (mirrors
+`_fd_lcc_substep!`/`_fd_vsc_substep!`'s contract exactly). Zero work when no area is controlled.
+"""
+function _fd_area_substep!(
+    sv::StateVectorCache,
+    cache::FastDecoupledCache,
+    residual::ACPowerFlowResidual,
+    data::ACPowerFlowData,
+    time_step::Int64,
+)
+    n_areas = n_controlled_areas(data)
+    iszero(n_areas) && return
+    fd = cache.fd
+    isempty(fd.pvpq) && return
+
+    # A greedy-relax de-enrollment can shrink `n_controlled_areas(data)` without changing the
+    # `FastDecoupledCache` reuse key (Ybus identity/scheme/backend — the area count is not part
+    # of it), so the border scratch is (re)allocated here on a size mismatch rather than only at
+    # cache-build time.
+    if size(cache.area_S, 1) != n_areas
+        cache.area_W = Matrix{Float64}(undef, length(fd.pvpq), n_areas)
+        cache.area_S = Matrix{Float64}(undef, n_areas, n_areas)
+        cache.area_g = Vector{Float64}(undef, n_areas)
+    end
+
+    aid = data.area_interchange
+    dcn = get_dc_network(data)
+    area_off = area_tail_offset(data, dcn)
+    Vm = view(data.bus_magnitude, :, time_step)
+    θ = view(data.bus_angles, :, time_step)
+    ybus_nzval = SparseArrays.nonzeros(data.power_network_matrix.data)
+    pos = cache.pvpq_pos
+    theta_x_idx = cache.theta_x_idx
+    p_row_idx = cache.p_row_idx
+
+    # u = B′⁻¹·rp, rp recomputed fresh (the current residual/Vm, not the stale P half-step rp).
+    u = cache.area_u
+    @inbounds for k in eachindex(fd.pvpq)
+        u[k] = residual.Rv[p_row_idx[k]] / Vm[fd.pvpq[k]]
+    end
+    solve!(fd.bp_cache, u)
+
+    # W columns: w_a = B′⁻¹·C[:,a]. The exact-Jacobian border coupling ∂P_slack/∂ΔP_a = −1
+    # (`_set_entries_for_area`) lives in the slack bus's P-row; entering the row-scaled B′ space
+    # (rp = Rv_P/Vm) divides that row — and its coupling — by V_slack, so C[:,a] = −1/V_slack at
+    # area a's slack-bus pvpq row (not −1). W is rebuilt every substep, so the V-dependence is free.
+    W = cache.area_W
+    @inbounds for area in aid.areas
+        wcol = @view W[:, area.tail_ix]
+        fill!(wcol, 0.0)
+        wcol[pos[area.slack_bus_ix]] = -1.0 / Vm[area.slack_bus_ix]
+        solve!(fd.bp_cache, wcol)
+    end
+
+    # g = Dᵀ·u − ra ; S = Dᵀ·W, accumulated tie-by-tie (only 2 nonzero Dᵀ columns per tie side)
+    # rather than materializing Dᵀ. `_area_residual_gaps` is the same exact kernel the Newton
+    # residual tail uses — the FD approximation is confined to the STEP, not `ra` itself.
+    S = cache.area_S
+    g = cache.area_g
+    fill!(S, 0.0)
+    ra = _area_residual_gaps(data, time_step)
+    @inbounds for area in aid.areas
+        g[area.tail_ix] = -ra[area.tail_ix]
+    end
+    @inbounds for tie in aid.ties
+        f = tie.from_bus_ix
+        t = tie.to_bus_ix
+        (_, dPm_dθf, _, dPm_dθt) =
+            _tie_metered_active_power_partials(tie, Vm[f], θ[f], Vm[t], θ[t], ybus_nzval)
+        if tie.metered_from
+            metered_tail = tie.from_area_tail
+            other_tail = tie.to_area_tail
+        else
+            metered_tail = tie.to_area_tail
+            other_tail = tie.from_area_tail
+        end
+        kf = pos[f]
+        kt = pos[t]
+        if !iszero(metered_tail)
+            _fd_area_row_accumulate!(g, S, W, u, metered_tail, kf, dPm_dθf)
+            _fd_area_row_accumulate!(g, S, W, u, metered_tail, kt, dPm_dθt)
+        end
+        if !iszero(other_tail)
+            _fd_area_row_accumulate!(g, S, W, u, other_tail, kf, -dPm_dθf)
+            _fd_area_row_accumulate!(g, S, W, u, other_tail, kt, -dPm_dθt)
+        end
+    end
+
+    dp = S \ g                              # ΔP_a Newton step, n_areas×n_areas dense (tiny)
+    dtheta = cache.area_dtheta
+    mul!(dtheta, W, dp)
+    @inbounds @. dtheta = u - dtheta
+
+    @inbounds for k in eachindex(theta_x_idx)
+        sv.x[theta_x_idx[k]] -= dtheta[k]
+    end
+    @inbounds for area in aid.areas
+        sv.x[area_off + area.tail_ix] -= dp[area.tail_ix]
+    end
+
+    _sync_explicit_state!(sv, residual, time_step)
+    residual(sv.x, time_step)
+    return
+end
+
+# Accumulate a tie endpoint's contribution into area row `row` of `g`/`S`: `k` is the endpoint
+# bus's `pvpq` position (`0` for a REF endpoint — `_push_area_row_bus_cols!`'s exclusion), `coeff`
+# is `σ·∂Pm/∂θ` for that endpoint. `S[row, :] += coeff · W[k, :]` since `S = Dᵀ·W` and row `k` of
+# `W` is the only nonzero contribution `Dᵀ[row, k]` makes to that dense product.
+function _fd_area_row_accumulate!(
+    g::Vector{Float64},
+    S::Matrix{Float64},
+    W::Matrix{Float64},
+    u::Vector{Float64},
+    row::Int,
+    k::Int,
+    coeff::Float64,
+)
+    iszero(k) && return
+    g[row] += coeff * u[k]
+    @inbounds for b in axes(S, 2)
+        S[row, b] += coeff * W[k, b]
+    end
     return
 end
 
@@ -979,6 +1196,9 @@ function _fd_decoupled_power_flow(
     # while a per-converter sub-solve refreshes the DC boundary conditions each cycle. Neither
     # present ⇒ the sub-solves are never invoked (pure-AC path unchanged).
     n_lcc = get_lcc_count(data)
+    # Same structural reason as LCC/VSC: the B′/B″ half-steps never touch the ΔP_a tail, so the
+    # bordered Schur substep (`_fd_area_substep!`) runs every cycle a controlled area exists.
+    has_area = !iszero(n_controlled_areas(data))
 
     # Sync explicit rows, then evaluate the residual so Rv / data reflect (V, θ, explicit P/Q).
     _sync_explicit_state!(sv, residual, time_step)
@@ -987,6 +1207,7 @@ function _fd_decoupled_power_flow(
     # enter the loop already small (they are refreshed each cycle after the Q half-step).
     n_lcc > 0 && _fd_lcc_substep!(sv, residual, data, time_step)
     has_vsc && _fd_vsc_substep!(sv, residual, data, time_step)
+    has_area && _fd_area_substep!(sv, cache, residual, data, time_step)
     ss = dot(residual.Rv, residual.Rv)
     sg = FDSafeguardState(sv.x, ss)
     converged = norm(residual.Rv, Inf) < stage_tol
@@ -1063,6 +1284,9 @@ function _fd_decoupled_power_flow(
         if !diverged && has_vsc
             _fd_vsc_substep!(sv, residual, data, time_step)
         end
+        if !diverged && has_area
+            _fd_area_substep!(sv, cache, residual, data, time_step)
+        end
 
         ss = dot(residual.Rv, residual.Rv)
 
@@ -1106,6 +1330,9 @@ function _fd_decoupled_power_flow(
                 end
                 if has_vsc
                     _fd_vsc_substep!(sv, residual, data, time_step)
+                end
+                if has_area
+                    _fd_area_substep!(sv, cache, residual, data, time_step)
                 end
                 ss = dot(residual.Rv, residual.Rv)
                 _fd_update_best!(sg, sv.x, ss)
