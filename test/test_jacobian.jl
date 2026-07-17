@@ -123,6 +123,62 @@ end
     )
 end
 
+@testset "Jacobian verification with LCC, realistic inverter (interior, tap≠1, NBR>1)" begin
+    # The regime large interconnection-scale planning cases hit and the tap=1 / α≈0 tests
+    # above never exercised:
+    # extinction/delay angles ~15-18°, transformer taps off nominal, 2 bridges per side.
+    # With the corrected inverter commutation (drop SUBTRACTS), ϕ_i stays interior
+    # (sin ϕ_i > 0) so the converter carries reactive power, and the −xtr_i sign on the
+    # inverter's commutation-chain derivatives must make the analytic Jacobian match the
+    # residual. A wrong inverter commutation sign shows up as order-1 decay here.
+    sys = System(100.0)
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.05, 0.0)
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.PQ, 230, 1.02, 0.0)
+    b3 = _add_simple_bus!(sys, 3, ACBusTypes.PQ, 230, 1.0, 0.0)
+    _add_simple_load!(sys, b2, 10, 5)
+    _add_simple_load!(sys, b3, 60, 20)
+    _add_simple_line!(sys, b1, b2, 5e-3, 5e-3, 1e-3)
+    _add_simple_line!(sys, b1, b3, 5e-3, 5e-3, 1e-3)
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    lcc = _add_simple_lcc!(sys, b2, b3, 0.02, 0.03, 0.04)
+    PSY.set_rectifier_delay_angle!(lcc, deg2rad(15))
+    PSY.set_inverter_extinction_angle!(lcc, deg2rad(18))
+    PSY.set_rectifier_tap_setting!(lcc, 0.9)
+    PSY.set_inverter_tap_setting!(lcc, 0.95)
+    PSY.set_rectifier_bridges!(lcc, 2)
+    PSY.set_inverter_bridges!(lcc, 2)
+    verify_jacobian(sys; label = "polar 3-bus LCC, realistic interior inverter",
+        perturbation = 0.005)
+end
+
+@testset "LCC inverter reactive power is nonzero at the solution (regression)" begin
+    # Regression for the inverter ϕ-commutation-sign defect: before the fix a realistic
+    # small-γ inverter had its commutation drop ADDED, driving raw = −(cos γ + comm) < −1,
+    # so ϕ_i clamped to π (sin ϕ_i = 0). That zeroed the inverter's reactive draw and let
+    # the terminal voltage run away. With the fix the inverter stays interior and consumes
+    # reactive power. Assert the solved inverter is well off the clamp.
+    sys = System(100.0)
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.0, 0.0)
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.PQ, 230, 1.0, 0.0)
+    b3 = _add_simple_bus!(sys, 3, ACBusTypes.PQ, 230, 1.0, 0.0)
+    _add_simple_load!(sys, b2, 10, 5)
+    _add_simple_load!(sys, b3, 60, 20)
+    _add_simple_line!(sys, b1, b2, 5e-3, 5e-3, 1e-3)
+    _add_simple_line!(sys, b1, b3, 5e-3, 5e-3, 1e-3)
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    lcc = _add_simple_lcc!(sys, b2, b3, 0.02, 0.04, 0.08)
+    PSY.set_rectifier_delay_angle!(lcc, deg2rad(15))
+    PSY.set_inverter_extinction_angle!(lcc, deg2rad(17))
+    PSY.set_inverter_tap_setting!(lcc, 0.95)
+    pf = PF.ACPowerFlow{NewtonRaphsonACPowerFlow}(; correct_bustypes = true)
+    data = PF.PowerFlowData(pf, sys)
+    @test PF.solve_power_flow!(data)
+    # Off the acos clamp: sin(ϕ_i) = 0 would mean zero reactive contribution.
+    @test sin(data.lcc.inverter.phi[1, 1]) > 0.1
+    # Nonzero DC current carrying the transfer.
+    @test data.lcc.i_dc[1, 1] > 0.0
+end
+
 @testset "Jacobian verification with ZIP load" begin
     sys = System(100.0)
     b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.0, 0.0)

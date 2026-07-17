@@ -51,11 +51,11 @@ with an `ArgumentError` for combinations that are not yet supported:
     inner solvers. (FastDecoupled factors B′/B″ once and would silently reuse
     them after a tap move; LM/GD/Homotopy are unvalidated as continuation inner
     solvers.)
-  - **Single time step:** `time_steps > 1` is rejected — device state does not
-    yet track per-time-step baselines (taps mutate the shared Y-bus; shunt
-    deltas are per-column).
   - **No LCC HVDC:** the continuation's rollback does not yet cover the
     per-time-step LCC state.
+
+`time_steps > 1` is supported for every device family (see
+[Multiperiod solves](@ref discrete-control-multiperiod)).
 
 Per-device data problems (unresolvable controlled buses, degenerate tap/step
 ranges, unsupported MODSW modes, implausible voltage setpoints) never abort
@@ -64,6 +64,30 @@ setting — the same *warn and lock* posture PSS/E takes for bad control data.
 
 `ControlledFACTS` is enrolled unconditionally (no flag); its metadata sourcing
 caveats are noted in [Metadata sourcing](@ref discrete-control-metadata).
+
+## [Multiperiod solves](@id discrete-control-multiperiod)
+
+Each time step regulates independently. `ControlledDeviceSet` carries a
+per-time-step store (one column per step, sized at construction); around each
+step's continuation the solver loads that step's device state into the scalar
+scratch the engine mutates and saves it back afterwards. Shunt/FACTS state is a
+plain scalar swap — their control deltas land in the per-column withdrawal
+matrices. Taps mutate the *shared* Y-bus, so each step instead resets the tap to
+its enrollment baseline via a Y-bus delta-update before regulating
+(reset-to-baseline design), and branch flows are computed inside the time-step
+loop so every step's flows reflect that step's tap position.
+
+Two multiperiod-specific behaviors:
+
+  - **No PSY write-back:** a PSY component holds a single scalar setting, so
+    [`write_device_settings!`](@ref) skips (with a warning) for
+    `time_steps > 1`. Per-step settings are reported by
+    [`get_controlled_device_results`](@ref), one row per device per time step
+    (`time_step` column).
+  - **Same-snapshot seeding:** time-invariant inputs (constant-power,
+    constant-current, and constant-impedance withdrawals, injections, reactive
+    limits) are seeded into every column from the system snapshot; callers with
+    time-varying data overwrite columns before solving.
 
 ## Device abstraction
 
@@ -322,7 +346,8 @@ pinned at `b_lim` while its regulated bus remains off `voltage_setpoint` is
 flagged `saturated = true` (with a warning). `get_controlled_device_results`
 carries that flag plus `delivered_q_mvar = b·|V|²·S_base` on the FACTS rows, and
 under active controls the solved `Q` is written back to the component's
-`reactive_power_required`.
+`reactive_power_required` (single time step only; see
+[Multiperiod solves](@ref discrete-control-multiperiod)).
 
 ## Reserved seams for future work
 

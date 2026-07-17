@@ -1072,3 +1072,54 @@ end
         @test isapprox(sol["nr"][i], sol["fd"][i]; atol = 1e-6)
     end
 end
+
+@testset "get_hvdc_results: multiperiod NamedTuple tables" begin
+    time_steps = 3
+    sys, from_no, to_no = _vsc_system(;
+        g = 50.0,
+        dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
+        ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
+        dc_setpoint_from = 1.04,
+        reactive_power_from = 0.0,
+        dc_control_to = PSY.VSCDCControlModes.DC_POWER,
+        ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
+        dc_setpoint_to = 0.3,
+        reactive_power_to = 0.05,
+    )
+    pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+        time_steps = time_steps, solver_settings = VSC_SETTINGS)
+    data = PowerFlowData(pf, sys)
+    prepare_ts_data!(data, time_steps)
+    @test solve_power_flow!(data)
+    res = get_hvdc_results(sys, data)
+    @test DataFrames.nrow(res.vsc) == time_steps   # one VSC line, one row per step
+    @test isempty(res.lcc)
+    @test isempty(res.mtdc_converters)
+    @test isempty(res.mtdc_lines)
+    # Per-step slices equal the single-time-step builders.
+    dcn = PF.get_dc_network(data)
+    nrd = PNM.get_network_reduction_data(PF.get_power_network_matrix(data))
+    base = PSY.get_base_power(sys)
+    for t in 1:time_steps
+        slice = res.vsc[res.vsc.time_step .== t, DataFrames.Not(:time_step)]
+        direct = PF.vsc_results_dataframe(sys, data, dcn, nrd, base, t)
+        @test slice == direct
+    end
+    # The P_to_from column closes the loss identity at every step.
+    @test all(
+        isapprox.(res.vsc.P_losses, res.vsc.P_from_to .+ res.vsc.P_to_from; atol = 1e-9),
+    )
+end
+
+@testset "get_hvdc_results: MTDC converter and DC-line tables" begin
+    sys = _build_mtdc_system()
+    pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(; solver_settings = VSC_SETTINGS)
+    data = PowerFlowData(pf, sys)
+    @test solve_power_flow!(data)
+    res = get_hvdc_results(sys, data)
+    @test DataFrames.nrow(res.mtdc_converters) == 3
+    @test DataFrames.nrow(res.mtdc_lines) == 2
+    @test all(res.mtdc_converters.time_step .== 1)
+    @test isempty(res.vsc)
+    @test isempty(res.lcc)
+end

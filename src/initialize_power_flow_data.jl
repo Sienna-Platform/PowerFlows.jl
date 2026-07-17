@@ -47,8 +47,10 @@ function initialize_power_flow_data!(
         removed_buses,
         sys,
     )
-    data.bus_active_power_injections[:, 1] .= bus_active_power_injections
-    data.bus_reactive_power_injections[:, 1] .= bus_reactive_power_injections
+    # Broadcast seeds every column from the snapshot; time-varying callers (PSI, prepare_ts_data!)
+    # overwrite columns afterward. An unfilled column would solve as zero, not the snapshot.
+    data.bus_active_power_injections .= bus_active_power_injections
+    data.bus_reactive_power_injections .= bus_reactive_power_injections
 
     # bus active power range and per-generator headroom for headroom-proportional
     # distributed slack. generator_headroom is populated inside
@@ -86,15 +88,17 @@ function initialize_power_flow_data!(
         removed_buses,
         sys,
     )
-    data.bus_active_power_withdrawals[:, 1] .= bus_active_power_withdrawals
-    data.bus_reactive_power_withdrawals[:, 1] .= bus_reactive_power_withdrawals
-    data.bus_active_power_constant_current_withdrawals[:, 1] .=
+    data.bus_active_power_withdrawals .= bus_active_power_withdrawals
+    data.bus_reactive_power_withdrawals .= bus_reactive_power_withdrawals
+    # Constant-I/Z baselines are time-invariant; broadcast so the per-step control delta on
+    # column `ts` keeps its baseline at `ts≥2`.
+    data.bus_active_power_constant_current_withdrawals .=
         bus_active_power_constant_current_withdrawals
-    data.bus_reactive_power_constant_current_withdrawals[:, 1] .=
+    data.bus_reactive_power_constant_current_withdrawals .=
         bus_reactive_power_constant_current_withdrawals
-    data.bus_active_power_constant_impedance_withdrawals[:, 1] .=
+    data.bus_active_power_constant_impedance_withdrawals .=
         bus_active_power_constant_impedance_withdrawals
-    data.bus_reactive_power_constant_impedance_withdrawals[:, 1] .=
+    data.bus_reactive_power_constant_impedance_withdrawals .=
         bus_reactive_power_constant_impedance_withdrawals
 
     # reactive power bounds
@@ -109,7 +113,9 @@ function initialize_power_flow_data!(
         removed_buses,
         sys,
     )
-    data.bus_reactive_power_bounds[:, 1] .= bus_reactive_power_bounds
+    # Bounds are time-invariant but read per `time_step`; broadcast so PV→PQ Q-limit switching
+    # fires at `ts≥2` (the matrix is otherwise `(-Inf, Inf)`).
+    data.bus_reactive_power_bounds .= bus_reactive_power_bounds
 
     # bus/generator participation factors
     # remark: everything after the 3rd argument here is contained inside data.

@@ -74,6 +74,15 @@ struct ControlledDeviceSet
     taps::Vector{ControlledTap}
     shunts::Vector{ControlledSwitchedShunt}
     facts::Vector{ControlledFACTS}
+    # Per-time-step scalar state [device, ts]; `load_device_state!`/`save_device_state!` swap it
+    # in/out of the device scratch. Taps mutate the SHARED Y-bus, so their store is reconciled via
+    # `apply_parameter!` (reset to `d.initial` each step), not a scalar swap.
+    shunt_current::Matrix{Float64}
+    shunt_block_n::Matrix{Vector{Int}}
+    facts_current::Matrix{Float64}
+    facts_b_lim::Matrix{Float64}
+    facts_saturated::Matrix{Bool}
+    tap_current::Matrix{Float64}
     # Perf counters for the last `_control_continuation!` (counts, not wall-clock; the regression
     # harness). symbolic_factors stays O(1) per continuation with PolarNRCache reuse. See getters.
     inner_solves::Base.RefValue{Int}
@@ -84,12 +93,92 @@ function ControlledDeviceSet(
     taps::Vector{ControlledTap},
     shunts::Vector{ControlledSwitchedShunt},
     facts::Vector{ControlledFACTS},
+    n_time_steps::Int = 1,
 )
-    return ControlledDeviceSet(taps, shunts, facts, Ref(0), Ref(0), Ref(0))
+    shunt_current = [d.current for d in shunts, _ in 1:n_time_steps]
+    shunt_block_n = [copy(d.block_n) for d in shunts, _ in 1:n_time_steps]
+    facts_current = [d.current for d in facts, _ in 1:n_time_steps]
+    facts_b_lim = [d.b_lim for d in facts, _ in 1:n_time_steps]
+    facts_saturated = [d.saturated for d in facts, _ in 1:n_time_steps]
+    tap_current = [d.current for d in taps, _ in 1:n_time_steps]
+    return ControlledDeviceSet(
+        taps,
+        shunts,
+        facts,
+        shunt_current,
+        shunt_block_n,
+        facts_current,
+        facts_b_lim,
+        facts_saturated,
+        tap_current,
+        Ref(0),
+        Ref(0),
+        Ref(0),
+    )
 end
 function Base.isempty(s::ControlledDeviceSet)
     return isempty(s.taps) && isempty(s.shunts) && isempty(s.facts)
 end
+
+"""Load time step `ts`'s persisted state into the device scratch `_control_continuation!` mutates.
+Shunt/FACTS is a plain scalar swap; taps instead reset to their enrollment baseline (`d.initial`)
+via a Y-bus delta-update, since they mutate the shared Y-bus and every step must regulate from the
+same baseline network (reset-to-baseline design; a no-op on step 1)."""
+function load_device_state!(set::ControlledDeviceSet, data, ts::Int)
+    for (i, d) in enumerate(set.shunts)
+        d.current = set.shunt_current[i, ts]
+        d.block_n .= set.shunt_block_n[i, ts]
+    end
+    for (i, d) in enumerate(set.facts)
+        d.current = set.facts_current[i, ts]
+        d.b_lim = set.facts_b_lim[i, ts]
+        d.saturated = set.facts_saturated[i, ts]
+    end
+    for d in set.taps
+        apply_parameter!(d, data, d.initial, ts)
+    end
+    return
+end
+load_device_state!(::Nothing, data, ts::Int) = nothing
+
+"""Persist the device scratch for time step `ts` into the per-ts store after `_control_continuation!`
+runs for that step. Taps persist their converged position for reporting; the next `load_device_state!`
+resets the Y-bus to baseline before the next step regulates."""
+function save_device_state!(set::ControlledDeviceSet, data, ts::Int)
+    for (i, d) in enumerate(set.shunts)
+        set.shunt_current[i, ts] = d.current
+        set.shunt_block_n[i, ts] .= d.block_n
+    end
+    for (i, d) in enumerate(set.facts)
+        set.facts_current[i, ts] = d.current
+        set.facts_b_lim[i, ts] = d.b_lim
+        set.facts_saturated[i, ts] = d.saturated
+    end
+    for (i, d) in enumerate(set.taps)
+        set.tap_current[i, ts] = d.current
+    end
+    return
+end
+save_device_state!(::Nothing, data, ts::Int) = nothing
+
+"""Width (number of time steps) of the per-time-step device store; all store matrices share
+it by construction."""
+store_time_steps(set::ControlledDeviceSet) = size(set.shunt_current, 2)
+
+"""Guard the per-ts store width against the data horizon at the solve seam: without it a set built
+for a different horizon would only surface as a `BoundsError` deep inside the solve."""
+function validate_device_store_width(set::ControlledDeviceSet, n_time_steps::Int)
+    width = store_time_steps(set)
+    if width != n_time_steps
+        error(
+            "ControlledDeviceSet per-time-step store has width $width but the " *
+            "PowerFlowData horizon is $n_time_steps time steps. Rebuild the set with " *
+            "`build_controlled_device_set(...; n_time_steps = $n_time_steps)`.",
+        )
+    end
+    return
+end
+validate_device_store_width(::Nothing, ::Int) = nothing
 
 """Number of inner `_solve_with_q_limits!` calls the last discrete-control continuation
 performed (0 when the data was built without discrete control)."""
@@ -128,13 +217,40 @@ end
 
 controlled_bus_ix(d::AbstractControlledDevice) = d.controlled_ix
 
+# Results reporting reads the PERSISTED per-ts store, not the live device scalar (which
+# reflects only the solve loop's last-processed time step once time_steps>1). Dispatch, not
+# an `isa` branch, over the mixed device loop.
+stored_current(set::ControlledDeviceSet, ::ControlledTap, i::Int, ts::Int) =
+    set.tap_current[i, ts]
+stored_current(set::ControlledDeviceSet, ::ControlledSwitchedShunt, i::Int, ts::Int) =
+    set.shunt_current[i, ts]
+stored_current(set::ControlledDeviceSet, ::ControlledFACTS, i::Int, ts::Int) =
+    set.facts_current[i, ts]
+
 # Result columns meaningful only for FACTS; taps/shunts report the neutral value so the
-# frame stays rectangular (dispatch, not an `isa` branch, over the mixed device loop).
-result_delivered_q_mvar(::AbstractControlledDevice, data, ts::Int) = missing
-result_delivered_q_mvar(d::ControlledFACTS, data, ts::Int) =
-    delivered_q_mvar(d, data.bus_magnitude[d.bus_ix, ts])
-result_saturated(::AbstractControlledDevice) = false
-result_saturated(d::ControlledFACTS) = d.saturated
+# frame stays rectangular.
+stored_delivered_q_mvar(
+    ::ControlledDeviceSet,
+    ::AbstractControlledDevice,
+    ::Int,
+    data,
+    ::Int,
+) =
+    missing
+stored_delivered_q_mvar(
+    set::ControlledDeviceSet, d::ControlledFACTS, i::Int, data, ts::Int,
+) = delivered_q_mvar(set.facts_current[i, ts], data.bus_magnitude[d.bus_ix, ts], d.base_mva)
+stored_saturated(::ControlledDeviceSet, ::AbstractControlledDevice, ::Int, ::Int) = false
+stored_saturated(set::ControlledDeviceSet, ::ControlledFACTS, i::Int, ts::Int) =
+    set.facts_saturated[i, ts]
+
+# FACTS's |b| bound is voltage-dependent and refreshed per-ts (`b_lim`); taps/shunts have a
+# fixed parameter range, so their stored limits equal `parameter_limits(d)` regardless of ts.
+stored_parameter_limits(::ControlledDeviceSet, d::AbstractControlledDevice, ::Int, ::Int) =
+    parameter_limits(d)
+stored_parameter_limits(set::ControlledDeviceSet, ::ControlledFACTS, i::Int, ts::Int) =
+    (-set.facts_b_lim[i, ts], set.facts_b_lim[i, ts])
+
 voltage_setpoint(d::AbstractControlledDevice) = d.vset
 parameter_limits(d::ControlledTap) = (d.p_min, d.p_max)
 parameter_limits(d::ControlledSwitchedShunt) = (d.b_min, d.b_max)
@@ -292,7 +408,11 @@ snap_to_discrete(d::ControlledFACTS, b::Float64) = clamp(b, -d.b_lim, d.b_lim)
 
 # Delivered reactive power Q = b·|V|² in MVA, evaluated at the device's own (sending) bus
 # voltage `vmag` — the susceptance sits there, not at the regulated bus (which may be remote).
-delivered_q_mvar(d::ControlledFACTS, vmag::Float64) = d.current * vmag^2 * d.base_mva
+# The 3-arg form takes an explicit susceptance so results-reporting can read a stored
+# (possibly non-live, past-time-step) value without touching `d.current`.
+delivered_q_mvar(b::Float64, vmag::Float64, base_mva::Float64) = b * vmag^2 * base_mva
+delivered_q_mvar(d::ControlledFACTS, vmag::Float64) =
+    delivered_q_mvar(d.current, vmag, d.base_mva)
 
 # Post-solve classification of one FACTS endpoint against its final (voltage-dependent) bound
 # and setpoint. `saturated` = pinned at the |b| bound while off setpoint — the device cannot
@@ -322,7 +442,8 @@ end
 
 # Delta-update the from/to arc-admittance rows to `d.current` (parallel branches sharing the arc
 # row are preserved; `d.synced` tracks the reflected value). Reported flows are computed from
-# these matrices post-loop, so an unsynced branch would report flows at its original tap.
+# these matrices right after each time step, so an unsynced branch would report flows at its
+# original tap.
 function _sync_branch_arc_rows!(
     Yft::SparseArrays.SparseMatrixCSC,
     Ytf::SparseArrays.SparseMatrixCSC,

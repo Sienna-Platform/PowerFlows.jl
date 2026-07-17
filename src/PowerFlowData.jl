@@ -223,6 +223,8 @@ get_bus_reactive_power_constant_current_withdrawals(pfd::PowerFlowData) =
 get_bus_reactive_power_constant_impedance_withdrawals(pfd::PowerFlowData) =
     pfd.bus_reactive_power_constant_impedance_withdrawals
 get_bus_reactive_power_bounds(pfd::PowerFlowData) = pfd.bus_reactive_power_bounds
+get_bus_hvdc_net_power(pfd::PowerFlowData) = pfd.bus_hvdc_net_power
+get_generic_hvdc_flows(pfd::PowerFlowData) = pfd.generic_hvdc_flows
 get_bus_slack_participation_factors(pfd::PowerFlowData) =
     pfd.bus_slack_participation_factors
 get_bus_type(pfd::PowerFlowData) = pfd.bus_type
@@ -602,7 +604,8 @@ end
 
 # Build the controlled-device set for a solve, or `nothing` when discrete control is off or the
 # system has no enrollable devices. LCC HVDC is rejected: the continuation's rollback does not yet
-# cover the per-time-step LCC state.
+# cover the per-time-step LCC state. Taps support time_steps>1 via reset-to-baseline
+# (`load_device_state!` resets the shared Y-bus to `d.initial` before each step).
 function _build_controlled_devices(
     pf::AbstractACPowerFlow,
     sys::PSY.System,
@@ -620,12 +623,14 @@ function _build_controlled_devices(
             ),
         )
     end
+    n_time_steps = get_time_steps(pf)
     nrd = PNM.get_network_reduction_data(power_network_matrix)
     set = build_controlled_device_set(
         sys,
         PNM.get_bus_lookup(power_network_matrix),
         power_network_matrix;
         reverse_bus_search_map = PNM.get_reverse_bus_search_map(nrd),
+        n_time_steps = n_time_steps,
     )
     if isempty(set)
         return nothing
@@ -890,21 +895,21 @@ function _compute_arc_angle_differences_from_data!(
     return
 end
 
-"""Compute arc angle differences using precomputed from/to bus index vectors
-over specified time steps. Used by the AC solver where `fb_ix`/`tb_ix` are
-already available from the branch flow calculation."""
+"""Compute one time step's arc angle differences using precomputed from/to bus index
+vectors. Used by the AC solver where `fb_ix`/`tb_ix` are already available from the
+branch flow calculation."""
 function _compute_arc_angle_differences_from_indices!(
     data::PowerFlowData{T, M, N},
     fb_ix::Vector{Int},
     tb_ix::Vector{Int},
-    time_steps::Vector{Int},
+    time_step::Int,
 ) where {
     T <: PowerFlowEvaluationModel,
     M <: PNM.PowerNetworkMatrix,
     N <: Union{PNM.PowerNetworkMatrix, Nothing},
 }
-    @views data.arc_angle_differences[:, time_steps] .=
-        data.bus_angles[fb_ix, time_steps] .- data.bus_angles[tb_ix, time_steps]
+    @views data.arc_angle_differences[:, time_step] .=
+        data.bus_angles[fb_ix, time_step] .- data.bus_angles[tb_ix, time_step]
     return
 end
 

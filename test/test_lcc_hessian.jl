@@ -2,20 +2,22 @@
     K = PF.SQRT6_DIV_PI
 
     # Universal side-aware P_s and Q_s for the FD reference. σ = +1 rectifier,
-    # σ = -1 inverter. β = x_t · I_dc / √2.
+    # σ = -1 inverter. β = x_t · I_dc / √2. cos ϕ = σ·(cos α − β/(Vt)): the commutation
+    # drop reduces the DC voltage magnitude on BOTH sides (so the inverter's cos ϕ_i is
+    # −(cos γ − β/(Vt)), not −(cos γ + β/(Vt))), and σ carries the inverter's sign convention.
     function P_lcc(V, t, α, x_t, I_dc, σ)
         β = x_t * I_dc / sqrt(2)
-        u = σ * cos(α) - β / (V * t)
+        u = σ * (cos(α) - β / (V * t))
         return V * t * K * I_dc * u
     end
     function Q_lcc(V, t, α, x_t, I_dc, σ)
         β = x_t * I_dc / sqrt(2)
-        u = σ * cos(α) - β / (V * t)
+        u = σ * (cos(α) - β / (V * t))
         return V * t * K * I_dc * sqrt(1 - u^2)
     end
     function ϕ_lcc(V, t, α, x_t, I_dc, σ)
         β = x_t * I_dc / sqrt(2)
-        return acos(σ * cos(α) - β / (V * t))
+        return acos(σ * (cos(α) - β / (V * t)))
     end
 
     # Central FD 2nd derivative: 3-point stencil for diagonal entries
@@ -76,8 +78,9 @@
         end
     end
 
-    # Inverter points: need cos α_i + β/(Vt) < 1 (else u_i < -1 → past clamp).
-    # With x_t=0.06, I_dc=1.2 (β≈0.051) and Vt≈1, that requires α ≳ 20°.
+    # Inverter points: interior means |cos α_i − β/(Vt)| < 1, i.e. sin ϕ_i > 0. With the
+    # corrected commutation sign this holds for realistic small extinction angles (the old
+    # +commutation convention drove |u_i| > 1 and clamped ϕ_i to π here).
     @testset "Inverter ($(V), $(t), $(α))" for (V, t, α) in (
         (1.00, 1.00, deg2rad(30)),
         (1.02, 0.98, deg2rad(35)),

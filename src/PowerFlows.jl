@@ -33,6 +33,9 @@ export write_export
 export get_psse_export_paths
 export FlowReporting
 export ControlledDeviceSet
+export get_controlled_device_results
+export get_hvdc_results
+export write_device_settings!
 # "protected" (semi-stable because used in PSI) but not exported:
 # PowerFlowData and related type aliases, solve_power_flow!, write_results
 

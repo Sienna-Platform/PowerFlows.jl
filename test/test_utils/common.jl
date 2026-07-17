@@ -493,6 +493,15 @@ function prepare_ts_data!(data::PowerFlowData, time_steps::Int64 = 24)
 
     data.bus_active_power_injections .= deepcopy(injs[:, 1:time_steps])
     data.bus_active_power_withdrawals .= deepcopy(withs[:, 1:time_steps])
+    # The CSVs carry ACTIVE power only. The scenario every consumer of this helper was
+    # calibrated against has reactive power at the system snapshot for t=1 and ZERO for t>=2
+    # (historically an artifact of column-1-only seeding; `initialize_power_flow_data!` now
+    # seeds every column from the snapshot, so the zeros must be explicit). FDDecoupled's
+    # Q-limit outer loop does not converge on all 24 steps with snapshot Q load everywhere.
+    if time_steps > 1
+        data.bus_reactive_power_injections[:, 2:end] .= 0.0
+        data.bus_reactive_power_withdrawals[:, 2:end] .= 0.0
+    end
     return
 end
 
@@ -653,6 +662,247 @@ function _make_svc_system(;
     )
     add_component!(sys, svc)
     return sys
+end
+
+"""Add a `base_power = 100.0` `PowerLoad` (named `load_<busno>`) to the multiperiod fixtures."""
+function _add_mp_load!(
+    sys::System,
+    bus::ACBus,
+    active_power::Float64,
+    reactive_power::Float64,
+)
+    load = PowerLoad(;
+        name = "load_$(get_number(bus))",
+        available = true,
+        bus = bus,
+        active_power = active_power,
+        reactive_power = reactive_power,
+        base_power = 100.0,
+        max_active_power = 100.0,
+        max_reactive_power = 100.0,
+    )
+    add_component!(sys, load)
+    return load
+end
+
+"""Add a CONTINUOUS_VOLTAGE `SwitchedAdmittance` (named `shunt_<busno>`) regulating `bus`. The
+narrow `admittance_limits` band (±5e-4 around 1.0) settles the continuous continuation tight to
+the setpoint. `Y` is the FIXED susceptance (a nonzero value adds a constant-Z baseline, "b0")."""
+function _add_cv_shunt!(sys::System, bus::ACBus; Y = 0.0 + 0.0im)
+    sa = SwitchedAdmittance(;
+        name = "shunt_$(get_number(bus))",
+        available = true,
+        bus = bus,
+        Y = Y,
+        initial_status = [0],
+        number_of_steps = [12],
+        Y_increase = [0.0 + 0.1im],
+        admittance_limits = (min = 0.9995, max = 1.0005),
+        control_mode = PSY.SwitchedAdmittanceControlMode.CONTINUOUS_VOLTAGE,
+    )
+    add_component!(sys, sa)
+    return sa
+end
+
+"""Build a 2-bus system (REF—PQ) with one CONTINUOUS_VOLTAGE `SwitchedAdmittance` regulating the
+PQ bus, for multiperiod discrete-control tests. The base-case load pulls bus 2 below the setpoint;
+`_set_multiperiod_shunt_loads!` scales it per step so the required susceptance differs at each step.
+`shunt_Y` sets the shunt's FIXED susceptance (nonzero = a constant-Z "b0" baseline)."""
+function _make_multiperiod_shunt_system(; shunt_Y = 0.0 + 0.0im)
+    sys = System(100.0)
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.0, 0.0)
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.PQ, 230, 1.0, 0.0)
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    _add_simple_line!(sys, b1, b2, 0.01, 0.10, 0.0)
+    _add_mp_load!(sys, b2, 0.2, 0.3)
+    _add_cv_shunt!(sys, b2; Y = shunt_Y)
+    return sys
+end
+
+"""Overwrite `data`'s per-time-step withdrawals for the 2-bus multiperiod fixtures.
+`initialize_power_flow_data!` only populates column 1 from the system, so columns
+`2:n` start at zero; this replicates the active-power withdrawal unchanged across
+steps and scales the reactive withdrawal by `q_scale(t)` per step, so the controlled
+device must settle at a DIFFERENT setting at each time step."""
+function _set_multiperiod_loads!(data, n::Int, q_scale)
+    base_p = copy(data.bus_active_power_withdrawals[:, 1])
+    base_q = copy(data.bus_reactive_power_withdrawals[:, 1])
+    for t in 1:n
+        data.bus_active_power_withdrawals[:, t] .= base_p
+        data.bus_reactive_power_withdrawals[:, t] .= base_q .* q_scale(t)
+    end
+    return
+end
+
+_shunt_step_q_scale(t::Int) = 0.8 + 0.2 * t
+_facts_step_q_scale(t::Int) = 0.6 + 0.3 * t
+_tap_step_q_scale(t::Int) = 0.8 + 0.2 * t
+
+function _set_multiperiod_shunt_loads!(data, n::Int)
+    return _set_multiperiod_loads!(data, n, _shunt_step_q_scale)
+end
+
+"""Network index of the regulated bus (PSY bus number 2) in the 2-bus
+`_make_multiperiod_*_system` fixtures."""
+function _regulated_bus_index(data)
+    return PF.get_bus_lookup(data)[2]
+end
+
+"""`_make_multiperiod_shunt_system` with a nonzero FIXED shunt susceptance (`Y = 0.0 + 0.2im`), a
+constant-Z "b0" baseline `_get_withdrawals!` folds into `bus_reactive_power_constant_impedance_withdrawals`.
+Regression fixture for the bug where `initialize_power_flow_data!` seeded that baseline only into
+column 1, so `ts≥2` silently lost it."""
+function _make_multiperiod_shunt_system_with_baseline()
+    return _make_multiperiod_shunt_system(; shunt_Y = 0.0 + 0.2im)
+end
+
+"""Replicate column 1's injections and withdrawals into every time-step column, producing an
+IDENTICAL operating-point snapshot at each step. `initialize_power_flow_data!` seeds these (and the
+reactive-power bounds) only into column 1; this fills the load/generation columns but deliberately
+LEAVES the bounds untouched, so a multiperiod solve exercises the per-step bounds seeding."""
+function _replicate_col1_to_all_steps!(data, n::Int)
+    for t in 2:n
+        data.bus_active_power_injections[:, t] .= data.bus_active_power_injections[:, 1]
+        data.bus_reactive_power_injections[:, t] .= data.bus_reactive_power_injections[:, 1]
+        data.bus_active_power_withdrawals[:, t] .= data.bus_active_power_withdrawals[:, 1]
+        data.bus_reactive_power_withdrawals[:, t] .=
+            data.bus_reactive_power_withdrawals[:, 1]
+    end
+    return
+end
+
+"""Independent single-time-step solve of `sys` (built with `pf`) at multiperiod step `t`'s load:
+scale column 1's reactive withdrawal by `_shunt_step_q_scale(t)`. The gold-standard per-step parity
+oracle — column 1 keeps its correctly-initialized baseline, only the load moves to step `t`."""
+function _solve_single_ts_at_step(sys, pf, t::Int)
+    data = PowerFlowData(pf, sys)
+    data.bus_reactive_power_withdrawals[:, 1] .*= _shunt_step_q_scale(t)
+    solve_power_flow!(data)
+    return data
+end
+
+function _solve_shunt_single_ts_at_step(t::Int)
+    return _solve_single_ts_at_step(
+        _make_multiperiod_shunt_system_with_baseline(),
+        ACPowerFlow{NewtonRaphsonACPowerFlow}(; control_discrete_devices = true),
+        t,
+    )
+end
+
+"""Build a 3-bus system (REF—PV—PQ) combining both control mechanisms: a PV-bus generator
+with TIGHT reactive limits (so heavier steps force a PV→PQ Q-limit switch) and a
+CONTINUOUS_VOLTAGE `SwitchedAdmittance` regulating the PQ bus. Exercises
+`control_discrete_devices = true` together with `check_reactive_power_limits = true` in a
+multiperiod solve."""
+function _make_multiperiod_qlimit_shunt_system()
+    sys = System(100.0)
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.0, 0.0)
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.PV, 230, 1.0, 0.0)
+    b3 = _add_simple_bus!(sys, 3, ACBusTypes.PQ, 230, 1.0, 0.0)
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    gen = _add_simple_thermal_standard!(sys, b2, 0.1, 0.0)
+    set_reactive_power_limits!(gen, (min = -0.02, max = 0.02))
+    _add_simple_line!(sys, b1, b2, 0.01, 0.10, 0.0)
+    _add_simple_line!(sys, b2, b3, 0.01, 0.10, 0.0)
+    _add_mp_load!(sys, b3, 0.2, 0.3)
+    _add_cv_shunt!(sys, b3)
+    return sys
+end
+
+"""`_solve_single_ts_at_step` for `_make_multiperiod_qlimit_shunt_system` with BOTH
+`control_discrete_devices` and `check_reactive_power_limits` — the parity oracle for the
+combined-mode multiperiod test."""
+function _solve_qlimit_shunt_single_ts_at_step(t::Int)
+    return _solve_single_ts_at_step(
+        _make_multiperiod_qlimit_shunt_system(),
+        ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+            control_discrete_devices = true, check_reactive_power_limits = true),
+        t,
+    )
+end
+
+"""Build a 2-bus system (REF—PQ) with a `FACTSControlDevice` in explicit SVC mode
+(`shunt_control_type = SVC`) regulating the weak PQ bus, for multiperiod
+discrete-control tests. `max_shunt_current = 100.0` gives the SVC ample susceptance
+headroom so it never saturates identically across time steps; the base-case load
+pulls bus 2 below `voltage_setpoint = 1.0` and `_set_multiperiod_facts_loads!` then
+scales it per time step so the SVC settles at a DIFFERENT susceptance at each step."""
+function _make_multiperiod_facts_system()
+    sys = System(100.0)
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.0, 0.0)
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.PQ, 230, 1.0, 0.0)
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    _add_simple_line!(sys, b1, b2, 0.01, 0.10, 0.0)
+    _add_mp_load!(sys, b2, 0.2, 0.3)
+    svc = FACTSControlDevice(;
+        name = "svc_2",
+        available = true,
+        bus = b2,
+        control_mode = PSY.FACTSOperationModes.NML,
+        voltage_setpoint = 1.0,
+        max_shunt_current = 100.0,
+        shunt_control_type = PSY.FACTSShuntControlType.SVC,
+        reactive_power_required = 100.0,
+    )
+    add_component!(sys, svc)
+    return sys
+end
+
+function _set_multiperiod_facts_loads!(data, n::Int)
+    return _set_multiperiod_loads!(data, n, _facts_step_q_scale)
+end
+
+"""Build a 2-bus system (REF—PQ) with one voltage-controlling `TapTransformer` regulating
+the PQ bus, for multiperiod discrete-control tests (reset-to-baseline tap design). Mirrors
+`_make_solvable_tap_shunt_system`'s impedance (r=0.01, x=0.10) and base load (0.5+j0.25) so
+the tap has full authority over bus 2; the explicit control fields (`tap_limits`,
+`number_of_tap_positions`, `regulated_bus_number`, `voltage_setpoint`) pin a fine tap grid
+(31 positions over [0.85, 1.15]) so `_set_multiperiod_tap_loads!`'s per-step reactive-load
+scaling drives the required tap to a DIFFERENT discrete position at each time step."""
+function _make_multiperiod_tap_system()
+    sys = System(100.0)
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.0, 0.0)
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.PQ, 230, 1.0, 0.0)
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    _add_mp_load!(sys, b2, 0.5, 0.25)
+    tap_arc = Arc(; from = b1, to = b2)
+    tx = TapTransformer(;
+        name = "tap_1_2",
+        available = true,
+        active_power_flow = 0.0,
+        reactive_power_flow = 0.0,
+        arc = tap_arc,
+        r = 0.01,
+        x = 0.10,
+        primary_shunt = 0.0 + 0.0im,
+        tap = 1.0,
+        rating = 1.0,
+        base_power = 100.0,
+        tap_limits = (min = 0.85, max = 1.15),
+        number_of_tap_positions = 31,
+        regulated_bus_number = 2,
+        voltage_setpoint = 1.0,
+        control_objective = PSY.TransformerControlObjective.VOLTAGE,
+    )
+    add_component!(sys, tx)
+    return sys
+end
+
+"""Overwrite `data`'s per-time-step withdrawals for `_make_multiperiod_tap_system`.
+Column `t` equals `_set_single_tap_load!(data1, t)` exactly (both scale by
+`_tap_step_q_scale`), so each multi-ts step can be checked against an independent
+single-time-step solve at the same load (the gold-standard reset-to-baseline parity
+check)."""
+function _set_multiperiod_tap_loads!(data, n::Int)
+    return _set_multiperiod_loads!(data, n, _tap_step_q_scale)
+end
+
+"""Set a SINGLE-time-step `data`'s (built with `time_steps=1`) column-1 withdrawal to the
+SAME load `_set_multiperiod_tap_loads!` assigns to multi-ts column `t` — the load level an
+independent single-time-step solve must reproduce for the gold-standard parity check."""
+function _set_single_tap_load!(data, t::Int)
+    data.bus_reactive_power_withdrawals[:, 1] .*= _tap_step_q_scale(t)
+    return
 end
 
 """Build a 2-bus system with an API-convention `SwitchedAdmittance` (empty `initial_status`,
