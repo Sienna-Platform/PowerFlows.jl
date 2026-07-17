@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>Discrete Shunt Voltage Control · PowerFlows.jl</title><meta name="title" content="Discrete Shunt Voltage Control · PowerFlows.jl"/><meta property="og:title" content="Discrete Shunt Voltage Control · PowerFlows.jl"/><meta property="twitter:title" content="Discrete Shunt Voltage Control · PowerFlows.jl"/><meta name="description" content="Documentation for PowerFlows.jl."/><meta property="og:description" content="Documentation for PowerFlows.jl."/><meta property="twitter:description" content="Documentation for PowerFlows.jl."/><script data-outdated-warner src="../../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.050/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL="../.."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../../assets/documenter.js"></script><script src="../../search_index.js"></script><script src="../../siteinfo.js"></script><script src="../../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../../assets/themeswap.js"></script></head><body><div id="documenter"><nav class="docs-sidebar"><a class="docs-logo" href="../../"><img src="../../assets/logo.png" alt="PowerFlows.jl logo"/></a><div class="docs-package-name"><span class="docs-autofit"><a href="../../">PowerFlows.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../../">Welcome Page</a></li><li><span class="tocitem">Tutorials</span><ul><li><a class="tocitem" href="../generated_solving_a_power_flow/">Solving a Power Flow</a></li><li class="is-active"><a class="tocitem" href>Discrete Shunt Voltage Control</a><ul class="internal"><li><a class="tocitem" href="#Building-and-stressing-the-system"><span>Building and stressing the system</span></a></li><li><a class="tocitem" href="#Continuous-FACTS-control"><span>Continuous FACTS control</span></a></li><li><a class="tocitem" href="#Discrete-switched-shunt"><span>Discrete switched shunt</span></a></li><li><a class="tocitem" href="#Saturation"><span>Saturation</span></a></li><li><a class="tocitem" href="#When-to-use-each"><span>When to use each</span></a></li></ul></li><li><a class="tocitem" href="../generated_hvdc_converters_14bus/">HVDC Converters (VSC &amp; LCC)</a></li></ul></li><li><span class="tocitem">How-to-Guides</span><ul><li><a class="tocitem" href="../../how-tos/choose_ac_formulation_and_solver/">How to choose an AC formulation and solver</a></li></ul></li><li><span class="tocitem">Explanation</span><ul><li><a class="tocitem" href="../../explanation/models-and-solvers/">Evaluation Models vs. Solver Algorithms</a></li><li><a class="tocitem" href="../../explanation/mixed_cpb_formulation/">Mixed Current-Power Balance Formulation</a></li><li><a class="tocitem" href="../../explanation/fast_decoupled/">Fast/Fixed Decoupled Power Flow</a></li><li><a class="tocitem" href="../../explanation/lm_vs_gauss_seidel/">Levenberg-Marquardt vs Gauss-Seidel</a></li><li><a class="tocitem" href="../../explanation/folds_and_diagnostics/">Folds, Voltage Collapse, and Solver Diagnostics</a></li><li><a class="tocitem" href="../../explanation/lcc_model/">LCC Model Implementation</a></li><li><a class="tocitem" href="../../explanation/lcc_hessian/">LCC Second Derivatives (Hessian Blocks)</a></li><li><a class="tocitem" href="../../explanation/vsc_model/">VSC Model Implementation</a></li><li><a class="tocitem" href="../../explanation/discrete_control/">Discrete Control via λ-Continuation</a></li></ul></li><li><span class="tocitem">Reference</span><ul><li><a class="tocitem" href="../../reference/api/public/">Public API Reference</a></li><li><a class="tocitem" href="../../reference/api/internal/">Internal API Reference - Core</a></li><li><a class="tocitem" href="../../reference/api/internal_solvers/">Internal API Reference - Solvers &amp; Utilities</a></li><li><input class="collapse-toggle" id="menuitem-5-4" type="checkbox"/><label class="tocitem" for="menuitem-5-4"><span class="docs-label">Code Base Developer Guide</span><i class="docs-chevron"></i></label><ul class="collapsed"><li><a class="tocitem" href="../../reference/developers/developer/">Guidelines</a></li><li><a class="tocitem" href="../../reference/developers/power_flow/">Power Flow Overview for Developers</a></li></ul></li></ul></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li><a class="is-disabled">Tutorials</a></li><li class="is-active"><a href>Discrete Shunt Voltage Control</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>Discrete Shunt Voltage Control</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/Sienna-Platform/PowerFlows.jl" title="View the repository on GitHub"><span class="docs-icon fa-brands"></span><span class="docs-label is-hidden-touch">GitHub</span></a><a class="docs-navbar-link" href="https://github.com/Sienna-Platform/PowerFlows.jl/blob/main/docs/src/tutorials/discrete_control_14bus.jl" title="Edit source on GitHub"><span class="docs-icon fa-solid"></span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><h1 id="Discrete-Shunt-Voltage-Control"><a class="docs-heading-anchor" href="#Discrete-Shunt-Voltage-Control">Discrete Shunt Voltage Control</a><a id="Discrete-Shunt-Voltage-Control-1"></a><a class="docs-heading-anchor-permalink" href="#Discrete-Shunt-Voltage-Control" title="Permalink"></a></h1><p><em>To follow along, you can download this tutorial as a <a href="https://sienna-platform.github.io/PowerFlows.jl/dev/tutorials/discrete_control_14bus.jl">Julia script (.jl)</a> or <a href="https://sienna-platform.github.io/PowerFlows.jl/dev/tutorials/generated_discrete_control_14bus.ipynb">Jupyter notebook (.ipynb)</a>.</em></p><p>On a heavily loaded network, the voltage at a weak bus can sag well below its nominal value: the reactive power that the loads demand outpaces what nearby generators and lines can deliver. A shunt reactive device installed at (or near) the weak bus can restore the voltage by injecting reactive power locally. This tutorial builds a stressed 14-bus system, then shows two ways PowerFlows can hold a bus voltage at a setpoint:</p><ul><li>a <strong>continuous</strong> shunt FACTS device (SVC/STATCOM-style), whose reactive injection can take any value up to a current limit; and</li><li>a <strong>discrete</strong> switched shunt (PSS/E-style block-switched capacitor bank), whose reactive injection can only take one of a finite set of steps.</li></ul><p>Both device families are co-solved with the network equations by passing <code>control_discrete_devices = true</code> to the AC solver: the device&#39;s parameter (susceptance, in either case) is adjusted between outer iterations until the controlled bus voltage settles at its target, or the device saturates at its own limit.</p><h2 id="Building-and-stressing-the-system"><a class="docs-heading-anchor" href="#Building-and-stressing-the-system">Building and stressing the system</a><a id="Building-and-stressing-the-system-1"></a><a class="docs-heading-anchor-permalink" href="#Building-and-stressing-the-system" title="Permalink"></a></h2><p>To get started, load the needed packages.</p><pre><code class="language-julia hljs">using PowerSystemCaseBuilder
+using PowerSystems
+using PowerFlows</code></pre><p>Build the 14-bus test system with <a href="https://sienna-platform.github.io/PowerSystemCaseBuilder.jl/stable/reference/public/#PowerSystemCaseBuilder.build_system"><code>PowerSystemCaseBuilder.build_system</code></a>, then scale every <code>PowerLoad</code>&#39;s active and reactive power by <code>load_scale</code> to push the network toward its reactive power limits:</p><pre><code class="language-julia hljs">function build_stressed_system(load_scale::Float64)
+    sys = build_system(PSITestSystems, &quot;c_sys14&quot;; force_build = true, add_forecasts = false)
+    set_units_base_system!(sys, &quot;SYSTEM_BASE&quot;)
+    for load in get_components(PowerLoad, sys)
+        set_active_power!(load, get_active_power(load) * load_scale)
+        set_reactive_power!(load, get_reactive_power(load) * load_scale)
+    end
+    return sys
+end
+
+load_scale = 3.0
+sys = build_stressed_system(load_scale)</code></pre><table>
+  <thead>
+    <tr class = "title">
+      <td colspan = "2" style = "font-size: x-large; font-weight: bold; text-align: center;">System</td>
+    </tr>
+    <tr class = "columnLabelRow">
+      <th style = "font-weight: bold; text-align: left;">Property</th>
+      <th style = "font-weight: bold; text-align: left;">Value</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr class = "dataRow">
+      <td style = "text-align: left;">Name</td>
+      <td style = "text-align: left;"></td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: left;">Description</td>
+      <td style = "text-align: left;"></td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: left;">System Units Base</td>
+      <td style = "text-align: left;">SYSTEM_BASE</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: left;">Base Power</td>
+      <td style = "text-align: left;">100.0</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: left;">Base Frequency</td>
+      <td style = "text-align: left;">60.0</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: left;">Num Components</td>
+      <td style = "text-align: left;">70</td>
+    </tr>
+  </tbody>
+</table>
+
+<table>
+  <thead>
+    <tr class = "title">
+      <td colspan = "2" style = "font-size: x-large; font-weight: bold; text-align: center;">Static Components</td>
+    </tr>
+    <tr class = "columnLabelRow">
+      <th style = "font-weight: bold; text-align: left;">Type</th>
+      <th style = "font-weight: bold; text-align: left;">Count</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr class = "dataRow">
+      <td style = "text-align: left;">ACBus</td>
+      <td style = "text-align: left;">14</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: left;">Arc</td>
+      <td style = "text-align: left;">20</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: left;">Line</td>
+      <td style = "text-align: left;">16</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: left;">PowerLoad</td>
+      <td style = "text-align: left;">11</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: left;">TapTransformer</td>
+      <td style = "text-align: left;">3</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: left;">ThermalStandard</td>
+      <td style = "text-align: left;">5</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: left;">Transformer2W</td>
+      <td style = "text-align: left;">1</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>Solve a baseline <a href="../../reference/api/public/#PowerFlows.ACPowerFlow"><code>ACPowerFlow</code></a> on the stressed system, with no control devices installed:</p><pre><code class="language-julia hljs">baseline_results = solve_power_flow(ACPowerFlow(), sys)
+bus_results = baseline_results[&quot;bus_results&quot;]</code></pre><div>
+  <div style = "float: right; font-style: italic;">
+    <span>4 rows omitted</span>
+  </div>
+  <div style = "clear: both;"></div>
+</div>
+<table>
+  <thead>
+    <tr class = "columnLabelRow">
+      <th style = "font-weight: bold; text-align: right;">bus_number</th>
+      <th style = "font-weight: bold; text-align: right;">Vm</th>
+      <th style = "font-weight: bold; text-align: right;">θ</th>
+      <th style = "font-weight: bold; text-align: right;">P_gen</th>
+      <th style = "font-weight: bold; text-align: right;">P_load</th>
+      <th style = "font-weight: bold; text-align: right;">P_net</th>
+      <th style = "font-weight: bold; text-align: right;">Q_gen</th>
+      <th style = "font-weight: bold; text-align: right;">Q_load</th>
+      <th style = "font-weight: bold; text-align: right;">Q_net</th>
+    </tr>
+    <tr class = "columnLabelRow">
+      <th style = "text-align: right;">Int64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">1</td>
+      <td style = "text-align: right;">1.06</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">928.4857178631912</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">928.4857178631912</td>
+      <td style = "text-align: right;">13.088739884940114</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">13.088739884940114</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">2</td>
+      <td style = "text-align: right;">1.045</td>
+      <td style = "text-align: right;">-0.3759660289117472</td>
+      <td style = "text-align: right;">40.0</td>
+      <td style = "text-align: right;">65.10000000000001</td>
+      <td style = "text-align: right;">-25.1</td>
+      <td style = "text-align: right;">438.679974994852</td>
+      <td style = "text-align: right;">38.1</td>
+      <td style = "text-align: right;">400.57997499485197</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">3</td>
+      <td style = "text-align: right;">1.01</td>
+      <td style = "text-align: right;">-0.8586648490020555</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">282.59999999999997</td>
+      <td style = "text-align: right;">-282.59999999999997</td>
+      <td style = "text-align: right;">238.2175839665848</td>
+      <td style = "text-align: right;">57.00000000000001</td>
+      <td style = "text-align: right;">181.2175839665848</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">4</td>
+      <td style = "text-align: right;">0.9134087329564853</td>
+      <td style = "text-align: right;">-0.6865478751039675</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">143.4</td>
+      <td style = "text-align: right;">-143.4</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">-11.7</td>
+      <td style = "text-align: right;">11.7</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">5</td>
+      <td style = "text-align: right;">0.9137384247273096</td>
+      <td style = "text-align: right;">-0.5904321975790663</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">22.799999999999997</td>
+      <td style = "text-align: right;">-22.799999999999997</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">4.8</td>
+      <td style = "text-align: right;">-4.8</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">6</td>
+      <td style = "text-align: right;">1.07</td>
+      <td style = "text-align: right;">-0.9565133025619996</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">33.6</td>
+      <td style = "text-align: right;">-33.6</td>
+      <td style = "text-align: right;">175.8493147822929</td>
+      <td style = "text-align: right;">22.499999999999996</td>
+      <td style = "text-align: right;">153.3493147822929</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">7</td>
+      <td style = "text-align: right;">0.9589547681061759</td>
+      <td style = "text-align: right;">-0.8741297093499476</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.0</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">8</td>
+      <td style = "text-align: right;">1.09</td>
+      <td style = "text-align: right;">-0.8741297093499476</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">81.08958676657531</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">81.08958676657531</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">9</td>
+      <td style = "text-align: right;">0.9035410782833333</td>
+      <td style = "text-align: right;">-0.9757084799127009</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">88.5</td>
+      <td style = "text-align: right;">-88.5</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">49.8</td>
+      <td style = "text-align: right;">-49.8</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">10</td>
+      <td style = "text-align: right;">0.9071465702559606</td>
+      <td style = "text-align: right;">-0.9901082321631607</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">27.0</td>
+      <td style = "text-align: right;">-27.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">17.400000000000002</td>
+      <td style = "text-align: right;">-17.400000000000002</td>
+    </tr>
+    <tr>
+      <td style = "text-align: right;">&vellip;</td>
+      <td style = "text-align: right;">&vellip;</td>
+      <td style = "text-align: right;">&vellip;</td>
+      <td style = "text-align: right;">&vellip;</td>
+      <td style = "text-align: right;">&vellip;</td>
+      <td style = "text-align: right;">&vellip;</td>
+      <td style = "text-align: right;">&vellip;</td>
+      <td style = "text-align: right;">&vellip;</td>
+      <td style = "text-align: right;">&vellip;</td>
+    </tr>
+  </tbody>
+</table>
+<p>Find the PQ bus with the lowest voltage magnitude. (PV and slack buses hold their setpoint by definition, so only PQ buses can sag.)</p><pre><code class="language-julia hljs">pq_bus_numbers =
+    Set(
+        get_number(b) for b in get_components(ACBus, sys) if get_bustype(b) == ACBusTypes.PQ
+    )
+pq_bus_results = filter(row -&gt; row.bus_number in pq_bus_numbers, bus_results)
+weakest = first(sort(pq_bus_results, :Vm), 1)</code></pre><table>
+  <thead>
+    <tr class = "columnLabelRow">
+      <th style = "font-weight: bold; text-align: right;">bus_number</th>
+      <th style = "font-weight: bold; text-align: right;">Vm</th>
+      <th style = "font-weight: bold; text-align: right;">θ</th>
+      <th style = "font-weight: bold; text-align: right;">P_gen</th>
+      <th style = "font-weight: bold; text-align: right;">P_load</th>
+      <th style = "font-weight: bold; text-align: right;">P_net</th>
+      <th style = "font-weight: bold; text-align: right;">Q_gen</th>
+      <th style = "font-weight: bold; text-align: right;">Q_load</th>
+      <th style = "font-weight: bold; text-align: right;">Q_net</th>
+    </tr>
+    <tr class = "columnLabelRow">
+      <th style = "text-align: right;">Int64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">14</td>
+      <td style = "text-align: right;">0.8741212558601034</td>
+      <td style = "text-align: right;">-1.0588365831382476</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">44.699999999999996</td>
+      <td style = "text-align: right;">-44.699999999999996</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">15.000000000000002</td>
+      <td style = "text-align: right;">-15.000000000000002</td>
+    </tr>
+  </tbody>
+</table>
+<p>At this load scale, the weakest PQ bus sags well below 1.0 pu:</p><pre><code class="language-julia hljs">weakest
+
+weak_bus_number = weakest.bus_number[1]
+weak_bus = get_bus(sys, weak_bus_number)</code></pre><pre><code class="nohighlight hljs">ACBus: Bus 14:
+   number: 14
+   name: Bus 14
+   available: true
+   bustype: ACBusTypes.PQ = 1
+   angle: -0.27995081201989047
+   magnitude: 1.036
+   voltage_limits: (min = 0.94, max = 1.06)
+   base_voltage: 13.8
+   area: nothing
+   load_zone: nothing
+   ext: Dict{String, Any}()
+   InfrastructureSystems.SystemUnitsSettings:
+      base_value: 100.0
+      unit_system: UnitSystem.SYSTEM_BASE = 0
+   has_supplemental_attributes: false
+   has_time_series: false</code></pre><h2 id="Continuous-FACTS-control"><a class="docs-heading-anchor" href="#Continuous-FACTS-control">Continuous FACTS control</a><a id="Continuous-FACTS-control-1"></a><a class="docs-heading-anchor-permalink" href="#Continuous-FACTS-control" title="Permalink"></a></h2><p>A <code>FACTSControlDevice</code> in <code>NML</code> mode is a continuously controllable shunt (an SVC or STATCOM): its susceptance can take any value between <code>-max_shunt_current</code> and <code>+max_shunt_current</code>, so it can inject exactly the reactive power needed to hold its bus at <code>voltage_setpoint</code>. Add one at <code>weak_bus</code>:</p><pre><code class="language-julia hljs">facts = FACTSControlDevice(;
+    name = &quot;svc_$(get_number(weak_bus))&quot;,
+    available = true,
+    bus = weak_bus,
+    control_mode = FACTSOperationModes.NML,
+    voltage_setpoint = 1.0,
+    max_shunt_current = 100.0,
+    shunt_control_type = FACTSShuntControlType.STATCOM,
+)
+add_component!(sys, facts)</code></pre><p>Solve with <code>control_discrete_devices = true</code> so the FACTS device&#39;s susceptance is co-solved with the network. This requires building a <code>PowerFlowData</code> and calling <code>solve_power_flow!</code> in place, rather than the <code>solve_power_flow</code> convenience wrapper used above:</p><pre><code class="language-julia hljs">pf = ACPolarPowerFlow(; control_discrete_devices = true)
+data = PowerFlows.PowerFlowData(pf, sys)
+PowerFlows.solve_power_flow!(data)</code></pre><pre><code class="nohighlight hljs">true</code></pre><p>The controlled bus now sits at its setpoint:</p><pre><code class="language-julia hljs">bus_lookup = PowerFlows.get_bus_lookup(data)
+data.bus_magnitude[bus_lookup[weak_bus_number], 1]</code></pre><pre><code class="nohighlight hljs">0.9995778655809634</code></pre><p>Detailed results for every enrolled control device are available from <code>PowerFlows.get_controlled_device_results</code>, one row per device:</p><pre><code class="language-julia hljs">res = PowerFlows.get_controlled_device_results(data)</code></pre><table>
+  <thead>
+    <tr class = "columnLabelRow">
+      <th style = "font-weight: bold; text-align: right;">family</th>
+      <th style = "font-weight: bold; text-align: right;">name</th>
+      <th style = "font-weight: bold; text-align: right;">lower_limit</th>
+      <th style = "font-weight: bold; text-align: right;">upper_limit</th>
+      <th style = "font-weight: bold; text-align: right;">initial</th>
+      <th style = "font-weight: bold; text-align: right;">final</th>
+      <th style = "font-weight: bold; text-align: right;">delivered_q_mvar</th>
+      <th style = "font-weight: bold; text-align: right;">saturated</th>
+    </tr>
+    <tr class = "columnLabelRow">
+      <th style = "text-align: right;">String</th>
+      <th style = "text-align: right;">String</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64?</th>
+      <th style = "text-align: right;">Bool</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">FACTSControlDevice</td>
+      <td style = "text-align: right;">svc_14</td>
+      <td style = "text-align: right;">-1.0004223126917593</td>
+      <td style = "text-align: right;">1.0004223126917593</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.5482653726985112</td>
+      <td style = "text-align: right;">54.78025870288483</td>
+      <td style = "text-align: right;">false</td>
+    </tr>
+  </tbody>
+</table>
+<p><code>lower_limit</code>/<code>upper_limit</code> are the susceptance band implied by <code>max_shunt_current</code>; <code>initial</code> is the susceptance the device started from (zero, since it wasn&#39;t installed before); <code>final</code> is the solved susceptance, in pu; <code>delivered_q_mvar</code> is the reactive power the device is actually injecting at the converged voltage; and <code>saturated</code> reports whether the device had to be clamped to <code>lower_limit</code>/<code>upper_limit</code> to converge — <code>false</code> here means the bus was held at setpoint without exhausting the device&#39;s capacity. Note that <code>final</code> is <strong>not</strong> snapped to any grid: this is a continuous device, so it lands on whatever real susceptance value the outer-loop continuation converges to.</p><h2 id="Discrete-switched-shunt"><a class="docs-heading-anchor" href="#Discrete-switched-shunt">Discrete switched shunt</a><a id="Discrete-switched-shunt-1"></a><a class="docs-heading-anchor-permalink" href="#Discrete-switched-shunt" title="Permalink"></a></h2><p>A <code>SwitchedAdmittance</code> in <code>DISCRETE_VOLTAGE</code> mode models a block-switched capacitor bank: its susceptance can only take one of <code>number_of_steps</code> discrete increments of <code>Y_increase</code>, mirroring how a real substation shunt bank is switched. Build a fresh copy of the stressed system (so this device doesn&#39;t coexist with the FACTS device above), and add a 60-step, 1 MVar-per-step bank at the same weak bus. <code>admittance_limits</code> is a voltage deadband: once the bus voltage falls inside it, the continuation stops switching in more blocks.</p><pre><code class="language-julia hljs">sys2 = build_stressed_system(load_scale)
+weak_bus2 = get_bus(sys2, weak_bus_number)
+sa = SwitchedAdmittance(;
+    name = &quot;shunt_$(get_number(weak_bus2))&quot;,
+    available = true,
+    bus = weak_bus2,
+    Y = 0.0 + 0.0im,
+    initial_status = [0],
+    number_of_steps = [60],
+    Y_increase = [0.0 + (1.0 / get_base_power(sys2)) * im],
+    admittance_limits = (min = 0.98, max = 1.02),
+    control_mode = SwitchedAdmittanceControlMode.DISCRETE_VOLTAGE,
+)
+add_component!(sys2, sa)
+
+data2 = PowerFlows.PowerFlowData(pf, sys2)
+PowerFlows.solve_power_flow!(data2)</code></pre><pre><code class="nohighlight hljs">true</code></pre><p>The bus voltage settles inside the deadband, rather than exactly at 1.0:</p><pre><code class="language-julia hljs">bus_lookup2 = PowerFlows.get_bus_lookup(data2)
+data2.bus_magnitude[bus_lookup2[weak_bus_number], 1]</code></pre><pre><code class="nohighlight hljs">0.9824698822854908</code></pre><p>Reading the device results shows the contrast with the continuous case:</p><pre><code class="language-julia hljs">res2 = PowerFlows.get_controlled_device_results(data2)</code></pre><table>
+  <thead>
+    <tr class = "columnLabelRow">
+      <th style = "font-weight: bold; text-align: right;">family</th>
+      <th style = "font-weight: bold; text-align: right;">name</th>
+      <th style = "font-weight: bold; text-align: right;">lower_limit</th>
+      <th style = "font-weight: bold; text-align: right;">upper_limit</th>
+      <th style = "font-weight: bold; text-align: right;">initial</th>
+      <th style = "font-weight: bold; text-align: right;">final</th>
+      <th style = "font-weight: bold; text-align: right;">delivered_q_mvar</th>
+      <th style = "font-weight: bold; text-align: right;">saturated</th>
+    </tr>
+    <tr class = "columnLabelRow">
+      <th style = "text-align: right;">String</th>
+      <th style = "text-align: right;">String</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64?</th>
+      <th style = "text-align: right;">Bool</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">SwitchedAdmittance</td>
+      <td style = "text-align: right;">shunt_14</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.6</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.48000000000000026</td>
+      <td style = "text-align: right;">missing</td>
+      <td style = "text-align: right;">false</td>
+    </tr>
+  </tbody>
+</table>
+<p><code>final</code> here lands on an integer number of 1 MVar blocks (<code>final * base_power</code> is a whole number), rather than an arbitrary real value. <code>delivered_q_mvar</code> and <code>saturated</code> are <code>missing</code>/<code>false</code>: those two derived columns are currently only populated for <code>FACTSControlDevice</code>. For a switched shunt, the delivered reactive power at the converged voltage can be computed directly from <code>final</code>:</p><pre><code class="language-julia hljs">res2.final[1] * data2.bus_magnitude[bus_lookup2[weak_bus_number], 1]^2 *
+get_base_power(sys2)</code></pre><pre><code class="nohighlight hljs">46.3318593407072</code></pre><h2 id="Saturation"><a class="docs-heading-anchor" href="#Saturation">Saturation</a><a id="Saturation-1"></a><a class="docs-heading-anchor-permalink" href="#Saturation" title="Permalink"></a></h2><p>If a FACTS device&#39;s <code>max_shunt_current</code> is too small for the correction the bus needs, it cannot hold the setpoint: it clamps to its own limit instead. Build another fresh copy of the stressed system and add a FACTS device with a tight current limit:</p><pre><code class="language-julia hljs">sys3 = build_stressed_system(load_scale)
+weak_bus3 = get_bus(sys3, weak_bus_number)
+facts_tight = FACTSControlDevice(;
+    name = &quot;svc_tight_$(get_number(weak_bus3))&quot;,
+    available = true,
+    bus = weak_bus3,
+    control_mode = FACTSOperationModes.NML,
+    voltage_setpoint = 1.0,
+    max_shunt_current = 5.0,
+    shunt_control_type = FACTSShuntControlType.STATCOM,
+)
+add_component!(sys3, facts_tight)
+
+data3 = PowerFlows.PowerFlowData(pf, sys3)
+PowerFlows.solve_power_flow!(data3)</code></pre><pre><code class="nohighlight hljs">true</code></pre><p>The bus stays below setpoint:</p><pre><code class="language-julia hljs">bus_lookup3 = PowerFlows.get_bus_lookup(data3)
+data3.bus_magnitude[bus_lookup3[weak_bus_number], 1]</code></pre><pre><code class="nohighlight hljs">0.8858532264484004</code></pre><p>and the results table flags the device as saturated, the shunt-device analogue of a generator hitting a reactive power limit:</p><pre><code class="language-julia hljs">res3 = PowerFlows.get_controlled_device_results(data3)</code></pre><table>
+  <thead>
+    <tr class = "columnLabelRow">
+      <th style = "font-weight: bold; text-align: right;">family</th>
+      <th style = "font-weight: bold; text-align: right;">name</th>
+      <th style = "font-weight: bold; text-align: right;">lower_limit</th>
+      <th style = "font-weight: bold; text-align: right;">upper_limit</th>
+      <th style = "font-weight: bold; text-align: right;">initial</th>
+      <th style = "font-weight: bold; text-align: right;">final</th>
+      <th style = "font-weight: bold; text-align: right;">delivered_q_mvar</th>
+      <th style = "font-weight: bold; text-align: right;">saturated</th>
+    </tr>
+    <tr class = "columnLabelRow">
+      <th style = "text-align: right;">String</th>
+      <th style = "text-align: right;">String</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64?</th>
+      <th style = "text-align: right;">Bool</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">FACTSControlDevice</td>
+      <td style = "text-align: right;">svc_tight_14</td>
+      <td style = "text-align: right;">-0.056442758808320975</td>
+      <td style = "text-align: right;">0.056442758808320975</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.0564145703865775</td>
+      <td style = "text-align: right;">4.427054085481961</td>
+      <td style = "text-align: right;">true</td>
+    </tr>
+  </tbody>
+</table>
+<h2 id="When-to-use-each"><a class="docs-heading-anchor" href="#When-to-use-each">When to use each</a><a id="When-to-use-each-1"></a><a class="docs-heading-anchor-permalink" href="#When-to-use-each" title="Permalink"></a></h2><p>Use a continuous FACTS device when the model calls for an SVC or STATCOM: fast, continuously variable reactive support that lands exactly on the solved susceptance. Use a discrete switched shunt to model an actual block-switched capacitor/reactor bank, where only whole steps can be switched in or out. Both are read from the same <code>get_controlled_device_results</code> table. When the installed capacity isn&#39;t enough to hold the bus at its target voltage, the FACTS device reports it directly through <code>saturated = true</code>; a switched shunt instead reveals it by switching in all of its steps (its <code>final</code> reaching the top of the susceptance band).</p></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../generated_solving_a_power_flow/">« Solving a Power Flow</a><a class="docs-footer-nextpage" href="../generated_hvdc_converters_14bus/">HVDC Converters (VSC &amp; LCC) »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.17.0 on <span class="colophon-date" title="Sunday 12 July 2026 03:52">Sunday 12 July 2026</span>. Using Julia version 1.12.6.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
