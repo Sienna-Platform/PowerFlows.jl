@@ -74,7 +74,7 @@ ac_results = solve_power_flow(pf_ac, sys)
 
 # AC results are returned as a flat `Dict{String, DataFrame}`, with the same keys as
 # before: `"bus_results"`, `"flow_results"` (AC lines), and `"lcc_results"` (HVDC lines).
-# (We don't support multi-period AC power flows yet.) Look at the bus results:
+# Look at the bus results:
 
 ac_results["bus_results"]
 

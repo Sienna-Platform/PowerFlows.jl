@@ -899,8 +899,8 @@ function _set_entries_for_lcc_rect!(
         cos_phi_i = cos(phi_i)
         sin_phi_i = sin(phi_i)
         # ∂ϕ derivatives with sin(ϕ)→0 clamp guard (return 0 at clamp).
-        # Inverter uses −xtr_i: the corrected ϕ_i subtracts the commutation drop, flipping
-        # the sign of ∂ϕ_i/∂{V,t} (linear in x_t) vs the rectifier form (see _lcc_utils).
+        # Inverter uses −xtr_i: its ϕ_i subtracts the commutation drop, so ∂ϕ_i/∂{V,t}
+        # (linear in x_t) has opposite sign to the rectifier form (see _lcc_utils).
         dphi_dV_fb = _dphi_dV_lcc(xtr_r, s.i_dc, Vm_fb, s.tap_r, phi_r)
         dphi_dV_tb = _dphi_dV_lcc(-xtr_i, s.i_dc, Vm_tb, s.tap_i, phi_i)
         dphi_dtap_r = _dphi_dt_lcc(xtr_r, s.i_dc, Vm_fb, s.tap_r, phi_r)

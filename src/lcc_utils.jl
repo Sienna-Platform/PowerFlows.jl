@@ -283,11 +283,10 @@ function _d2Q_lcc(
         return (VV = 0.0, tt = 0.0, Vt = 0.0, Vα = 0.0, tα = 0.0, αα = 0.0)
     end
     KI = SQRT6_DIV_PI * I_dc
-    # σ·x_t carries the commutation sign: the corrected inverter (σ = −1) subtracts the
-    # commutation drop, so its β-LINEAR curvature terms flip vs the rectifier form derived
-    # here (β² terms are even in β and unchanged). This is the second-derivative analogue of
-    # the −xtr_i passed to the first-derivative helpers; keying on σ keeps the fix inside
-    # this helper (the homotopy Hessian assembly needs no change).
+    # σ·x_t carries the commutation sign: the inverter (σ = −1) subtracts the commutation drop,
+    # so its β-LINEAR curvature terms have opposite sign to the rectifier form derived here (β²
+    # terms are even in β, unchanged). Second-derivative analogue of the −xtr_i passed to the
+    # first-derivative helpers; keying on σ keeps this in the helper (homotopy Hessian unchanged).
     β = σ * x_t * I_dc / sqrt(2)
     β² = β * β
     C = cos(ϕ)
@@ -532,7 +531,7 @@ function _lcc_jacobian_scalars(
     phi_i = data.lcc.inverter.phi[i, time_step]
     xtr_r = data.lcc.rectifier.transformer_reactance[i]
     xtr_i = data.lcc.inverter.transformer_reactance[i]
-    # The corrected inverter ϕ subtracts the commutation drop (cos ϕ_i = −(cos γ − comm)),
+    # The inverter ϕ subtracts the commutation drop (cos ϕ_i = −(cos γ − comm)),
     # so ∂ϕ_i/∂{V,t} — and every commutation-chain term in the true-ϕ dP/dQ helpers — has
     # the opposite sign to the rectifier form the helpers assume. Each such term is linear
     # in x_t and x_t is absent from the leading/α terms, so passing −xtr_i flips exactly the
