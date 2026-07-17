@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>Power Flow Overview for Developers · PowerFlows.jl</title><meta name="title" content="Power Flow Overview for Developers · PowerFlows.jl"/><meta property="og:title" content="Power Flow Overview for Developers · PowerFlows.jl"/><meta property="twitter:title" content="Power Flow Overview for Developers · PowerFlows.jl"/><meta name="description" content="Documentation for PowerFlows.jl."/><meta property="og:description" content="Documentation for PowerFlows.jl."/><meta property="twitter:description" content="Documentation for PowerFlows.jl."/><script data-outdated-warner src="../../../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.050/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL="../../.."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../../../assets/documenter.js"></script><script src="../../../search_index.js"></script><script src="../../../siteinfo.js"></script><script src="../../../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../../../assets/themeswap.js"></script></head><body><div id="documenter"><nav class="docs-sidebar"><a class="docs-logo" href="../../../"><img src="../../../assets/logo.png" alt="PowerFlows.jl logo"/></a><div class="docs-package-name"><span class="docs-autofit"><a href="../../../">PowerFlows.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../../../">Welcome Page</a></li><li><span class="tocitem">Tutorials</span><ul><li><a class="tocitem" href="../../../tutorials/generated_solving_a_power_flow/">Solving a Power Flow</a></li><li><a class="tocitem" href="../../../tutorials/generated_discrete_control_14bus/">Discrete Shunt Voltage Control</a></li><li><a class="tocitem" href="../../../tutorials/generated_hvdc_converters_14bus/">HVDC Converters (VSC &amp; LCC)</a></li></ul></li><li><span class="tocitem">How-to-Guides</span><ul><li><a class="tocitem" href="../../../how-tos/choose_ac_formulation_and_solver/">How to choose an AC formulation and solver</a></li></ul></li><li><span class="tocitem">Explanation</span><ul><li><a class="tocitem" href="../../../explanation/models-and-solvers/">Evaluation Models vs. Solver Algorithms</a></li><li><a class="tocitem" href="../../../explanation/mixed_cpb_formulation/">Mixed Current-Power Balance Formulation</a></li><li><a class="tocitem" href="../../../explanation/fast_decoupled/">Fast/Fixed Decoupled Power Flow</a></li><li><a class="tocitem" href="../../../explanation/lm_vs_gauss_seidel/">Levenberg-Marquardt vs Gauss-Seidel</a></li><li><a class="tocitem" href="../../../explanation/folds_and_diagnostics/">Folds, Voltage Collapse, and Solver Diagnostics</a></li><li><a class="tocitem" href="../../../explanation/lcc_model/">LCC Model Implementation</a></li><li><a class="tocitem" href="../../../explanation/lcc_hessian/">LCC Second Derivatives (Hessian Blocks)</a></li><li><a class="tocitem" href="../../../explanation/vsc_model/">VSC Model Implementation</a></li><li><a class="tocitem" href="../../../explanation/discrete_control/">Discrete Control via λ-Continuation</a></li></ul></li><li><span class="tocitem">Reference</span><ul><li><a class="tocitem" href="../../api/public/">Public API Reference</a></li><li><a class="tocitem" href="../../api/internal/">Internal API Reference - Core</a></li><li><a class="tocitem" href="../../api/internal_solvers/">Internal API Reference - Solvers &amp; Utilities</a></li><li><input class="collapse-toggle" id="menuitem-5-4" type="checkbox" checked/><label class="tocitem" for="menuitem-5-4"><span class="docs-label">Code Base Developer Guide</span><i class="docs-chevron"></i></label><ul class="collapsed"><li><a class="tocitem" href="../developer/">Guidelines</a></li><li class="is-active"><a class="tocitem" href>Power Flow Overview for Developers</a><ul class="internal"><li><a class="tocitem" href="#Two-standalone-usage-modes"><span>Two standalone usage modes</span></a></li><li><a class="tocitem" href="#Capabilities-relevant-to-developers"><span>Capabilities relevant to developers</span></a></li><li><a class="tocitem" href="#Power-flow-in-the-loop-([PowerSimulations.jl](https://sienna-platform.github.io/PowerSimulations.jl/stable/))"><span>Power flow in the loop (PowerSimulations.jl)</span></a></li><li><a class="tocitem" href="#Related-reading"><span>Related reading</span></a></li></ul></li></ul></li></ul></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li><a class="is-disabled">Reference</a></li><li><a class="is-disabled">Code Base Developer Guide</a></li><li class="is-active"><a href>Power Flow Overview for Developers</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>Power Flow Overview for Developers</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/Sienna-Platform/PowerFlows.jl" title="View the repository on GitHub"><span class="docs-icon fa-brands"></span><span class="docs-label is-hidden-touch">GitHub</span></a><a class="docs-navbar-link" href="https://github.com/Sienna-Platform/PowerFlows.jl/blob/main/docs/src/reference/developers/power_flow.md" title="Edit source on GitHub"><span class="docs-icon fa-solid"></span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><h1 id="Power-Flow-Overview-for-Developers"><a class="docs-heading-anchor" href="#Power-Flow-Overview-for-Developers">Power Flow Overview for Developers</a><a id="Power-Flow-Overview-for-Developers-1"></a><a class="docs-heading-anchor-permalink" href="#Power-Flow-Overview-for-Developers" title="Permalink"></a></h1><p><code>PowerFlows.jl</code> solves steady-state power flow on a <a href="https://sienna-platform.github.io/PowerSystems.jl/stable/reference/public/#PowerSystems.System"><code>PowerSystems.System</code></a>. The public API is built around <a href="../../api/public/#PowerFlows.PowerFlowEvaluationModel"><code>PowerFlowEvaluationModel</code></a> values (what problem to solve) and, for AC cases, an <a href="../../api/public/#PowerFlows.ACPowerFlowSolverType"><code>ACPowerFlowSolverType</code></a> (how to solve it). See <a href="../../../explanation/models-and-solvers/#Evaluation-Models-vs.-Solver-Algorithms">Evaluation Models vs. Solver Algorithms</a> for that split and for the three AC formulations (<a href="../../api/public/#PowerFlows.ACPolarPowerFlow"><code>ACPolarPowerFlow</code></a>, <a href="../../api/public/#PowerFlows.ACRectangularPowerFlow"><code>ACRectangularPowerFlow</code></a>, <a href="../../api/public/#PowerFlows.ACMixedPowerFlow"><code>ACMixedPowerFlow</code></a>).</p><p>AC solves use sparse Jacobians factorized with <a href="https://github.com/JuliaSparse/KLU.jl">KLU.jl</a>. The initial guess comes from the current bus setpoints in <code>sys</code>, optionally adjusted by enhanced flat start and related options on the evaluation model.</p><h2 id="Two-standalone-usage-modes"><a class="docs-heading-anchor" href="#Two-standalone-usage-modes">Two standalone usage modes</a><a id="Two-standalone-usage-modes-1"></a><a class="docs-heading-anchor-permalink" href="#Two-standalone-usage-modes" title="Permalink"></a></h2><p>Most callers use one of the following patterns.</p><h3 id="1.-Solve-and-return-results-(solve_power_flow)"><a class="docs-heading-anchor" href="#1.-Solve-and-return-results-(solve_power_flow)">1. Solve and return results (<code>solve_power_flow</code>)</a><a id="1.-Solve-and-return-results-(solve_power_flow)-1"></a><a class="docs-heading-anchor-permalink" href="#1.-Solve-and-return-results-(solve_power_flow)" title="Permalink"></a></h3><p><a href="../../api/public/#PowerFlows.solve_power_flow-Tuple{Union{PowerFlows.PowerFlowData{DCPowerFlow, PowerNetworkMatrices.DC_ABA_Matrix_Factorized, PowerNetworkMatrices.DC_BA_Matrix}, PowerFlows.PowerFlowData{PTDFDCPowerFlow, PowerNetworkMatrices.DC_PTDF_Matrix, PowerNetworkMatrices.DC_ABA_Matrix_Factorized}, PowerFlows.PowerFlowData{vPTDFDCPowerFlow, &lt;:PowerNetworkMatrices.DC_vPTDF_Matrix, PowerNetworkMatrices.DC_ABA_Matrix_Factorized}}, System, FlowReporting}"><code>solve_power_flow</code></a> reads injections and setpoints from <code>sys</code>, runs the selected evaluation model, and returns a <code>Dict</code> of <code>DataFrame</code>s (<code>&quot;bus_results&quot;</code>, <code>&quot;flow_results&quot;</code>, and <code>&quot;lcc_results&quot;</code> when LCC HVDC is present). The <code>System</code> is not modified.</p><pre><code class="language-julia hljs">using PowerFlows
+using PowerSystems
+using PowerSystemCaseBuilder
+
+sys = build_system(PSITestSystems, &quot;c_sys14&quot;; runchecks = false)
+pf = ACPowerFlow()</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(false, nothing, false, false, false, nothing, true, false, false, false, PowerNetworkMatrices.NetworkReduction[], 1, String[], false, false, Dict{Symbol, Any}())</code></pre><pre><code class="language-julia hljs">results = solve_power_flow(pf, sys)
+results[&quot;bus_results&quot;]</code></pre><div>
+  <div style = "float: right; font-style: italic;">
+    <span>4 rows omitted</span>
+  </div>
+  <div style = "clear: both;"></div>
+</div>
+<table>
+  <thead>
+    <tr class = "columnLabelRow">
+      <th style = "font-weight: bold; text-align: right;">bus_number</th>
+      <th style = "font-weight: bold; text-align: right;">Vm</th>
+      <th style = "font-weight: bold; text-align: right;">θ</th>
+      <th style = "font-weight: bold; text-align: right;">P_gen</th>
+      <th style = "font-weight: bold; text-align: right;">P_load</th>
+      <th style = "font-weight: bold; text-align: right;">P_net</th>
+      <th style = "font-weight: bold; text-align: right;">Q_gen</th>
+      <th style = "font-weight: bold; text-align: right;">Q_load</th>
+      <th style = "font-weight: bold; text-align: right;">Q_net</th>
+    </tr>
+    <tr class = "columnLabelRow">
+      <th style = "text-align: right;">Int64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">1</td>
+      <td style = "text-align: right;">1.06</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">232.55090506782906</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">232.55090506782906</td>
+      <td style = "text-align: right;">-15.529078407207178</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">-15.529078407207178</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">2</td>
+      <td style = "text-align: right;">1.045</td>
+      <td style = "text-align: right;">-0.08704576237894333</td>
+      <td style = "text-align: right;">40.0</td>
+      <td style = "text-align: right;">21.7</td>
+      <td style = "text-align: right;">18.3</td>
+      <td style = "text-align: right;">46.92158629034729</td>
+      <td style = "text-align: right;">12.7</td>
+      <td style = "text-align: right;">34.22158629034729</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">3</td>
+      <td style = "text-align: right;">1.01</td>
+      <td style = "text-align: right;">-0.2223975863687207</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">94.19999999999999</td>
+      <td style = "text-align: right;">-94.19999999999999</td>
+      <td style = "text-align: right;">27.136399074342837</td>
+      <td style = "text-align: right;">19.0</td>
+      <td style = "text-align: right;">8.136399074342837</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">4</td>
+      <td style = "text-align: right;">1.0142324081898735</td>
+      <td style = "text-align: right;">-0.17900881200359442</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">47.8</td>
+      <td style = "text-align: right;">-47.8</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">-3.9</td>
+      <td style = "text-align: right;">3.9</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">5</td>
+      <td style = "text-align: right;">1.017238179848024</td>
+      <td style = "text-align: right;">-0.15297200104735895</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">7.6</td>
+      <td style = "text-align: right;">-7.6</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">1.6</td>
+      <td style = "text-align: right;">-1.6</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">6</td>
+      <td style = "text-align: right;">1.07</td>
+      <td style = "text-align: right;">-0.25163674129841473</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">11.200000000000001</td>
+      <td style = "text-align: right;">-11.200000000000001</td>
+      <td style = "text-align: right;">21.60389347429052</td>
+      <td style = "text-align: right;">7.5</td>
+      <td style = "text-align: right;">14.103893474290519</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">7</td>
+      <td style = "text-align: right;">1.0503437795744979</td>
+      <td style = "text-align: right;">-0.23128949300382112</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.0</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">8</td>
+      <td style = "text-align: right;">1.09</td>
+      <td style = "text-align: right;">-0.2312894930038211</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">24.53890523566427</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">24.53890523566427</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">9</td>
+      <td style = "text-align: right;">1.0337108965111232</td>
+      <td style = "text-align: right;">-0.2588720513851722</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">29.5</td>
+      <td style = "text-align: right;">-29.5</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">16.6</td>
+      <td style = "text-align: right;">-16.6</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">10</td>
+      <td style = "text-align: right;">1.0325605999979304</td>
+      <td style = "text-align: right;">-0.262518640571551</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">9.0</td>
+      <td style = "text-align: right;">-9.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">5.800000000000001</td>
+      <td style = "text-align: right;">-5.800000000000001</td>
+    </tr>
+    <tr>
+      <td style = "text-align: right;">&vellip;</td>
+      <td style = "text-align: right;">&vellip;</td>
+      <td style = "text-align: right;">&vellip;</td>
+      <td style = "text-align: right;">&vellip;</td>
+      <td style = "text-align: right;">&vellip;</td>
+      <td style = "text-align: right;">&vellip;</td>
+      <td style = "text-align: right;">&vellip;</td>
+      <td style = "text-align: right;">&vellip;</td>
+      <td style = "text-align: right;">&vellip;</td>
+    </tr>
+  </tbody>
+</table>
+<p>For DC formulations, pass a <a href="../../api/public/#PowerFlows.FlowReportingModule.FlowReporting"><code>FlowReporting</code></a> mode so branch flows use the same arc basis as the rest of the package:</p><pre><code class="language-julia hljs">keys(solve_power_flow(DCPowerFlow(), sys, FlowReporting.ARC_FLOWS))</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">KeySet for a Dict{String, Dict{String, DataFrame}} with 1 entry. Keys:
+  &quot;1&quot;</code></pre><h3 id="2.-Solve-and-write-back-into-the-system-(solve_and_store_power_flow!)"><a class="docs-heading-anchor" href="#2.-Solve-and-write-back-into-the-system-(solve_and_store_power_flow!)">2. Solve and write back into the system (<code>solve_and_store_power_flow!</code>)</a><a id="2.-Solve-and-write-back-into-the-system-(solve_and_store_power_flow!)-1"></a><a class="docs-heading-anchor-permalink" href="#2.-Solve-and-write-back-into-the-system-(solve_and_store_power_flow!)" title="Permalink"></a></h3><p><a href="../../api/public/#PowerFlows.solve_and_store_power_flow!-Tuple{AbstractDCPowerFlow, System}"><code>solve_and_store_power_flow!</code></a> solves the same problem and, on success, updates bus voltages, branch flows, and generator setpoints in <code>sys</code>. It returns <code>true</code> or <code>false</code> for convergence — useful in scripts and validation loops.</p><pre><code class="language-julia hljs">converged = solve_and_store_power_flow!(pf, sys)</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">true</code></pre><p>Solver tolerances and iteration limits can be passed as keyword arguments (for example <code>tol</code>, <code>maxIterations</code>); configuration such as <code>time_steps</code>, <code>network_reductions</code>, and <code>correct_bustypes</code> belongs on the evaluation model constructor.</p><p>Typical uses: initializing a case before export, checking AC feasibility after a scheduling step, or batch validation when you already have a <code>System</code> in memory.</p><h2 id="Capabilities-relevant-to-developers"><a class="docs-heading-anchor" href="#Capabilities-relevant-to-developers">Capabilities relevant to developers</a><a id="Capabilities-relevant-to-developers-1"></a><a class="docs-heading-anchor-permalink" href="#Capabilities-relevant-to-developers" title="Permalink"></a></h2><ul><li><strong>AC formulations</strong> — polar power balance (default), Da Costa rectangular current injection, and mixed current–power balance (<a href="../../api/public/#PowerFlows.ACMixedPowerFlow"><code>ACMixedPowerFlow</code></a>).</li><li><strong>AC solvers</strong> — Newton–Raphson, trust region, Levenberg–Marquardt; robust homotopy and gradient descent on polar only.</li><li><strong>DC</strong> — bus-angle DC, PTDF, and virtual PTDF; multi-period DC is supported.</li><li><strong>HVDC</strong> — LCC line-commutated converters on all three AC formulations; VSC/HVDC models per package tests and docs.</li><li><strong>Post-processing</strong> — optional reactive-power limit enforcement, PSS/e export via <a href="../../api/public/#PowerFlows.PSSEExportPowerFlow-Tuple{Symbol, AbstractString}"><code>PSSEExportPowerFlow</code></a>, loss and voltage-stability factors (polar only).</li></ul><p>For formulation and solver selection at scale, see <a href="../../../how-tos/choose_ac_formulation_and_solver/#choose-ac-formulation-and-solver">How to choose an AC formulation and solver</a>.</p><h2 id="Power-flow-in-the-loop-([PowerSimulations.jl](https://sienna-platform.github.io/PowerSimulations.jl/stable/))"><a class="docs-heading-anchor" href="#Power-flow-in-the-loop-([PowerSimulations.jl](https://sienna-platform.github.io/PowerSimulations.jl/stable/))">Power flow in the loop (<a href="https://sienna-platform.github.io/PowerSimulations.jl/stable/">PowerSimulations.jl</a>)</a><a id="Power-flow-in-the-loop-([PowerSimulations.jl](https://sienna-platform.github.io/PowerSimulations.jl/stable/))-1"></a><a class="docs-heading-anchor-permalink" href="#Power-flow-in-the-loop-([PowerSimulations.jl](https://sienna-platform.github.io/PowerSimulations.jl/stable/))" title="Permalink"></a></h2><p>There is a third integration pattern that does <strong>not</strong> call <code>solve_power_flow</code> from user code directly, but still exercises the same solvers inside <code>PowerFlows.jl</code>.</p><p>In production-cost, unit commitment, and economic-dispatch workflows, <a href="https://sienna-platform.github.io/PowerSimulations.jl/stable/">PowerSimulations.jl</a> (PSI) can run an AC (or DC) power flow <strong>after each optimization interval</strong> while a simulation is executing. This is often called <em>power flow in the loop</em> (or <em>in-the-loop</em> PF).</p><h3 id="How-PSI-wires-it"><a class="docs-heading-anchor" href="#How-PSI-wires-it">How PSI wires it</a><a id="How-PSI-wires-it-1"></a><a class="docs-heading-anchor-permalink" href="#How-PSI-wires-it" title="Permalink"></a></h3><ol><li>You pass a <a href="../../api/public/#PowerFlows.PowerFlowEvaluationModel"><code>PowerFlowEvaluationModel</code></a> (for example <a href="../../api/public/#PowerFlows.ACPowerFlow"><code>ACPowerFlow</code></a> with an optional <a href="../../api/public/#PowerFlows.PSSEExportPowerFlow-Tuple{Symbol, AbstractString}"><code>PSSEExportPowerFlow</code></a> exporter) into a PSI <a href="https://sienna-platform.github.io/PowerSimulations.jl/stable/formulation_library/Network/#PowerSimulations.NetworkModel"><code>NetworkModel</code></a> via the <code>power_flow_evaluation</code> keyword.</li><li>During <code>build!</code> / <code>execute!</code>, PSI constructs a <a href="../../api/internal/#PowerFlows.PowerFlowData"><code>PowerFlowData</code></a> container (see <code>make_power_flow_container</code> in the source) and maps UC/ED decision variables (dispatch, load, storage, etc.) into PF injection data for each time step.</li><li>At the appropriate point in the simulation, PSI calls <code>solve_power_flow!</code> on that container — the same in-place solve used internally by standalone AC solves — then copies voltages, angles, and branch flows into <strong>auxiliary variables</strong> on the optimization results (for example <code>PowerFlowVoltageMagnitude__ACBus</code>, <code>PowerFlowBranchActivePowerFromTo__Line</code>).</li></ol><p>So from a <code>PowerFlows.jl</code> maintainer&#39;s perspective, in-the-loop usage is still <code>PowerFlowEvaluationModel</code> + <code>solve_power_flow!</code> on <code>PowerFlowData</code>; PSI owns the scheduling, input mapping, and exposure of results to the simulation interface.</p><h3 id="Why-it-matters-for-PF-development"><a class="docs-heading-anchor" href="#Why-it-matters-for-PF-development">Why it matters for PF development</a><a id="Why-it-matters-for-PF-development-1"></a><a class="docs-heading-anchor-permalink" href="#Why-it-matters-for-PF-development" title="Permalink"></a></h3><ul><li>Changes to residual/Jacobian setup, multi-period behavior, LCC handling, or convergence reporting can surface in PSI simulations even when standalone <code>solve_power_flow</code> tests still pass.</li><li>PSI currently rejects some PF options in this path (for example network reductions on in-the-loop containers); see <code>check_network_reduction</code> in PowerSimulations.</li><li>The UC stage still optimizes over its own network model (commonly PTDF); the in-loop AC solve is a <strong>post-optimization evaluation</strong> on the committed dispatch, not a feedback loop into the MILP/LP. PSI <code>use_slacks</code> on the network model refers to slack variables in the <strong>optimization</strong> formulation, not to AC/PTDF reconciliation.</li></ul><h3 id="Learn-more-in-PowerSimulations"><a class="docs-heading-anchor" href="#Learn-more-in-PowerSimulations">Learn more in PowerSimulations</a><a id="Learn-more-in-PowerSimulations-1"></a><a class="docs-heading-anchor-permalink" href="#Learn-more-in-PowerSimulations" title="Permalink"></a></h3><p>PSI documents the end-to-end workflow (template setup, auxiliary variables, comparing PTDF UC flows to AC in-loop flows) in its tutorial <a href="https://sienna-platform.github.io/PowerSimulations.jl/stable/tutorials/generated_uc_power_flow_in_the_loop/#uc-inloop-pf">Running Power Flow In The Loop with Unit Commitment</a>.</p><p>Standalone PF examples and formulation trade-offs remain in the <a href="../../../tutorials/generated_solving_a_power_flow/#Solving-a-Power-Flow">Solving a Power Flow</a> tutorial and the Explanation pages (for example <a href="../../../explanation/models-and-solvers/#Evaluation-Models-vs.-Solver-Algorithms">Evaluation Models vs. Solver Algorithms</a>).</p><h2 id="Related-reading"><a class="docs-heading-anchor" href="#Related-reading">Related reading</a><a id="Related-reading-1"></a><a class="docs-heading-anchor-permalink" href="#Related-reading" title="Permalink"></a></h2><ul><li><a href="../../../explanation/models-and-solvers/#Evaluation-Models-vs.-Solver-Algorithms">Evaluation Models vs. Solver Algorithms</a></li><li><a href="../../../explanation/mixed_cpb_formulation/#Mixed-Current-Power-Balance-Formulation">Mixed Current-Power Balance Formulation</a></li><li><a href="../../../explanation/lcc_model/#Line-Commutated-Converter-(LCC)-Implementations">Line-Commutated Converter (LCC) Implementations</a></li><li><a href="../../api/public/#Public-API">Public API</a> — evaluation models and <code>solve_*</code> entry points</li></ul></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../developer/">« Guidelines</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.17.0 on <span class="colophon-date" title="Friday 17 July 2026 21:40">Friday 17 July 2026</span>. Using Julia version 1.12.6.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
