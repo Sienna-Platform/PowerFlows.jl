@@ -136,11 +136,11 @@ using PowerFlows</code></pre><h2 id="VSC-case"><a class="docs-heading-anchor" hr
  Row │ line_name  dc_bus_from  dc_bus_to  dc_current  P_losses
      │ String     Int64        Int64      Float64     Float64
 ─────┴─────────────────────────────────────────────────────────
-  &quot;vsc_results&quot; =&gt; 1×10 DataFrame
- Row │ line_name  bus_from  bus_to  P_from_to  Q_from_to  Q_to_from  dc_current  Vdc_from  Vdc_to   P_losses
-     │ String     Int64     Int64   Float64    Float64    Float64    Float64     Float64   Float64  Float64
-─────┼───────────────────────────────────────────────────────────────────────────────────────────────────────
-   1 │ VSC_2_3           2       3    40.2945        5.0       10.0    0.383758      1.05  1.04232   0.29454
+  &quot;vsc_results&quot; =&gt; 1×11 DataFrame
+ Row │ line_name  bus_from  bus_to  P_from_to  P_to_from  Q_from_to  Q_to_from  dc_current  Vdc_from  Vdc_to   P_losses
+     │ String     Int64     Int64   Float64    Float64    Float64    Float64    Float64     Float64   Float64  Float64
+─────┼──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   1 │ VSC_2_3           2       3    40.2945      -40.0        5.0       10.0    0.383758      1.05  1.04232   0.29454
   &quot;mtdc_results&quot; =&gt; 0×8 DataFrame
  Row │ converter_name  ac_bus  dc_bus  P_dc     Q        Vac      Vdc      mode
      │ String          Int64   Int64   Float64  Float64  Float64  Float64  String
@@ -155,6 +155,7 @@ using PowerFlows</code></pre><h2 id="VSC-case"><a class="docs-heading-anchor" hr
       <th style = "font-weight: bold; text-align: right;">bus_from</th>
       <th style = "font-weight: bold; text-align: right;">bus_to</th>
       <th style = "font-weight: bold; text-align: right;">P_from_to</th>
+      <th style = "font-weight: bold; text-align: right;">P_to_from</th>
       <th style = "font-weight: bold; text-align: right;">Q_from_to</th>
       <th style = "font-weight: bold; text-align: right;">Q_to_from</th>
       <th style = "font-weight: bold; text-align: right;">dc_current</th>
@@ -173,6 +174,7 @@ using PowerFlows</code></pre><h2 id="VSC-case"><a class="docs-heading-anchor" hr
       <th style = "text-align: right;">Float64</th>
       <th style = "text-align: right;">Float64</th>
       <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
     </tr>
   </thead>
   <tbody>
@@ -181,6 +183,7 @@ using PowerFlows</code></pre><h2 id="VSC-case"><a class="docs-heading-anchor" hr
       <td style = "text-align: right;">2</td>
       <td style = "text-align: right;">3</td>
       <td style = "text-align: right;">40.29453966932661</td>
+      <td style = "text-align: right;">-40.0</td>
       <td style = "text-align: right;">5.0</td>
       <td style = "text-align: right;">10.0</td>
       <td style = "text-align: right;">0.3837575206602534</td>
@@ -362,8 +365,8 @@ lcc_results = solve_power_flow(ACPowerFlow(), sys_lcc)</code></pre><pre><code cl
    4 │ 2-5               2       5   49.9663         1.126      -48.6595        -0.811242   1.30675      0.314762         0.0802976
    5 │ 3-4               3       4  -45.3912        17.6128      46.9638       -14.9088     1.5726       2.704           -0.0879452
    6 │ 4-5               4       5  -71.8724        16.967       72.5818       -14.7296     0.709339     2.23747         -0.0316087
-   7 │ 4-7               4       7   26.7028        -6.1635     -26.7028         7.62713    0.0          1.46363          0.0513757
-   8 │ 4-9               4       9   15.2212         2.96206    -15.2212        -1.73855    5.55112e-15  1.22351          0.0784713
+   7 │ 4-7               4       7   26.7028        -6.1635     -26.7028         7.62713    5.55112e-15  1.46363          0.0513757
+   8 │ 4-9               4       9   15.2212         2.96206    -15.2212        -1.73855    0.0          1.22351          0.0784713
    9 │ 5-6               5       6   46.4769        11.0586     -46.4769        -6.21864   -3.33067e-14  4.84001          0.100585
   10 │ 6-11              6      11    8.66495        8.19544     -8.54694       -7.94832    0.118007     0.247121         0.00843502
   11 │ 6-12              6      12    8.0932         3.07793     -8.01271       -2.91041    0.0804874    0.167517         0.0150112
@@ -381,7 +384,7 @@ lcc_results = solve_power_flow(ACPowerFlow(), sys_lcc)</code></pre><pre><code cl
 ─────┼─────────────────────────────────────────────────────────────────────────────────────────
    1 │          1  1.06      0.0        234.168      0.0  234.168  -14.4622      0.0  -14.4622
    2 │          2  1.045    -0.0847029   40.0       21.7   18.3     46.7101     12.7   34.0101
-   3 │          3  1.01     -0.284554     0.0       94.2  -94.2     47.1828     19.0   28.1828
+   3 │          3  1.01     -0.284554     0.0       94.2  -94.2     54.9443     19.0   35.9443
    4 │          4  1.0131   -0.196609     0.0       47.8  -47.8      0.0        -3.9    3.9
    5 │          5  1.01603  -0.165001     0.0        7.6   -7.6      0.0         1.6   -1.6
    6 │          6  1.07     -0.265585     0.0       11.2  -11.2     22.1782      7.5   14.6782
@@ -397,10 +400,10 @@ lcc_results = solve_power_flow(ACPowerFlow(), sys_lcc)</code></pre><pre><code cl
  Row │ line_name  dc_bus_from  dc_bus_to  dc_current  P_losses
      │ String     Int64        Int64      Float64     Float64
 ─────┴─────────────────────────────────────────────────────────
-  &quot;vsc_results&quot; =&gt; 0×10 DataFrame
- Row │ line_name  bus_from  bus_to  P_from_to  Q_from_to  Q_to_from  dc_current  Vdc_from  Vdc_to   P_losses
-     │ String     Int64     Int64   Float64    Float64    Float64    Float64     Float64   Float64  Float64
-─────┴───────────────────────────────────────────────────────────────────────────────────────────────────────
+  &quot;vsc_results&quot; =&gt; 0×11 DataFrame
+ Row │ line_name  bus_from  bus_to  P_from_to  P_to_from  Q_from_to  Q_to_from  dc_current  Vdc_from  Vdc_to   P_losses
+     │ String     Int64     Int64   Float64    Float64    Float64    Float64    Float64     Float64   Float64  Float64
+─────┴──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
   &quot;mtdc_results&quot; =&gt; 0×8 DataFrame
  Row │ converter_name  ac_bus  dc_bus  P_dc     Q        Vac      Vdc      mode
      │ String          Int64   Int64   Float64  Float64  Float64  Float64  String
@@ -409,7 +412,7 @@ lcc_results = solve_power_flow(ACPowerFlow(), sys_lcc)</code></pre><pre><code cl
  Row │ line_name  bus_from  bus_to  rectifier_tap  inverter_tap  rectifier_delay_angle  inverter_extinction_angle  P_from_to  P_to_from  Q_from_to  Q_to_from  P_losses  Q_losses
      │ String     Int64     Int64   Float64        Float64       Float64                Float64                    Float64    Float64    Float64    Float64    Float64   Float64
 ─────┼────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-   1 │ LCC_2_3           2       3        1.27379       1.29929                    0.0                   0.296706       50.0   -48.8088    8.13037      10.57   1.19115   18.7004</code></pre><p>The matching result table is <code>&quot;lcc_results&quot;</code>:</p><pre><code class="language-julia hljs">lcc_results[&quot;lcc_results&quot;]</code></pre><table>
+   1 │ LCC_2_3           2       3        1.27379       1.35646                    0.0                   0.296706       50.0   -48.8088    8.13037    18.3315   1.19115   26.4618</code></pre><p>The matching result table is <code>&quot;lcc_results&quot;</code>:</p><pre><code class="language-julia hljs">lcc_results[&quot;lcc_results&quot;]</code></pre><table>
   <thead>
     <tr class = "columnLabelRow">
       <th style = "font-weight: bold; text-align: right;">line_name</th>
@@ -448,15 +451,15 @@ lcc_results = solve_power_flow(ACPowerFlow(), sys_lcc)</code></pre><pre><code cl
       <td style = "text-align: right;">2</td>
       <td style = "text-align: right;">3</td>
       <td style = "text-align: right;">1.2737858888888838</td>
-      <td style = "text-align: right;">1.2992868916082443</td>
+      <td style = "text-align: right;">1.356459216677401</td>
       <td style = "text-align: right;">0.0</td>
       <td style = "text-align: right;">0.29670597283903605</td>
       <td style = "text-align: right;">50.0</td>
-      <td style = "text-align: right;">-48.80884817015153</td>
-      <td style = "text-align: right;">8.130370146724646</td>
-      <td style = "text-align: right;">10.570016818795521</td>
-      <td style = "text-align: right;">1.1911518298484691</td>
-      <td style = "text-align: right;">18.700386965520167</td>
+      <td style = "text-align: right;">-48.808848170151535</td>
+      <td style = "text-align: right;">8.130370146724644</td>
+      <td style = "text-align: right;">18.331477764564745</td>
+      <td style = "text-align: right;">1.1911518298484636</td>
+      <td style = "text-align: right;">26.46184791128939</td>
     </tr>
   </tbody>
 </table>
@@ -496,39 +499,39 @@ lcc_results = solve_power_flow(ACPowerFlow(), sys_lcc)</code></pre><pre><code cl
       <td style = "text-align: right;">1</td>
       <td style = "text-align: right;">1.06</td>
       <td style = "text-align: right;">0.0</td>
-      <td style = "text-align: right;">234.1680479700308</td>
+      <td style = "text-align: right;">234.16804797003087</td>
       <td style = "text-align: right;">0.0</td>
-      <td style = "text-align: right;">234.1680479700308</td>
-      <td style = "text-align: right;">-14.462180723202383</td>
+      <td style = "text-align: right;">234.16804797003087</td>
+      <td style = "text-align: right;">-14.462180723202398</td>
       <td style = "text-align: right;">0.0</td>
-      <td style = "text-align: right;">-14.462180723202383</td>
+      <td style = "text-align: right;">-14.462180723202398</td>
     </tr>
     <tr class = "dataRow">
       <td style = "text-align: right;">2</td>
       <td style = "text-align: right;">1.045</td>
-      <td style = "text-align: right;">-0.084702944550861</td>
+      <td style = "text-align: right;">-0.08470294455086101</td>
       <td style = "text-align: right;">40.0</td>
       <td style = "text-align: right;">21.7</td>
       <td style = "text-align: right;">18.3</td>
-      <td style = "text-align: right;">46.71013384759168</td>
+      <td style = "text-align: right;">46.710133847591706</td>
       <td style = "text-align: right;">12.7</td>
-      <td style = "text-align: right;">34.010133847591675</td>
+      <td style = "text-align: right;">34.0101338475917</td>
     </tr>
     <tr class = "dataRow">
       <td style = "text-align: right;">3</td>
       <td style = "text-align: right;">1.01</td>
-      <td style = "text-align: right;">-0.28455445675066565</td>
+      <td style = "text-align: right;">-0.2845544567506656</td>
       <td style = "text-align: right;">0.0</td>
       <td style = "text-align: right;">94.19999999999999</td>
       <td style = "text-align: right;">-94.19999999999999</td>
-      <td style = "text-align: right;">47.182789211954365</td>
+      <td style = "text-align: right;">54.94425015772357</td>
       <td style = "text-align: right;">19.0</td>
-      <td style = "text-align: right;">28.18278921195436</td>
+      <td style = "text-align: right;">35.94425015772357</td>
     </tr>
     <tr class = "dataRow">
       <td style = "text-align: right;">4</td>
       <td style = "text-align: right;">1.0131003362369728</td>
-      <td style = "text-align: right;">-0.19660929082930523</td>
+      <td style = "text-align: right;">-0.1966092908293052</td>
       <td style = "text-align: right;">0.0</td>
       <td style = "text-align: right;">47.8</td>
       <td style = "text-align: right;">-47.8</td>
@@ -539,7 +542,7 @@ lcc_results = solve_power_flow(ACPowerFlow(), sys_lcc)</code></pre><pre><code cl
     <tr class = "dataRow">
       <td style = "text-align: right;">5</td>
       <td style = "text-align: right;">1.0160263215193588</td>
-      <td style = "text-align: right;">-0.16500058942154844</td>
+      <td style = "text-align: right;">-0.1650005894215484</td>
       <td style = "text-align: right;">0.0</td>
       <td style = "text-align: right;">7.6</td>
       <td style = "text-align: right;">-7.6</td>
@@ -554,9 +557,9 @@ lcc_results = solve_power_flow(ACPowerFlow(), sys_lcc)</code></pre><pre><code cl
       <td style = "text-align: right;">0.0</td>
       <td style = "text-align: right;">11.200000000000001</td>
       <td style = "text-align: right;">-11.200000000000001</td>
-      <td style = "text-align: right;">22.17817853246847</td>
+      <td style = "text-align: right;">22.17817853246846</td>
       <td style = "text-align: right;">7.5</td>
-      <td style = "text-align: right;">14.678178532468467</td>
+      <td style = "text-align: right;">14.678178532468461</td>
     </tr>
     <tr class = "dataRow">
       <td style = "text-align: right;">7</td>
@@ -576,14 +579,14 @@ lcc_results = solve_power_flow(ACPowerFlow(), sys_lcc)</code></pre><pre><code cl
       <td style = "text-align: right;">0.0</td>
       <td style = "text-align: right;">0.0</td>
       <td style = "text-align: right;">0.0</td>
-      <td style = "text-align: right;">24.926424907504686</td>
+      <td style = "text-align: right;">24.92642490750469</td>
       <td style = "text-align: right;">0.0</td>
-      <td style = "text-align: right;">24.926424907504686</td>
+      <td style = "text-align: right;">24.92642490750469</td>
     </tr>
     <tr class = "dataRow">
       <td style = "text-align: right;">9</td>
       <td style = "text-align: right;">1.032932594115382</td>
-      <td style = "text-align: right;">-0.2750805471919238</td>
+      <td style = "text-align: right;">-0.2750805471919239</td>
       <td style = "text-align: right;">0.0</td>
       <td style = "text-align: right;">29.5</td>
       <td style = "text-align: right;">-29.5</td>
@@ -615,4 +618,4 @@ lcc_results = solve_power_flow(ACPowerFlow(), sys_lcc)</code></pre><pre><code cl
     </tr>
   </tbody>
 </table>
-<h2 id="When-each-is-modeled"><a class="docs-heading-anchor" href="#When-each-is-modeled">When each is modeled</a><a id="When-each-is-modeled-1"></a><a class="docs-heading-anchor-permalink" href="#When-each-is-modeled" title="Permalink"></a></h2><p>Reach for VSC when a converter has independent control over active power, reactive power (or AC voltage), and DC voltage — the behavior of modern IGBT-based HVDC links. Reach for LCC to model classic thyristor-based HVDC, where the only controls are firing/extinction angles and transformer taps, and the converter is always a net reactive-power sink on the AC side. PowerFlows solves both inside the same AC power flow as the surrounding network, so no separate DC power-flow step is needed for either technology.</p></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../generated_discrete_control_14bus/">« Discrete Shunt Voltage Control</a><a class="docs-footer-nextpage" href="../../how-tos/choose_ac_formulation_and_solver/">How to choose an AC formulation and solver »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.17.0 on <span class="colophon-date" title="Sunday 12 July 2026 03:52">Sunday 12 July 2026</span>. Using Julia version 1.12.6.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
+<h2 id="When-each-is-modeled"><a class="docs-heading-anchor" href="#When-each-is-modeled">When each is modeled</a><a id="When-each-is-modeled-1"></a><a class="docs-heading-anchor-permalink" href="#When-each-is-modeled" title="Permalink"></a></h2><p>Reach for VSC when a converter has independent control over active power, reactive power (or AC voltage), and DC voltage — the behavior of modern IGBT-based HVDC links. Reach for LCC to model classic thyristor-based HVDC, where the only controls are firing/extinction angles and transformer taps, and the converter is always a net reactive-power sink on the AC side. PowerFlows solves both inside the same AC power flow as the surrounding network, so no separate DC power-flow step is needed for either technology.</p></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../generated_discrete_control_14bus/">« Discrete Shunt Voltage Control</a><a class="docs-footer-nextpage" href="../../how-tos/choose_ac_formulation_and_solver/">How to choose an AC formulation and solver »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.17.0 on <span class="colophon-date" title="Friday 17 July 2026 16:50">Friday 17 July 2026</span>. Using Julia version 1.12.6.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
