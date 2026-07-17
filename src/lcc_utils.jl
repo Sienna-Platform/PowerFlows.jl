@@ -10,14 +10,11 @@ function _calculate_ϕ_lcc(
     x_t::Float64,
     Vm::Float64,
 )::Float64
-    # Commutation-drop term uses abs(I_dc): the drop x_t·|I_dc| always REDUCES the
-    # ideal DC voltage, on both sides. The inverter is called with I_dc = −i_dc, so
-    # sign(I_dc) flips only the outer convention (cos ϕ_i < 0), giving
-    # cos ϕ_i = −(cos γ − commutation). Using the signed I_dc in the commutation term
-    # instead would add the drop on the inverter (cos ϕ_i = −(cos γ + commutation)),
-    # which is non-physical and drives ϕ_i past π for any realistic small γ.
-    # The matching inverter derivatives carry this sign too: the first-derivative helpers via
-    # −xtr_i at their call sites, and the second-derivative _d2Q_lcc via its σ (see there).
+    # Commutation drop x_t·|I_dc| always REDUCES the DC voltage on both sides, hence abs(I_dc).
+    # The inverter passes I_dc = −i_dc, so the outer sign(I_dc) flips only the convention
+    # (cos ϕ_i < 0 ⇒ cos ϕ_i = −(cos γ − commutation)); a signed I_dc in the drop term would
+    # non-physically ADD it on the inverter. Inverter derivatives carry this sign via −xtr_i
+    # (first-derivative helpers) and σ (second-derivative _d2Q_lcc).
     raw = sign(I_dc) * (cos(α) - (x_t * abs(I_dc)) / (sqrt(2) * Vm * t))
     if raw < -1.0 || raw > 1.0
         @warn "LCC ϕ argument outside [-1, 1] (got $raw); clamping. \

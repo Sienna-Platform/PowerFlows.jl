@@ -47,9 +47,8 @@ function initialize_power_flow_data!(
         removed_buses,
         sys,
     )
-    # Seed EVERY column from the snapshot (a column vector broadcasts across time): each step
-    # solves independently, so an unfilled column means "the snapshot", not zero. Time-varying
-    # callers (PSI, prepare_ts_data!) overwrite columns afterwards.
+    # Broadcast seeds every column from the snapshot; time-varying callers (PSI, prepare_ts_data!)
+    # overwrite columns afterward. An unfilled column would solve as zero, not the snapshot.
     data.bus_active_power_injections .= bus_active_power_injections
     data.bus_reactive_power_injections .= bus_reactive_power_injections
 
@@ -91,8 +90,8 @@ function initialize_power_flow_data!(
     )
     data.bus_active_power_withdrawals .= bus_active_power_withdrawals
     data.bus_reactive_power_withdrawals .= bus_reactive_power_withdrawals
-    # Constant-I/Z baselines are time-invariant; the per-step discrete-control delta lands on top
-    # of column `ts`, so seed EVERY column (broadcast) or `ts≥2` loses the baseline.
+    # Constant-I/Z baselines are time-invariant; broadcast so the per-step control delta on
+    # column `ts` keeps its baseline at `ts≥2`.
     data.bus_active_power_constant_current_withdrawals .=
         bus_active_power_constant_current_withdrawals
     data.bus_reactive_power_constant_current_withdrawals .=
@@ -114,8 +113,8 @@ function initialize_power_flow_data!(
         removed_buses,
         sys,
     )
-    # Bounds are time-invariant, but `_check_q_limit_bounds!` reads them per `time_step`; seed EVERY
-    # column so PV→PQ Q-limit switching fires at `ts≥2` (the matrix is otherwise `(-Inf, Inf)`).
+    # Bounds are time-invariant but read per `time_step`; broadcast so PV→PQ Q-limit switching
+    # fires at `ts≥2` (the matrix is otherwise `(-Inf, Inf)`).
     data.bus_reactive_power_bounds .= bus_reactive_power_bounds
 
     # bus/generator participation factors

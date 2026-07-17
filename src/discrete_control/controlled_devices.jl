@@ -74,10 +74,9 @@ struct ControlledDeviceSet
     taps::Vector{ControlledTap}
     shunts::Vector{ControlledSwitchedShunt}
     facts::Vector{ControlledFACTS}
-    # Per-time-step scalar state, indexed [device, ts], each column seeded from the freshly-built
-    # device's fields; `load_device_state!`/`save_device_state!` swap them in/out of the device
-    # scratch `_control_continuation!` mutates. Taps mutate the SHARED Y-bus, so their store is
-    # reconciled via `apply_parameter!` (reset to `d.initial` each step), not a scalar swap.
+    # Per-time-step scalar state [device, ts]; `load_device_state!`/`save_device_state!` swap it
+    # in/out of the device scratch. Taps mutate the SHARED Y-bus, so their store is reconciled via
+    # `apply_parameter!` (reset to `d.initial` each step), not a scalar swap.
     shunt_current::Matrix{Float64}
     shunt_block_n::Matrix{Vector{Int}}
     facts_current::Matrix{Float64}

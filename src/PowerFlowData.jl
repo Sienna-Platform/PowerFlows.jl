@@ -604,10 +604,8 @@ end
 
 # Build the controlled-device set for a solve, or `nothing` when discrete control is off or the
 # system has no enrollable devices. LCC HVDC is rejected: the continuation's rollback does not yet
-# cover the per-time-step LCC state. Tap-controlled transformers support time_steps>1 via a
-# reset-to-baseline design: `load_device_state!` resets the shared Y-bus to each tap's
-# enrollment value (`d.initial`) before every time step, so each step regulates independently
-# from the same baseline network (see `ControlledDeviceSet`/`load_device_state!`).
+# cover the per-time-step LCC state. Taps support time_steps>1 via reset-to-baseline
+# (`load_device_state!` resets the shared Y-bus to `d.initial` before each step).
 function _build_controlled_devices(
     pf::AbstractACPowerFlow,
     sys::PSY.System,
