@@ -267,27 +267,19 @@ end
 _warn_slack_demoted_to_pq(::AbstractDCPowerFlow, ::String) = nothing
 
 """SLACK marks a bus for area-interchange redistribution (PSS/E ISW), not a formulation
-bus type; normalize at ingestion: error if it cannot move active power, PV if it can also
-regulate voltage, else PQ (DC demotes silently — see `_warn_slack_demoted_to_pq`)."""
+bus type; normalize it at ingestion like PV/REF: PV if the bus has an in-service
+voltage-regulating source, else PQ (DC demotes silently — see `_warn_slack_demoted_to_pq`).
+A SLACK bus that normalizes to PQ cannot serve as an area slack; the area-interchange
+enrollment guard then de-enrolls its area."""
 function _normalize_slack_bustype(
     pf::PowerFlowEvaluationModel,
     bt::PSY.ACBusTypes,
     bus_no::Int,
     bus_name::String,
     possible_PV::Set{Int},
-    p_capable::Set{Int},
 )
     if bt != PSY.ACBusTypes.SLACK
         return bt
-    end
-    if !(bus_no in p_capable)
-        throw(
-            ArgumentError(
-                "SLACK-designated bus $bus_name has no in-service component capable " *
-                "of active power injection; an area slack bus must be able to adjust " *
-                "active power. Change the bus type or place an available injector there.",
-            ),
-        )
     end
     if bus_no in possible_PV
         return PSY.ACBusTypes.PV
@@ -318,7 +310,6 @@ function _initialize_bus_data!(
     # correct/validate the bus types.
     forced_PV = must_be_PV(sys)
     possible_PV = can_be_PV(sys)
-    p_capable = can_inject_active_power(sys)
     bus_numbers = PSY.get_bus_numbers(sys)
     temp_bus_types = Dict{Int, PSY.ACBusTypes}()
     sizehint!(temp_bus_types, length(bus_numbers))
@@ -329,7 +320,7 @@ function _initialize_bus_data!(
         bus_no = PSY.get_number(bus)
         bus_name = PSY.get_name(bus)
         temp_bus_map[bus_no] = bus_name
-        bt = _normalize_slack_bustype(pf, bt, bus_no, bus_name, possible_PV, p_capable)
+        bt = _normalize_slack_bustype(pf, bt, bus_no, bus_name, possible_PV)
         if bus_no in subnetwork_keys && bus_no != main_ref_bus
             bt = PSY.ACBusTypes.REF
             @warn("Island detected, containing $(summary(bus)).", maxlog = PF_MAX_LOG)

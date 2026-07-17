@@ -99,6 +99,7 @@ end
     ref_data = PowerFlowData(pf, base_sys)
     @test solve_power_flow!(ref_data)
 
+    # (a) A SLACK bus with a voltage-regulating source normalizes to PV and solves as REF.
     sys_a = deepcopy(base_sys)
     bus_a = PSY.get_component(PSY.ACBus, sys_a, "Bus 2")
     PSY.set_bustype!(bus_a, PSY.ACBusTypes.SLACK)
@@ -109,12 +110,19 @@ end
     @test all(isapprox.(data_a.bus_magnitude, ref_data.bus_magnitude; atol = 1e-8))
     @test all(isapprox.(data_a.bus_angles, ref_data.bus_angles; atol = 1e-8))
 
+    # (b) A SLACK bus with no voltage-regulating source normalizes to PQ. Bus 14 has no
+    # generator, so PQ is its native type and the solve matches the REF baseline.
     sys_b = deepcopy(base_sys)
     bus_b = PSY.get_component(PSY.ACBus, sys_b, "Bus 14")
     PSY.set_bustype!(bus_b, PSY.ACBusTypes.SLACK)
-    @test_throws ArgumentError PowerFlowData(pf, sys_b)
-    @test_throws r"SLACK-designated bus Bus 14" PowerFlowData(pf, sys_b)
+    data_b = PowerFlowData(pf, sys_b)
+    ix_b = PF.get_bus_lookup(data_b)[PSY.get_number(bus_b)]
+    @test data_b.bus_type[ix_b, 1] == PSY.ACBusTypes.PQ
+    @test solve_power_flow!(data_b)
+    @test all(isapprox.(data_b.bus_magnitude, ref_data.bus_magnitude; atol = 1e-8))
+    @test all(isapprox.(data_b.bus_angles, ref_data.bus_angles; atol = 1e-8))
 
+    # (b2) A SLACK bus whose only generator is unavailable normalizes to PQ.
     sys_b2 = deepcopy(base_sys)
     bus_b2 = PSY.get_component(PSY.ACBus, sys_b2, "Bus 2")
     PSY.set_bustype!(bus_b2, PSY.ACBusTypes.SLACK)
@@ -123,47 +131,40 @@ end
             PSY.set_available!(gen, false)
         end
     end
-    @test_throws ArgumentError PowerFlowData(pf, sys_b2)
-    @test_throws r"SLACK-designated bus Bus 2" PowerFlowData(pf, sys_b2)
+    data_b2 = PowerFlowData(pf, sys_b2)
+    ix_b2 = PF.get_bus_lookup(data_b2)[PSY.get_number(bus_b2)]
+    @test data_b2.bus_type[ix_b2, 1] == PSY.ACBusTypes.PQ
 
-    # (c) P-capable but not voltage-regulation-capable normalizes to PQ + warn.
-    # The only PSY types in that gap (HybridSystem, InterconnectingConverter)
-    # need heavyweight fixtures, so unit-test the classification helper.
+    # (c) unit: no voltage-regulating source normalizes to PQ, with a warn (AC).
     bt_c = @test_logs (:warn, r"SLACK-designated bus TestBus") PF._normalize_slack_bustype(
         pf,
         PSY.ACBusTypes.SLACK,
         99,
         "TestBus",
         Set{Int}(),
-        Set([99]),
     )
     @test bt_c == PSY.ACBusTypes.PQ
 
-    # (d) same classification for a DC evaluation model demotes silently: voltage
-    # regulation is irrelevant to DC power flow.
+    # (c') a voltage-regulating source normalizes to PV, no warn.
+    bt_cp = @test_logs min_level = Logging.Warn PF._normalize_slack_bustype(
+        pf, PSY.ACBusTypes.SLACK, 99, "TestBus", Set([99]))
+    @test bt_cp == PSY.ACBusTypes.PV
+
+    # (d) DC demotes to PQ silently: voltage regulation is irrelevant to DC power flow.
     dc_pf = DCPowerFlow()
     bt_c_dc = @test_logs(
         min_level = Logging.Warn,
-        PF._normalize_slack_bustype(
-            dc_pf,
-            PSY.ACBusTypes.SLACK,
-            99,
-            "TestBus",
-            Set{Int}(),
-            Set([99]),
-        )
+        PF._normalize_slack_bustype(dc_pf, PSY.ACBusTypes.SLACK, 99, "TestBus", Set{Int}()),
     )
     @test bt_c_dc == PSY.ACBusTypes.PQ
 
-    @test_throws ArgumentError PowerFlowData(dc_pf, sys_b)
-    @test_throws r"SLACK-designated bus Bus 14" PowerFlowData(dc_pf, sys_b)
+    # DC builds the no-source SLACK system.
+    @test PowerFlowData(dc_pf, sys_b) isa PowerFlowData
 
     for bt in
         (PSY.ACBusTypes.REF, PSY.ACBusTypes.PV, PSY.ACBusTypes.PQ, PSY.ACBusTypes.ISOLATED)
-        @test PF._normalize_slack_bustype(pf, bt, 99, "TestBus", Set{Int}(), Set{Int}()) ==
-              bt
-        @test PF._normalize_slack_bustype(
-            dc_pf, bt, 99, "TestBus", Set{Int}(), Set{Int}()) == bt
+        @test PF._normalize_slack_bustype(pf, bt, 99, "TestBus", Set{Int}()) == bt
+        @test PF._normalize_slack_bustype(dc_pf, bt, 99, "TestBus", Set{Int}()) == bt
     end
 end
 

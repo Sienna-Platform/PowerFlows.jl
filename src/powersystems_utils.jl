@@ -131,24 +131,6 @@ function can_be_PV(sys::System)
     return pv_buses
 end
 
-# mirrors _is_available_source, the device filter of _power_redistribution_ref.
-_contributes_to_active_power_redistribution(::PSY.StaticInjection) = true
-_contributes_to_active_power_redistribution(::PSY.ElectricLoad) = false
-_contributes_to_active_power_redistribution(::PSY.FACTSControlDevice) = false
-
-"""Return set of all bus numbers with an in-service component capable of active power
-injection: the device set `_power_redistribution_ref` redistributes slack active
-power over."""
-function can_inject_active_power(sys::System)
-    buses = Set{Int}()
-    for source in PSY.get_available_components(PSY.StaticInjection, sys)
-        if _contributes_to_active_power_redistribution(source)
-            push!(buses, PSY.get_number(PSY.get_bus(source)))
-        end
-    end
-    return buses
-end
-
 error_if_reversed(::PSY.TwoTerminalHVDC, ::Float64) = nothing
 
 function error_if_reversed(hvdc::PSY.TwoTerminalLCCLine, P_dc::Float64)
