@@ -15,6 +15,10 @@ jobs:
         os: [ubuntu-latest, windows-latest, macOS-latest]
 
     steps:
+      - name: Debug repository slug capitalization
+        run: |
+          echo "The github.repository value is: ${{ github.repository }}"
+          echo "The repository owner is: ${{ github.repository_owner }}"
       - uses: actions/checkout@v4
       - uses: julia-actions/setup-julia@v2
         with:
