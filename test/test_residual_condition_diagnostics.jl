@@ -43,6 +43,39 @@ function _solver_diagnostic_lines(pf, sys)
     return [r.message for r in tl.logs if occursin(r"iter \d+", r.message)]
 end
 
+@testset "find_jacobian_null_space σ_min matches dense svdvals" begin
+    # The localizer's smallest singular value (via Lanczos on (JᵀJ)⁻¹) should
+    # match dense svdvals, and the returned vectors should be sized as requested.
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14")
+    pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(; correct_bustypes = true)
+    data = PowerFlowData(pf, sys)
+    residual = PF.ACPowerFlowResidual(data, 1)
+    jac = PF.ACPowerFlowJacobian(residual, 1)
+    x0 = PF.calculate_x0(data, 1)
+    residual(x0, 1)
+    jac(1)
+    σ_true = minimum(svdvals(Matrix(jac.Jv)))
+
+    σ_min, state_entries, residual_entries = PF.find_jacobian_null_space(data, 1; k = 5)
+    @test abs(σ_min - σ_true) / σ_true < 1e-6
+    @test length(state_entries) == 5
+    @test length(residual_entries) == 5
+end
+
+@testset "find_jacobian_null_space σ_min matches dense svdvals (LCC)" begin
+    sys = System(joinpath(TEST_DATA_DIR, "case5_2_lcc.raw"))
+    data = PowerFlowData(ACPowerFlow{NewtonRaphsonACPowerFlow}(), sys)
+    residual = PF.ACPowerFlowResidual(data, 1)
+    jac = PF.ACPowerFlowJacobian(residual, 1)
+    x0 = PF.calculate_x0(data, 1)
+    residual(x0, 1)
+    jac(1)
+    σ_true = minimum(svdvals(Matrix(jac.Jv)))
+
+    σ_min, _, _ = PF.find_jacobian_null_space(data, 1)
+    @test abs(σ_min - σ_true) / σ_true < 1e-6
+end
+
 @testset "Schur min-eigenvalue matches dense ground truth (no LCC)" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14")
     pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(; correct_bustypes = true)
