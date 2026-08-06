@@ -60,6 +60,7 @@ import StaticArrays: MVector
 import DataStructures: OrderedDict
 import Dates
 import LineSearches: BackTracking
+import PrecompileTools
 
 include("definitions.jl")
 # Before PowerFlowData.jl: defines PFLinearSolverCache and AbstractNRCache, which
@@ -114,4 +115,6 @@ include("RobustHomotopy/HessianSolver/fixed_structure_CHOLMOD.jl")
 include("RobustHomotopy/HessianSolver/cholesky_solver.jl")
 include("RobustHomotopy/homotopy_hessian.jl")
 include("RobustHomotopy/robust_homotopy_method.jl")
+# Last: the precompilation workload runs the solve paths defined above.
+include("precompile.jl")
 end
