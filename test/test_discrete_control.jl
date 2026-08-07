@@ -801,11 +801,12 @@ end
     # NR/TR with a single time step construct fine.
     @test ACPolarPowerFlow{TrustRegionACPowerFlow}(;
         control_discrete_devices = true) isa ACPolarPowerFlow
-    # LCC systems are rejected at PowerFlowData construction (rollback does not
-    # cover the per-time-step LCC state).
+    # LCC systems are supported: the continuation checkpoint covers the LCC tail state.
     lcc_sys, _ = simple_lcc_system()
-    @test_throws ArgumentError PowerFlowData(
-        ACPolarPowerFlow(; control_discrete_devices = true), lcc_sys)
+    @test PowerFlowData(
+        ACPolarPowerFlow(; control_discrete_devices = true), lcc_sys) isa PowerFlowData
+    @test PowerFlowData(
+        ACPolarPowerFlow(; control_discrete_devices = true, time_steps = 2), lcc_sys) isa PowerFlowData
     # Tap-controlled transformers support multiple time steps via the reset-to-baseline
     # design (each step resets the shared Y-bus to the tap's enrollment value before
     # regulating): construction succeeds and the solve converges.

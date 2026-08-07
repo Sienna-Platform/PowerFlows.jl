@@ -859,16 +859,16 @@ function initialize_LCCParameters!(
 
     lcc_setpoint_at_rectifier .= (PSY.get_transfer_setpoint.(lccs) .>= 0.0)
     lcc_p_set .= abs.(PSY.get_transfer_setpoint.(lccs) ./ base_power) # only one direction is supported, no reverse flow possible
-    lcc_rectifier_tap[:, 1] .= PSY.get_rectifier_tap_setting.(lccs)
-    lcc_inverter_tap[:, 1] .= PSY.get_inverter_tap_setting.(lccs)
+    lcc_rectifier_tap .= PSY.get_rectifier_tap_setting.(lccs)
+    lcc_inverter_tap .= PSY.get_inverter_tap_setting.(lccs)
     # Fixed tap targets used to pin the tap state for 0-current (0-MW) converters.
     data.lcc.rectifier.tap_setpoint .= PSY.get_rectifier_tap_setting.(lccs)
     data.lcc.inverter.tap_setpoint .= PSY.get_inverter_tap_setting.(lccs)
     lcc_dc_line_resistance .=
         PSY.get_r.(lccs) .+ PSY.get_rectifier_rc.(lccs) .+ PSY.get_inverter_rc.(lccs)
     lcc_i_dc .= _lcc_i_dc_from_p_set.(lcc_dc_line_resistance, lcc_p_set)
-    lcc_rectifier_delay_angle[:, 1] .= PSY.get_rectifier_delay_angle.(lccs)
-    lcc_inverter_extinction_angle[:, 1] .= PSY.get_inverter_extinction_angle.(lccs)
+    lcc_rectifier_delay_angle .= PSY.get_rectifier_delay_angle.(lccs)
+    lcc_inverter_extinction_angle .= PSY.get_inverter_extinction_angle.(lccs)
     lcc_rectifier_bus .= [
         _get_bus_ix(bus_lookup, reverse_bus_search_map, x) for
         x in PSY.get_number.(PSY.get_from.(lcc_arcs))

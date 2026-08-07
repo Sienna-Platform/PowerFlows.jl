@@ -51,8 +51,6 @@ with an `ArgumentError` for combinations that are not yet supported:
     inner solvers. (FastDecoupled factors B′/B″ once and would silently reuse
     them after a tap move; LM/GD/Homotopy are unvalidated as continuation inner
     solvers.)
-  - **No LCC HVDC:** the continuation's rollback does not yet cover the
-    per-time-step LCC state.
 
 `time_steps > 1` is supported for every device family (see
 [Multiperiod solves](@ref discrete-control-multiperiod)).
@@ -263,6 +261,23 @@ bisection sub-stepping as `_continuation_to!` (`_restore_one!`). If any
 device cannot be restored to a converged state, `data.converged[ts] = false`
 is set and an `@error` is emitted with the device names; no non-physical
 solution is silently returned.
+
+### State checkpoint and rollback during continuation
+
+The outer loop maintains a checkpoint at the beginning of each continuation
+attempt: V/θ, `bus_type`, the two bus injection columns, and, for systems
+carrying HVDC, the VSC DC-network columns and the LCC converter columns
+(per-time-step taps, thyristor angles, and DC current). It does not cover
+Ybus tap deltas, shunt/FACTS withdrawal vectors, or device parameters — those
+are restored separately, at the call sites, by `apply_parameter!` resetting
+each device to its pre-attempt value. The orientation-probe phase
+(`_plant_sign`) captures and restores this checkpoint unconditionally on
+every control-enabled solve, not only when an attempt fails; when a
+continuation attempt itself fails to converge, the checkpoint is restored to
+roll back the bus/DC-network/LCC mutations the attempt made. When the
+checkpoint is restored, the derived LCC caches (`phi`, `branch_admittances`)
+are re-derived from the restored converter parameters at the restored
+network state, rather than snapshotted.
 
 ## [Metadata sourcing](@id discrete-control-metadata)
 
