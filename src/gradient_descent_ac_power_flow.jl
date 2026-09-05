@@ -4,7 +4,7 @@
 An [`ACPowerFlowSolverType`](@ref) that solves AC power flow by minimising ½‖F(x)‖² with
 the Adam optimizer and backtracking line search.
 
-# Solver settings (pass via `solver_settings` Dict)
+# Solver settings (pass via `solution_parameters = SolutionParameters(...)`)
 | Key              | Default | Description                          |
 |------------------|---------|--------------------------------------|
 | `:learning_rate` | `0.01`  | Adam step size η                     |
@@ -19,6 +19,7 @@ struct GradientDescentACPowerFlow <: ACPowerFlowSolverType end
 """
     AdamConfig(; learning_rate=0.01, beta1=0.9, beta2=0.999, epsilon=1e-8)
     AdamConfig(settings::Dict{Symbol, Any})
+    AdamConfig(params::SolutionParameters)
 
 Configuration for the Adam optimizer used by [`GradientDescentACPowerFlow`](@ref).
 """
@@ -37,6 +38,19 @@ function AdamConfig(settings::Dict{Symbol, Any})
         epsilon = Float64(get(settings, :epsilon, 1e-8)),
     )
 end
+
+"""
+    AdamConfig(params::SolutionParameters)
+
+The Adam configuration carried by a [`SolutionParameters`](@ref). The typed path; the
+`Dict` method above serves call-site keywords, which override the stored parameters.
+"""
+AdamConfig(params::SolutionParameters) = AdamConfig(;
+    learning_rate = params.learning_rate,
+    beta1 = params.beta1,
+    beta2 = params.beta2,
+    epsilon = params.epsilon,
+)
 
 """
     AdamState(n::Int)

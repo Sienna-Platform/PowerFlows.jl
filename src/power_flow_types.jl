@@ -186,7 +186,7 @@ end
 An [`ACPowerFlowSolverType`](@ref) corresponding to a basic Newton-Raphson iterative method.
 The Newton step is taken verbatim at each iteration: no line search is performed.
 
-Iwamoto step control can be enabled via `solver_settings = Dict(:iwamoto => true)` in
+Iwamoto step control can be enabled via `SolutionParameters(; iwamoto = true)` in
 [`ACPowerFlow`](@ref). When enabled, each iteration checks whether the full Newton step
 reduces the residual norm. If it does, the full step is accepted (overhead: 3 dot products).
 If not, an optimal damping multiplier `μ` is computed by solving a cubic and the step
@@ -222,7 +222,7 @@ Works with both the polar ([`ACPolarPowerFlow`](@ref)) and rectangular
 current-injection ([`ACRectangularPowerFlow`](@ref)) formulations.
 
 Marquardt diagonal column scaling (`√λ·D` damping instead of `√λ·I`) can be
-toggled via `solver_settings = Dict(:marquardt_scaling => true|false)`. When
+toggled via `SolutionParameters(; marquardt_scaling = true|false)`. When
 unset it defaults **on** for [`ACRectangularPowerFlow`](@ref) — whose state
 columns `(e, f, Q, P_gen)` are differently scaled, so identity damping is
 ill-conditioned — and **off** for [`ACPolarPowerFlow`](@ref), leaving the polar
@@ -298,7 +298,7 @@ ACPowerFlow{FastDecoupledACPowerFlow{FDDecoupled, FDSchemeBX}}()          # expl
 ACRectangularPowerFlow{FastDecoupledACPowerFlow{FDFixedJacobian, FDSchemeXB}}()
 ```
 
-# Settings (via `solver_settings` and/or call kwargs)
+# Settings (via `solution_parameters` and/or call kwargs)
 - `handoff_solver`: `nothing` (pure FD; default) or [`NewtonRaphsonACPowerFlow`](@ref) /
     [`TrustRegionACPowerFlow`](@ref) / [`LevenbergMarquardtACPowerFlow`](@ref) for final
     refinement to `tol`.
@@ -367,11 +367,15 @@ with the specified solver type.
     `MIN_INTERCHANGE_TOLERANCE` with a warning. Default is `DEFAULT_INTERCHANGE_TOLERANCE`.
 - `tie_definition::Symbol`: How area ties are identified. Only `:lines_only` is implemented;
     `:lines_and_loads` (PSS/E control code 2) is reserved. Default is `:lines_only`.
-- `solver_settings::Dict{Symbol, Any}`: Additional keyword arguments to pass to the solver.
-    Default is an empty dictionary.
+- `solution_parameters::SolutionParameters`: The solve parameters — convergence targets,
+    step-control limits, network controls and the linear-solver backend. Also the home of
+    `check_reactive_power_limits`, `enhanced_flat_start`, `control_discrete_devices`,
+    `area_interchange_control`, `interchange_tolerance` and `tie_definition`, which remain
+    accepted as keywords here and are folded into the stored parameters.
+- `solver_settings::AbstractDict`: **Deprecated.** The untyped predecessor of
+    `solution_parameters`; entries naming a parameter are still applied.
 """
 struct ACPolarPowerFlow{ACSolver <: ACPowerFlowSolverType} <: AbstractACPowerFlow{ACSolver}
-    check_reactive_power_limits::Bool
     exporter::Union{Nothing, PowerFlowEvaluationModel}
     calculate_loss_factors::Bool
     calculate_voltage_stability_factors::Bool
@@ -381,7 +385,6 @@ struct ACPolarPowerFlow{ACSolver <: ACPowerFlowSolverType} <: AbstractACPowerFlo
         Dict{Tuple{DataType, String}, Float64},
         Vector{Dict{Tuple{DataType, String}, Float64}},
     }
-    enhanced_flat_start::Bool
     robust_power_flow::Bool
     skip_redistribution::Bool
     distribute_slack_proportional_to_headroom::Bool
@@ -389,11 +392,7 @@ struct ACPolarPowerFlow{ACSolver <: ACPowerFlowSolverType} <: AbstractACPowerFlo
     time_steps::Int
     time_step_names::Vector{String}
     correct_bustypes::Bool
-    control_discrete_devices::Bool
-    area_interchange_control::Bool
-    interchange_tolerance::Float64
-    tie_definition::Symbol
-    solver_settings::Dict{Symbol, Any}
+    solution_parameters::SolutionParameters
 end
 
 """
@@ -430,7 +429,7 @@ with the specified solver type.
     allowing for different participation factors for different time steps.
 """
 function ACPolarPowerFlow{ACSolver}(;
-    check_reactive_power_limits::Bool = false,
+    check_reactive_power_limits::Union{Nothing, Bool} = nothing,
     exporter::Union{Nothing, PowerFlowEvaluationModel} = nothing,
     calculate_loss_factors::Bool = false,
     calculate_voltage_stability_factors::Bool = false,
@@ -440,7 +439,7 @@ function ACPolarPowerFlow{ACSolver}(;
         Dict{Tuple{DataType, String}, Float64},
         Vector{Dict{Tuple{DataType, String}, Float64}},
     } = nothing,
-    enhanced_flat_start::Bool = true,
+    enhanced_flat_start::Union{Nothing, Bool} = nothing,
     robust_power_flow::Bool = false,
     skip_redistribution::Bool = false,
     distribute_slack_proportional_to_headroom::Bool = false,
@@ -448,36 +447,51 @@ function ACPolarPowerFlow{ACSolver}(;
     time_steps::Int = 1,
     time_step_names::Vector{String} = String[],
     correct_bustypes::Bool = false,
-    control_discrete_devices::Bool = false,
-    area_interchange_control::Bool = false,
-    interchange_tolerance::Float64 = DEFAULT_INTERCHANGE_TOLERANCE,
-    tie_definition::Symbol = :lines_only,
-    solver_settings::AbstractDict = Dict{Symbol, Any}(),
+    control_discrete_devices::Union{Nothing, Bool} = nothing,
+    area_interchange_control::Union{Nothing, Bool} = nothing,
+    interchange_tolerance::Union{Nothing, Float64} = nothing,
+    tie_definition::Union{Nothing, Symbol} = nothing,
+    solution_parameters::SolutionParameters = SolutionParameters(),
+    solver_settings::Union{Nothing, AbstractDict} = nothing,
 ) where {ACSolver <: ACPowerFlowSolverType}
-    settings = Dict{Symbol, Any}(solver_settings)
     if calculate_loss_factors && ACSolver == LevenbergMarquardtACPowerFlow
         error("Loss factor calculation is not supported by the Levenberg-Marquardt solver.")
     end
+    params = _fold_legacy_parameters(
+        solution_parameters,
+        solver_settings,
+        (;
+            check_reactive_power_limits,
+            enhanced_flat_start,
+            control_discrete_devices,
+            area_interchange_control,
+            interchange_tolerance,
+            tie_definition,
+        ),
+    )
     _validate_slack_distribution_settings(
         distribute_slack_proportional_to_headroom,
         generator_slack_participation_factors,
         time_steps,
     )
-    _validate_discrete_control_settings(control_discrete_devices, ACSolver)
-    validated_interchange_tolerance = _validate_area_interchange_settings(
-        ACSolver,
-        area_interchange_control,
-        interchange_tolerance,
-        tie_definition,
+    _validate_discrete_control_settings(params.control_discrete_devices, ACSolver)
+    # Returns the possibly-floored tolerance, so the stored parameters carry the value the
+    # solve will actually use rather than the one the caller asked for.
+    params = _override(
+        params;
+        interchange_tolerance = _validate_area_interchange_settings(
+            ACSolver,
+            params.area_interchange_control,
+            params.interchange_tolerance,
+            params.tie_definition,
+        ),
     )
     return ACPolarPowerFlow{ACSolver}(
-        check_reactive_power_limits,
         exporter,
         calculate_loss_factors,
         calculate_voltage_stability_factors,
         log_solver_diagnostics,
         generator_slack_participation_factors,
-        enhanced_flat_start,
         robust_power_flow,
         skip_redistribution,
         distribute_slack_proportional_to_headroom,
@@ -485,11 +499,7 @@ function ACPolarPowerFlow{ACSolver}(;
         time_steps,
         time_step_names,
         correct_bustypes,
-        control_discrete_devices,
-        area_interchange_control,
-        validated_interchange_tolerance,
-        tie_definition,
-        settings,
+        params,
     )
 end
 
@@ -501,7 +511,15 @@ compatibility with PowerSimulations.jl and external callers. It is a plain type
 alias (no deprecation warning); polar remains the default AC formulation."""
 const ACPowerFlow = ACPolarPowerFlow
 
-get_enhanced_flat_start(pf::AbstractACPowerFlow) = pf.enhanced_flat_start
+"""The solve parameters attached to an evaluation model. DC models carry no parameters of
+their own, so the fallback returns the defaults."""
+get_solution_parameters(pf::AbstractACPowerFlow) = pf.solution_parameters
+get_solution_parameters(::PowerFlowEvaluationModel) = SolutionParameters()
+
+get_check_reactive_power_limits(pf::PowerFlowEvaluationModel) =
+    get_solution_parameters(pf).check_reactive_power_limits
+get_enhanced_flat_start(pf::AbstractACPowerFlow) =
+    get_solution_parameters(pf).enhanced_flat_start
 get_distribute_slack_proportional_to_headroom(::PowerFlowEvaluationModel) = false
 get_distribute_slack_proportional_to_headroom(pf::AbstractACPowerFlow) =
     pf.distribute_slack_proportional_to_headroom
@@ -511,7 +529,10 @@ get_network_reductions(pf::AbstractACPowerFlow) = pf.network_reductions
 get_time_steps(pf::AbstractACPowerFlow) = pf.time_steps
 get_time_step_names(pf::AbstractACPowerFlow) = pf.time_step_names
 get_correct_bustypes(pf::AbstractACPowerFlow) = pf.correct_bustypes
-get_solver_kwargs(pf::AbstractACPowerFlow) = pf.solver_settings
+"""The solver-facing parameters of `pf` as a `NamedTuple`, ready to splat into a solver
+call. Call-site keywords override these; see `solve_power_flow!`."""
+get_solver_kwargs(pf::PowerFlowEvaluationModel) =
+    solver_kwargs(get_solution_parameters(pf))
 
 # Polar-only fields: rectangular has no equivalent, so default to false.
 get_robust_power_flow(::AbstractACPowerFlow) = false
@@ -525,14 +546,18 @@ get_calculate_voltage_stability_factors(pf::ACPolarPowerFlow) =
 get_log_solver_diagnostics(::PowerFlowEvaluationModel) = false
 get_log_solver_diagnostics(pf::AbstractACPowerFlow) = pf.log_solver_diagnostics
 
-get_control_discrete_devices(pf::AbstractACPowerFlow) = pf.control_discrete_devices
+get_control_discrete_devices(pf::AbstractACPowerFlow) =
+    get_solution_parameters(pf).control_discrete_devices
 get_control_discrete_devices(::PowerFlowEvaluationModel) = false
 
-get_area_interchange_control(pf::AbstractACPowerFlow) = pf.area_interchange_control
+get_area_interchange_control(pf::AbstractACPowerFlow) =
+    get_solution_parameters(pf).area_interchange_control
 get_area_interchange_control(::PowerFlowEvaluationModel) = false
-get_interchange_tolerance(pf::AbstractACPowerFlow) = pf.interchange_tolerance
+get_interchange_tolerance(pf::AbstractACPowerFlow) =
+    get_solution_parameters(pf).interchange_tolerance
 get_interchange_tolerance(::PowerFlowEvaluationModel) = DEFAULT_INTERCHANGE_TOLERANCE
-get_tie_definition(pf::AbstractACPowerFlow) = pf.tie_definition
+get_tie_definition(pf::AbstractACPowerFlow) =
+    get_solution_parameters(pf).tie_definition
 get_tie_definition(::PowerFlowEvaluationModel) = :lines_only
 
 """
@@ -573,18 +598,18 @@ polar state layout and have no current-injection equivalent.
     Default `false`.
 - `area_interchange_control::Bool`: Not supported on this formulation (area interchange control is polar-only);
     passing `true` throws `ArgumentError`. Default `false`.
-- `solver_settings::Dict{Symbol, Any}`: Default empty.
+- `solution_parameters::SolutionParameters`: The solve parameters; see
+    [`SolutionParameters`](@ref).
+- `solver_settings::AbstractDict`: **Deprecated**, superseded by `solution_parameters`.
 """
 struct ACRectangularPowerFlow{ACSolver <: ACPowerFlowSolverType} <:
        AbstractACPowerFlow{ACSolver}
-    check_reactive_power_limits::Bool
     exporter::Union{Nothing, PowerFlowEvaluationModel}
     generator_slack_participation_factors::Union{
         Nothing,
         Dict{Tuple{DataType, String}, Float64},
         Vector{Dict{Tuple{DataType, String}, Float64}},
     }
-    enhanced_flat_start::Bool
     log_solver_diagnostics::Bool
     skip_redistribution::Bool
     distribute_slack_proportional_to_headroom::Bool
@@ -592,22 +617,18 @@ struct ACRectangularPowerFlow{ACSolver <: ACPowerFlowSolverType} <:
     time_steps::Int
     time_step_names::Vector{String}
     correct_bustypes::Bool
-    control_discrete_devices::Bool
-    area_interchange_control::Bool
-    interchange_tolerance::Float64
-    tie_definition::Symbol
-    solver_settings::Dict{Symbol, Any}
+    solution_parameters::SolutionParameters
 end
 
 function ACRectangularPowerFlow{ACSolver}(;
-    check_reactive_power_limits::Bool = false,
+    check_reactive_power_limits::Union{Nothing, Bool} = nothing,
     exporter::Union{Nothing, PowerFlowEvaluationModel} = nothing,
     generator_slack_participation_factors::Union{
         Nothing,
         Dict{Tuple{DataType, String}, Float64},
         Vector{Dict{Tuple{DataType, String}, Float64}},
     } = nothing,
-    enhanced_flat_start::Bool = true,
+    enhanced_flat_start::Union{Nothing, Bool} = nothing,
     log_solver_diagnostics::Bool = false,
     skip_redistribution::Bool = false,
     distribute_slack_proportional_to_headroom::Bool = false,
@@ -615,11 +636,12 @@ function ACRectangularPowerFlow{ACSolver}(;
     time_steps::Int = 1,
     time_step_names::Vector{String} = String[],
     correct_bustypes::Bool = false,
-    control_discrete_devices::Bool = false,
-    area_interchange_control::Bool = false,
-    interchange_tolerance::Float64 = DEFAULT_INTERCHANGE_TOLERANCE,
-    tie_definition::Symbol = :lines_only,
-    solver_settings::Dict{Symbol, Any} = Dict{Symbol, Any}(),
+    control_discrete_devices::Union{Nothing, Bool} = nothing,
+    area_interchange_control::Union{Nothing, Bool} = nothing,
+    interchange_tolerance::Union{Nothing, Float64} = nothing,
+    tie_definition::Union{Nothing, Symbol} = nothing,
+    solution_parameters::SolutionParameters = SolutionParameters(),
+    solver_settings::Union{Nothing, AbstractDict} = nothing,
 ) where {ACSolver <: ACPowerFlowSolverType}
     if ACSolver <: Union{
         RobustHomotopyPowerFlow,
@@ -636,8 +658,20 @@ function ACRectangularPowerFlow{ACSolver}(;
         )
     end
     _reject_fd_decoupled_on_nonpolar(ACSolver, "ACRectangularPowerFlow")
+    params = _fold_legacy_parameters(
+        solution_parameters,
+        solver_settings,
+        (;
+            check_reactive_power_limits,
+            enhanced_flat_start,
+            control_discrete_devices,
+            area_interchange_control,
+            interchange_tolerance,
+            tie_definition,
+        ),
+    )
     _reject_area_interchange_on_nonpolar(
-        area_interchange_control,
+        params.area_interchange_control,
         "ACRectangularPowerFlow",
     )
     _validate_slack_distribution_settings(
@@ -645,12 +679,10 @@ function ACRectangularPowerFlow{ACSolver}(;
         generator_slack_participation_factors,
         time_steps,
     )
-    _validate_discrete_control_settings(control_discrete_devices, ACSolver)
+    _validate_discrete_control_settings(params.control_discrete_devices, ACSolver)
     return ACRectangularPowerFlow{ACSolver}(
-        check_reactive_power_limits,
         exporter,
         generator_slack_participation_factors,
-        enhanced_flat_start,
         log_solver_diagnostics,
         skip_redistribution,
         distribute_slack_proportional_to_headroom,
@@ -658,11 +690,7 @@ function ACRectangularPowerFlow{ACSolver}(;
         time_steps,
         time_step_names,
         correct_bustypes,
-        control_discrete_devices,
-        area_interchange_control,
-        interchange_tolerance,
-        tie_definition,
-        solver_settings,
+        params,
     )
 end
 
@@ -707,18 +735,18 @@ polar state layout and have no mixed current-power equivalent.
     Default `false`.
 - `area_interchange_control::Bool`: Not supported on this formulation (area interchange control is polar-only);
     passing `true` throws `ArgumentError`. Default `false`.
-- `solver_settings::Dict{Symbol, Any}`: Default empty.
+- `solution_parameters::SolutionParameters`: The solve parameters; see
+    [`SolutionParameters`](@ref).
+- `solver_settings::AbstractDict`: **Deprecated**, superseded by `solution_parameters`.
 """
 struct ACMixedPowerFlow{ACSolver <: ACPowerFlowSolverType} <:
        AbstractACPowerFlow{ACSolver}
-    check_reactive_power_limits::Bool
     exporter::Union{Nothing, PowerFlowEvaluationModel}
     generator_slack_participation_factors::Union{
         Nothing,
         Dict{Tuple{DataType, String}, Float64},
         Vector{Dict{Tuple{DataType, String}, Float64}},
     }
-    enhanced_flat_start::Bool
     log_solver_diagnostics::Bool
     skip_redistribution::Bool
     distribute_slack_proportional_to_headroom::Bool
@@ -726,22 +754,18 @@ struct ACMixedPowerFlow{ACSolver <: ACPowerFlowSolverType} <:
     time_steps::Int
     time_step_names::Vector{String}
     correct_bustypes::Bool
-    control_discrete_devices::Bool
-    area_interchange_control::Bool
-    interchange_tolerance::Float64
-    tie_definition::Symbol
-    solver_settings::Dict{Symbol, Any}
+    solution_parameters::SolutionParameters
 end
 
 function ACMixedPowerFlow{ACSolver}(;
-    check_reactive_power_limits::Bool = false,
+    check_reactive_power_limits::Union{Nothing, Bool} = nothing,
     exporter::Union{Nothing, PowerFlowEvaluationModel} = nothing,
     generator_slack_participation_factors::Union{
         Nothing,
         Dict{Tuple{DataType, String}, Float64},
         Vector{Dict{Tuple{DataType, String}, Float64}},
     } = nothing,
-    enhanced_flat_start::Bool = true,
+    enhanced_flat_start::Union{Nothing, Bool} = nothing,
     log_solver_diagnostics::Bool = false,
     skip_redistribution::Bool = false,
     distribute_slack_proportional_to_headroom::Bool = false,
@@ -749,11 +773,12 @@ function ACMixedPowerFlow{ACSolver}(;
     time_steps::Int = 1,
     time_step_names::Vector{String} = String[],
     correct_bustypes::Bool = false,
-    control_discrete_devices::Bool = false,
-    area_interchange_control::Bool = false,
-    interchange_tolerance::Float64 = DEFAULT_INTERCHANGE_TOLERANCE,
-    tie_definition::Symbol = :lines_only,
-    solver_settings::Dict{Symbol, Any} = Dict{Symbol, Any}(),
+    control_discrete_devices::Union{Nothing, Bool} = nothing,
+    area_interchange_control::Union{Nothing, Bool} = nothing,
+    interchange_tolerance::Union{Nothing, Float64} = nothing,
+    tie_definition::Union{Nothing, Symbol} = nothing,
+    solution_parameters::SolutionParameters = SolutionParameters(),
+    solver_settings::Union{Nothing, AbstractDict} = nothing,
 ) where {ACSolver <: ACPowerFlowSolverType}
     if ACSolver <: Union{
         RobustHomotopyPowerFlow,
@@ -771,18 +796,31 @@ function ACMixedPowerFlow{ACSolver}(;
         )
     end
     _reject_fd_decoupled_on_nonpolar(ACSolver, "ACMixedPowerFlow")
-    _reject_area_interchange_on_nonpolar(area_interchange_control, "ACMixedPowerFlow")
+    params = _fold_legacy_parameters(
+        solution_parameters,
+        solver_settings,
+        (;
+            check_reactive_power_limits,
+            enhanced_flat_start,
+            control_discrete_devices,
+            area_interchange_control,
+            interchange_tolerance,
+            tie_definition,
+        ),
+    )
+    _reject_area_interchange_on_nonpolar(
+        params.area_interchange_control,
+        "ACMixedPowerFlow",
+    )
     _validate_slack_distribution_settings(
         distribute_slack_proportional_to_headroom,
         generator_slack_participation_factors,
         time_steps,
     )
-    _validate_discrete_control_settings(control_discrete_devices, ACSolver)
+    _validate_discrete_control_settings(params.control_discrete_devices, ACSolver)
     return ACMixedPowerFlow{ACSolver}(
-        check_reactive_power_limits,
         exporter,
         generator_slack_participation_factors,
-        enhanced_flat_start,
         log_solver_diagnostics,
         skip_redistribution,
         distribute_slack_proportional_to_headroom,
@@ -790,11 +828,7 @@ function ACMixedPowerFlow{ACSolver}(;
         time_steps,
         time_step_names,
         correct_bustypes,
-        control_discrete_devices,
-        area_interchange_control,
-        interchange_tolerance,
-        tie_definition,
-        solver_settings,
+        params,
     )
 end
 

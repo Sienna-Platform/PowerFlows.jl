@@ -458,9 +458,11 @@ function initialize_DCNetwork!(
     # A system that has a DC network should model it, so this is ON by default — the DC equipment is
     # solved as part of the power flow. A sequential decoupled DC warm-start (see
     # `_vsc_warm_start!`) seeds the joint AC↔DC Newton for robustness. The escape hatch
-    # `solver_settings = Dict(:model_dc_network => false)` restores the historical behavior (DC
-    # components ignored in the AC solve, kept as fixed injections only on the DC path).
-    get(get_solver_kwargs(data.pf), :model_dc_network, true) || return
+    # `solution_parameters = SolutionParameters(; model_dc_network = false)` restores the
+    # historical behavior (DC components ignored in the AC solve, kept as fixed injections
+    # only on the DC path). Read off the model, not the merged solve kwargs: this runs
+    # during `PowerFlowData` construction, before any call-site keyword exists.
+    get_solution_parameters(data.pf).model_dc_network || return
 
     vsc_lines = _available_vsc_lines(sys, removed_buses)
     # Count only converters whose AC bus survives network reduction: if reduction removed every

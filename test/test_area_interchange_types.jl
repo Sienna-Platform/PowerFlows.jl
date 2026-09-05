@@ -30,24 +30,25 @@
         )
     @test PowerFlows.get_interchange_tolerance(floored_pf) == 0.02
 
-    @test ACPolarPowerFlow(; area_interchange_control = false).area_interchange_control ==
-          false
-    @test ACRectangularPowerFlow(;
-        area_interchange_control = false,
-    ).area_interchange_control ==
-          false
-    @test ACMixedPowerFlow(; area_interchange_control = false).area_interchange_control ==
-          false
+    # The setting lives in the model's `SolutionParameters`; read it through the accessor.
+    @test PowerFlows.get_area_interchange_control(
+        ACPolarPowerFlow(; area_interchange_control = false),
+    ) == false
+    @test PowerFlows.get_area_interchange_control(
+        ACRectangularPowerFlow(; area_interchange_control = false),
+    ) == false
+    @test PowerFlows.get_area_interchange_control(
+        ACMixedPowerFlow(; area_interchange_control = false),
+    ) == false
     for S in (
         LevenbergMarquardtACPowerFlow,
         RobustHomotopyPowerFlow,
         GradientDescentACPowerFlow,
         FastDecoupledACPowerFlow,
     )
-        @test ACPolarPowerFlow{S}(;
-            area_interchange_control = false,
-        ).area_interchange_control ==
-              false
+        @test PowerFlows.get_area_interchange_control(
+            ACPolarPowerFlow{S}(; area_interchange_control = false),
+        ) == false
     end
 end
 

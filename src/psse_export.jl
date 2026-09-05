@@ -82,27 +82,6 @@ const PSSE_V35_EXTRA_GROUPS = [
 const PSSE_RAW_BUFFER_SIZEHINT = 1024
 const PSSE_MD_BUFFER_SIZEHINT = 1024
 
-# Default PSS/E v35 system-wide data block
-const PSSE_V35_DEFAULT_SYSTEM_WIDE_DATA = """GENERAL, THRSHZ=0.0001, PQBRAK=0.7, BLOWUP=5.0, MaxIsolLvls=4, CAMaxReptSln=20, ChkDupCntLbl=0
-GAUSS, ITMX=100, ACCP=1.6, ACCQ=1.6, ACCM=1.0, TOL=0.0001
-NEWTON, ITMXN=20, ACCN=1.0, TOLN=0.1, VCTOLQ=0.1, VCTOLV=0.00001, DVLIM=0.99, NDVFCT=0.99
-ADJUST, ADJTHR=0.005, ACCTAP=1.0, TAPLIM=0.05, SWVBND=100.0, MXTPSS=99, MXSWIM=10
-TYSL, ITMXTY=20, ACCTY=1.0, TOLTY=0.00001
-SOLVER,     , ACTAPS=0, AREAIN=0, PHSHFT=0, DCTAPS=0, SWSHNT=0, FLATST=0, VARLIM=0, NONDIV=0
-RATING, 1, "RATE1 ", "RATING SET 1                    "
-RATING, 2, "RATE2 ", "RATING SET 2                    "
-RATING, 3, "RATE3 ", "RATING SET 3                    "
-RATING, 4, "RATE4 ", "RATING SET 4                    "
-RATING, 5, "RATE5 ", "RATING SET 5                    "
-RATING, 6, "RATE6 ", "RATING SET 6                    "
-RATING, 7, "RATE7 ", "RATING SET 7                    "
-RATING, 8, "RATE8 ", "RATING SET 8                    "
-RATING, 9, "RATE9 ", "RATING SET 9                    "
-RATING,10, "RATE10", "RATING SET 10                   "
-RATING,11, "RATE11", "RATING SET 11                   "
-RATING,12, "RATE12", "RATING SET 12                   "
-"""
-
 # Header comments for v35 format (ordered by data section)
 const PSSE_V35_HEADERS = Dict{String, String}(
     "Case Identification Data" => "@!IC,SBASE,REV,XFRRAT,NXFRAT,BASFRQ",
@@ -193,6 +172,13 @@ update using `update_exporter` with any new data as relevant, and perform the ex
 transformations that had to be made to conform to PSS/E naming rules, which can be parsed by
 PowerSystems.jl to perform a round trip with the names restored.
 
+A v35 export also carries the parameters of the solve that produced the data, in the
+system-wide solution records, so the exported case reloads as the problem PowerFlows
+actually solved rather than one with every adjustment disabled. The exporter learns them
+from `update_exporter!` — either the `PowerFlowData` of a solve, or an evaluation model
+passed directly. Without that it writes the format defaults, unchanged. The v33 raw format
+has no such section, so a v33 export warns and drops them.
+
 # Arguments:
   - `base_system::PSY.System`: the system to be exported. Later updates may change power
     flow-related values but may not fundamentally alter the system
@@ -225,6 +211,12 @@ mutable struct PSSEExporter <: SystemPowerFlowContainer
     md_valid::Bool  # If this is true, the metadata need not be reserialized
     md_buffer::IOBuffer  # Cache a serialized version of the metadata
     components_cache::Dict{String, Any}  # Cache sorted lists of components to reduce allocations
+    # The evaluation model whose solve produced the data being exported, and the parameters
+    # that solve ran with, or `nothing` when the exporter is driven standalone. Together
+    # they supply the solution records; see `write_solution_records`. The parameters are
+    # held separately from the model because a call-site keyword can override them.
+    source_model::Union{Nothing, PowerFlowEvaluationModel}
+    source_parameters::Union{Nothing, SolutionParameters}
 
     function PSSEExporter(
         base_system::PSY.System,
@@ -257,6 +249,8 @@ mutable struct PSSEExporter <: SystemPowerFlowContainer
             false,
             IOBuffer(),
             Dict{String, Any}(),
+            nothing,
+            nothing,
         )
     end
 end
@@ -305,8 +299,60 @@ function update_exporter!(exporter::PSSEExporter, data::PowerFlowData)
         # the exported case self-consistent without touching the user's system.
         write_device_settings!(exporter.system, data)
     end
+    # This call is what marks a solve as having happened, so it is where the exporter
+    # learns the parameters the solve ran with.
+    _attach_source_model!(exporter, get_pf(data))
     # NOTE this relies on exporter.system being a deepcopy of the original system so we're not changing that one here
     update_system!(exporter.system, data)
+end
+
+"""
+Update the `PSSEExporter` with the evaluation model whose parameters the export should
+report, without also updating the system.
+
+Use this when the solve parameters were passed at the call site rather than stored on the
+model — `solve_power_flow!(data; tol = 1e-8)` — since only the caller knows them:
+
+```julia
+update_exporter!(exporter, pf; solver_kwargs = (; tol = 1e-8))
+```
+
+# Arguments:
+  - `exporter::PSSEExporter`: the exporter to update
+  - `pf::PowerFlowEvaluationModel`: the model that was solved
+  - `solver_kwargs`: parameters passed at the call site, which override the model's own
+"""
+function update_exporter!(
+    exporter::PSSEExporter,
+    pf::PowerFlowEvaluationModel;
+    solver_kwargs = (;),
+)
+    _attach_source_model!(exporter, pf; solver_kwargs = solver_kwargs)
+    return
+end
+
+# The exporter keeps the model (for the solver identity) and the parameters separately,
+# rather than rebuilding the model around overridden parameters: each formulation has its
+# own field set, so a generic rebuild would silently drop the polar-only fields.
+function _attach_source_model!(
+    exporter::PSSEExporter,
+    pf::PowerFlowEvaluationModel;
+    solver_kwargs = (;),
+)
+    if exporter.psse_version == :v33
+        @warn(
+            "The PSS/E v33 raw format has no system-wide solution data section, so the " *
+            "power flow solve parameters are not exported. Use psse_version = :v35 to " *
+            "carry them.",
+            maxlog = 1,
+        )
+    end
+    params = get_solution_parameters(pf)
+    isempty(solver_kwargs) ||
+        (params = _override(params, Dict{Symbol, Any}(pairs(solver_kwargs))))
+    exporter.source_model = pf
+    exporter.source_parameters = params
+    return
 end
 
 "Force all cached information (serialized metadata, component lists, etc.) to be regenerated"
@@ -569,10 +615,17 @@ function write_to_buffers!(
         println(io, line3)
     end
 
-    # v35 requires a System-Wide Data block between Case Identification Data and Bus Data
+    # v35 requires a System-Wide Data block between Case Identification Data and Bus Data.
+    # With no solve attached it is written at the format defaults, so a standalone export
+    # is unchanged; `update_exporter!` supplies the model that fills it in.
     if exporter.psse_version == :v35
         println(io)  # blank line
-        print(io, PSSE_V35_DEFAULT_SYSTEM_WIDE_DATA)
+        write_solution_records(
+            io,
+            exporter.source_model,
+            exporter.source_parameters,
+            Float64(SBASE),
+        )
         println(io, "0 / END OF SYSTEM-WIDE DATA, BEGIN BUS DATA")
     end
 

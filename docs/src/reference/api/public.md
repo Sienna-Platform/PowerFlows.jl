@@ -18,6 +18,7 @@ Public = true
 Private = false
 Pages = [
     "power_flow_types.jl",
+    "solution_parameters.jl",
 ]
 ```
 
@@ -50,5 +51,6 @@ Public = true
 Private = false
 Pages = [
     "psse_export.jl",
+    "psse_solution_records.jl",
 ]
 ```

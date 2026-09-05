@@ -26,6 +26,8 @@ export AbstractDCPowerFlow
 export PowerFlowEvaluationModel
 export PTDFDCPowerFlow
 export vPTDFDCPowerFlow
+export SolutionParameters
+export read_solution_parameters
 export PSSEExportPowerFlow
 export PSSEExporter
 export update_exporter!
@@ -65,6 +67,9 @@ include("definitions.jl")
 # Before PowerFlowData.jl: defines PFLinearSolverCache and AbstractNRCache, which
 # type the lazily-populated cache slots on PowerFlowData.
 include("linear_solver_backend.jl")
+# Before `power_flow_types.jl`: the AC evaluation models embed a `SolutionParameters`.
+# Depends only on the constants in `definitions.jl`.
+include("solution_parameters.jl")
 # `AreaInterchangeData` must be defined before `power_flow_types.jl` references it in
 # `ACJacobianStructureCache`; the rest of the `area_interchange/` family has its own
 # later dependencies (LCC/VSC/discrete-control types, PowerFlowData).
@@ -85,6 +90,9 @@ include("vsc_utils.jl")
 include("common.jl")
 include("area_interchange/enrollment.jl")
 include("initialize_power_flow_data.jl")
+# Before `psse_export.jl`: supplies the solution-record writer the case-identification
+# section calls, plus the reader that fills a `SolutionParameters` from a case file.
+include("psse_solution_records.jl")
 include("psse_export.jl")
 include("dcpf_loss_injection.jl")
 include("solve_dc_power_flow.jl")

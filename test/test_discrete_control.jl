@@ -81,17 +81,19 @@ end
 end
 
 @testset "discrete control: pf field defaults" begin
-    @test ACPolarPowerFlow().control_discrete_devices == false
-    @test ACRectangularPowerFlow().control_discrete_devices == false
-    @test ACMixedPowerFlow().control_discrete_devices == false
-    @test ACPolarPowerFlow(; control_discrete_devices = true).control_discrete_devices ==
-          true
-    @test ACRectangularPowerFlow(;
-        control_discrete_devices = true,
-    ).control_discrete_devices ==
-          true
-    @test ACMixedPowerFlow(; control_discrete_devices = true).control_discrete_devices ==
-          true
+    # The setting lives in the model's `SolutionParameters`; read it through the accessor.
+    @test PowerFlows.get_control_discrete_devices(ACPolarPowerFlow()) == false
+    @test PowerFlows.get_control_discrete_devices(ACRectangularPowerFlow()) == false
+    @test PowerFlows.get_control_discrete_devices(ACMixedPowerFlow()) == false
+    @test PowerFlows.get_control_discrete_devices(
+        ACPolarPowerFlow(; control_discrete_devices = true),
+    ) == true
+    @test PowerFlows.get_control_discrete_devices(
+        ACRectangularPowerFlow(; control_discrete_devices = true),
+    ) == true
+    @test PowerFlows.get_control_discrete_devices(
+        ACMixedPowerFlow(; control_discrete_devices = true),
+    ) == true
     @test PowerFlows.get_control_discrete_devices(ACPolarPowerFlow()) == false
     @test PowerFlows.get_control_discrete_devices(
         ACPolarPowerFlow(; control_discrete_devices = true),

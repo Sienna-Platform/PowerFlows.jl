@@ -904,17 +904,19 @@ end
 @testset "ACPowerFlow solver_settings accepts narrowly-typed Dicts" begin
     # Regression: previously the kwarg required Dict{Symbol, Any} exactly, so a
     # plain `Dict(:k => 50)` (inferred as Dict{Symbol, Int64}) was rejected.
+    # `solver_settings` is now the deprecated spelling of `solution_parameters`; its
+    # entries are folded into the typed parameters and still reach the solver.
     pf_int = ACPowerFlow(; solver_settings = Dict(:maxIterations => 50))
-    @test pf_int.solver_settings isa Dict{Symbol, Any}
-    @test pf_int.solver_settings[:maxIterations] === 50
+    @test PowerFlows.get_solution_parameters(pf_int) isa SolutionParameters
+    @test PowerFlows.get_solver_kwargs(pf_int)[:maxIterations] === 50
 
     pf_bool = ACPowerFlow(;
         solver_settings = Dict(:validate_voltage_magnitudes => false),
     )
-    @test pf_bool.solver_settings[:validate_voltage_magnitudes] === false
+    @test PowerFlows.get_solver_kwargs(pf_bool)[:validate_voltage_magnitudes] === false
 
     pf_any = ACPowerFlow(;
         solver_settings = Dict{Symbol, Any}(:maxIterations => 50),
     )
-    @test pf_any.solver_settings[:maxIterations] === 50
+    @test PowerFlows.get_solver_kwargs(pf_any)[:maxIterations] === 50
 end

@@ -81,12 +81,12 @@ solve_power_flow(pf, sys)
 ```
 
 $\hat\kappa(J)$ is available only on the KLU backend; other backends print
-`n/a`. Pin `:linear_solver => "KLU"` in `solver_settings` if you need it on
+`n/a`. Pin `linear_solver = "KLU"` in `solution_parameters` if you need it on
 platforms whose default is AppleAccelerate.
 
 ### `stop_at_fold` — abort at the fold
 
-Passed through `solver_settings`. The solver stops as soon as it sees a fold
+Passed through `solution_parameters`. The solver stops as soon as it sees a fold
 signature — the real part of $\lambda_{\min}(S)$ flips sign between iterations,
 the Jacobian is outright singular, or the eigenvalue is indeterminate
 (non-converged or non-finite, treated conservatively as a fold) — and returns
@@ -95,7 +95,7 @@ low-voltage branch.
 
 ```julia
 pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
-    solver_settings = Dict{Symbol, Any}(:stop_at_fold => true))
+    solution_parameters = SolutionParameters(; stop_at_fold = true))
 data = PowerFlowData(pf, sys)
 converged = solve_power_flow!(data)   # false at a fold, with a voltage-collapse warning
 ```
