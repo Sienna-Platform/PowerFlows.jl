@@ -1055,6 +1055,36 @@ end
     @test dVdp[1] == 0.05
 end
 
+@testset "discrete control: polar analytic gain is pinned bit-for-bit" begin
+    # The analytic gain feeds `_relaxation`, so it sizes the step, not just its direction. A
+    # 1-ulp change therefore alters a trajectory and can flip which discrete grid point a
+    # device snaps to. These values were captured before the sensitivity layer was made
+    # formulation-dispatched and are pinned with `===`, not `isapprox`: any movement here means
+    # a refactor changed polar's arithmetic, which is exactly what must not happen.
+    #
+    # `_make_solvable_tap_shunt_system` was chosen because it exercises both a tap (Y-bus
+    # perturbation, two buses) and a shunt (withdrawal perturbation, one bus).
+    for (build, expected) in (
+        (_make_solvable_tap_shunt_system,
+            ("tap_1_2" => -1.037005876824872, "shunt_3" => 0.009997504076369628)),
+        (_make_tap_shunt_system,
+            ("tap_1_2" => -1.0000599855957133, "shunt_3" => 0.009999950001625115)),
+    )
+        pf = ACPolarPowerFlow(; control_discrete_devices = true)
+        data = PowerFlowData(pf, build())
+        PowerFlows._solve_with_q_limits!(pf, data, 1)
+        ctx = PowerFlows._sensitivity_context(pf, data, 1)
+        @test !isnothing(ctx)
+        set = data.controlled_devices
+        for (d, (name, want)) in zip((set.taps[1], set.shunts[1]), expected)
+            @test d.name == name
+            got, ok = PowerFlows._linear_plant_sign(d, data, 1, ctx)
+            @test ok
+            @test got === want
+        end
+    end
+end
+
 @testset "discrete control: linearized plant sensitivity matches FD probe (P2)" begin
     # The linearized sensitivity dy/dp = (−J⁻¹ ∂F/∂p)[Vm(controlled)] must agree with the
     # finite-difference probe in SIGN and magnitude (the FD probe carries O(δ) truncation, so

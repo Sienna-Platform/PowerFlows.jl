@@ -107,6 +107,9 @@ include("rectangular_ci_power_flow_jacobian.jl")
 include("mixed_cpb_setup.jl")
 include("mixed_cpb_power_flow_residual.jl")
 include("mixed_cpb_power_flow_jacobian.jl")
+# After all three formulations' residual/Jacobian pairs: the discrete-control sensitivity
+# methods dispatch on those concrete types in their signatures.
+include("discrete_control/control_sensitivity.jl")
 include("solve_ac_power_flow.jl")
 include("residual_condition_diagnostics.jl")
 include("power_flow_setup.jl")
