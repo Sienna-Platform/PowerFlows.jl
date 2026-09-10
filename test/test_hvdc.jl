@@ -56,7 +56,7 @@ end
     hvdc = only(get_components(TwoTerminalHVDC, sys))
 
     P_dc = 10.0
-    set_active_power_flow!(hvdc, P_dc * PSY.MW)
+    set_active_power_flow!(hvdc, P_dc * u"MW")
 
     # fixed slope loss function: 1% loss
     loss_coeff = 0.01
@@ -76,7 +76,7 @@ end
     loss_curve = PiecewiseIncrementalCurve(0.0, 0.0, [0.0, 20.0, 100.0], [0.01, 0.02])
     set_loss!(hvdc, loss_curve)
     for P_dc_setpoint in (10.0, 30.0)
-        set_active_power_flow!(hvdc, P_dc_setpoint * PSY.MW)
+        set_active_power_flow!(hvdc, P_dc_setpoint * u"MW")
         (P_from, P_to) = PF.hvdc_injections_natural_units(hvdc)
         expected_loss =
             0.01 * min(P_dc_setpoint, 20.0) + 0.02 * max(0.0, P_dc_setpoint - 20.0)
@@ -86,7 +86,7 @@ end
 
     # test reversed flow error
     _, lcc = simple_lcc_system()
-    set_active_power_flow!(lcc, -15.0 * PSY.MW)
+    set_active_power_flow!(lcc, -15.0 * u"MW")
     @test_throws ArgumentError PF.hvdc_injections_natural_units(lcc)
 end
 

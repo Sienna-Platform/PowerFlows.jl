@@ -52,10 +52,10 @@ function build_ieee14_facts_system(;
         regulated_bus_number = regulated_bus_number,
     )
     # `max_shunt_current`/`max_reactive_power` are stored in device base; the constructor
-    # kwargs take a raw DU value, so set them through the units-aware setters to honor the
+    # kwargs take a raw CU value, so set them through the units-aware setters to honor the
     # caller's MVA input.
-    set_max_shunt_current!(facts, shmx_mva * MVA)
-    set_max_reactive_power!(facts, mva_cap * MVA)
+    set_max_shunt_current!(facts, shmx_mva * u"MVA")
+    set_max_reactive_power!(facts, mva_cap * u"MVA")
     add_component!(sys, facts)
     return sys
 end

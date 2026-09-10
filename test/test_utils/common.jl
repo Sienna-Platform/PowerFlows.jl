@@ -109,7 +109,7 @@ function _reset_gen_power!(
 )
     for (g, og) in
         zip(get_components(Union{Generator, Source}, sys), original_gen_power)
-        set_active_power!(g, og * PSY.MW)
+        set_active_power!(g, og * u"MW")
     end
 end
 
@@ -704,9 +704,9 @@ function _make_svc_system(;
         voltage_setpoint = 1.0,
         reactive_power_required = 100.0,
     )
-    # `max_shunt_current` is stored in device base; the constructor kwarg takes a raw DU
+    # `max_shunt_current` is stored in device base; the constructor kwarg takes a raw CU
     # value, so set it through the units-aware setter to honor the caller's MVA input.
-    set_max_shunt_current!(svc, max_shunt_current * MVA)
+    set_max_shunt_current!(svc, max_shunt_current * u"MVA")
     add_component!(sys, svc)
     return sys
 end
@@ -890,9 +890,9 @@ function _make_multiperiod_facts_system()
         shunt_control_type = PSY.FACTSShuntControlType.SVC,
         reactive_power_required = 100.0,
     )
-    # `max_shunt_current` is stored in device base; the constructor kwarg takes a raw DU
+    # `max_shunt_current` is stored in device base; the constructor kwarg takes a raw CU
     # value, so set it through the units-aware setter to honor the MVA input.
-    set_max_shunt_current!(svc, 100.0 * MVA)
+    set_max_shunt_current!(svc, 100.0 * u"MVA")
     add_component!(sys, svc)
     return sys
 end
@@ -1051,9 +1051,9 @@ function _add_facts_shunt!(
         voltage_setpoint = voltage_setpoint,
         reactive_power_required = 100.0,
     )
-    # `max_shunt_current` is stored in device base; the constructor kwarg takes a raw DU
+    # `max_shunt_current` is stored in device base; the constructor kwarg takes a raw CU
     # value, so set it through the units-aware setter to honor the caller's MVA input.
-    set_max_shunt_current!(facts, max_shunt_current * MVA)
+    set_max_shunt_current!(facts, max_shunt_current * u"MVA")
     add_component!(sys, facts)
     return facts
 end

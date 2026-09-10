@@ -597,9 +597,9 @@ end
         reactive_power_required = 42.0,  # solved output; must NOT be written as RMPCT
         ext = Dict{String, Any}("RMPCT" => 55.0),  # stale ext; the exporter must ignore it
     )
-    # `max_shunt_current` is stored in device base; the constructor kwarg takes a raw DU
+    # `max_shunt_current` is stored in device base; the constructor kwarg takes a raw CU
     # value, so set it through the units-aware setter to honor the MVA input.
-    PSY.set_max_shunt_current!(facts, 100.0 * PSY.MVA)
+    PSY.set_max_shunt_current!(facts, 100.0 * u"MVA")
     PSY.add_component!(sys, facts)
 
     export_location = joinpath(test_psse_export_dir, "v33", "facts_rmpct_fcreg")
