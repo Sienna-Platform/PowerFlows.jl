@@ -158,7 +158,7 @@ end
                     sys,
                 ),
             )
-            set_active_power!(g, 20.0 * PSY.MW)
+            set_active_power!(g, 20.0 * u"MW")
 
             pf = ACPowerFlow(; correct_bustypes = true)
             data = PowerFlowData(pf, sys)
@@ -310,7 +310,7 @@ end
                     sys,
                 ),
             )
-            set_active_power!(g, 20.0 * PSY.MW)
+            set_active_power!(g, 20.0 * u"MW")
 
             pf = ACPowerFlow{ACSolver}(;
                 correct_bustypes = true,
@@ -384,7 +384,7 @@ end
                     sys,
                 ),
             )
-            set_active_power!(ref_gen, 20.0 * PSY.MW)
+            set_active_power!(ref_gen, 20.0 * u"MW")
 
             # Record original generator powers and headroom (in natural units) before solving
             original_gen_power = [

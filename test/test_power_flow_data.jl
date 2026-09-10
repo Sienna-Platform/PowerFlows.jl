@@ -37,7 +37,7 @@ end
         @testset "AC Solver: $(ACSolver)" begin
             sys_original = build_system(PSISystems, "RTS_GMLC_DA_sys")
             for sc in get_components(SynchronousCondenser, sys_original)
-                set_base_power!(sc, 100.0 * PSY.MW)
+                set_base_power!(sc, 100.0 * u"MW")
             end
             data_original =
                 PowerFlowData(
