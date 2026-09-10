@@ -29,7 +29,12 @@ end
 # No analytic form for this formulation ⇒ the caller uses FD probes. Kept as the escape for any
 # formulation added later without a `_sensitivity_residual_jacobian` method.
 _sensitivity_context(::AbstractACPowerFlow, data, ts::Int; kwargs...) = nothing
-function _sensitivity_context(pf::ACPolarPowerFlow, data, ts::Int; kwargs...)
+function _sensitivity_context(
+    pf::Union{ACPolarPowerFlow, ACRectangularPowerFlow, ACMixedPowerFlow},
+    data,
+    ts::Int;
+    kwargs...,
+)
     backend = resolve_linear_solver_backend(get(kwargs, :linear_solver, nothing))
     residual, J = _sensitivity_residual_jacobian(pf, data, ts)
     lin_cache =
@@ -58,6 +63,11 @@ end
 # device moved, and be wrong on every pass after the first.
 _supports_batched_refresh(::Nothing) = false
 _supports_batched_refresh(ctx::_SensitivityContext) = _refreshable(ctx.residual)
+# Default false, so a formulation that gains analytic probe sensitivities does NOT silently
+# gain batched passes as well: opting in requires adding a `_refresh_sensitivity_context!`
+# method AND flipping this. Getting the default backwards would batch a formulation whose
+# context goes stale on the first device move.
+_refreshable(::Any) = false
 _refreshable(::ACPowerFlowResidual) = true
 
 function _refresh_sensitivity_context!(ctx::_SensitivityContext, data, ts::Int)::Bool
@@ -174,223 +184,154 @@ function _linear_plant_sign(d, data, ts::Int, ctx::_SensitivityContext)
     return _dVm_from_sol(ctx.residual, ctx.sol, cbus, data, ts), true
 end
 
-# Shared bisection sub-step walk for the robust continuation applicators
-# (`_continuation_to!` and `_restore_one!`). The full move having failed, step from `start`
-# toward `target` (each interpolated point clamped to `[lo, hi]`), growing the step on NR
-# success and halving it on failure; give up below `MIN_LAMBDA_STEP`. On entry `snap` holds
-# the converged state at `start` and the device/data sit at `start`. Leaves the system at the
-# last converged iterate and returns `(reached, completed)`: the parameter reached (== `start`
-# if nothing budged) and whether the full `[start, target]` interval was traversed.
-function _bisection_walk!(d, data, ts::Int, start::Float64, target::Float64,
-    lo::Float64, hi::Float64, pf, snap::ControlStateSnapshot; kwargs...)
-    done = 0.0                       # fraction of [start, target] applied so far
-    step = 0.5
-    reached = start
-    while done < 1.0
-        trial = min(1.0, done + step)
-        p = clamp(start + trial * (target - start), lo, hi)
-        apply_parameter!(d, data, p, ts)
-        if _ctrl_solve!(pf, data, ts; kwargs...)
-            done = trial
-            reached = p
-            _capture_state!(snap, data, ts)
-            step = min(step * CONTROL_STEP_GROWTH, MAX_LAMBDA_STEP)
-        else
-            # Revert to the last converged parameter and state, not the failed trial.
-            apply_parameter!(d, data, reached, ts)
-            _restore_state!(data, ts, snap)
-            step /= 2.0
-            step < MIN_LAMBDA_STEP && return reached, false
-        end
-    end
-    return reached, true
+# ── Rectangular CI and MCPB ───────────────────────────────────────────────────────────────
+#
+# Both formulations carry a complex state `V = e + jf` and a residual built on a CURRENT
+# balance, where polar's is a POWER balance. One primitive spans all three: the complex
+# derivative of the network current injected at a bus,
+#
+#     ΔI_i = ∂(Y_bus_eff·V)_i / ∂p
+#
+# from which each formulation's rows follow by its own sign and ordering convention. The
+# identity that ties the two families together, and the cross-check for any new stamp, is
+#
+#     ∂F_rect/∂p = −ΔI_i          ∂F_polar/∂p = V_i · conj(ΔI_i)
+#
+# Applied to polar, the right-hand form reproduces the two hand-written methods above exactly:
+# a shunt gives `V·conj(jV) = −j|V|²` ⇒ reactive row `−Vm²`, and a tap gives `V_f·conj(ΔI_f)`
+# ⇒ the `dSf` split. That is why those bodies are trusted and these are derived from them.
+
+const _RectOrMixedResidual = Union{ACRectangularCIResidual, ACMixedCPBResidual}
+
+_state_offset(r::_RectOrMixedResidual, i::Int) = Int(r.bus_state_offset[i])
+
+# The bus voltage as the residual's own state sees it. NOT `data.bus_magnitude`/`bus_angles`:
+# those hold V_set at PV buses rather than |V_state|, while `e_state`/`f_state` are the values
+# the Jacobian was built from — so using them keeps ∂F/∂p and J consistent by construction.
+_bus_voltage(r::_RectOrMixedResidual, i::Int) = complex(r.e_state[i], r.f_state[i])
+
+# ── ∂I/∂p, per device family ──────────────────────────────────────────────────────────────
+# The buses a parameter move touches, each with its `ΔI`. Formulation-free: this is the
+# physics of the device, not of the residual. Returns a tuple so it stays stack-allocated.
+
+# A shunt/FACTS parameter is a susceptance at one bus. `apply_parameter!` writes
+# `bus_reactive_power_constant_impedance_withdrawals += current − b`, so ∂β_Q/∂p = −1, and
+# `fold_zip_constant_z!` folds that into the Y-bus as `Y_bb += complex(β_P, −β_Q)`. Hence
+# ∂Y_bb/∂p = (−j)(−1) = +j and ΔI = j·V.
+_dI_dp(d::Union{ControlledSwitchedShunt, ControlledFACTS}, r::_RectOrMixedResidual) =
+    ((d.bus_ix, im * _bus_voltage(r, d.bus_ix)),)
+
+# A tap perturbs three Y-bus entries (t_c = p·cis(α); Y_tt is p-independent), so it touches
+# both terminals. Same ∂Y/∂p as the polar tap method above.
+function _dI_dp(d::ControlledTap, r::_RectOrMixedResidual)
+    f, t = d.from_ix, d.to_ix
+    Vf, Vt = _bus_voltage(r, f), _bus_voltage(r, t)
+    p, a = d.current, d.alpha
+    dYff = -2.0 * d.yt / p^3
+    dYft = d.yt * cis(a) / p^2
+    dYtf = d.yt * cis(-a) / p^2
+    return ((f, dYff * Vf + dYft * Vt), (t, dYtf * Vf))
 end
 
-# Incremental robust applicator: walk the parameter from `start = d.current`
-# toward `target` so NR stays converged.  The full move is tried FIRST (one
-# inner solve in the common case); only if it fails does the walk fall back to
-# bisection sub-stepping (via `_bisection_walk!`).  Returns `(reached, moved)`:
-# the parameter actually reached (solver left converged there) and whether ANY
-# sub-step was applied — a requested move that could not budge at all must not
-# masquerade as a settled device.
-function _continuation_to!(
-    d, data, ts::Int, target::Float64, pf, snap::ControlStateSnapshot; kwargs...,
+# ── ΔI → residual rows, per formulation ───────────────────────────────────────────────────
+
+# Rectangular CI: `F = I_spec − Y·V`, real part in slot 0 and imag in slot 1, uniformly at
+# every bus type (`_update_rect_ci_residual_values!`). A PV bus's third row is the `|V|²`
+# constraint, which carries no p dependence.
+function _stamp_dI!(
+    rhs::Vector{Float64},
+    r::ACRectangularCIResidual,
+    i::Int,
+    dI::ComplexF64,
+    ::PSY.ACBusTypes,
 )
-    start = current_parameter(d)
-    abs(target - start) < _param_tol(d) && return start, true
-    lo, hi = parameter_limits(d)
-    _capture_state!(snap, data, ts)  # last converged state, restored on a failed trial
-    clamped = clamp(target, lo, hi)  # no-op here (damped target is pre-clamped)
-    # Full move first: the damped target is usually within the warm-started solver's
-    # reach, so the common case costs ONE inner solve instead of a multi-sub-step walk.
-    apply_parameter!(d, data, clamped, ts)
-    _ctrl_solve!(pf, data, ts; kwargs...) && return clamped, true
-    apply_parameter!(d, data, start, ts)
-    _restore_state!(data, ts, snap)
-    # Bisection fallback: the full step failed, so retry from half the interval.
-    reached, completed =
-        _bisection_walk!(d, data, ts, start, target, lo, hi, pf, snap; kwargs...)
-    completed && return reached, true
-    if reached != start
-        # Re-solve from the restored converged state (partial move applied).
-        _ctrl_solve!(pf, data, ts; kwargs...)
-    end
-    return reached, reached != start
-end
-
-# Adaptive under-relaxation. The damped iteration p ← p + ω·(σ(V(p)) − p) has local
-# slope m = 1 + ω·(g′−1), g′ = σ′(V)·dV/dp ≤ 0 after sign correction. ω is chosen to
-# keep m NON-negative (monotone, 0≤m<1, not merely |m|<1): m ≥ θ ⟹ ω ≤ (1−θ)/(1+|g′|).
-# |σ′| ≤ |hi−lo|·S/4 bounds g′ at the CURRENT gain estimate (refreshed each step by a
-# secant update, so the bound tracks the operating point).
-@inline function _relaxation(d, S::Float64, dVdp::Float64)
-    lo, hi = parameter_limits(d)
-    gbound = 0.25 * abs(hi - lo) * S * abs(dVdp)
-    # ω ≤ 1−θ = 0.5 for any gbound ≥ 0, so no additional cap is needed.
-    return (1.0 - CONTROL_CONTRACTION) / (1.0 + gbound)
-end
-
-# Freeze a device (PSS/E lock-and-continue): it holds its current parameter, counts as
-# settled so it cannot stall the steepness ramp for healthy devices, and is reported.
-function _freeze_device!(frozen::Vector{Bool}, idx::Int, d, ts::Int, reason::String)
-    frozen[idx] = true
-    @warn "discrete control: freezing device $(d.name) at parameter \
-        $(current_parameter(d)) (time step $ts): $reason"
-    return
-end
-
-# Refresh one ControlledFACTS's voltage-dependent susceptance bound (`_facts_b_limit`) from its
-# measured controlled-bus voltage, once per continuation pass, BEFORE this pass's damped
-# target/clamp reads `parameter_limits`. A `frozen` device holds `b_lim` at its last refreshed
-# value: it is never stepped again, so re-tracking voltage would only chatter the bound with no
-# corresponding parameter move.
-function _refresh_facts_limit!(d::ControlledFACTS, data, ts::Int, frozen::Bool)
-    frozen && return d.b_lim
-    d.b_lim = _facts_b_limit(d, measured_value(d, data, ts))
-    return d.b_lim
-end
-
-# Per-pass refresh of every FACTS device's bound (function-barrier group wrapper, offset-
-# indexed into the shared `frozen` bookkeeping — mirrors `_probe_device_signs!`).
-function _refresh_facts_limits!(
-    devices::Vector{ControlledFACTS}, offset::Int, data, ts::Int, frozen::Vector{Bool},
-)
-    for (i, d) in enumerate(devices)
-        _refresh_facts_limit!(d, data, ts, frozen[offset + i])
+    off = _state_offset(r, i)
+    @inbounds begin
+        rhs[off] = -real(dI)
+        rhs[off + 1] = -imag(dI)
     end
     return
 end
 
-# Compute the damped, sign-corrected target parameter for one device and advance its
-# oscillation state. Returns `(p_new, yc, ok)`: `yc` is the pre-move regulated quantity (for a
-# secant refresh); `ok=false` means the device was frozen (oscillation) or held in its deadband —
-# do not move it. Shared by the sequential (`_step_device!`) and batched (`_batched_pass!`) paths.
-function _damped_target!(
-    d, idx::Int, data, ts::Int, S::Float64, frozen::Vector{Bool},
-    dVdp::Vector{Float64}, osc::Vector{Int}, prev_sign::Vector{Int}, n_shared::Vector{Int},
+# MCPB mixes three conventions in one vector (`_update_mixed_cpb_residual_values!`):
+#   PQ  — divided current balance, IMAG-first (the two rect slots swapped so a nonzero B_ii
+#         lands on the block diagonal). Rows swap; the (e, f) COLUMNS do not.
+#   PV  — real-power balance `e·Ir + f·Ii − P_spec` plus a `|V|²` row. A purely reactive
+#         injection cannot move either: `Re(V·conj(jV)) = 0`, and the `|V|²` row is
+#         p-independent. Written generically so a tap (which does move real power) is right.
+#   REF — rect-verbatim, real-first.
+function _stamp_dI!(
+    rhs::Vector{Float64},
+    r::ACMixedCPBResidual,
+    i::Int,
+    dI::ComplexF64,
+    bt::PSY.ACBusTypes,
 )
-    yc = measured_value(d, data, ts)
-    p_now = current_parameter(d)
-    if _in_deadband(d, yc)
-        # PSS/E deadband semantics: a device whose regulated quantity is inside its
-        # band is held, not driven to the band midpoint.
-        prev_sign[idx] = 0
-        return p_now, yc, false
-    end
-    lo, hi = parameter_limits(d)
-    tol_d = _param_tol(d)
-    dv = dVdp[idx]
-    # Devices sharing a controlled bus split the correction: the per-device contraction
-    # bound does not see the cross-coupling, and N co-located controllers stepping the
-    # full error together have an in-phase gain ≈ N× the measured self-gain.
-    ω = _relaxation(d, S, dv) / n_shared[idx]
-    p_tgt = _control_target(d, yc, S, dv)
-    # Track sign reversals to detect within-stage oscillation. Sub-tolerance target
-    # moves carry no direction information (grid/tolerance dither, not instability).
-    s = 0
-    if abs(p_tgt - p_now) >= tol_d
-        s = Int(sign(p_tgt - p_now))
-    end
-    ps = prev_sign[idx]
-    if !iszero(ps) && !iszero(s) && s != ps
-        osc[idx] += 1
-        if osc[idx] > CONTROL_OSCILLATION_LIMIT
-            _freeze_device!(frozen, idx, d, ts,
-                "oscillating ($(osc[idx]) direction reversals within a steepness stage)")
-            return p_now, yc, false
-        end
-    end
-    prev_sign[idx] = s
-    return clamp(p_now + ω * (p_tgt - p_now), lo, hi), yc, true
-end
-
-# Freeze on a detected plant-gain sign reversal (OLTC reverse action) or a collapse below the
-# effectiveness floor; otherwise accept the refreshed gain `g`. `dv` is the pre-refresh gain.
-function _apply_gain_refresh!(d, idx::Int, data, ts::Int, frozen::Vector{Bool},
-    dVdp::Vector{Float64}, dv::Float64, g::Float64)
-    lo, hi = parameter_limits(d)
-    if !iszero(dv) && !iszero(g) && sign(g) != sign(dv)
-        _freeze_device!(frozen, idx, d, ts,
-            "plant sensitivity changed sign along the trajectory (reverse action); \
-            continuing would be positive feedback")
-    elseif abs(g) * (hi - lo) < CONTROL_GAIN_FLOOR
-        _freeze_device!(frozen, idx, d, ts,
-            "plant sensitivity collapsed below the effectiveness floor \
-            (|dy/dp|·range = $(abs(g) * (hi - lo)))")
+    off = _state_offset(r, i)
+    @inbounds if bt == PSY.ACBusTypes.PV
+        rhs[off] = real(_bus_voltage(r, i) * conj(dI))
+        rhs[off + 1] = 0.0
+    elseif bt == PSY.ACBusTypes.PQ
+        rhs[off] = -imag(dI)
+        rhs[off + 1] = -real(dI)
     else
-        dVdp[idx] = g
+        rhs[off] = -real(dI)
+        rhs[off + 1] = -imag(dI)
     end
     return
 end
 
-# Secant refresh gate: a measured Δy at or below solver noise carries no sign
-# information — skip the refresh entirely (both the reverse-action freeze AND the
-# effectiveness-floor freeze would be spurious on a noise sample).
-function _maybe_refresh_gain!(d, idx::Int, data, ts::Int, frozen::Vector{Bool},
-    dVdp::Vector{Float64}, dv::Float64, g::Float64, Δy::Float64)
-    abs(Δy) < CONTROL_MEASUREMENT_FLOOR && return
-    _apply_gain_refresh!(d, idx, data, ts, frozen, dVdp, dv, g)
-    return
-end
-
-# One damped, sign-corrected proportional update of a single device (SEQUENTIAL path: apply +
-# solve per device). Returns the magnitude of the parameter change actually applied (for the
-# settling test); frozen and in-deadband devices return 0.0. The measured plant gain is refreshed
-# by a secant update from the numbers the step just produced (zero extra solves).
-function _step_device!(
+# One body for both formulations: the device supplies ΔI, the formulation supplies the stamp.
+function _dF_dp!(
+    rhs::Vector{Float64},
     d,
-    idx::Int,
+    r::_RectOrMixedResidual,
     data,
     ts::Int,
-    S::Float64,
-    pf,
-    scratch_snap::ControlStateSnapshot,
-    frozen::Vector{Bool},
-    dVdp::Vector{Float64},
-    osc::Vector{Int},
-    prev_sign::Vector{Int},
-    n_shared::Vector{Int};
-    kwargs...,
-)::Float64
-    frozen[idx] && return 0.0
-    p_new, yc, ok =
-        _damped_target!(d, idx, data, ts, S, frozen, dVdp, osc, prev_sign, n_shared)
-    ok || return 0.0
-    p_now = current_parameter(d)
-    tol_d = _param_tol(d)
-    dv = dVdp[idx]
-    reached, moved = _continuation_to!(d, data, ts, p_new, pf, scratch_snap; kwargs...)
-    if !moved && abs(p_new - p_now) >= tol_d
-        # Inner solver rejects any movement — freeze rather than let a zero change look settled.
-        _freeze_device!(frozen, idx, d, ts,
-            "the inner solver rejects any parameter movement (requested \
-            $(p_new - p_now))")
-        return 0.0
+)
+    fill!(rhs, 0.0)
+    bus_types = view(data.bus_type, :, ts)
+    for (i, dI) in _dI_dp(d, r)
+        _stamp_dI!(rhs, r, i, dI, bus_types[i])
     end
-    Δp = reached - p_now
-    if abs(Δp) >= tol_d
-        Δy = measured_value(d, data, ts) - yc
-        _maybe_refresh_gain!(d, idx, data, ts, frozen, dVdp, dv, Δy / Δp, Δy)
-    end
-    return abs(Δp)
+    return true
+end
+
+# `|V|² = e² + f²` ⇒ dVm/dp = (e·de/dp + f·df/dp)/Vm, with dx/dp = −sol. The PQ state slots are
+# `(e, f)` at `off`, `off+1` in both formulations, and `_linear_plant_sign` only reaches here at
+# a PQ controlled bus. `V_FLOOR2` matches the residuals' own guard; at a converged base it never
+# binds.
+function _dVm_from_sol(
+    r::_RectOrMixedResidual,
+    sol::Vector{Float64},
+    cbus::Int,
+    data,
+    ts::Int,
+)
+    off = _state_offset(r, cbus)
+    e, f = r.e_state[cbus], r.f_state[cbus]
+    Vm = sqrt(max(e^2 + f^2, V_FLOOR2))
+    return -(e * sol[off] + f * sol[off + 1]) / Vm
+end
+
+function _sensitivity_residual_jacobian(::ACRectangularPowerFlow, data, ts::Int)
+    residual = ACRectangularCIResidual(data, ts)
+    # `Rv` is the full residual/state length (bus blocks + the LCC/VSC/area tail), so it sizes
+    # `x` without re-deriving the tail.
+    x = zeros(length(residual.Rv))
+    rect_initial_state!(x, data, residual.bus_state_offset, residual.bus_block_size, ts)
+    residual(x, ts)                       # evaluate at current state; fills e_state/f_state
+    J = ACRectangularCIJacobian(residual, ts)
+    J(ts)
+    return residual, J
+end
+
+function _sensitivity_residual_jacobian(::ACMixedPowerFlow, data, ts::Int)
+    residual = ACMixedCPBResidual(data, ts)
+    x = zeros(length(residual.Rv))
+    mixed_initial_state!(x, data, residual.bus_state_offset, residual.bus_block_size, ts)
+    residual(x, ts)
+    J = ACMixedCPBJacobian(residual, ts)
+    J(ts)
+    return residual, J
 end

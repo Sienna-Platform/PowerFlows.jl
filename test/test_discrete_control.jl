@@ -1061,6 +1061,72 @@ end
     @test dVdp[1] == 0.05
 end
 
+@testset "discrete control: analytic sensitivity is available on every AC formulation" begin
+    # Every formulation must reach the analytic path, and none may silently gain batched
+    # passes: batching needs a `_refresh_sensitivity_context!` that re-syncs the p-dependent
+    # caches (`Y_bus_eff` is a copy, `Y_diag` is snapshotted), which only polar has.
+    for (pf, batched) in (
+        (ACPolarPowerFlow(; control_discrete_devices = true), true),
+        (ACRectangularPowerFlow(; control_discrete_devices = true), false),
+        (ACMixedPowerFlow(; control_discrete_devices = true), false),
+    )
+        data = PowerFlowData(pf, _make_solvable_tap_shunt_system())
+        PowerFlows._solve_with_q_limits!(pf, data, 1)
+        ctx = PowerFlows._sensitivity_context(pf, data, 1)
+        @test !isnothing(ctx)
+        @test PowerFlows._supports_batched_refresh(ctx) == batched
+    end
+    # No context at all ⇒ no batching, and the predicate must not throw.
+    @test !PowerFlows._supports_batched_refresh(nothing)
+end
+
+@testset "discrete control: analytic sensitivity agrees across AC formulations" begin
+    # The highest-value check in the port. `∂F/∂p` is written per formulation in three
+    # different row/sign conventions (polar is a power balance; rectangular is
+    # `I_spec − Y·V` real-first; MCPB mixes imag-first PQ rows, a PV power row, and
+    # real-first REF rows), and a sign error there would silently invert a control's feedback
+    # direction while still clearing the `CONTROL_GAIN_FLOOR` enrollment gate. So assert
+    # against the FD probe AND across formulations: the three must agree on one number.
+    for build in (_make_solvable_tap_shunt_system, build_lcc_control_system)
+        reference = nothing
+        for pf in (
+            ACPolarPowerFlow(; control_discrete_devices = true),
+            ACRectangularPowerFlow(; control_discrete_devices = true),
+            ACMixedPowerFlow(; control_discrete_devices = true),
+        )
+            data = PowerFlowData(pf, build())
+            PowerFlows._solve_with_q_limits!(pf, data, 1)
+            set = data.controlled_devices
+            ctx = PowerFlows._sensitivity_context(pf, data, 1)
+            @test !isnothing(ctx)
+            snap = PowerFlows._snapshot_state(data, 1)
+            gains = Dict{String, Float64}()
+            for devices in (set.taps, set.shunts, set.facts)
+                for d in devices
+                    lin, ok_lin = PowerFlows._linear_plant_sign(d, data, 1, ctx)
+                    fd, ok_fd = PowerFlows._plant_sign(d, data, 1, pf, snap)
+                    @test ok_lin && ok_fd
+                    @test sign(lin) == sign(fd)
+                    @test isapprox(lin, fd; rtol = 1e-2)
+                    gains[d.name] = lin
+                end
+            end
+            @test !isempty(gains)
+            if isnothing(reference)
+                reference = gains       # polar runs first and is the already-validated path
+            else
+                @test keys(gains) == keys(reference)
+                for (name, g) in gains
+                    # Looser than the shunt's ~1e-16 because a tap touches two buses and the
+                    # three Jacobians differ structurally, so the linear solve rounds
+                    # differently; measured worst case is ~6e-11.
+                    @test isapprox(g, reference[name]; rtol = 1e-6)
+                end
+            end
+        end
+    end
+end
+
 @testset "discrete control: polar analytic gain is pinned bit-for-bit" begin
     # The analytic gain feeds `_relaxation`, so it sizes the step, not just its direction. A
     # 1-ulp change therefore alters a trajectory and can flip which discrete grid point a
