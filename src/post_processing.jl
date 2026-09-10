@@ -1015,6 +1015,7 @@ empty_vsc_results() = DataFrames.DataFrame(;
     Vdc_from = Float64[],
     Vdc_to = Float64[],
     P_losses = Float64[],
+    Q_losses = Float64[],
 )
 
 empty_mtdc_results() = DataFrames.DataFrame(;
@@ -1184,8 +1185,10 @@ function vsc_results_dataframe(
                 bus_to = to_number,
                 P_from_to = sys_basepower * (-dcn.p_c[cf, time_step]),
                 P_to_from = sys_basepower * (-dcn.p_c[ct, time_step]),
-                Q_from_to = sys_basepower * dcn.q_c[cf, time_step],
-                Q_to_from = sys_basepower * dcn.q_c[ct, time_step],
+                # q_c is bus injection signed, so negate it for reactive power
+                # flowing from the AC terminal into the VSC DC line.
+                Q_from_to = -sys_basepower * dcn.q_c[cf, time_step],
+                Q_to_from = -sys_basepower * dcn.q_c[ct, time_step],
                 dc_current = -_vsc_pdc(dcn, cf, Vm_from, time_step) / Vdc_from,
                 Vdc_from = Vdc_from,
                 Vdc_to = Vdc_to,
@@ -1193,6 +1196,8 @@ function vsc_results_dataframe(
                 # of both AC injections (equivalently P_from_to + P_to_from).
                 P_losses = -sys_basepower *
                            (dcn.p_c[cf, time_step] + dcn.p_c[ct, time_step]),
+                Q_losses = -sys_basepower *
+                           (dcn.q_c[cf, time_step] + dcn.q_c[ct, time_step]),
             ),
         )
     end
