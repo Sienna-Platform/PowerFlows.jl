@@ -39,8 +39,6 @@ mutable struct ControlledSwitchedShunt <: AbstractShuntControl
     vset::Float64
     vset_lo::Float64                 # VSWLO/VSWHI deadband: held anywhere inside
     vset_hi::Float64
-    g0::Float64                      # real(get_Y)
-    b0::Float64                      # fixed (non-switchable) susceptance base
     block_steps::Vector{Int}         # number_of_steps per block
     block_dB::Vector{Float64}        # imag(Y_increase) per block
     b_min::Float64
@@ -323,7 +321,7 @@ end
 
 # Delta-update (`+=`, not `=`): `_get_withdrawals!` accumulates all constant-Z devices on
 # this bus into one slot, so overwriting would drop co-located contributions. Only
-# susceptance is controlled; g0 is constant and stays in the baseline. Raising the
+# susceptance is controlled. Raising the
 # (capacitive) susceptance lowers the bus's reactive withdrawal, injecting Q and raising the
 # voltage. Shared by switched shunts and FACTS shunt compensators.
 function apply_parameter!(d::AbstractShuntControl, data, b::Float64, ts::Int)
@@ -350,16 +348,16 @@ end
 # PSS/E mixed banks: capacitor blocks (dB>0) switch on cumulatively in listed order,
 # reactor blocks (dB<0) likewise — two independent chains stepping away from the
 # all-off base, NOT one serial chain, so a mixed bank reaches both signs. Realizable
-# totals = b0 ∪ {b0 + capacitor prefixes} ∪ {b0 + reactor prefixes}. Same-sign banks
+# totals = {0} ∪ {capacitor prefixes} ∪ {reactor prefixes}. Same-sign banks
 # reduce to the previous single-chain walk. O(Σ steps), allocation-free.
 function snap_to_discrete(d::ControlledSwitchedShunt, b::Float64)
     d.continuous && return clamp(b, d.b_min, d.b_max)
     target = clamp(b, d.b_min, d.b_max)
-    best = d.b0
+    best = 0.0
     best_steps = 0
     best_positive = true
     @inbounds for positive in (true, false)
-        total = d.b0
+        total = 0.0
         steps_taken = 0
         for k in eachindex(d.block_steps, d.block_dB)
             dB = d.block_dB[k]

@@ -161,12 +161,13 @@ _eval_loss_function(curve::PSY.LinearCurve, x::Float64) = curve(x)
 _eval_loss_function(pwl::PSY.PiecewiseIncrementalCurve, x::Float64) =
     IS.InputOutputCurve(pwl)(x)
 
-# `PSY.LossCurve` x-axis ratio (natural-unit base / curve's own base) to reach `PSY.NU`, where
-# NU's own base is 1. `SystemBaseUnit` rescales against the system base, `ComponentBaseUnit`
-# against the line's own `base_power`.
-_loss_curve_nu_ratio(::PSY.NaturalUnit, ::Float64, ::Float64) = 1.0
-_loss_curve_nu_ratio(::PSY.SystemBaseUnit, sys_base::Float64, ::Float64) = 1.0 / sys_base
-_loss_curve_nu_ratio(::PSY.ComponentBaseUnit, ::Float64, dev_base::Float64) = 1.0 / dev_base
+# A `PSY.LossCurve`'s own base, in MW: 1 for `NaturalUnit` (already MW), the system base for
+# `SystemBaseUnit`, the device's own `base_power` for `ComponentBaseUnit`. Shared by every
+# rebasing ratio computed off a `LossCurve`'s power units — a caller wanting the ratio toward
+# some target base `T` (in MW) divides `T / _loss_curve_own_base(...)`.
+_loss_curve_own_base(::PSY.NaturalUnit, ::Float64, ::Float64) = 1.0
+_loss_curve_own_base(::PSY.SystemBaseUnit, sys_base::Float64, ::Float64) = sys_base
+_loss_curve_own_base(::PSY.ComponentBaseUnit, ::Float64, dev_base::Float64) = dev_base
 
 function _eval_loss_function(
     curve::PSY.LossCurve,
@@ -174,7 +175,7 @@ function _eval_loss_function(
     sys_base::Float64,
     dev_base::Float64,
 )
-    ratio = _loss_curve_nu_ratio(PSY.get_power_units(curve), sys_base, dev_base)
+    ratio = 1.0 / _loss_curve_own_base(PSY.get_power_units(curve), sys_base, dev_base)
     nu_curve = IS.convert_power_units(curve, PSY.NaturalUnit(), ratio)
     return _eval_loss_function(PSY.get_value_curve(nu_curve), x)
 end

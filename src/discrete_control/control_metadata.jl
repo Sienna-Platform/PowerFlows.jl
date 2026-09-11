@@ -3,13 +3,12 @@ it locked at its current setting (the safe posture for bad control data)."""
 function _validate_shunt(
     name::String,
     b_min::Float64,
-    b0::Float64,
     b_max::Float64,
     steps::Vector{Int},
     dB::Vector{Float64},
 )::Bool
-    if !(b_min <= b0 <= b_max)
-        @warn "ControlledSwitchedShunt \"$name\": b0=$b0 is outside \
+    if !(b_min <= 0.0 <= b_max)
+        @warn "ControlledSwitchedShunt \"$name\": the all-off susceptance 0.0 is outside \
             [b_min=$b_min, b_max=$b_max]; leaving the shunt locked at its current setting."
         return false
     end
@@ -294,7 +293,7 @@ function build_controlled_device_set(
         engaged = PSY.get_number_engaged(sa)
         current_b, bmin, bmax = _shunt_susceptance_model(
             name, solved, steps, dB, engaged)
-        _validate_shunt(name, bmin, 0.0, bmax, steps, dB) || continue
+        _validate_shunt(name, bmin, bmax, steps, dB) || continue
         push!(
             shunts,
             ControlledSwitchedShunt(
@@ -304,8 +303,6 @@ function build_controlled_device_set(
                 vset,
                 lims.min,   # VSWLO: deadband lower edge
                 lims.max,   # VSWHI: deadband upper edge
-                0.0,        # g0: no conductance in the new model
-                0.0,        # b0: no fixed base admittance in the new model
                 steps,
                 dB,
                 bmin,

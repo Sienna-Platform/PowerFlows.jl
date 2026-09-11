@@ -20,17 +20,11 @@ function _loss_coefficients(curve::PSY.QuadraticCurve)
     )
 end
 
-# `PSY.LossCurve` x-axis ratio (system base / curve's own base) to reach `PSY.SU`. `NaturalUnit`
-# is already in MW, so only the system base enters; `ComponentBaseUnit` rescales against the
-# converter's own `base_power`; `SystemBaseUnit` needs no ratio — the identity `convert_power_units`
-# method dispatches on it directly.
-_loss_curve_ratio(::PSY.NaturalUnit, sys_base::Float64, ::Float64) = sys_base
-_loss_curve_ratio(::PSY.SystemBaseUnit, sys_base::Float64, ::Float64) = sys_base
-_loss_curve_ratio(::PSY.ComponentBaseUnit, sys_base::Float64, dev_base::Float64) =
-    sys_base / dev_base
-
 function _loss_coefficients(curve::PSY.LossCurve, sys_base::Float64, dev_base::Float64)
-    ratio = _loss_curve_ratio(PSY.get_power_units(curve), sys_base, dev_base)
+    # `PSY.LossCurve` x-axis ratio (system base / curve's own base, see `_loss_curve_own_base`)
+    # to reach `PSY.SU`. When the curve is already `SystemBaseUnit`, `convert_power_units`
+    # dispatches to its identity method and ignores this ratio entirely.
+    ratio = sys_base / _loss_curve_own_base(PSY.get_power_units(curve), sys_base, dev_base)
     su_curve = IS.convert_power_units(curve, PSY.SystemBaseUnit(), ratio)
     return _loss_coefficients(PSY.get_value_curve(su_curve))
 end

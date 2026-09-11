@@ -115,9 +115,8 @@ end
     @test t.vset > 0.0
     @test t.vset == 1.0
     s = set.shunts[1]
-    @test s.b_min <= s.b0 <= s.b_max
     @test length(s.block_n) == length(s.block_dB)
-    @test s.b0 == 0.0
+    @test s.b_min <= 0.0 <= s.b_max
     @test s.b_min == 0.0
     @test s.b_max == 0.2
     @test s.current == 0.0
@@ -246,7 +245,6 @@ end
     set = PowerFlows.build_controlled_device_set(
         sys, PF.get_bus_lookup(data), data.power_network_matrix)
     s = set.shunts[1]
-    @test s.b0 == 0.0            # block-counting base
     @test s.b_min == 0.0
     @test s.b_max ≈ 0.2
     @test s.current ≈ 0.1        # baseline at BINIT, inside the reachable range
@@ -275,11 +273,10 @@ end
 end
 
 @testset "discrete control: shunt invariant validation (warn-and-lock)" begin
-    # b0 outside [b_min, b_max]: warn, device de-enrolled (returns false).
+    # The all-off susceptance (0.0) outside [b_min, b_max]: warn, device de-enrolled.
     r1 = @test_logs (:warn, r"outside") match_mode = :any PowerFlows._validate_shunt(
         "bad_shunt",
-        0.0, # b_min
-        0.5, # b0 — above b_max, outside [b_min, b_max]
+        0.1, # b_min — above 0.0, so the all-off point is unreachable
         0.2, # b_max
         [4],
         [0.05],
@@ -289,7 +286,6 @@ end
     r2 = @test_logs (:warn, r"zero steps") match_mode = :any PowerFlows._validate_shunt(
         "bad_shunt2",
         0.0,  # b_min
-        0.0,  # b0
         0.2,  # b_max
         [0],  # zero steps
         [0.05], # nonzero dB — malformed
@@ -297,11 +293,11 @@ end
     @test r2 == false
     # b_min == b_max (no controllable range): warn + false.
     r3 = @test_logs (:warn, r"no controllable") match_mode = :any (
-        PowerFlows._validate_shunt("no_range", 0.5, 0.5, 0.5, [0], [0.0])
+        PowerFlows._validate_shunt("no_range", 0.0, 0.0, [0], [0.0])
     )
     @test r3 == false
     # Valid case — true, no logs.
-    @test PowerFlows._validate_shunt("ok_shunt", 0.0, 0.0, 0.2, [4], [0.05]) == true
+    @test PowerFlows._validate_shunt("ok_shunt", 0.0, 0.2, [4], [0.05]) == true
 end
 
 @testset "discrete control: tap invariant validation (warn-and-lock)" begin
@@ -373,7 +369,7 @@ end
     remote = PowerFlows.ControlledTap("ts", 1, 2, 1, 1.0, 1.0, 1.0,
         1.0 / (0.01 + 0.1im), 0.0, 0.9, 1.1,
         collect(range(0.9, 1.1; length = 33)), (1, 2, 3, 4), 1.0, 1.0, 1.0, "ts", 1)
-    shunt = PowerFlows.ControlledSwitchedShunt("sh", 3, 3, 1.0, 0.95, 1.05, 0.0, 0.0,
+    shunt = PowerFlows.ControlledSwitchedShunt("sh", 3, 3, 1.0, 0.95, 1.05,
         [4], [0.05], 0.0, 0.2, zeros(Int, 1), false, 0.0, 0.0, false)
     for d in (tap, remote, shunt)
         vset = PowerFlows.voltage_setpoint(d)
@@ -442,14 +438,14 @@ end
     @test PowerFlows.snap_to_discrete(d, 1.03) == 1.05
     @test PowerFlows.snap_to_discrete(d, 1.20) == 1.1   # clamp
     block_dB_sh_snap = [0.05]
-    sh = PowerFlows.ControlledSwitchedShunt("s", 3, 3, 1.0, 0.95, 1.05, 0.0, 0.0,
+    sh = PowerFlows.ControlledSwitchedShunt("s", 3, 3, 1.0, 0.95, 1.05,
         [4], block_dB_sh_snap, 0.0, 0.2,
         zeros(Int, length(block_dB_sh_snap)),
         false, 0.0, 0.0, false)  # reachable: 0,0.05,0.10,0.15,0.20
     @test PowerFlows.snap_to_discrete(sh, 0.12) == 0.10
     @test sh.block_n == [2]
     block_dB_sh2 = [0.1, 0.02]
-    sh2 = PowerFlows.ControlledSwitchedShunt("s2", 3, 3, 1.0, 0.95, 1.05, 0.0, 0.0,
+    sh2 = PowerFlows.ControlledSwitchedShunt("s2", 3, 3, 1.0, 0.95, 1.05,
         [2, 3], block_dB_sh2, 0.0, 0.26,
         zeros(Int, length(block_dB_sh2)),
         false, 0.0, 0.0, false)  # PSS/E cumulative chain: blocks activate in listed order
@@ -462,8 +458,7 @@ end
 
 @testset "mixed-sign shunt snap reaches both chain sides" begin
     d = PowerFlows.ControlledSwitchedShunt(
-        "mixed", 1, 1, 1.0, 0.95, 1.05, 0.0,
-        0.0,                    # b0: all blocks off = neutral
+        "mixed", 1, 1, 1.0, 0.95, 1.05,
         [1, 1],                 # one reactor step, one capacitor step
         [-0.5, 0.5],            # reactor listed first (RAW convention)
         -0.5, 0.5,              # envelope
@@ -478,7 +473,7 @@ end
     # continuous == true ⇒ snap_to_discrete returns the clamped continuous value,
     # NOT the nearest reachable block grid point.
     block_dB = [0.05]
-    cont = PowerFlows.ControlledSwitchedShunt("c", 3, 3, 1.0, 0.95, 1.05, 0.0, 0.0,
+    cont = PowerFlows.ControlledSwitchedShunt("c", 3, 3, 1.0, 0.95, 1.05,
         [4], block_dB, 0.0, 0.2, zeros(Int, length(block_dB)), true, 0.0, 0.0, false)
     # 0.12 is between grid points 0.10 and 0.15; continuous must return it unchanged.
     @test PowerFlows.snap_to_discrete(cont, 0.12) == 0.12
@@ -486,7 +481,7 @@ end
     @test PowerFlows.snap_to_discrete(cont, 0.30) == 0.2
     @test PowerFlows.snap_to_discrete(cont, -0.10) == 0.0
     # sanity: the discrete twin DOES snap 0.12 → 0.10.
-    disc = PowerFlows.ControlledSwitchedShunt("d", 3, 3, 1.0, 0.95, 1.05, 0.0, 0.0,
+    disc = PowerFlows.ControlledSwitchedShunt("d", 3, 3, 1.0, 0.95, 1.05,
         [4], block_dB, 0.0, 0.2, zeros(Int, length(block_dB)), false, 0.0, 0.0, false)
     @test PowerFlows.snap_to_discrete(disc, 0.12) == 0.10
 end
@@ -927,7 +922,7 @@ end
 
 @testset "discrete control: shunt deadband semantics" begin
     # In-band voltages hold the device (PSS/E VSWLO/VSWHI semantics); out-of-band do not.
-    sh = PowerFlows.ControlledSwitchedShunt("s", 3, 3, 1.0, 0.95, 1.05, 0.0, 0.0,
+    sh = PowerFlows.ControlledSwitchedShunt("s", 3, 3, 1.0, 0.95, 1.05,
         [4], [0.05], 0.0, 0.2, zeros(Int, 1), false, 0.0, 0.0, false)
     @test PowerFlows._in_deadband(sh, 1.0)
     @test PowerFlows._in_deadband(sh, 0.96)
@@ -944,7 +939,7 @@ end
     # Scale-aware settle tolerance: wide-range devices get a relative floor.
     @test PowerFlows._param_tol(tap) ≈
           max(PowerFlows.CONTROL_PARAM_TOL, PowerFlows.CONTROL_PARAM_RTOL * 0.2)
-    wide = PowerFlows.ControlledSwitchedShunt("w", 3, 3, 1.0, 0.95, 1.05, 0.0, 0.0,
+    wide = PowerFlows.ControlledSwitchedShunt("w", 3, 3, 1.0, 0.95, 1.05,
         [10], [1.0], 0.0, 10.0, zeros(Int, 1), false, 0.0, 0.0, false)
     @test PowerFlows._param_tol(wide) ≈ PowerFlows.CONTROL_PARAM_RTOL * 10.0
 end
