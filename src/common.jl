@@ -134,7 +134,13 @@ function _get_withdrawals!(
         bus = PSY.get_bus(sa)
         PSY.get_number(bus) in removed_buses && continue
         bus_ix = _get_bus_ix(bus_lookup, reverse_bus_search_map, PSY.get_number(bus))
-        Y = PSY.get_Y(sa) + sum(PSY.get_initial_status(sa) .* PSY.get_Y_increase(sa))
+        # `solved_admittance` replaces the engaged blocks; it is a pure susceptance.
+        solved = PSY.get_solved_admittance(sa)
+        Y = if solved === nothing
+            sum(PSY.get_number_engaged(sa) .* PSY.get_Y_increase(sa))
+        else
+            im * solved
+        end
         # Here we implement the switched admittance element as a constant impedance load.
         # The inputs for ZIP loads are provided for V = 1.0 p.u., so
         # the following is equivalent to S = V * conj(Y * V) for V = 1.0 p.u.

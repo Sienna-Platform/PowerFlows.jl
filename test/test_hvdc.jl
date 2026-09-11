@@ -120,7 +120,7 @@ function add_component_with_power!(sys::PSY.System, bus::PSY.ACBus, P::Float64)
         gen = ThermalStandard(;
             name = "gen_$(PSY.get_number(bus))_thermal_hvdc_$P",
             available = true,
-            status = true,
+            status = OperationalStates.ONLINE,
             bus = bus,
             active_power = P, # TODO check units
             reactive_power = 0.0,

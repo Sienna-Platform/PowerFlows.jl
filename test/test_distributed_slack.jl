@@ -116,7 +116,7 @@ end
             g2 = ThermalStandard(;
                 name = "Duplicate",
                 available = true,
-                status = true,
+                status = OperationalStates.ONLINE,
                 bus = get_bus(g1),
                 active_power = 0.1,
                 reactive_power = 0.1,
@@ -357,7 +357,7 @@ end
             g2 = ThermalStandard(;
                 name = "HeadroomDuplicate",
                 available = true,
-                status = true,
+                status = OperationalStates.ONLINE,
                 bus = get_bus(g1),
                 active_power = 0.1,
                 reactive_power = 0.05,

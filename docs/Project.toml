@@ -31,7 +31,7 @@ PrettyTables = "08abe8d2-0d0c-5749-adfa-8a2ac140af0d"
 InfrastructureSystems = {rev = "jd/openapi-1x-suite", url = "https://github.com/Sienna-Platform/InfrastructureSystems.jl.git"}
 # Pinned to the branch rather than the registry: registry PNM v0.24 requires PowerSystems
 # 5.11, which this line (5.10.0) does not satisfy.
-PowerNetworkMatrices = {url = "https://github.com/Sienna-Platform/PowerNetworkMatrices.jl.git", rev = "psy6"}
+PowerNetworkMatrices = {url = "https://github.com/Sienna-Platform/PowerNetworkMatrices.jl.git", rev = "jd/openapi-1x-pins"}
 PowerSystemCaseBuilder = {url = "https://github.com/Sienna-Platform/PowerSystemCaseBuilder.jl.git", rev = "jd/openapi-1x"}
 PowerSystems = {rev = "jd/openapi-1x", url = "https://github.com/Sienna-Platform/PowerSystems.jl.git"}
 # PSCB's own [sources] pin for this is ignored once PSCB is a dependency rather than the root

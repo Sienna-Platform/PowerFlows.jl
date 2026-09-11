@@ -124,7 +124,7 @@ function build_lcc_control_system(; p_set_mw::Union{Nothing, Float64} = nothing)
     add_component!(
         sys,
         SwitchedAdmittance(; name = "ctrl_shunt_101", available = true,
-            bus = bus101, Y = 0.0 + 0.0im, initial_status = [0], number_of_steps = [8],
+            bus = bus101, number_engaged = [0], number_of_steps = [8],
             Y_increase = [0.0 + 0.5im], admittance_limits = (min = 1.05, max = 1.08),
             control_mode = PSY.SwitchedAdmittanceControlMode.DISCRETE_VOLTAGE,
         ),

@@ -1133,7 +1133,7 @@ end
             add_component!(
                 sys,
                 SwitchedAdmittance(; name = "sh$k", available = true,
-                    bus = bs, Y = 0.0 + 0.0im, initial_status = [0], number_of_steps = [4],
+                    bus = bs, number_engaged = [0], number_of_steps = [4],
                     Y_increase = [0.0 + 0.05im], admittance_limits = (min = 0.9, max = 1.1),
                 ),
             )
