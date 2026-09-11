@@ -234,14 +234,14 @@ end
     @test length(set.shunts) == 0
 end
 
-@testset "discrete control: PSS/E parser shunt convention (Y = BINIT)" begin
-    # A full-length zeroed initial_status marks the parser (BINIT) convention: Y holds
-    # the TOTAL in-service admittance, so the reachable range is spanned by the blocks
-    # alone (base 0) and the control baseline sits at BINIT.
+@testset "discrete control: PSS/E parser shunt convention (solved_admittance = BINIT)" begin
+    # A set `solved_admittance` marks a case read in as already solved: it holds the TOTAL
+    # in-service admittance, so the reachable range is spanned by the blocks alone (base 0)
+    # and the control baseline sits at the solved value.
     sys = _make_tap_shunt_system()
     sa = first(PSY.get_components(PSY.SwitchedAdmittance, sys))
     PSY.set_control_mode!(sa, PSY.SwitchedAdmittanceControlMode.DISCRETE_VOLTAGE)
-    PSY.set_Y!(sa, 0.0 + 0.1im)   # BINIT = 0.1 p.u. (two of the four 0.05 blocks in)
+    PSY.set_solved_admittance!(sa, 0.1)   # BINIT = 0.1 p.u. (two of the four 0.05 blocks in)
     data = PowerFlowData(ACPolarPowerFlow(), sys)
     set = PowerFlows.build_controlled_device_set(
         sys, PF.get_bus_lookup(data), data.power_network_matrix)
@@ -877,7 +877,7 @@ end
     # data_ref is built WITHOUT control_discrete_devices, so the VOLTAGE objective is
     # inert: this is a plain solve of the snapped network.
     sas = collect(PSY.get_components(PSY.SwitchedAdmittance, sys))
-    PSY.set_Y!(sas[1], PSY.get_Y(sas[1]) + im * (sh.current - sh.initial))
+    PSY.set_solved_admittance!(sas[1], sh.current)
     data_ref = PowerFlowData(ACPolarPowerFlow(), sys)
     solve_power_flow!(data_ref)
     @test all(data_ref.converged)
@@ -990,13 +990,12 @@ end
 @testset "write-back round-trips the API shunt convention" begin
     sys = _make_tap_shunt_system()
     sa = first(PSY.get_components(PSY.SwitchedAdmittance, sys))
-    # A nonzero initial_status marks the API convention (Y is the fixed base,
-    # initial_status meaningful), as opposed to the parser's zeroed-status BINIT
-    # convention.
+    # A nonzero `number_engaged` marks the API convention (no `solved_admittance` override,
+    # the total comes from the engaged blocks), as opposed to a case read in as solved.
     # One block already switched on at enrollment; the fixture's wide deadband holds the
     # shunt here (it never re-snaps), so this also exercises the never-snapped realizability
     # guard: block_n stays [0] while d.current reflects the pre-activated block.
-    PSY.set_initial_status!(sa, [1])
+    PSY.set_number_engaged!(sa, [1])
     pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; control_discrete_devices = true)
     data = PowerFlowData(pf, sys)
     ts = 1
@@ -1018,7 +1017,7 @@ end
     # (realizable) branch of write_device_settings!, not the fallback.
     sys = _make_shunt_snap_system()
     sa0 = first(PSY.get_components(PSY.SwitchedAdmittance, sys))
-    @test isempty(PSY.get_initial_status(sa0))   # API convention, not the BINIT marker
+    @test isnothing(PSY.get_solved_admittance(sa0))   # API convention, not the BINIT marker
     pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; control_discrete_devices = true)
     data = PowerFlowData(pf, sys)
     @test PowerFlows.solve_power_flow!(data)
@@ -1026,8 +1025,8 @@ end
     @test !iszero(sum(d.block_n))
     PowerFlows.write_device_settings!(sys, data)
     sa = PSY.get_component(PSY.SwitchedAdmittance, sys, d.name)
-    @test PSY.get_Y(sa) ≈ Complex(d.g0, d.b0)
-    @test PSY.get_initial_status(sa) == d.block_n
+    @test isnothing(PSY.get_solved_admittance(sa))
+    @test PSY.get_number_engaged(sa) == d.block_n
     data2 = PowerFlowData(pf, sys)
     d2 = first(PowerFlows.get_controlled_devices(data2).shunts)
     @test PowerFlows.current_parameter(d2) ≈ d.current atol = 1e-9

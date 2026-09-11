@@ -76,31 +76,6 @@ function solve_and_store_power_flow!(
     return converged
 end
 
-"""
-    write_device_settings!(system, data)
-
-Write the solved discrete-control device settings back into the `PSY.System`:
-tap ratios (`set_tap!`), switched-shunt admittances (`set_Y!`/`set_initial_status!`,
-convention-aware — see below), and phase-shifter angles (`set_α!`). FACTS devices
-carry no stored setting field in PSY and are skipped. A device no longer present
-in `system` is skipped with a `@warn` (its solved setting is not written back).
-Mutates the user's system — called by [`solve_and_store_power_flow!`](@ref) after a
-converged solve; a no-op when no discrete controls ran.
-
-Switched shunts write back per their sourcing convention (see
-[Metadata sourcing](@ref discrete-control-metadata) for how `psse_convention` is
-determined): PSS/E-parsed (BINIT) components take the solved total straight into
-`Y`; PSY API-built components keep `Y` at the fixed base and write the last-snap
-`block_n` into `initial_status`, since overwriting `Y` would double-count the
-status on re-enrollment. A never-snapped API-built device (continuous, or held in
-its deadband the whole solve) whose `block_n` cannot reconstruct `d.current` falls
-back to the BINIT write (solved total into `Y`, `initial_status` zeroed).
-
-No-op for `time_steps > 1`: a PSY component holds a single scalar setting, but a
-multiperiod solve produces one setting per time step, so there is no single value to
-write back without silently discarding all but the last-processed step. Per-time-step
-results remain available via [`get_controlled_device_results`](@ref).
-"""
 # Re-resolve a tap's circuit in `system` by name, rather than holding a reference, so the
 # write lands in the caller's system even when it is not the one enrollment read. The tap may
 # sit on either arity, and `PSY.get_circuits` covers both (a 2W returns a 1-tuple).
@@ -154,15 +129,15 @@ function write_device_settings!(system::PSY.System, data)
             continue
         end
         if d.psse_convention
-            PSY.set_Y!(sa, Complex(d.g0, d.current))
+            PSY.set_solved_admittance!(sa, d.current)
         else
-            realizable = d.b0 + sum(d.block_n .* d.block_dB; init = 0.0)
+            realizable = sum(d.block_n .* d.block_dB; init = 0.0)
             if abs(realizable - d.current) <= BOUNDS_TOLERANCE
-                PSY.set_Y!(sa, Complex(d.g0, d.b0))
-                PSY.set_initial_status!(sa, copy(d.block_n))
+                PSY.set_number_engaged!(sa, copy(d.block_n))
+                PSY.set_solved_admittance!(sa, nothing)
             else
-                PSY.set_Y!(sa, Complex(d.g0, d.current))
-                PSY.set_initial_status!(sa, zeros(Int, length(d.block_n)))
+                PSY.set_number_engaged!(sa, zeros(Int, length(d.block_n)))
+                PSY.set_solved_admittance!(sa, d.current)
             end
         end
     end

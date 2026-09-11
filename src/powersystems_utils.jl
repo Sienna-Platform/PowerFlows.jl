@@ -161,14 +161,32 @@ _eval_loss_function(curve::PSY.LinearCurve, x::Float64) = curve(x)
 _eval_loss_function(pwl::PSY.PiecewiseIncrementalCurve, x::Float64) =
     IS.InputOutputCurve(pwl)(x)
 
+# `PSY.LossCurve` x-axis ratio (natural-unit base / curve's own base) to reach `PSY.NU`, where
+# NU's own base is 1. `SystemBaseUnit` rescales against the system base, `ComponentBaseUnit`
+# against the line's own `base_power`.
+_loss_curve_nu_ratio(::PSY.NaturalUnit, ::Float64, ::Float64) = 1.0
+_loss_curve_nu_ratio(::PSY.SystemBaseUnit, sys_base::Float64, ::Float64) = 1.0 / sys_base
+_loss_curve_nu_ratio(::PSY.ComponentBaseUnit, ::Float64, dev_base::Float64) = 1.0 / dev_base
+
+function _eval_loss_function(
+    curve::PSY.LossCurve,
+    x::Float64,
+    sys_base::Float64,
+    dev_base::Float64,
+)
+    ratio = _loss_curve_nu_ratio(PSY.get_power_units(curve), sys_base, dev_base)
+    nu_curve = IS.convert_power_units(curve, PSY.NaturalUnit(), ratio)
+    return _eval_loss_function(PSY.get_value_curve(nu_curve), x)
+end
+
 # returns the tuple (P_dc, P_loss, flow_reversed), first two in natural units
-function hvdc_power_loss_natural_units(hvdc::PSY.TwoTerminalHVDC)
+function hvdc_power_loss_natural_units(hvdc::PSY.TwoTerminalHVDC, sys_base::Float64)
     P_dc = PSY.get_active_power_flow(hvdc, PSY.NU)
     error_if_reversed(hvdc, P_dc)
     flow_reversed = P_dc < 0
     P_dc = abs(P_dc)
     loss_curve = PSY.get_loss(hvdc)
-    P_loss = _eval_loss_function(loss_curve, P_dc)
+    P_loss = _eval_loss_function(loss_curve, P_dc, sys_base, PSY.get_base_power(hvdc))
     P_loss > P_dc && @warn "The loss curve of $(PSY.summary(hvdc)) " *
           "indicates the losses are greater than the transmitted power $P_dc. " *
           "Setting the loss equal to the transmitted power instead."
@@ -179,13 +197,15 @@ function hvdc_power_loss_natural_units(hvdc::PSY.TwoTerminalHVDC)
 end
 
 # VSC lines have separate converter losses on each end
-function hvdc_power_loss_natural_units(hvdc::PSY.TwoTerminalVSCLine)
+function hvdc_power_loss_natural_units(hvdc::PSY.TwoTerminalVSCLine, sys_base::Float64)
     P_dc = PSY.get_active_power_flow(hvdc, PSY.NU)
     flow_reversed = P_dc < 0
     P_dc = abs(P_dc)
+    dev_base = PSY.get_base_power(hvdc)
     # Sum losses from both converters
-    loss_from = _eval_loss_function(PSY.get_converter_loss_from(hvdc), P_dc)
-    loss_to = _eval_loss_function(PSY.get_converter_loss_to(hvdc), P_dc)
+    loss_from =
+        _eval_loss_function(PSY.get_converter_loss_from(hvdc), P_dc, sys_base, dev_base)
+    loss_to = _eval_loss_function(PSY.get_converter_loss_to(hvdc), P_dc, sys_base, dev_base)
     P_loss = loss_from + loss_to
     P_loss > P_dc && @warn "The converter losses of $(PSY.summary(hvdc)) " *
           "indicate losses greater than the transmitted power $P_dc. " *
@@ -201,13 +221,13 @@ function get_hvdc_power_loss(
     sys::PSY.System,
 )
     base_power = PSY.get_base_power(sys, PSY.NU)
-    (P_dc, P_loss, flow_reversed) = hvdc_power_loss_natural_units(hvdc)
+    (P_dc, P_loss, flow_reversed) = hvdc_power_loss_natural_units(hvdc, base_power)
     return (P_dc / base_power, P_loss / base_power, flow_reversed)
 end
 
 # returns the tuple (P_net_from, P_net_to), both in natural units
-function hvdc_injections_natural_units(hvdc::PSY.TwoTerminalHVDC)
-    P_dc, P_loss, flow_reversed = hvdc_power_loss_natural_units(hvdc)
+function hvdc_injections_natural_units(hvdc::PSY.TwoTerminalHVDC, sys_base::Float64)
+    P_dc, P_loss, flow_reversed = hvdc_power_loss_natural_units(hvdc, sys_base)
     P_received = P_dc - P_loss
     @assert P_received >= 0.0 - eps() && P_received <= P_dc + eps()
     # (from, to) net powers: reversed means from is receiving power.
@@ -219,7 +239,7 @@ function get_hvdc_injections(
     sys::PSY.System,
 )
     base_power = PSY.get_base_power(sys, PSY.NU)
-    (P_from, P_to) = hvdc_injections_natural_units(hvdc)
+    (P_from, P_to) = hvdc_injections_natural_units(hvdc, base_power)
     return (P_from / base_power, P_to / base_power)
 end
 

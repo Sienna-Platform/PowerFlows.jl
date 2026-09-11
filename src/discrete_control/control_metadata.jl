@@ -134,43 +134,33 @@ function _tap_metadata(circuit::PSY.TransformerCircuit, to_bus::Int)
     )
 end
 
-# Susceptance model of a switched shunt. The PSS/E parser (MODSW 0/1/2) stores
-# `Y = BINIT` (the TOTAL in-service admittance) and ZEROES `initial_status` to avoid
-# double counting, so the reachable set is spanned by the blocks alone (base 0) with the
-# current point at BINIT. API-built components follow the PSY docstring instead: `Y` is
-# the fixed N=0 base and `initial_status` is meaningful. The presence of the parser's
-# MODSW key distinguishes the two conventions.
-# BINIT convention ⇔ the PSS/E parser produced this shunt: it stores the TOTAL in-service
-# admittance in `Y` and zeroes a full-length `initial_status` (see pm_io/psse.jl). API-built
-# shunts carry the switched part in a nonzero (or empty) `initial_status`. This is the write-back
-# convention too (see `ControlledSwitchedShunt.psse_convention`).
-function _is_binit_shunt(init_status::Vector{Int})
-    return !isempty(init_status) && all(iszero, init_status)
-end
+# Susceptance model of a switched shunt. `SwitchedAdmittance` has no fixed base admittance:
+# total is `number_engaged .* Y_increase`, unless `solved_admittance` is set, in which case
+# that value is the effective admittance directly (PSS/E BINIT, a case read in as solved).
+_solved_flag(::Nothing) = false
+_solved_flag(::Float64) = true
+
+_shunt_baseline(solved::Float64, ::Vector{Int}, ::Vector{Float64}) = solved
+_shunt_baseline(::Nothing, engaged::Vector{Int}, dB::Vector{Float64}) =
+    sum(engaged .* dB; init = 0.0)
 
 function _shunt_susceptance_model(
     name::String,
-    Y0::Complex{Float64},
+    solved::Union{Nothing, Float64},
     steps::Vector{Int},
     dB::Vector{Float64},
-    init_status::Vector{Int},
+    engaged::Vector{Int},
 )
-    if _is_binit_shunt(init_status)   # PSS/E parser (BINIT) convention
-        b_fixed = 0.0
-        current = imag(Y0)
-    else                              # PSY API convention
-        b_fixed = imag(Y0)
-        current = imag(Y0) + sum(init_status .* dB; init = 0.0)
-    end
-    b_min = b_fixed + sum(min.(steps .* dB, 0.0); init = 0.0)
-    b_max = b_fixed + sum(max.(steps .* dB, 0.0); init = 0.0)
+    current = _shunt_baseline(solved, engaged, dB)
+    b_min = sum(min.(steps .* dB, 0.0); init = 0.0)
+    b_max = sum(max.(steps .* dB, 0.0); init = 0.0)
     if !(b_min - BOUNDS_TOLERANCE <= current <= b_max + BOUNDS_TOLERANCE)
         @warn "ControlledSwitchedShunt \"$name\": initial susceptance $current p.u. lies \
             outside the block-reachable range [$b_min, $b_max]; clamping the control \
             baseline into the range."
         current = clamp(current, b_min, b_max)
     end
-    return b_fixed, current, b_min, b_max
+    return current, b_min, b_max
 end
 
 """Build the type-stable device set from a `PSY.System`.
@@ -298,13 +288,13 @@ function build_controlled_device_set(
         lims = PSY.get_admittance_limits(sa)
         vset = (lims.min + lims.max) / 2.0
         _validate_vset("ControlledSwitchedShunt", name, vset) || continue
-        Y0 = PSY.get_Y(sa)
+        solved = PSY.get_solved_admittance(sa)
         steps = PSY.get_number_of_steps(sa)
         dB = imag.(PSY.get_Y_increase(sa))
-        init_status = PSY.get_initial_status(sa)
-        b_fixed, current_b, bmin, bmax = _shunt_susceptance_model(
-            name, Y0, steps, dB, init_status)
-        _validate_shunt(name, bmin, b_fixed, bmax, steps, dB) || continue
+        engaged = PSY.get_number_engaged(sa)
+        current_b, bmin, bmax = _shunt_susceptance_model(
+            name, solved, steps, dB, engaged)
+        _validate_shunt(name, bmin, 0.0, bmax, steps, dB) || continue
         push!(
             shunts,
             ControlledSwitchedShunt(
@@ -314,8 +304,8 @@ function build_controlled_device_set(
                 vset,
                 lims.min,   # VSWLO: deadband lower edge
                 lims.max,   # VSWHI: deadband upper edge
-                real(Y0),
-                b_fixed,
+                0.0,        # g0: no conductance in the new model
+                0.0,        # b0: no fixed base admittance in the new model
                 steps,
                 dB,
                 bmin,
@@ -324,7 +314,7 @@ function build_controlled_device_set(
                 continuous,
                 current_b,   # initial (reporting)
                 current_b,   # current
-                _is_binit_shunt(init_status),   # psse_convention: true ⇒ parser/BINIT
+                _solved_flag(solved),   # psse_convention: true ⇒ case read in as solved
             ),
         )
     end
