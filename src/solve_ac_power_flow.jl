@@ -235,7 +235,6 @@ function solve_power_flow!(
     kwargs...,
 )
     pf = get_pf(data)
-    # Merge the model's stored parameters with any explicitly passed kwargs (explicit kwargs win)
     merged_kwargs = merge(get_solver_kwargs(pf), NamedTuple(kwargs))
     sorted_time_steps =
         get(merged_kwargs, :time_steps, sort(collect(keys(get_time_step_map(data)))))

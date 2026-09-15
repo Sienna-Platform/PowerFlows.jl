@@ -30,7 +30,6 @@
         )
     @test PowerFlows.get_interchange_tolerance(floored_pf) == 0.02
 
-    # The setting lives in the model's `SolutionParameters`; read it through the accessor.
     @test PowerFlows.get_area_interchange_control(
         ACPolarPowerFlow(; area_interchange_control = false),
     ) == false

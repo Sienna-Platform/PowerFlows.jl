@@ -724,12 +724,9 @@ function _control_continuation!(
     # once). Intermediate stages solve at CONTROL_STAGE_TOL; full tol only at the final stage and
     # snap/restore, and never looser than a user-supplied tol.
     user_tol = Float64(get(kwargs, :tol, DEFAULT_NR_TOL))
-    # Batch the voltage-device passes when the analytic path is live AND its context can be kept
-    # current across passes: one joint solve per pass with analytic per-pass gain refresh,
-    # falling back to the sequential path on a failed joint solve. Batching is gated on
-    # `_refreshable` rather than on the presence of a `ctx`, so a formulation can supply
-    # analytic PROBE sensitivities before it supplies a per-pass refresh — batching without a
-    # working refresh would read a stale Jacobian every pass after the first move.
+    # Gated on `_refreshable`, not just `ctx`'s presence: a formulation can supply analytic
+    # sensitivities before it supplies a per-pass refresh, and batching without one would read
+    # a stale Jacobian after the first device move.
     use_batched = _supports_batched_refresh(ctx)
     p_prev = zeros(n_dev)
     did_move = fill(false, n_dev)

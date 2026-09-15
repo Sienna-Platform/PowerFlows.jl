@@ -81,7 +81,6 @@ end
 end
 
 @testset "discrete control: pf field defaults" begin
-    # The setting lives in the model's `SolutionParameters`; read it through the accessor.
     @test PowerFlows.get_control_discrete_devices(ACPolarPowerFlow()) == false
     @test PowerFlows.get_control_discrete_devices(ACRectangularPowerFlow()) == false
     @test PowerFlows.get_control_discrete_devices(ACMixedPowerFlow()) == false
@@ -1056,9 +1055,8 @@ end
 end
 
 @testset "discrete control: analytic sensitivity is available on every AC formulation" begin
-    # Every formulation must reach the analytic path and earn batched passes: each supplies
-    # a `_refresh_residual_inputs!`/`_refresh_jacobian_yb_caches!` pair that re-syncs its
-    # p-dependent caches (`Y_bus_eff` is a copy, `Y_diag` is snapshotted) between passes.
+    # Every formulation must reach the analytic path and earn batched passes via a
+    # `_refresh_residual_inputs!`/`_refresh_jacobian_yb_caches!` pair that re-syncs its caches.
     for pf in (
         ACPolarPowerFlow(; control_discrete_devices = true),
         ACRectangularPowerFlow(; control_discrete_devices = true),
@@ -1075,12 +1073,11 @@ end
 end
 
 @testset "discrete control: analytic sensitivity agrees across AC formulations" begin
-    # The highest-value check in the port. `∂F/∂p` is written per formulation in three
-    # different row/sign conventions (polar is a power balance; rectangular is
-    # `I_spec − Y·V` real-first; MCPB mixes imag-first PQ rows, a PV power row, and
-    # real-first REF rows), and a sign error there would silently invert a control's feedback
-    # direction while still clearing the `CONTROL_GAIN_FLOOR` enrollment gate. So assert
-    # against the FD probe AND across formulations: the three must agree on one number.
+    # `∂F/∂p` uses three different row/sign conventions per formulation (polar power balance;
+    # rectangular `I_spec − Y·V` real-first; MCPB mixes imag-first PQ, PV power, and
+    # real-first REF rows) — a sign error there would silently invert a control's feedback
+    # while still clearing the `CONTROL_GAIN_FLOOR` gate. Assert against the FD probe AND
+    # across formulations.
     for build in (_make_solvable_tap_shunt_system, build_lcc_control_system)
         reference = nothing
         for pf in (
@@ -1111,9 +1108,9 @@ end
             else
                 @test keys(gains) == keys(reference)
                 for (name, g) in gains
-                    # Looser than the shunt's ~1e-16 because a tap touches two buses and the
-                    # three Jacobians differ structurally, so the linear solve rounds
-                    # differently; measured worst case is ~6e-11.
+                    # Looser than the shunt's ~1e-16: a tap touches two buses and the three
+                    # Jacobians differ structurally, so the linear solve rounds differently
+                    # (measured worst case ~6e-11).
                     @test isapprox(g, reference[name]; rtol = 1e-6)
                 end
             end
@@ -1122,14 +1119,11 @@ end
 end
 
 @testset "discrete control: polar analytic gain is pinned bit-for-bit" begin
-    # The analytic gain feeds `_relaxation`, so it sizes the step, not just its direction. A
-    # 1-ulp change therefore alters a trajectory and can flip which discrete grid point a
-    # device snaps to. Pinned to rtol = 1e-12: the last bits differ across linear-solver
-    # backends AND architectures (KLU on x64 reproduces these values, KLU on arm64 and
-    # AppleAccelerate land 1-2 ulp away), so `===` cannot be made portable.
-    #
-    # `_make_solvable_tap_shunt_system` was chosen because it exercises both a tap (Y-bus
-    # perturbation, two buses) and a shunt (withdrawal perturbation, one bus).
+    # The analytic gain sizes `_relaxation`'s step, so a 1-ulp change can flip which grid
+    # point a device snaps to. Pinned to rtol = 1e-12, not `===`: the last bits differ across
+    # linear-solver backends and architectures (KLU on x64 reproduces these values; arm64
+    # KLU/AppleAccelerate land 1-2 ulp away). `_make_solvable_tap_shunt_system` exercises
+    # both a tap and a shunt.
     for (build, expected) in (
         (_make_solvable_tap_shunt_system,
             ("tap_1_2" => -1.037005876824872, "shunt_3" => 0.009997504076369628)),

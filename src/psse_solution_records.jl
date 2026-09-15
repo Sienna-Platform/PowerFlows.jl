@@ -1,12 +1,6 @@
-# Solution records for the PSS/E v35 raw format: the block of system-wide solution
-# parameters that sits between the case identification records and the bus records.
-#
-# The format is a vendor file format, not an interface: nothing outside this file speaks
-# it. `SolutionParameters` is the PowerFlows-side type, and the two mappings here are the
-# only place the record field names appear.
-#
-# The v33 raw format has no such block — PSS/E keeps solution parameters in the binary
-# save case instead — so everything here is v35-only.
+# Solution records for the PSS/E v35 raw format — the system-wide solution-parameter block
+# between the case identification and bus records. The v33 format has no such block; PSS/E
+# keeps solution parameters in the binary save case instead.
 
 # Records PowerFlows has no counterpart for are emitted verbatim at the format defaults.
 # GAUSS: PowerFlows implements no Gauss-Seidel solver.
@@ -43,9 +37,8 @@ const SOLUTION_RECORD_DEFAULT_TOLN = 0.1
 const SOLUTION_RECORD_DEFAULT_DVLIM = 0.99
 const SOLUTION_RECORD_DEFAULT_NDVFCT = 0.99
 
-# Solver method codes. Both fast-decoupled variants report the decoupled code: the
-# distinction between them (B′/B″ half-steps versus a frozen Jacobian) has no counterpart
-# in the format, and claiming one would assert a mapping the format does not define.
+# Both fast-decoupled variants report the same decoupled code: the distinction between
+# B′/B″ half-steps and a frozen Jacobian has no counterpart in the format.
 const SOLUTION_RECORD_SOLVER_FULL_NEWTON = "FNSL"
 const SOLUTION_RECORD_SOLVER_DECOUPLED = "FDNS"
 
@@ -175,9 +168,8 @@ function solution_record_values(
         solver = _solver_code(solver),
         blowup = fd ? params.fd_blowup : SOLUTION_RECORD_DEFAULT_BLOWUP,
         itmxn = iterations,
-        # Rounded: the per-unit-to-MW conversion leaves float noise that would otherwise
-        # be written out in full (1e-7 * 100 is 9.999999999999999e-6), and no solver
-        # tolerance is meaningful past twelve significant digits.
+        # Rounded: the per-unit-to-MW conversion leaves float noise (1e-7*100 =
+        # 9.999999999999999e-6), and no solver tolerance is meaningful past twelve digits.
         toln = round(params.tol * base_power; sigdigits = 12),
         dvlim = fd ? params.fd_dvlim : SOLUTION_RECORD_DEFAULT_DVLIM,
         ndvfct = fd ? params.fd_ndvfct : SOLUTION_RECORD_DEFAULT_NDVFCT,
@@ -228,9 +220,8 @@ function write_solution_records(io::IO, pf, params, base_power::Float64)
     )
     println(io, SOLUTION_RECORD_ADJUST_DEFAULT)
     println(io, SOLUTION_RECORD_TYSL_DEFAULT)
-    # The method name is positional and blank-able. The field is five characters wide, so
-    # right-aligning it puts a space before a name and renders an empty name as the five
-    # spaces the format defaults use.
+    # The method name is positional and blank-able; right-aligning to five chars renders
+    # an empty name as the five spaces the format defaults use.
     println(
         io,
         "SOLVER,", lpad(v.solver, 5),
@@ -299,16 +290,15 @@ end
 _record_int(d, key, fallback) = something(tryparse(Int, get(d, key, "")), fallback)
 _record_float(d, key, fallback) = something(tryparse(Float64, get(d, key, "")), fallback)
 
-# The leading token of a record, with any trailing `/` comment removed. Section
-# terminators customarily carry one — `0 / END OF SYSTEM-WIDE DATA, BEGIN BUS DATA`.
+# Section terminators customarily carry a trailing `/` comment, e.g. `0 / END OF
+# SYSTEM-WIDE DATA, BEGIN BUS DATA` — stripped here.
 function _leading_token(line::AbstractString)
     field = first(_split_record(line))
     return strip(first(split(field, '/')))
 end
 
-# A line ends the block when its leading token is the terminator `0`. A leading token that
-# parses as any other integer means bus data started and the block was absent — treat that
-# as the end too, rather than reading bus records as solution records.
+# Terminator `0` ends the block normally; any other leading integer means bus data started
+# and the block was absent — treated as the end too, not read as solution records.
 function _ends_solution_block(line::AbstractString)
     token = _leading_token(line)
     isempty(token) && return false

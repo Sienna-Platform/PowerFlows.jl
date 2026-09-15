@@ -211,10 +211,8 @@ mutable struct PSSEExporter <: SystemPowerFlowContainer
     md_valid::Bool  # If this is true, the metadata need not be reserialized
     md_buffer::IOBuffer  # Cache a serialized version of the metadata
     components_cache::Dict{String, Any}  # Cache sorted lists of components to reduce allocations
-    # The evaluation model whose solve produced the data being exported, and the parameters
-    # that solve ran with, or `nothing` when the exporter is driven standalone. Together
-    # they supply the solution records; see `write_solution_records`. The parameters are
-    # held separately from the model because a call-site keyword can override them.
+    # `nothing` when driven standalone. Held separately from the model because a call-site
+    # keyword can override the parameters; see `write_solution_records`.
     source_model::Union{Nothing, PowerFlowEvaluationModel}
     source_parameters::Union{Nothing, SolutionParameters}
 
@@ -299,8 +297,8 @@ function update_exporter!(exporter::PSSEExporter, data::PowerFlowData)
         # the exported case self-consistent without touching the user's system.
         write_device_settings!(exporter.system, data)
     end
-    # This call is what marks a solve as having happened, so it is where the exporter
-    # learns the parameters the solve ran with.
+    # This call marks a solve as having happened, so it's where the exporter learns the
+    # parameters the solve ran with.
     _attach_source_model!(exporter, get_pf(data))
     # NOTE this relies on exporter.system being a deepcopy of the original system so we're not changing that one here
     update_system!(exporter.system, data)
@@ -331,9 +329,8 @@ function update_exporter!(
     return
 end
 
-# The exporter keeps the model (for the solver identity) and the parameters separately,
-# rather than rebuilding the model around overridden parameters: each formulation has its
-# own field set, so a generic rebuild would silently drop the polar-only fields.
+# Keeps the model and parameters separate rather than rebuilding the model around overridden
+# parameters — a generic rebuild would silently drop each formulation's own fields.
 function _attach_source_model!(
     exporter::PSSEExporter,
     pf::PowerFlowEvaluationModel;
@@ -616,8 +613,7 @@ function write_to_buffers!(
     end
 
     # v35 requires a System-Wide Data block between Case Identification Data and Bus Data.
-    # With no solve attached it is written at the format defaults, so a standalone export
-    # is unchanged; `update_exporter!` supplies the model that fills it in.
+    # With no solve attached, it's written at the format defaults via `update_exporter!`.
     if exporter.psse_version == :v35
         println(io)  # blank line
         write_solution_records(

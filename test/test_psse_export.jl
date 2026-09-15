@@ -1000,7 +1000,6 @@ end
     @test occursin("ITMXN=30", text)
     @test occursin("FNSL", text)
 
-    # The parameters read back out of the written file match the solve.
     recovered = read_solution_parameters(raw_after)
     @test !isnothing(recovered)
     @test recovered.maxIterations == 30
@@ -1008,7 +1007,6 @@ end
     @test recovered.check_reactive_power_limits
     @test recovered.tol ≈ 1e-6
 
-    # Two exports of the same attached solve are byte-identical.
     write_export(exporter, "after2"; overwrite = true)
     test_psse_export_strict_equality(
         get_psse_export_paths(joinpath(export_location, "after"))...,

@@ -1,29 +1,18 @@
 # Analytic sensitivity for the discrete-control continuation: dy/dp from the factored power
 # flow Jacobian instead of a finite-difference probe.
-#
-# Adding a formulation means adding methods here — `_sensitivity_residual_jacobian`, `_dF_dp!`,
-# `_dVm_from_sol`, and (to earn batched passes) `_refresh_residual_inputs!`, `_sensitivity_x0`,
-# `_refresh_jacobian_yb_caches!` (only needed if the Jacobian caches its own copies of anything
-# `_refresh_residual_inputs!` changes — a no-op otherwise), plus `_refreshable` — and touching no
-# device code and no continuation logic. `_refresh_sensitivity_context!` itself is formulation-
-# agnostic: it dispatches the p-dependent pieces to the formulation's methods and does the rest
-# — evaluate, re-Jacobian, refactor — once.
 
-# The residual/Jacobian pair for a formulation, built and evaluated at the state currently in
-# `data`. One method per formulation; `_sensitivity_context` below is generic over them.
 function _sensitivity_residual_jacobian(::ACPolarPowerFlow, data, ts::Int)
     residual = ACPowerFlowResidual(data, ts)
     # Not `initialize_power_flow_variables`: it routes through `improve_x0` and would build
     # the context at a warm-start candidate, not the converged base.
     x = calculate_x0(data, ts)
-    residual(x, ts)                       # evaluate at current state; fills P_net/Q_net
+    residual(x, ts)
     J = ACPowerFlowJacobian(residual, ts)
-    J(ts)                                 # Jacobian values at current state
+    J(ts)
     return residual, J
 end
 
-# No analytic form for this formulation ⇒ the caller uses FD probes. Kept as the escape for any
-# formulation added later without a `_sensitivity_residual_jacobian` method.
+# No analytic form here ⇒ caller falls back to FD probes.
 _sensitivity_context(::AbstractACPowerFlow, data, ts::Int; kwargs...) = nothing
 function _sensitivity_context(
     pf::Union{ACPolarPowerFlow, ACRectangularPowerFlow, ACMixedPowerFlow},
@@ -41,28 +30,20 @@ function _sensitivity_context(
         e isa LinearAlgebra.SingularException || rethrow()
         return                    # singular base Jacobian ⇒ fall back to FD probes
     end
-    # One full sensitivity-context build (fresh residual + Jacobian structure + refactor) per
-    # continuation. `_refresh_sensitivity_context!` re-evaluates VALUES into these same objects
-    # on every subsequent batched pass and does NOT count here — the Jacobian structure (and thus
-    # the persisted symbolic factorization this counter tracks) is topology-invariant across the
-    # continuation, so only this one build should ever register.
+    # One registration per continuation — `_refresh_sensitivity_context!` reuses this
+    # topology-invariant factorization on every batched pass without counting again.
     _count_symbolic_factor!(data)
     n = length(residual.Rv)
     return _SensitivityContext(
         lin_cache, residual, J, zeros(n), zeros(n), copy(view(data.bus_type, :, ts)))
 end
 
-# Whether a live context can be kept current across batched passes, i.e. whether its
-# formulation has a `_refresh_sensitivity_context!` that re-syncs every p-dependent cache.
-# Gates `use_batched`. A formulation that supplies analytic probe sensitivities but no refresh
-# stays on the sequential path: batching it would read a Jacobian that went stale the moment a
-# device moved, and be wrong on every pass after the first.
+# Gates `use_batched`: a formulation with analytic sensitivities but no refresh stays
+# sequential — batching it would read a stale Jacobian after the first device move.
 _supports_batched_refresh(::Nothing) = false
 _supports_batched_refresh(ctx::_SensitivityContext) = _refreshable(ctx.residual)
-# Default false, so a formulation that gains analytic probe sensitivities does NOT silently
-# gain batched passes as well: opting in requires adding a `_refresh_sensitivity_context!`
-# method AND flipping this. Getting the default backwards would batch a formulation whose
-# context goes stale on the first device move.
+# Default false: opting into batching needs a `_refresh_sensitivity_context!` method AND
+# flipping this explicitly.
 _refreshable(::Any) = false
 _refreshable(::ACPowerFlowResidual) = true
 
@@ -121,10 +102,8 @@ function _refresh_sensitivity_context!(ctx::_SensitivityContext, data, ts::Int):
     return true
 end
 
-# ∂F/∂p into `rhs` (zeroed first). Returns `true` iff the family has an analytic polar form here;
-# the `false` path is reserved for a future family without one — the caller then uses the FD probe
-# (see `_linear_plant_sign`). Row convention: F[2b−1] active, F[2b] reactive balance at bus b
-# (see `_update_residual_values!`).
+# Row convention: F[2b−1] active, F[2b] reactive balance at bus b (see `_update_residual_values!`).
+# Returns `false` when no analytic form exists here; caller then falls back to the FD probe.
 function _dF_dp!(
     rhs::Vector{Float64},
     d::ControlledTap,
@@ -169,23 +148,15 @@ function _dF_dp!(
     return true
 end
 
-# Linearized dy/dp for a voltage device via the factored Jacobian. `y = Vm(controlled_bus)`
-# = x[2·cbus−1], and dx/dp = −J⁻¹·(∂F/∂p). Returns `(dy/dp, true)`, or `(0.0, false)` when the
-# family has no analytic form (caller then uses the FD probe).
-# dVm(cbus)/dp from `sol = J⁻¹·(∂F/∂p)`, given `dx/dp = −sol`. One method per formulation:
-# each knows where its own state keeps the controlled bus's voltage.
-# Polar: x[2b−1] is Vm directly.
+# Polar: x[2b−1] is Vm directly, so dVm/dp = −sol[2b−1] (dx/dp = −J⁻¹·∂F/∂p).
 _dVm_from_sol(::ACPowerFlowResidual, sol::Vector{Float64}, cbus::Int, data, ts::Int) =
     -sol[2 * cbus - 1]
 
 function _linear_plant_sign(d, data, ts::Int, ctx::_SensitivityContext)
     _dF_dp!(ctx.rhs, d, ctx.residual, data, ts) || return 0.0, false
     cbus = controlled_bus_ix(d)
-    # The controlled bus's voltage is a free state variable ONLY at a PQ bus (polar keeps Q_gen
-    # there at PV and P at REF; the rectangular/mixed formulations pin |V|² with their own
-    # constraint row). At a PV/REF controlled bus the voltage is pinned by the bus model, so
-    # dVm/dp = 0 exactly: return a reliable zero so the caller's gain floor freezes the device,
-    # matching the FD probe's behavior.
+    # Voltage is a free state only at PQ (PV/REF pin it), so dVm/dp = 0 there by construction —
+    # matches the FD probe's behavior and freezes the device via the caller's gain floor.
     if data.bus_type[cbus, ts] != PSY.ACBusTypes.PQ
         return 0.0, true
     end
@@ -195,35 +166,17 @@ function _linear_plant_sign(d, data, ts::Int, ctx::_SensitivityContext)
 end
 
 # ── Rectangular CI and MCPB ───────────────────────────────────────────────────────────────
-#
-# Both formulations carry a complex state `V = e + jf` and a residual built on a CURRENT
-# balance, where polar's is a POWER balance. One primitive spans all three: the complex
-# derivative of the network current injected at a bus,
-#
-#     ΔI_i = ∂(Y_bus_eff·V)_i / ∂p
-#
-# from which each formulation's rows follow by its own sign and ordering convention. The
-# identity that ties the two families together, and the cross-check for any new stamp, is
-#
-#     ∂F_rect/∂p = −ΔI_i          ∂F_polar/∂p = V_i · conj(ΔI_i)
-#
-# Applied to polar, the right-hand form reproduces the two hand-written methods above exactly:
-# a shunt gives `V·conj(jV) = −j|V|²` ⇒ reactive row `−Vm²`, and a tap gives `V_f·conj(ΔI_f)`
-# ⇒ the `dSf` split. That is why those bodies are trusted and these are derived from them.
+# Shared primitive: ΔI_i = ∂(Y_bus_eff·V)_i/∂p, from which each formulation's rows follow.
+# Cross-check identity: ∂F_rect/∂p = −ΔI_i, ∂F_polar/∂p = V_i·conj(ΔI_i).
 
 const _RectOrMixedResidual = Union{ACRectangularCIResidual, ACMixedCPBResidual}
 
-# Both formulations gain a refresh below ⇒ both earn batched passes.
 _refreshable(::_RectOrMixedResidual) = true
 
-# `Y_bus_eff` is the only p-dependent cache either constructor derives from mutable `data`: a
-# Y-bus copy with ZIP constant-Z folded in ADDITIVELY. A tap move edits the Y-bus in place and a
-# shunt/FACTS move edits the withdrawals the fold reads, so the copy must restart from a fresh
-# Y-bus each refresh, not be re-folded onto the old one. The structure check guards the case
-# `fold_zip_constant_z!` inserted a structural entry at construction (a bus diagonal absent from
-# the Y-bus) that a plain `nonzeros` copy would silently misalign; on mismatch, fall back to FD
-# probes like a singular refactor does. Every other constructor field is read from constant-
-# power/constant-current withdrawals or topology, untouched by any device move here.
+# `Y_bus_eff` must be rebuilt fresh from `data` each refresh, not re-folded onto the old copy —
+# tap/shunt moves edit the source Y-bus and withdrawals in place. The structure check catches a
+# `fold_zip_constant_z!`-inserted diagonal a plain `nonzeros` copy would silently misalign; on
+# mismatch, fall back to FD probes.
 function _refresh_residual_inputs!(r::_RectOrMixedResidual, data, ts::Int)::Bool
     Y = data.power_network_matrix.data
     if SparseArrays.getcolptr(r.Y_bus_eff) != SparseArrays.getcolptr(Y) ||
@@ -235,10 +188,8 @@ function _refresh_residual_inputs!(r::_RectOrMixedResidual, data, ts::Int)::Bool
     return true
 end
 
-# Unlike `ACPowerFlowJacobian`, the rect/mixed Jacobians cache `Y_bus_eff`-derived values
-# (`Y_diag`, off-diagonal `Jv` blocks, mixed's `offdiag_pv_y`) once at construction instead of
-# re-reading `Y_bus_eff` per call, so a tap/shunt/FACTS move between passes leaves them stale.
-# Re-run the constructor's own population steps against the just-refreshed `r.Y_bus_eff`.
+# Unlike `ACPowerFlowJacobian`, these cache `Y_bus_eff`-derived values at construction, so a
+# tap/shunt move leaves them stale — rerun the constructor's population steps against the refresh.
 function _refresh_jacobian_yb_caches!(J, r::ACRectangularCIResidual, ts::Int)
     @inbounds for i in eachindex(J.Y_diag)
         J.Y_diag[i] = r.Y_bus_eff[i, i]
@@ -259,8 +210,7 @@ function _refresh_jacobian_yb_caches!(J, r::ACMixedCPBResidual, ts::Int)
     return
 end
 
-# Mirrors `_sensitivity_residual_jacobian(::ACRectangularPowerFlow/::ACMixedPowerFlow, ...)` and
-# `improve_x0`'s own initial state for each formulation.
+# Mirrors `_sensitivity_residual_jacobian`'s and `improve_x0`'s initial state for each formulation.
 function _sensitivity_x0(r::ACRectangularCIResidual, data, ts::Int)
     x = zeros(length(r.Rv))
     rect_initial_state!(x, data, r.bus_state_offset, r.bus_block_size, ts)
@@ -274,24 +224,20 @@ end
 
 _state_offset(r::_RectOrMixedResidual, i::Int) = Int(r.bus_state_offset[i])
 
-# The bus voltage as the residual's own state sees it. NOT `data.bus_magnitude`/`bus_angles`:
-# those hold V_set at PV buses rather than |V_state|, while `e_state`/`f_state` are the values
-# the Jacobian was built from — so using them keeps ∂F/∂p and J consistent by construction.
+# NOT `data.bus_magnitude`/`bus_angles`: those hold V_set at PV buses, not |V_state|. Use
+# `e_state`/`f_state` — the values the Jacobian was built from — so ∂F/∂p and J stay consistent.
 _bus_voltage(r::_RectOrMixedResidual, i::Int) = complex(r.e_state[i], r.f_state[i])
 
 # ── ∂I/∂p, per device family ──────────────────────────────────────────────────────────────
 # The buses a parameter move touches, each with its `ΔI`. Formulation-free: this is the
 # physics of the device, not of the residual. Returns a tuple so it stays stack-allocated.
 
-# A shunt/FACTS parameter is a susceptance at one bus. `apply_parameter!` writes
-# `bus_reactive_power_constant_impedance_withdrawals += current − b`, so ∂β_Q/∂p = −1, and
-# `fold_zip_constant_z!` folds that into the Y-bus as `Y_bb += complex(β_P, −β_Q)`. Hence
-# ∂Y_bb/∂p = (−j)(−1) = +j and ΔI = j·V.
+# `apply_parameter!` writes `bus_reactive_..._withdrawals += current − b`, so ∂β_Q/∂p = −1, and
+# `fold_zip_constant_z!` folds that as `Y_bb += complex(β_P, −β_Q)` ⇒ ∂Y_bb/∂p = +j ⇒ ΔI = j·V.
 _dI_dp(d::Union{ControlledSwitchedShunt, ControlledFACTS}, r::_RectOrMixedResidual) =
     ((d.bus_ix, im * _bus_voltage(r, d.bus_ix)),)
 
-# A tap perturbs three Y-bus entries (t_c = p·cis(α); Y_tt is p-independent), so it touches
-# both terminals. Same ∂Y/∂p as the polar tap method above.
+# Same ∂Y/∂p as the polar tap method above (t_c = p·cis(α); Y_tt is p-independent).
 function _dI_dp(d::ControlledTap, r::_RectOrMixedResidual)
     f, t = d.from_ix, d.to_ix
     Vf, Vt = _bus_voltage(r, f), _bus_voltage(r, t)
@@ -304,9 +250,8 @@ end
 
 # ── ΔI → residual rows, per formulation ───────────────────────────────────────────────────
 
-# Rectangular CI: `F = I_spec − Y·V`, real part in slot 0 and imag in slot 1, uniformly at
-# every bus type (`_update_rect_ci_residual_values!`). A PV bus's third row is the `|V|²`
-# constraint, which carries no p dependence.
+# F = I_spec − Y·V: real in slot 0, imag in slot 1 at every bus type. A PV bus's third row
+# is the `|V|²` constraint, which carries no p dependence.
 function _stamp_dI!(
     rhs::Vector{Float64},
     r::ACRectangularCIResidual,
@@ -322,12 +267,9 @@ function _stamp_dI!(
     return
 end
 
-# MCPB mixes three conventions in one vector (`_update_mixed_cpb_residual_values!`):
-#   PQ  — divided current balance, IMAG-first (the two rect slots swapped so a nonzero B_ii
-#         lands on the block diagonal). Rows swap; the (e, f) COLUMNS do not.
-#   PV  — real-power balance `e·Ir + f·Ii − P_spec` plus a `|V|²` row. A purely reactive
-#         injection cannot move either: `Re(V·conj(jV)) = 0`, and the `|V|²` row is
-#         p-independent. Written generically so a tap (which does move real power) is right.
+# MCPB mixes three row conventions (`_update_mixed_cpb_residual_values!`):
+#   PQ  — divided current balance, IMAG-first (rows swap; (e, f) columns do not).
+#   PV  — real-power balance + `|V|²` row (p-independent; reactive injection cannot move either).
 #   REF — rect-verbatim, real-first.
 function _stamp_dI!(
     rhs::Vector{Float64},
@@ -366,10 +308,8 @@ function _dF_dp!(
     return true
 end
 
-# `|V|² = e² + f²` ⇒ dVm/dp = (e·de/dp + f·df/dp)/Vm, with dx/dp = −sol. The PQ state slots are
-# `(e, f)` at `off`, `off+1` in both formulations, and `_linear_plant_sign` only reaches here at
-# a PQ controlled bus. `V_FLOOR2` matches the residuals' own guard; at a converged base it never
-# binds.
+# dVm/dp = (e·de/dp + f·df/dp)/Vm from |V|² = e²+f², with dx/dp = −sol. `V_FLOOR2` matches the
+# residuals' own guard — never binds at a converged base.
 function _dVm_from_sol(
     r::_RectOrMixedResidual,
     sol::Vector{Float64},
@@ -389,7 +329,7 @@ function _sensitivity_residual_jacobian(::ACRectangularPowerFlow, data, ts::Int)
     # `x` without re-deriving the tail.
     x = zeros(length(residual.Rv))
     rect_initial_state!(x, data, residual.bus_state_offset, residual.bus_block_size, ts)
-    residual(x, ts)                       # evaluate at current state; fills e_state/f_state
+    residual(x, ts)
     J = ACRectangularCIJacobian(residual, ts)
     J(ts)
     return residual, J

@@ -161,7 +161,6 @@ end
     @test recovered.area_interchange_control
     @test recovered.tie_definition === :lines_only
 
-    # Parse, then write: the block must come back identical.
     written = _write_records(pf, params)
     reparsed = PF.read_solution_records(path)
     @test sprint(io -> PF.write_solution_records(io, nothing, nothing, 100.0)) ==

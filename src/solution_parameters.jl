@@ -67,12 +67,12 @@ over the stored value for that solve only.
 Per-call data (`x0`) is not a parameter and is not carried here — pass it at the call site.
 """
 Base.@kwdef struct SolutionParameters
-    # Convergence. `maxIterations === nothing` keeps each solver's own default, which
-    # differs between the Newton-type solvers (50) and fast decoupled (150).
+    # `maxIterations === nothing` keeps each solver's own default: 50 for Newton-type
+    # solvers, 150 for fast decoupled.
     tol::Float64 = DEFAULT_NR_TOL
     maxIterations::Union{Nothing, Int} = nothing
 
-    # Network controls. Read through the `get_*` accessors, never splatted into a solver.
+    # Read through the `get_*` accessors — never splatted into a solver call.
     check_reactive_power_limits::Bool = false
     enhanced_flat_start::Bool = true
     control_discrete_devices::Bool = false
@@ -81,30 +81,27 @@ Base.@kwdef struct SolutionParameters
     tie_definition::Symbol = :lines_only
     model_dc_network::Bool = true
 
-    # Voltage validation.
     validate_voltage_magnitudes::Bool = DEFAULT_VALIDATE_VOLTAGES
     vm_validation_range::MinMax = DEFAULT_VALIDATION_RANGE
 
-    # Newton-Raphson.
     refinement_threshold::Float64 = DEFAULT_REFINEMENT_THRESHOLD
     refinement_eps::Float64 = DEFAULT_REFINEMENT_EPS
     iwamoto::Bool = false
     stop_at_fold::Bool = false
 
-    # Trust region.
     factor::Float64 = DEFAULT_TRUST_REGION_FACTOR
     eta::Float64 = DEFAULT_TRUST_REGION_ETA
     autoscale::Bool = DEFAULT_AUTOSCALE
     iwamoto_fallback::Bool = DEFAULT_IWAMOTO_FALLBACK
 
-    # Levenberg-Marquardt. `marquardt_scaling === nothing` selects the per-formulation
-    # default (off for polar, on for rectangular).
+    # `marquardt_scaling === nothing` selects the per-formulation default (off for polar,
+    # on for rectangular).
     λ_0::Float64 = DEFAULT_λ_0
     marquardt_scaling::Union{Bool, Nothing} = nothing
 
-    # Fast decoupled. `handoff_solver` is a solver type or `nothing`; it is typed as
-    # `DataType` because `ACPowerFlowSolverType` is defined after this file in the include
-    # order, and `_validate_fd_handoff_solver` checks the value anyway.
+    # `handoff_solver` is typed as `DataType`, not `ACPowerFlowSolverType`, because that
+    # type is defined after this file in the include order; `_validate_fd_handoff_solver`
+    # checks the value anyway.
     handoff_solver::Union{Nothing, DataType} = nothing
     handoff_tol::Float64 = DEFAULT_FD_HANDOFF_TOL
     refreeze_on_stall::Bool = DEFAULT_FD_REFREEZE_ON_STALL
@@ -115,22 +112,19 @@ Base.@kwdef struct SolutionParameters
     fd_ndvfct::Float64 = DEFAULT_FD_NDVFCT
     fd_max_step_halvings::Int = DEFAULT_FD_MAX_STEP_HALVINGS
 
-    # Robust homotopy.
     Δt_k::Float64 = DEFAULT_Δt_k
 
-    # Gradient descent (Adam). Defaults mirror `AdamConfig`.
+    # Defaults mirror `AdamConfig`.
     learning_rate::Float64 = 0.01
     beta1::Float64 = 0.9
     beta2::Float64 = 0.999
     epsilon::Float64 = 1e-8
 
-    # Linear-solver backend.
     linear_solver::Union{Nothing, AbstractString} = nothing
 end
 
-# Fields read through the `get_*` accessors rather than splatted into a solver call.
-# `get_solver_kwargs` omits them so the kwargs surface a solver sees stays exactly what it
-# saw when these were struct fields on the evaluation model.
+# Excluded from `get_solver_kwargs` so the kwargs surface a solver sees matches what it saw
+# when these were separate struct fields on the evaluation model.
 const _SOLUTION_PARAMETER_CONTROL_FIELDS = (
     :check_reactive_power_limits,
     :enhanced_flat_start,
@@ -146,9 +140,9 @@ const _SOLUTION_PARAMETER_SOLVER_FIELDS = Tuple(
     if !(name in _SOLUTION_PARAMETER_CONTROL_FIELDS)
 )
 
-# `maxIterations` is the one sentinel field: emitting `nothing` would override the solver's
-# own default with `nothing`, so it is dropped instead when unset. Both field lists are
-# precomputed so building the kwargs does not rebuild a tuple on every solve.
+# `maxIterations` is the sentinel field: emitting `nothing` would override the solver's own
+# default, so it's dropped when unset. Both field lists are precomputed to avoid rebuilding
+# a tuple on every solve.
 const _SOLUTION_PARAMETER_SOLVER_FIELDS_NO_ITER = Tuple(
     name for name in _SOLUTION_PARAMETER_SOLVER_FIELDS if name !== :maxIterations
 )
@@ -197,7 +191,6 @@ end
 _override(params::SolutionParameters; kwargs...) =
     _override(params, Dict{Symbol, Any}(kwargs))
 
-# Keys of a legacy `solver_settings` dictionary that name a field, warning about the rest.
 function _settings_overrides(settings)
     overrides = Dict{Symbol, Any}()
     isnothing(settings) && return overrides
