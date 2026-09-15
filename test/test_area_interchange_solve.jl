@@ -1033,7 +1033,8 @@ end
 
     # Converge the reduced (1-area) working set for ts=2 for real, then persist it exactly as
     # `_ac_power_flow_with_area_relax!` would on a successful post-relax retry.
-    @test PF._ac_power_flow(data, pf, 2; PF.get_solver_kwargs(pf)...)
+    converged = PF._ac_power_flow(data, pf, 2; PF.get_solver_kwargs(pf)...)
+    @test converged
     PF._sync_pristine_delta_p!(data, 2)
 
     df1 = PF.area_interchange_results_dataframe(sys, data, 1)
