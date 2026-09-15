@@ -766,8 +766,10 @@ function _apply_vsc_bus_injections_polar!(
     return
 end
 
-# Write the VSC tail residual rows: 2 control rows per converter, then 1 DC-KCL row per DC node.
-# `Vm` is the per-bus voltage magnitude (polar). `vsc_off` is the index just before the VSC tail.
+"""
+Write the VSC tail residual rows: 2 control rows per converter, then 1 DC-KCL row per DC node.
+`Vm` is the per-bus voltage magnitude (polar). `vsc_off` is the index just before the VSC tail.
+"""
 function _set_vsc_tail_residuals!(
     F::Vector{Float64},
     dcn::DCNetwork,

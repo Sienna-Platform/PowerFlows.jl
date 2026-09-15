@@ -910,7 +910,7 @@ which for a three-winding winding is suffixed per circuit. Non-transformer famil
 `device_name`/`circuit_index` `missing`.
 
 For a single-time-step solve (`time_steps == 1`), the solved settings are also written back
-to the `PSY.System` by [`solve_and_store_power_flow!`](@ref) under active controls, and
+to the `PSY.System` by `solve_and_store_power_flow!` under active controls, and
 applied to PSS/E exports by [`update_exporter!`](@ref) — see
 [`write_device_settings!`](@ref). For `time_steps > 1`, a PSY component cannot hold a
 per-time-step schedule, so this DataFrame is the only place the full per-step results

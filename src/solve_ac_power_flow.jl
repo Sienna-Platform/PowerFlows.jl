@@ -156,7 +156,7 @@ function write_device_settings!(system::PSY.System, data)
 end
 
 """
-Similar to [solve\\_and\\_store\\_power\\_flow!](@ref) but does not update the system struct with results.
+Similar to [`solve_and_store_power_flow!`](@ref) but does not update the system struct with results.
 Returns the results in a dictionary of dataframes.
 
 ## Examples
