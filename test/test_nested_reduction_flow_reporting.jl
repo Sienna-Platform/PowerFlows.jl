@@ -111,7 +111,7 @@ function _nested_reduction_system(shape::Symbol)
         PSY.ThermalStandard(;
             name = "gen1",
             available = true,
-            status = true,
+            status = PSY.OperationalStates.ONLINE,
             bus = buses[1],
             active_power = 1.05,
             reactive_power = 0.25,

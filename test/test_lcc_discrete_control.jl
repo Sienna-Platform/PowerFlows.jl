@@ -124,7 +124,7 @@ function build_lcc_control_system(; p_set_mw::Union{Nothing, Float64} = nothing)
     add_component!(
         sys,
         SwitchedAdmittance(; name = "ctrl_shunt_101", available = true,
-            bus = bus101, Y = 0.0 + 0.0im, initial_status = [0], number_of_steps = [8],
+            bus = bus101, number_engaged = [0], number_of_steps = [8],
             Y_increase = [0.0 + 0.5im], admittance_limits = (min = 1.05, max = 1.08),
             control_mode = PSY.SwitchedAdmittanceControlMode.DISCRETE_VOLTAGE,
         ),
@@ -154,7 +154,8 @@ end
 
 """Rebuild the fixture with both controlled devices hard-locked at the settings `results`
 reports for time step `ts`, so it can be solved with control off. The shunt locks through its
-own `Y`; the FACTS device needs a `FixedAdmittance` because its Q is reporting-only."""
+own `solved_admittance`; the FACTS device needs a `FixedAdmittance` because its Q is
+reporting-only."""
 function build_locked_twin(results, ts::Int)
     step_results = results[results.time_step .== ts, :]
     shunt_final = only(step_results.final[step_results.family .== "SwitchedAdmittance"])
@@ -163,7 +164,7 @@ function build_locked_twin(results, ts::Int)
         only(step_results.delivered_q_mvar[step_results.family .== "FACTSControlDevice"])
     sys = build_lcc_control_system()
     sa = get_component(SwitchedAdmittance, sys, "ctrl_shunt_101")
-    set_Y!(sa, Complex(real(get_Y(sa)), shunt_final))
+    set_solved_admittance!(sa, shunt_final)
     set_reactive_power_required!(
         get_component(FACTSControlDevice, sys, "ctrl_facts_101"), facts_q)
     add_component!(

@@ -95,9 +95,10 @@ end
 
 @testset "write-back is skipped under time_steps>1 (no silent last-ts write)" begin
     sys = _make_multiperiod_shunt_system()
-    # capture the shunt's PSY Y before solving
+    # capture the shunt's PSY settings before solving
     shunt = only(collect(PSY.get_components(PSY.SwitchedAdmittance, sys)))
-    y_before = PSY.get_Y(shunt)
+    engaged_before = copy(PSY.get_number_engaged(shunt))
+    solved_before = PSY.get_solved_admittance(shunt)
     time_steps = 3
     pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
         control_discrete_devices = true, time_steps = time_steps)
@@ -106,19 +107,22 @@ end
     @test solve_power_flow!(data)
     # multi-ts: PSY component is NOT mutated (per-ts results are in get_controlled_device_results)
     PowerFlows.write_device_settings!(sys, data)
-    @test PSY.get_Y(shunt) == y_before
+    @test PSY.get_number_engaged(shunt) == engaged_before
+    @test PSY.get_solved_admittance(shunt) == solved_before
     @test nrow(PowerFlows.get_controlled_device_results(data)) >= time_steps
 end
 
 @testset "write-back still happens for time_steps==1 (no regression)" begin
     sys = _make_multiperiod_shunt_system()
     shunt = only(collect(PSY.get_components(PSY.SwitchedAdmittance, sys)))
-    y_before = PSY.get_Y(shunt)
+    engaged_before = copy(PSY.get_number_engaged(shunt))
+    solved_before = PSY.get_solved_admittance(shunt)
     pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(; control_discrete_devices = true)
     data = PowerFlowData(pf, sys)
     @test solve_power_flow!(data)
     PowerFlows.write_device_settings!(sys, data)
-    @test PSY.get_Y(shunt) != y_before
+    @test PSY.get_number_engaged(shunt) != engaged_before ||
+          PSY.get_solved_admittance(shunt) != solved_before
 end
 
 @testset "Branch-flow-inside-loop parity (no taps, multi-step)" begin

@@ -81,6 +81,15 @@ function _compute_bus_active_power_range!(
     return
 end
 
+# `solved_admittance` replaces the engaged blocks; it is a pure susceptance.
+_switched_admittance(solved::Float64, ::Vector{Int}, ::Vector{Complex{Float64}}) =
+    im * solved
+_switched_admittance(
+    ::Nothing,
+    engaged::Vector{Int},
+    y_increase::Vector{Complex{Float64}},
+) = sum(engaged .* y_increase; init = 0.0 + 0.0im)
+
 function _get_withdrawals!(
     pf::PowerFlowEvaluationModel,
     bus_active_power_withdrawals::Vector{Float64},
@@ -134,7 +143,11 @@ function _get_withdrawals!(
         bus = PSY.get_bus(sa)
         PSY.get_number(bus) in removed_buses && continue
         bus_ix = _get_bus_ix(bus_lookup, reverse_bus_search_map, PSY.get_number(bus))
-        Y = PSY.get_Y(sa) + sum(PSY.get_initial_status(sa) .* PSY.get_Y_increase(sa))
+        Y = _switched_admittance(
+            PSY.get_solved_admittance(sa),
+            PSY.get_number_engaged(sa),
+            PSY.get_Y_increase(sa),
+        )
         # Here we implement the switched admittance element as a constant impedance load.
         # The inputs for ZIP loads are provided for V = 1.0 p.u., so
         # the following is equivalent to S = V * conj(Y * V) for V = 1.0 p.u.
@@ -327,7 +340,19 @@ function _initialize_bus_data!(
     subnetworks = PNM.find_subnetworks(sys)
     subnetwork_keys = keys(subnetworks)
     # so that we don't warn if there's just 1 component.
-    main_ref_bus = argmax(x -> length(x[2]), subnetworks)[1]
+    #
+    # The main subnetwork's key is the one exempted from the REF promotion below, so it has
+    # to be a bus that already IS a REF: a subnetwork with no REF of its own is keyed by an
+    # arbitrary member, and exempting that one leaves it with no slack. Ranking on "is
+    # already REF" first and the bus number last also makes the choice independent of Dict
+    # iteration order, which is not stable across Julia versions and silently flipped this
+    # on two equal-sized islands.
+    system_ref_buses = Set(
+        PSY.get_number(b) for b in PSY.get_components(PSY.ACBus, sys) if
+        PSY.get_bustype(b) == PSY.ACBusTypes.REF
+    )
+    main_ref_bus =
+        argmax(x -> (x[1] in system_ref_buses, length(x[2]), -x[1]), subnetworks)[1]
     # correct/validate the bus types.
     forced_PV = must_be_PV(sys)
     possible_PV = can_be_PV(sys)

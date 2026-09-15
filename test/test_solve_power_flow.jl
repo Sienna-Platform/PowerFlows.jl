@@ -649,14 +649,15 @@ end
     data1 = PowerFlowData(ACPowerFlow(), sys)
 
     # create a switched admittance
+    # The old fixed `Y` field is gone from PSY's SwitchedAdmittance; folded in here as a
+    # third, always-fully-engaged block so the effective admittance matches the prior fixture.
     sa = SwitchedAdmittance(;
         name = "SA",
         available = true,
         bus = b2,
-        Y = 0.03 + 0.05im,
-        initial_status = Int[1, 2],
-        number_of_steps = Int[3, 3],
-        Y_increase = Complex{Float64}[0.01 + 0.02im, 0.02 + 0.03im],
+        number_engaged = Int[1, 2, 1],
+        number_of_steps = Int[3, 3, 1],
+        Y_increase = Complex{Float64}[0.01 + 0.02im, 0.02 + 0.03im, 0.03 + 0.05im],
     )
     add_component!(sys, sa)
 
@@ -670,7 +671,7 @@ end
         rtol = 0,
     )
 
-    Y = PSY.get_Y(sa) + sum(PSY.get_initial_status(sa) .* PSY.get_Y_increase(sa))
+    Y = sum(PSY.get_number_engaged(sa) .* PSY.get_Y_increase(sa))
 
     data1.power_network_matrix.data[2, 2] += Y
 

@@ -1391,7 +1391,7 @@ function _make_gens_from_hvdc(
     return PSY.ThermalStandard(;
         name = "$(PSY.get_name(hvdc_line))_$suffix",
         available = PSY.get_available(hvdc_line) ? 1 : 0,
-        status = true,
+        status = PSY.OperationalStates.ONLINE,
         bus = bus,
         active_power = active_power,
         reactive_power = 0.0,
@@ -2830,6 +2830,16 @@ function write_to_buffers!(
         (md["facts_name_mapping"] = serialize_component_ids(facts_name_mapping))
 end
 
+# Total switched-shunt susceptance for BINIT: `solved_admittance` when the case was read in
+# as solved, else the currently engaged blocks.
+_switched_shunt_binit(solved::Float64, ::Vector{Int}, ::Vector{Complex{Float64}}) = solved
+_switched_shunt_binit(
+    ::Nothing,
+    engaged::Vector{Int},
+    y_increase::Vector{Complex{Float64}},
+) =
+    imag(sum(engaged .* y_increase; init = 0.0 + 0.0im))
+
 """Build v35 switched shunt step data (S, N, B triplets padded to 8)."""
 function _build_switched_shunt_steps_v35(
     shunt::PSY.SwitchedAdmittance,
@@ -2837,12 +2847,12 @@ function _build_switched_shunt_steps_v35(
     increases::Vector{Complex{Float64}},
     base_power::Float64,
 )
-    initial_status = PSY.get_initial_status(shunt)
+    engaged = PSY.get_number_engaged(shunt)
     S_vals = []
     N_vals = []
     B_vals = []
     for (N, B) in zip(steps, increases)
-        push!(S_vals, get(initial_status, length(S_vals) + 1, 1))
+        push!(S_vals, get(engaged, length(S_vals) + 1, 1))
         push!(N_vals, N)
         push!(B_vals, imag(B) * base_power)
     end
@@ -2937,7 +2947,12 @@ function write_to_buffers!(
 
         RMPCT = PSSE_DEFAULT
         RMIDNT = _psse_quote_string("")
-        BINIT = imag(PSY.get_Y(shunt)) * base_power
+        BINIT =
+            _switched_shunt_binit(
+                PSY.get_solved_admittance(shunt),
+                PSY.get_number_engaged(shunt),
+                PSY.get_Y_increase(shunt),
+            ) * base_power
 
         steps = PSY.get_number_of_steps(shunt)
         increases = PSY.get_Y_increase(shunt)
