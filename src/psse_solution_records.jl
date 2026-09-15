@@ -88,21 +88,37 @@ description of what is mapped.
 the per-unit mismatch; the two differ by the system base.
 """
 Base.@kwdef struct SolutionRecordValues
+    # PSS/E solver method code: FNSL (full Newton) or FDNS (fast-decoupled).
     solver::String = ""
+    # PSS/E zero-impedance line threshold. Round-tripped only; no PowerFlows consumer.
     thrshz::Float64 = SOLUTION_RECORD_DEFAULT_THRSHZ
+    # PSS/E fast-decoupled PQ-brake parameter. Round-tripped only; no PowerFlows consumer.
     pqbrak::Float64 = SOLUTION_RECORD_DEFAULT_PQBRAK
+    # Divergence (blow-up) detection threshold; a fast-decoupled step-control parameter.
     blowup::Float64 = SOLUTION_RECORD_DEFAULT_BLOWUP
+    # Maximum solver iteration count.
     itmxn::Int = SOLUTION_RECORD_DEFAULT_ITMXN
+    # Convergence mismatch tolerance, in MW/MVAr (see the struct docstring).
     toln::Float64 = SOLUTION_RECORD_DEFAULT_TOLN
+    # Per-iteration voltage-change limit; a Newton/fast-decoupled step-control parameter.
     dvlim::Float64 = SOLUTION_RECORD_DEFAULT_DVLIM
+    # Non-divergent-solution voltage-change factor; a step-control parameter.
     ndvfct::Float64 = SOLUTION_RECORD_DEFAULT_NDVFCT
+    # Automatic transformer tap adjustment flag (paired with swshnt for discrete control).
     actaps::Int = 0
+    # Area interchange control mode: 0 off, 1 tie lines only, 2 tie lines and loads.
     areain::Int = 0
+    # Automatic phase-shifter adjustment flag; no PowerFlows counterpart, format default only.
     phshft::Int = 0
+    # DC tap adjustment flag; no PowerFlows counterpart, format default only.
     dctaps::Int = 0
+    # Automatic switched-shunt adjustment flag (paired with actaps for discrete control).
     swshnt::Int = 0
+    # Enhanced flat-start flag.
     flatst::Int = 0
+    # Reactive power limit handling: 0 applies limits, -1 ignores them.
     varlim::Int = 0
+    # Fast-decoupled non-divergent-solution flag.
     nondiv::Int = 0
 end
 
@@ -280,10 +296,8 @@ function _record_assignments(fields)
     return out
 end
 
-_record_int(d, key, fallback) =
-    haskey(d, key) ? something(tryparse(Int, d[key]), fallback) : fallback
-_record_float(d, key, fallback) =
-    haskey(d, key) ? something(tryparse(Float64, d[key]), fallback) : fallback
+_record_int(d, key, fallback) = something(tryparse(Int, get(d, key, "")), fallback)
+_record_float(d, key, fallback) = something(tryparse(Float64, get(d, key, "")), fallback)
 
 # The leading token of a record, with any trailing `/` comment removed. Section
 # terminators customarily carry one — `0 / END OF SYSTEM-WIDE DATA, BEGIN BUS DATA`.
@@ -322,7 +336,12 @@ Unrecognized records and unrecognized field names are ignored, so a case written
 newer PSS/E than this mapping knows about still reads.
 """
 function read_solution_records(path::AbstractString)
-    records = _significant_records(readlines(path))
+    return _read_solution_records(_significant_records(readlines(path)))
+end
+
+# Core of `read_solution_records`, taking the already-split significant records so a
+# caller that also needs another field of the file (e.g. the base power) can read it once.
+function _read_solution_records(records::Vector{<:AbstractString})
     length(records) >= 3 || return nothing
 
     # Case identification record 1, field 3, is the format revision.
@@ -459,15 +478,15 @@ function read_solution_parameters(
     path::AbstractString;
     base_power::Union{Nothing, Real} = nothing,
 )
-    values = read_solution_records(path)
+    records = _significant_records(readlines(path))
+    values = _read_solution_records(records)
     isnothing(values) && return nothing
-    sbase = isnothing(base_power) ? _read_case_base_power(path) : Float64(base_power)
+    sbase = isnothing(base_power) ? _case_base_power(records) : Float64(base_power)
     return solution_parameters(values, sbase)
 end
 
 # Field 2 of the case identification record is the system base in MVA.
-function _read_case_base_power(path::AbstractString)
-    records = _significant_records(readlines(path))
+function _case_base_power(records::Vector{<:AbstractString})
     isempty(records) && return 100.0
     fields = _split_record(records[1])
     length(fields) >= 2 || return 100.0

@@ -49,7 +49,6 @@ import PowerSystems as PSY
 import PowerSystems: System
 import LinearAlgebra
 import LinearAlgebra: norm, dot, ldiv!, mul!
-import LinearAlgebra: norm, dot
 import JSON3
 import SparseArrays
 import InfrastructureSystems as IS
@@ -58,7 +57,6 @@ import PowerNetworkMatrices: YBUS_ELTYPE
 import KrylovKit
 import SparseArrays:
     SparseMatrixCSC, SparseVector, sparse, sparsevec, AbstractSparseMatrix, spzeros
-import StaticArrays: MVector
 import DataStructures: OrderedDict
 import Dates
 import LineSearches: BackTracking

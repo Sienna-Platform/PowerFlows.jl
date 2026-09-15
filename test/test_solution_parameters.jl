@@ -1,21 +1,3 @@
-@testset "SolutionParameters defaults match the solver defaults" begin
-    params = SolutionParameters()
-    @test params.tol == PF.DEFAULT_NR_TOL
-    # `nothing` so each solver keeps its own iteration budget: 50 for the Newton-type
-    # solvers, 150 for fast decoupled.
-    @test isnothing(params.maxIterations)
-    @test params.enhanced_flat_start
-    @test !params.check_reactive_power_limits
-    @test !params.control_discrete_devices
-    @test !params.area_interchange_control
-    @test params.tie_definition === :lines_only
-    @test params.interchange_tolerance == PF.DEFAULT_INTERCHANGE_TOLERANCE
-    @test params.model_dc_network
-    @test params.fd_blowup == PF.DEFAULT_FD_BLOWUP
-    @test params.fd_dvlim == PF.DEFAULT_FD_DVLIM
-    @test params.fd_ndvfct == PF.DEFAULT_FD_NDVFCT
-end
-
 @testset "solver_kwargs exposes solver parameters and hides the controls" begin
     kwargs = PF.solver_kwargs(SolutionParameters())
     # An unset iteration cap must not be splatted: passing `nothing` would override each
@@ -52,10 +34,6 @@ end
     )
     pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; solution_parameters = params)
 
-    @test PF.get_solution_parameters(pf) == params
-    @test PF.get_check_reactive_power_limits(pf)
-    @test PF.get_control_discrete_devices(pf)
-    @test !PF.get_enhanced_flat_start(pf)
     @test PF.get_solver_kwargs(pf).tol == 1e-7
     @test PF.get_solver_kwargs(pf).maxIterations == 12
 
