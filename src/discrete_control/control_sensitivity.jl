@@ -1,24 +1,20 @@
 # Analytic sensitivity for the discrete-control continuation: dy/dp from the factored power
 # flow Jacobian instead of a finite-difference probe.
 #
-# This lives in its own file, included AFTER every formulation's residual and Jacobian, because
-# the methods here dispatch on those concrete types in their SIGNATURES (which resolve at
-# definition time). `control_discrete_devices/control_continuation.jl` is included before them,
-# so the dispatch cannot live there.
-#
-# Adding a formulation means adding four methods here — `_sensitivity_residual_jacobian`,
-# `_dF_dp!`, `_dVm_from_sol`, and (to earn batched passes) `_refresh_sensitivity_context!` plus
-# `_refreshable` — and touching no device code and no continuation logic.
+# Adding a formulation means adding methods here — `_sensitivity_residual_jacobian`, `_dF_dp!`,
+# `_dVm_from_sol`, and (to earn batched passes) `_refresh_residual_inputs!`, `_sensitivity_x0`,
+# `_refresh_jacobian_yb_caches!` (only needed if the Jacobian caches its own copies of anything
+# `_refresh_residual_inputs!` changes — a no-op otherwise), plus `_refreshable` — and touching no
+# device code and no continuation logic. `_refresh_sensitivity_context!` itself is formulation-
+# agnostic: it dispatches the p-dependent pieces to the formulation's methods and does the rest
+# — evaluate, re-Jacobian, refactor — once.
 
 # The residual/Jacobian pair for a formulation, built and evaluated at the state currently in
 # `data`. One method per formulation; `_sensitivity_context` below is generic over them.
-#
-# Deliberately NOT `initialize_power_flow_variables`: all of its methods route through
-# `improve_x0` (previous-time-step warm-start comparison, enhanced flat start, DC fallback), so
-# it would build the context at a warm-start CANDIDATE rather than at the converged base — and
-# every gain read off it would be wrong by an unbounded amount.
 function _sensitivity_residual_jacobian(::ACPolarPowerFlow, data, ts::Int)
     residual = ACPowerFlowResidual(data, ts)
+    # Not `initialize_power_flow_variables`: it routes through `improve_x0` and would build
+    # the context at a warm-start candidate, not the converged base.
     x = calculate_x0(data, ts)
     residual(x, ts)                       # evaluate at current state; fills P_net/Q_net
     J = ACPowerFlowJacobian(residual, ts)
@@ -70,9 +66,9 @@ _supports_batched_refresh(ctx::_SensitivityContext) = _refreshable(ctx.residual)
 _refreshable(::Any) = false
 _refreshable(::ACPowerFlowResidual) = true
 
-function _refresh_sensitivity_context!(ctx::_SensitivityContext, data, ts::Int)::Bool
-    view(data.bus_type, :, ts) == ctx.bus_type || return false
-    residual = ctx.residual
+# `_update_residual_values!`'s PQ case telescopes `P_net` from the residual's LAST evaluation, so
+# these must be rebuilt fresh from `data` before every evaluation or the correction drifts.
+function _refresh_residual_inputs!(residual::ACPowerFlowResidual, data, ts::Int)::Bool
     copyto!(
         residual.bus_active_constant_I,
         view(data.bus_active_power_constant_current_withdrawals, :, ts),
@@ -99,7 +95,21 @@ function _refresh_sensitivity_context!(ctx::_SensitivityContext, data, ts::Int):
             get_bus_reactive_power_total_withdrawals(data, ix, ts)
         residual.P_net_set[ix] = residual.P_net[ix]
     end
-    x = calculate_x0(data, ts)
+    return true
+end
+
+_sensitivity_x0(::ACPowerFlowResidual, data, ts::Int) = calculate_x0(data, ts)
+
+# `ACPowerFlowJacobian`'s p-dependent fields are the SAME vectors as the residual's (passed by
+# reference at construction), already current after `_refresh_residual_inputs!`: nothing to do.
+_refresh_jacobian_yb_caches!(J, ::ACPowerFlowResidual, ts::Int) = return
+
+function _refresh_sensitivity_context!(ctx::_SensitivityContext, data, ts::Int)::Bool
+    view(data.bus_type, :, ts) == ctx.bus_type || return false
+    residual = ctx.residual
+    _refresh_residual_inputs!(residual, data, ts) || return false
+    _refresh_jacobian_yb_caches!(ctx.J, residual, ts)
+    x = _sensitivity_x0(residual, data, ts)
     ctx.residual(x, ts)
     ctx.J(ts)
     try
@@ -202,6 +212,65 @@ end
 # ⇒ the `dSf` split. That is why those bodies are trusted and these are derived from them.
 
 const _RectOrMixedResidual = Union{ACRectangularCIResidual, ACMixedCPBResidual}
+
+# Both formulations gain a refresh below ⇒ both earn batched passes.
+_refreshable(::_RectOrMixedResidual) = true
+
+# `Y_bus_eff` is the only p-dependent cache either constructor derives from mutable `data`: a
+# Y-bus copy with ZIP constant-Z folded in ADDITIVELY. A tap move edits the Y-bus in place and a
+# shunt/FACTS move edits the withdrawals the fold reads, so the copy must restart from a fresh
+# Y-bus each refresh, not be re-folded onto the old one. The structure check guards the case
+# `fold_zip_constant_z!` inserted a structural entry at construction (a bus diagonal absent from
+# the Y-bus) that a plain `nonzeros` copy would silently misalign; on mismatch, fall back to FD
+# probes like a singular refactor does. Every other constructor field is read from constant-
+# power/constant-current withdrawals or topology, untouched by any device move here.
+function _refresh_residual_inputs!(r::_RectOrMixedResidual, data, ts::Int)::Bool
+    Y = data.power_network_matrix.data
+    if SparseArrays.getcolptr(r.Y_bus_eff) != SparseArrays.getcolptr(Y) ||
+       SparseArrays.rowvals(r.Y_bus_eff) != SparseArrays.rowvals(Y)
+        return false
+    end
+    SparseArrays.nonzeros(r.Y_bus_eff) .= ComplexF64.(SparseArrays.nonzeros(Y))
+    fold_zip_constant_z!(r.Y_bus_eff, data, ts)
+    return true
+end
+
+# Unlike `ACPowerFlowJacobian`, the rect/mixed Jacobians cache `Y_bus_eff`-derived values
+# (`Y_diag`, off-diagonal `Jv` blocks, mixed's `offdiag_pv_y`) once at construction instead of
+# re-reading `Y_bus_eff` per call, so a tap/shunt/FACTS move between passes leaves them stale.
+# Re-run the constructor's own population steps against the just-refreshed `r.Y_bus_eff`.
+function _refresh_jacobian_yb_caches!(J, r::ACRectangularCIResidual, ts::Int)
+    @inbounds for i in eachindex(J.Y_diag)
+        J.Y_diag[i] = r.Y_bus_eff[i, i]
+    end
+    _populate_constant_yb_blocks!(
+        J.Jv, r.Y_bus_eff, r.bus_state_offset, view(r.data.bus_type, :, ts))
+    return
+end
+function _refresh_jacobian_yb_caches!(J, r::ACMixedCPBResidual, ts::Int)
+    @inbounds for i in eachindex(J.Y_diag)
+        J.Y_diag[i] = r.Y_bus_eff[i, i]
+    end
+    _populate_mixed_constant_yb_blocks!(
+        J.Jv, r.Y_bus_eff, r.bus_state_offset, view(r.data.bus_type, :, ts))
+    @inbounds for p in eachindex(J.offdiag_pv_y)
+        J.offdiag_pv_y[p] = r.Y_bus_eff[J.offdiag_pv_i[p], J.offdiag_pv_k[p]]
+    end
+    return
+end
+
+# Mirrors `_sensitivity_residual_jacobian(::ACRectangularPowerFlow/::ACMixedPowerFlow, ...)` and
+# `improve_x0`'s own initial state for each formulation.
+function _sensitivity_x0(r::ACRectangularCIResidual, data, ts::Int)
+    x = zeros(length(r.Rv))
+    rect_initial_state!(x, data, r.bus_state_offset, r.bus_block_size, ts)
+    return x
+end
+function _sensitivity_x0(r::ACMixedCPBResidual, data, ts::Int)
+    x = zeros(length(r.Rv))
+    mixed_initial_state!(x, data, r.bus_state_offset, r.bus_block_size, ts)
+    return x
+end
 
 _state_offset(r::_RectOrMixedResidual, i::Int) = Int(r.bus_state_offset[i])
 

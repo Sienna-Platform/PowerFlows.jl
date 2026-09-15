@@ -1056,19 +1056,19 @@ end
 end
 
 @testset "discrete control: analytic sensitivity is available on every AC formulation" begin
-    # Every formulation must reach the analytic path, and none may silently gain batched
-    # passes: batching needs a `_refresh_sensitivity_context!` that re-syncs the p-dependent
-    # caches (`Y_bus_eff` is a copy, `Y_diag` is snapshotted), which only polar has.
-    for (pf, batched) in (
-        (ACPolarPowerFlow(; control_discrete_devices = true), true),
-        (ACRectangularPowerFlow(; control_discrete_devices = true), false),
-        (ACMixedPowerFlow(; control_discrete_devices = true), false),
+    # Every formulation must reach the analytic path and earn batched passes: each supplies
+    # a `_refresh_residual_inputs!`/`_refresh_jacobian_yb_caches!` pair that re-syncs its
+    # p-dependent caches (`Y_bus_eff` is a copy, `Y_diag` is snapshotted) between passes.
+    for pf in (
+        ACPolarPowerFlow(; control_discrete_devices = true),
+        ACRectangularPowerFlow(; control_discrete_devices = true),
+        ACMixedPowerFlow(; control_discrete_devices = true),
     )
         data = PowerFlowData(pf, _make_solvable_tap_shunt_system())
         PowerFlows._solve_with_q_limits!(pf, data, 1)
         ctx = PowerFlows._sensitivity_context(pf, data, 1)
         @test !isnothing(ctx)
-        @test PowerFlows._supports_batched_refresh(ctx) == batched
+        @test PowerFlows._supports_batched_refresh(ctx)
     end
     # No context at all ⇒ no batching, and the predicate must not throw.
     @test !PowerFlows._supports_batched_refresh(nothing)
