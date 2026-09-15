@@ -1124,9 +1124,9 @@ end
 @testset "discrete control: polar analytic gain is pinned bit-for-bit" begin
     # The analytic gain feeds `_relaxation`, so it sizes the step, not just its direction. A
     # 1-ulp change therefore alters a trajectory and can flip which discrete grid point a
-    # device snaps to. These values were captured before the sensitivity layer was made
-    # formulation-dispatched and are pinned with `===`, not `isapprox`: any movement here means
-    # a refactor changed polar's arithmetic, which is exactly what must not happen.
+    # device snaps to. Pinned to rtol = 1e-12: the last bits differ across linear-solver
+    # backends AND architectures (KLU on x64 reproduces these values, KLU on arm64 and
+    # AppleAccelerate land 1-2 ulp away), so `===` cannot be made portable.
     #
     # `_make_solvable_tap_shunt_system` was chosen because it exercises both a tap (Y-bus
     # perturbation, two buses) and a shunt (withdrawal perturbation, one bus).
@@ -1146,7 +1146,7 @@ end
             @test d.name == name
             got, ok = PowerFlows._linear_plant_sign(d, data, 1, ctx)
             @test ok
-            @test got === want
+            @test isapprox(got, want; rtol = 1e-12)
         end
     end
 end
