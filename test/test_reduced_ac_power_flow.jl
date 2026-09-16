@@ -417,7 +417,6 @@ end
     for bus_number in 1:6
         expected = get_component(ACBus, sys_unreduced, "bus_$bus_number")
         actual = get_component(ACBus, sys_reduced, "bus_$bus_number")
-        @error get_magnitude(actual)
         @test isapprox(get_magnitude(actual), get_magnitude(expected); atol = 1e-5)
         @test isapprox(get_angle(actual), get_angle(expected); atol = 1e-5)
     end
