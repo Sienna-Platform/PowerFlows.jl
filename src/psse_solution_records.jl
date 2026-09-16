@@ -43,29 +43,12 @@ const SOLUTION_RECORD_SOLVER_FULL_NEWTON = "FNSL"
 const SOLUTION_RECORD_SOLVER_DECOUPLED = "FDNS"
 
 """
-Render a `Float64` without scientific notation, so the emitted records stay in the plain
-decimal form the format uses. `string(1e-5)` is `"1.0e-5"`, which would silently reformat
-records that are otherwise passed through unchanged.
-
-Falls back to `string` for exponents large enough that a decimal expansion would be
-absurd; the format accepts scientific notation there.
+Render a `Float64` in plain decimal, never scientific notation: `string(1e-5)` is `"1.0e-5"`,
+which would reformat records otherwise passed through unchanged. Twelve places is clean for
+every value the records carry; below 1e-12 prints as `0.0`.
 """
 function _decimal_string(x::Float64)
-    s = string(x)
-    m = match(r"^(-?)(\d+)\.(\d+)e(-?\d+)$", s)
-    isnothing(m) && return s
-    sign, int_part, frac, expo = m[1], m[2], m[3], parse(Int, m[4])
-    abs(expo) > 20 && return s
-    frac = rstrip(frac, '0')
-    digits = int_part * frac
-    point = length(int_part) + expo  # index in `digits` the decimal point follows
-    if point <= 0
-        return sign * "0." * "0"^(-point) * digits
-    elseif point >= length(digits)
-        return sign * digits * "0"^(point - length(digits)) * ".0"
-    else
-        return sign * digits[1:point] * "." * digits[(point + 1):end]
-    end
+    return replace(rstrip(@sprintf("%.12f", x), '0'), r"\.$" => ".0")
 end
 
 _decimal_string(x::Integer) = string(x)
