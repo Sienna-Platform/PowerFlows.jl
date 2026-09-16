@@ -517,6 +517,24 @@ end
     export_location = joinpath(test_psse_export_dir, "v33", "case16_vsc_roundtrip")
     exporter = PSSEExporter(sys, :v33, export_location; write_comments = true)
     test_psse_round_trip(DCPowerFlow(), sys, exporter, "basic", export_location)
+
+    # Focused check on the converter loss curve slope/intercept: BLOSS is normalized by
+    # `rated_dc_voltage`, not `base_power`, so this pins the p.u.-per-p.u.-current inversion
+    # `compare_systems_loosely` only exercises indirectly.
+    sys2 = read_system_with_metadata(joinpath(export_location, "basic"))
+    for vsc1 in PSY.get_components(PSY.TwoTerminalVSCLine, sys)
+        vsc2 = PSY.get_component(PSY.TwoTerminalVSCLine, sys2, PSY.get_name(vsc1))
+        for get_loss in (PSY.get_converter_loss_from, PSY.get_converter_loss_to)
+            fd1 = PSY.get_function_data(get_loss(vsc1))
+            fd2 = PSY.get_function_data(get_loss(vsc2))
+            @test isapprox(
+                PSY.get_proportional_term(fd1), PSY.get_proportional_term(fd2);
+                rtol = 1e-9)
+            @test isapprox(
+                PSY.get_constant_term(fd1), PSY.get_constant_term(fd2);
+                rtol = 1e-9)
+        end
+    end
 end
 
 # @testset "Parsed VSC lowers to p.u.-sane setpoints and the AC power flow solves (v33)" begin

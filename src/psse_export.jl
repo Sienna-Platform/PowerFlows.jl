@@ -2542,13 +2542,18 @@ function _compute_vsc_converter_fields(
         RMPCT = PSY.get_rmpct_to(vscline)
     end
 
-    # Invert the parser's loss normalization: the parser always reads BLOSS, ALOSS, and MINLOSS
-    # as kW/kW-per-A normalized by 1e3 * baseMVA, never by rated_dc_voltage. The PSS/E constant
-    # loss splits into ALOSS + MINLOSS, but only the sum is a model quantity (the curve's constant
-    # term), so the whole constant is exported as ALOSS with MINLOSS = 0 (re-parse recovers the
-    # same curve).
+    # Invert the parser's loss normalization: ALOSS/MINLOSS are kW normalized by
+    # 1e3 * baseMVA; BLOSS is kW-per-DC-ampere normalized by rated_dc_voltage (kV), giving a
+    # p.u. slope per p.u. current. The constant loss splits into ALOSS + MINLOSS, but only
+    # the sum is a model quantity, so it is exported as ALOSS with MINLOSS = 0 (re-parse
+    # recovers the same curve).
     fd = PSY.get_function_data(converter_loss)
-    BLOSS = PSY.get_proportional_term(fd) * 1e3 * base_power
+    vdc_base = PSY.get_rated_dc_voltage(vscline)
+    BLOSS = if iszero(vdc_base)
+        PSY.get_proportional_term(fd)
+    else
+        PSY.get_proportional_term(fd) * vdc_base
+    end
     ALOSS = PSY.get_constant_term(fd) * 1e3 * base_power
     MINLOSS = 0.0
 
