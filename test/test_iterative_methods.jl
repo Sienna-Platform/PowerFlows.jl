@@ -221,6 +221,21 @@ end
     )
 end
 
+@testset "terminal non-convergence is logged once, naming every failed time step" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
+    pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+        enhanced_flat_start = false, time_steps = 2,
+        solver_settings = Dict{Symbol, Any}(:maxIterations => 2))
+    data = PowerFlowData(pf, sys)
+    data.bus_magnitude .= 0.0
+    @test_logs(
+        (:error, r"did not converge in 2 of 2 time step\(s\): \[1, 2\]"),
+        match_mode = :any,
+        @test !solve_power_flow!(data)
+    )
+    @test !any(data.converged)
+end
+
 @testset "Iwamoto multiplier root-finding" begin
     # Verify that _iwamoto_multiplier recovers the global minimizer of the
     # classical (exact-Newton-step) Iwamoto objective
