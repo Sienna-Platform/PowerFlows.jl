@@ -69,8 +69,6 @@ function solve_and_store_power_flow!(
             get(kwargs, :maxIterations, DEFAULT_NR_MAX_ITER),
         )
         @info("PowerFlow solve converged, the results have been stored in the system")
-    else
-        @error("The power flow solver returned convergence = $converged")
     end
 
     return converged
@@ -156,7 +154,7 @@ function write_device_settings!(system::PSY.System, data)
 end
 
 """
-Similar to [solve\\_and\\_store\\_power\\_flow!](@ref) but does not update the system struct with results.
+Similar to [`solve_and_store_power_flow!`](@ref) but does not update the system struct with results.
 Returns the results in a dictionary of dataframes.
 
 ## Examples
@@ -193,7 +191,6 @@ function solve_power_flow(
         df_results = write_results(pf, system, data, time_step, flow_reporting)
     else
         df_results = missing
-        @error("The power flow solver returned convergence = $(converged)")
     end
 
     return df_results
@@ -210,7 +207,7 @@ The power flow solver settings are taken from the `ACPowerFlow` object stored in
 # Arguments
 - [`data::ACPowerFlowData`](@ref ACPowerFlowData): The power flow data containing the grid information and initial conditions.
 - `kwargs...`: Additional keyword arguments. If these overlap with those in the 
-    `solver_settings` of the `ACPowerFlow` object, the values in `kwargs` take precedence.
+    `solution_parameters` of the `ACPowerFlow` object, the values in `kwargs` take precedence.
 
 # Keyword Arguments
 - `time_steps`: Specifies the time steps to solve. Defaults to sorting and collecting the keys of `get_time_step_map(data)`.
@@ -235,8 +232,7 @@ function solve_power_flow!(
     kwargs...,
 )
     pf = get_pf(data)
-    # Merge solver_settings from pf with any explicitly passed kwargs (explicit kwargs take precedence)
-    merged_kwargs = merge(get_solver_kwargs(pf), kwargs)
+    merged_kwargs = merge(get_solver_kwargs(pf), NamedTuple(kwargs))
     sorted_time_steps =
         get(merged_kwargs, :time_steps, sort(collect(keys(get_time_step_map(data)))))
     # This can be done from PSI by directly writing to `data`'s fields; we just don't
@@ -325,6 +321,11 @@ function solve_power_flow!(
 
     data.converged[sorted_time_steps] .= ts_converged
 
+    if !all(ts_converged)
+        failed = sorted_time_steps[.!ts_converged]
+        @error "AC power flow did not converge in $(length(failed)) of $(length(ts_converged)) time step(s): $failed"
+    end
+
     return all(ts_converged)
 end
 
@@ -334,7 +335,7 @@ function _solve_with_q_limits!(
     time_step::Int64;
     kwargs...,
 )
-    check_reactive_power_limits = pf.check_reactive_power_limits
+    check_reactive_power_limits = get_check_reactive_power_limits(pf)
     converged = false
 
     for _ in 1:MAX_REACTIVE_POWER_ITERATIONS

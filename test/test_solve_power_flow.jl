@@ -143,7 +143,7 @@ function test_ac_convergence_fail(ACSolver)
 
     # This is a negative test. The data passed for sys5_re is known to be infeasible.
     @test_logs(
-        (:error, "The power flow solver returned convergence = false"),
+        (:error, r"did not converge in 1 of 1"),
         match_mode = :any,
         @test !solve_and_store_power_flow!(pf, pf_sys5_re)
     )
@@ -375,7 +375,10 @@ end
         J_block[(npvpq + 1):end, 1:npvpq] *
         inv(collect(J_block[1:npvpq, 1:npvpq])) *
         J_block[1:npvpq, (npvpq + 1):end]
-    u_1, (σ_1,), v_1, _ = PROPACK.tsvd_irl(Gs; smallest = true, k = 1)
+    # dense reference; PROPACK's native binding is order-fragile on 1.13
+    F = LinearAlgebra.svd(Gs)
+    @assert issorted(F.S; rev = true)
+    σ_1, u_1, v_1 = F.S[end], F.U[:, end], F.V[:, end]
     σ, u, v = PowerFlows._singular_value_decomposition(J_block, npvpq)
 
     @assert isapprox(σ_1, σ, atol = 1e-6)
@@ -904,17 +907,19 @@ end
 @testset "ACPowerFlow solver_settings accepts narrowly-typed Dicts" begin
     # Regression: previously the kwarg required Dict{Symbol, Any} exactly, so a
     # plain `Dict(:k => 50)` (inferred as Dict{Symbol, Int64}) was rejected.
+    # `solver_settings` is now the deprecated spelling of `solution_parameters`; its
+    # entries are folded into the typed parameters and still reach the solver.
     pf_int = ACPowerFlow(; solver_settings = Dict(:maxIterations => 50))
-    @test pf_int.solver_settings isa Dict{Symbol, Any}
-    @test pf_int.solver_settings[:maxIterations] === 50
+    @test PowerFlows.get_solution_parameters(pf_int) isa SolutionParameters
+    @test PowerFlows.get_solver_kwargs(pf_int)[:maxIterations] === 50
 
     pf_bool = ACPowerFlow(;
         solver_settings = Dict(:validate_voltage_magnitudes => false),
     )
-    @test pf_bool.solver_settings[:validate_voltage_magnitudes] === false
+    @test PowerFlows.get_solver_kwargs(pf_bool)[:validate_voltage_magnitudes] === false
 
     pf_any = ACPowerFlow(;
         solver_settings = Dict{Symbol, Any}(:maxIterations => 50),
     )
-    @test pf_any.solver_settings[:maxIterations] === 50
+    @test PowerFlows.get_solver_kwargs(pf_any)[:maxIterations] === 50
 end

@@ -187,33 +187,6 @@ struct _SensitivityContext{C, R, JT}
     bus_type::Vector{PSY.ACBusTypes}
 end
 
-_sensitivity_context(::AbstractACPowerFlow, data, ts::Int; kwargs...) = nothing
-function _sensitivity_context(pf::ACPolarPowerFlow, data, ts::Int; kwargs...)
-    backend = resolve_linear_solver_backend(get(kwargs, :linear_solver, nothing))
-    residual = ACPowerFlowResidual(data, ts)
-    x = calculate_x0(data, ts)
-    residual(x, ts)                       # evaluate at current state; fills P_net/Q_net
-    J = ACPowerFlowJacobian(residual, ts)
-    J(ts)                                 # Jacobian values at current state
-    lin_cache =
-        _nr_linear_solver_cache!(data, J, backend, residual.bus_slack_participation_factors)
-    try
-        numeric_refactor!(lin_cache, J.Jv)
-    catch e
-        e isa LinearAlgebra.SingularException || rethrow()
-        return                    # singular base Jacobian ⇒ fall back to FD probes
-    end
-    # One full sensitivity-context build (fresh residual + Jacobian structure + refactor) per
-    # continuation. `_refresh_sensitivity_context!` re-evaluates VALUES into these same objects
-    # on every subsequent batched pass and does NOT count here — the Jacobian structure (and thus
-    # the persisted symbolic factorization this counter tracks) is topology-invariant across the
-    # continuation, so only this one build should ever register.
-    _count_symbolic_factor!(data)
-    n = length(residual.Rv)
-    return _SensitivityContext(
-        lin_cache, residual, J, zeros(n), zeros(n), copy(view(data.bus_type, :, ts)))
-end
-
 # Values-only refresh at a new converged base state: the Jacobian sparsity depends only on
 # topology/REF layout (invariant across the continuation), so re-evaluating values + numeric
 # refactor into the persisted objects replaces a full rebuild — UNLESS a PV↔PQ flip has changed
@@ -233,106 +206,6 @@ end
 # `apply_parameter!` for switched shunts/FACTS writes device moves directly into
 # `data.bus_reactive_power_constant_impedance_withdrawals`, so the four constant-I/Z vectors need
 # the same re-sync.
-function _refresh_sensitivity_context!(ctx::_SensitivityContext, data, ts::Int)::Bool
-    view(data.bus_type, :, ts) == ctx.bus_type || return false
-    residual = ctx.residual
-    copyto!(
-        residual.bus_active_constant_I,
-        view(data.bus_active_power_constant_current_withdrawals, :, ts),
-    )
-    copyto!(
-        residual.bus_reactive_constant_I,
-        view(data.bus_reactive_power_constant_current_withdrawals, :, ts),
-    )
-    copyto!(
-        residual.bus_active_constant_Z,
-        view(data.bus_active_power_constant_impedance_withdrawals, :, ts),
-    )
-    copyto!(
-        residual.bus_reactive_constant_Z,
-        view(data.bus_reactive_power_constant_impedance_withdrawals, :, ts),
-    )
-    @inbounds for ix in eachindex(residual.P_net)
-        residual.P_net[ix] =
-            data.bus_active_power_injections[ix, ts] -
-            get_bus_active_power_total_withdrawals(data, ix, ts) +
-            data.bus_hvdc_net_power[ix, ts]
-        residual.Q_net[ix] =
-            data.bus_reactive_power_injections[ix, ts] -
-            get_bus_reactive_power_total_withdrawals(data, ix, ts)
-        residual.P_net_set[ix] = residual.P_net[ix]
-    end
-    x = calculate_x0(data, ts)
-    ctx.residual(x, ts)
-    ctx.J(ts)
-    try
-        numeric_refactor!(ctx.lin_cache, ctx.J.Jv)
-    catch e
-        e isa LinearAlgebra.SingularException || rethrow()
-        return false
-    end
-    return true
-end
-
-# ∂F/∂p into `rhs` (zeroed first). Returns `true` iff the family has an analytic polar form here;
-# the `false` path is reserved for a future family without one — the caller then uses the FD probe
-# (see `_linear_plant_sign`). Row convention: F[2b−1] active, F[2b] reactive balance at bus b
-# (see `_update_residual_values!`).
-function _dF_dp!(rhs::Vector{Float64}, d::ControlledTap, data, ts::Int)
-    fill!(rhs, 0.0)
-    f, t = d.from_ix, d.to_ix
-    Vf = data.bus_magnitude[f, ts] * cis(data.bus_angles[f, ts])
-    Vt = data.bus_magnitude[t, ts] * cis(data.bus_angles[t, ts])
-    p, a = d.current, d.alpha
-    # ∂Y/∂p of the from-side terms (t_c = p·cis(a)); Y_tt = yt is p-independent (see `_branch_terms`).
-    dYff = -2.0 * d.yt / p^3
-    dYft = d.yt * cis(a) / p^2
-    dYtf = d.yt * cis(-a) / p^2
-    # ∂S_i/∂p = V_i·conj(Σ_k ∂Y_ik/∂p·V_k); only Y_ff,Y_ft (row f) and Y_tf (row t) change.
-    dSf = Vf * conj(dYff * Vf + dYft * Vt)
-    dSt = Vt * conj(dYtf * Vf)
-    @inbounds begin
-        rhs[2 * f - 1] = real(dSf)
-        rhs[2 * f] = imag(dSf)
-        rhs[2 * t - 1] = real(dSt)
-        rhs[2 * t] = imag(dSt)
-    end
-    return true
-end
-
-function _dF_dp!(
-    rhs::Vector{Float64},
-    d::Union{ControlledSwitchedShunt, ControlledFACTS},
-    data,
-    ts::Int,
-)
-    fill!(rhs, 0.0)
-    b = d.bus_ix
-    Vm = data.bus_magnitude[b, ts]
-    # Constant-Z reactive withdrawal w enters Q_net as −w·Vm²; apply_parameter! sets ∂w/∂susc = −1,
-    # so ∂Q_net/∂susc = +Vm² and ∂F[2b]/∂susc = −∂Q_net/∂susc = −Vm² (reactive row only).
-    @inbounds rhs[2 * b] = -Vm^2
-    return true
-end
-
-# Linearized dy/dp for a voltage device via the factored Jacobian. `y = Vm(controlled_bus)`
-# = x[2·cbus−1], and dx/dp = −J⁻¹·(∂F/∂p). Returns `(dy/dp, true)`, or `(0.0, false)` when the
-# family has no analytic form (caller then uses the FD probe).
-function _linear_plant_sign(d, data, ts::Int, ctx::_SensitivityContext)
-    _dF_dp!(ctx.rhs, d, data, ts) || return 0.0, false
-    cbus = controlled_bus_ix(d)
-    # x[2b−1] is Vm ONLY at PQ buses (Q_gen at PV, P at REF — see update_state!). At a
-    # PV/REF controlled bus the voltage is pinned by the bus model, so dVm/dp = 0 exactly:
-    # return a reliable zero so the caller's gain floor freezes the device, matching the
-    # FD probe's behavior.
-    if data.bus_type[cbus, ts] != PSY.ACBusTypes.PQ
-        return 0.0, true
-    end
-    copyto!(ctx.sol, ctx.rhs)
-    solve!(ctx.lin_cache, ctx.sol)        # sol = J⁻¹·(∂F/∂p)
-    return -ctx.sol[2 * cbus - 1], true       # dy/dp = (dx/dp)[Vm(cbus)] = −sol[2·cbus−1]
-end
-
 # Shared bisection sub-step walk for the robust continuation applicators
 # (`_continuation_to!` and `_restore_one!`). The full move having failed, step from `start`
 # toward `target` (each interpolated point clamped to `[lo, hi]`), growing the step on NR
@@ -851,10 +724,10 @@ function _control_continuation!(
     # once). Intermediate stages solve at CONTROL_STAGE_TOL; full tol only at the final stage and
     # snap/restore, and never looser than a user-supplied tol.
     user_tol = Float64(get(kwargs, :tol, DEFAULT_NR_TOL))
-    # Batch the voltage-device passes when the polar linear path is live (a non-`nothing` probe
-    # `ctx`): one joint solve per pass with analytic per-pass gain refresh, falling back to the
-    # sequential path on a failed joint solve. Non-polar formulations step sequentially.
-    use_batched = !isnothing(ctx)
+    # Gated on `_refreshable`, not just `ctx`'s presence: a formulation can supply analytic
+    # sensitivities before it supplies a per-pass refresh, and batching without one would read
+    # a stale Jacobian after the first device move.
+    use_batched = _supports_batched_refresh(ctx)
     p_prev = zeros(n_dev)
     did_move = fill(false, n_dev)
     S = INITIAL_CONTROL_STEEPNESS

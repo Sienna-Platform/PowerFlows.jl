@@ -18,13 +18,9 @@ descend only into the first shape:
     member of a `AbstractBranchesParallel` straight to `_segment_flow_entry`.
   - DC/PTDF: `_distribute_arc_flows`, with the same asymmetry.
 
-So a chain nested inside a parallel group is never descended into. Because
-`AbstractReductionAggregate <: PSY.ACTransmission` (PNM `definitions.jl`), the chain is
-accepted by the leaf-branch method signatures rather than rejected at the PowerFlows
-boundary, and the failure surfaces deep in PSY as `get_r(::BranchesSeries, ::SystemBaseUnit)`
-(AC) or as the `result.count == n_branches` assertion (DC/PTDF).
-
-The first shape is covered here as a passing test; the other two are `@test_broken`. Real
+The first shape is covered here as a passing test. For `series_in_parallel` the reporting
+and write-back paths no longer throw; only the per-branch expansion of the nested chains
+(the reported flow names) remains `@test_broken`. Real
 datasets rarely nest this far -- ACTIVSg2000 under `DegreeTwoReduction` has 410 parallel
 groups, none of them parallel-of-chains, and 7 chains with a parallel segment -- so this is
 documented rather than fixed.
@@ -221,14 +217,13 @@ _NESTED_PARALLEL_SHAPES = (:series_in_parallel, :nested)
         Set(["L13", "L32", "L14", "L42"])
     end
 
-    # AC: `_segment_flow_entry` receives a `BranchesSeries` and asks it for `r`.
+    # AC: the per-branch expansion of the chains is what remains broken (next assertion).
     ac_outcome = _reporting_outcome(
         () -> solve_power_flow(_ac_pf(), sys, PF.FlowReporting.BRANCH_FLOWS),
     )
-    @test_broken ac_outcome === :ok
+    @test ac_outcome === :ok
     @test_broken Set(ac_outcome["flow_results"].flow_name) == expected_names
 
-    # DC/PTDF: `_distribute_arc_flows` emits one row per chain, tripping the branch count.
     for pf in (
         PF.DCPowerFlow(; network_reductions = _degree_two()),
         PF.PTDFDCPowerFlow(; network_reductions = _degree_two()),
@@ -236,15 +231,12 @@ _NESTED_PARALLEL_SHAPES = (:series_in_parallel, :nested)
         dc_outcome = _reporting_outcome(
             () -> solve_power_flow(pf, sys, PF.FlowReporting.BRANCH_FLOWS),
         )
-        @test_broken dc_outcome === :ok
+        @test dc_outcome === :ok
     end
 
-    # Write-back fails the same way, and the chains' interior buses are never reached:
-    # `write_power_flow_solution!` recovers interior voltages by walking the series branch
-    # map, which is empty here because both chains live in the parallel map.
     sys2 = _nested_reduction_system(shape)
     store_outcome = _reporting_outcome(() -> solve_and_store_power_flow!(_ac_pf(), sys2))
-    @test_broken store_outcome === :ok
+    @test store_outcome === :ok
 
     # Arc-level reporting does not throw, but silently reports only the equivalent arc: the
     # whole nest collapses to a single 1-2 row rather than the physical branches.

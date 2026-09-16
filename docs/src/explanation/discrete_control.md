@@ -326,14 +326,13 @@ columns address the owning circuit as
 | Controlled bus    | `regulated_bus_number` (0 ⇒ own bus)                                                                             |
 | Voltage setpoint  | midpoint of `get_admittance_limits` — the VSWLO/VSWHI band for parsed systems                                    |
 | Susceptance range | spanned by the blocks: `[Σ min(steps·dB, 0), Σ max(steps·dB, 0)]` (plus the fixed base for API-built components) |
-| Block structure   | `get_number_of_steps`, `get_Y_increase`, `get_initial_status`                                                    |
+| Block structure   | `get_number_of_steps`, `get_Y_increase`, `get_number_engaged`                                                    |
 
-Two `Y`/`initial_status` conventions exist and are auto-detected from
-`initial_status` itself: the **PSS/E parser** stores `Y = BINIT` (the *total*
-in-service admittance) and zeroes a full-length `initial_status`, so the
-reachable range is spanned by the blocks alone with the current point at BINIT;
-**API-built** components follow the PSY docstring (`Y` = fixed N=0 base,
-`initial_status` meaningful).
+`SwitchedAdmittance` has no fixed base admittance. The current baseline is
+`get_solved_admittance` when set (PSS/E `BINIT`, a case read in as solved);
+otherwise `Σ number_engaged · Y_increase`. Either way the baseline is clamped
+into the block-reachable range, with a warning if the source value falls
+outside it.
 
 ### `FACTSControlDevice` → `ControlledFACTS`
 

@@ -104,8 +104,16 @@ end
 
 # Twin-parity tolerance. A locked twin represents its FACTS device on the Y-bus rather than in
 # the withdrawal the continuation uses, so some difference is expected; this sits above it and
-# well below the multiperiod per-step spread.
-const LCC_PARITY_ATOL = 1e-7
+# below the multiperiod per-step spread. `_assert_steps_separated` reads the same constant as
+# a LOWER bound, so the value is squeezed from both sides. Measured on this fixture:
+#
+#   twin parity gap, must stay under    7.2e-8   (14x margin)
+#   step separation of angles, must exceed    8.1e-5   (81x margin)
+#   step separation of magnitudes, must exceed  1.8e-6   (1.8x margin)  <- the real ceiling
+#
+# Magnitude separation is what stops this going higher. 1e-6 matches
+# test_multiperiod_discrete_control.jl, the same comparison without LCC converter state.
+const LCC_PARITY_ATOL = 1e-6
 
 """Parse the bundled two-LCC fixture and add enrollable controlled devices: a stepping
 switched shunt and a shunt FACTS device at bus 101 (PQ, 230 kV, largest load). The fixture
@@ -198,9 +206,9 @@ end
         build_locked_twin(results, 1))
     solve_power_flow!(data2)
     @test all(data2.converged)
-    @test isapprox(data2.bus_magnitude[:, 1], vm_ctrl; atol = LCC_PARITY_ATOL)
-    @test isapprox(data2.bus_angles[:, 1], va_ctrl; atol = LCC_PARITY_ATOL)
-    @test isapprox(data2.lcc.rectifier.tap[:, 1], lcc_taps; atol = LCC_PARITY_ATOL)
+    @test _parity(data2.bus_magnitude[:, 1], vm_ctrl)
+    @test _parity(data2.bus_angles[:, 1], va_ctrl)
+    @test _parity(data2.lcc.rectifier.tap[:, 1], lcc_taps)
 end
 
 @testset "LCC + control with 0 MW transfer (i_dc = 0 tap pinning) survives restores" begin
@@ -241,6 +249,15 @@ function _set_lcc_bus101_load_at_step!(data, t::Int)
     return
 end
 
+"""Element-wise parity: every entry within `atol`.
+
+`isapprox` on two vectors compares `norm(x - y)`, a 2-norm over the whole vector, so the same
+per-entry error fails on a bigger system purely because there are more entries. Every tolerance
+here is a per-quantity statement — `_assert_steps_separated` below already reads
+`LCC_PARITY_ATOL` that way — so compare element-wise.
+"""
+_parity(x, y; atol = LCC_PARITY_ATOL) = all(isapprox.(x, y; atol = atol))
+
 """Assert each pair of time-step columns in `pairs` is separated by more than the parity
 tolerance, so comparing against the wrong column would be caught. LCC converter state is not
 guarded: its terminal buses are voltage-pinned, so those columns are identical across steps
@@ -275,13 +292,9 @@ end
         _set_lcc_bus101_load_at_step!(data2, ts)
         solve_power_flow!(data2)
         @test all(data2.converged)
-        @test isapprox(
-            data2.bus_angles[:, 1], data.bus_angles[:, ts]; atol = LCC_PARITY_ATOL)
-        @test isapprox(
-            data2.bus_magnitude[:, 1], data.bus_magnitude[:, ts]; atol = LCC_PARITY_ATOL)
-        @test isapprox(
-            data2.lcc.rectifier.tap[:, 1], data.lcc.rectifier.tap[:, ts];
-            atol = LCC_PARITY_ATOL)
+        @test _parity(data2.bus_angles[:, 1], data.bus_angles[:, ts])
+        @test _parity(data2.bus_magnitude[:, 1], data.bus_magnitude[:, ts])
+        @test _parity(data2.lcc.rectifier.tap[:, 1], data.lcc.rectifier.tap[:, ts])
     end
 end
 
@@ -304,13 +317,9 @@ end
         _set_lcc_bus101_load_at_step!(data_s, ts)
         solve_power_flow!(data_s)
         @test all(data_s.converged)
-        @test isapprox(
-            data_s.bus_angles[:, 1], data.bus_angles[:, ts]; atol = LCC_PARITY_ATOL)
-        @test isapprox(
-            data_s.bus_magnitude[:, 1], data.bus_magnitude[:, ts]; atol = LCC_PARITY_ATOL)
-        @test isapprox(
-            data_s.lcc.rectifier.tap[:, 1], data.lcc.rectifier.tap[:, ts];
-            atol = LCC_PARITY_ATOL)
+        @test _parity(data_s.bus_angles[:, 1], data.bus_angles[:, ts])
+        @test _parity(data_s.bus_magnitude[:, 1], data.bus_magnitude[:, ts])
+        @test _parity(data_s.lcc.rectifier.tap[:, 1], data.lcc.rectifier.tap[:, ts])
     end
 end
 
@@ -341,14 +350,9 @@ end
     )
     # Steps 1 and 3 are unaffected by step 2's pinned converters.
     for ts in (1, 3)
-        @test isapprox(
-            data.bus_angles[:, ts], data_ref.bus_angles[:, ts]; atol = LCC_PARITY_ATOL)
-        @test isapprox(
-            data.bus_magnitude[:, ts], data_ref.bus_magnitude[:, ts];
-            atol = LCC_PARITY_ATOL)
-        @test isapprox(
-            data.lcc.rectifier.tap[:, ts], data_ref.lcc.rectifier.tap[:, ts];
-            atol = LCC_PARITY_ATOL)
+        @test _parity(data.bus_angles[:, ts], data_ref.bus_angles[:, ts])
+        @test _parity(data.bus_magnitude[:, ts], data_ref.bus_magnitude[:, ts])
+        @test _parity(data.lcc.rectifier.tap[:, ts], data_ref.lcc.rectifier.tap[:, ts])
     end
 end
 
@@ -372,16 +376,19 @@ end
 
     # Rectangular-CI carries an e/f state internally but still populates `bus_magnitude`, so
     # the physical quantities compare directly.
-    @test isapprox(
-        data_rect.bus_magnitude[:, 1], data_polar.bus_magnitude[:, 1]; atol = 1e-6)
-    @test isapprox(
+    @test _parity(
+        data_rect.bus_magnitude[:, 1],
+        data_polar.bus_magnitude[:, 1];
+        atol = 1e-6,
+    )
+    @test _parity(
         data_rect.lcc.rectifier.tap[:, 1], data_polar.lcc.rectifier.tap[:, 1]; atol = 1e-6)
-    @test isapprox(
+    @test _parity(
         data_rect.lcc.inverter.tap[:, 1], data_polar.lcc.inverter.tap[:, 1]; atol = 1e-6)
-    @test isapprox(
+    @test _parity(
         data_rect.lcc.rectifier.thyristor_angle[:, 1],
         data_polar.lcc.rectifier.thyristor_angle[:, 1];
         atol = 1e-6,
     )
-    @test isapprox(data_rect.lcc.i_dc[:, 1], data_polar.lcc.i_dc[:, 1]; atol = 1e-6)
+    @test _parity(data_rect.lcc.i_dc[:, 1], data_polar.lcc.i_dc[:, 1]; atol = 1e-6)
 end

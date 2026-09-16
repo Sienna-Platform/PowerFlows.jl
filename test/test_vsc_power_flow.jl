@@ -808,7 +808,10 @@ function _build_parallel_ic_system(; shared_ac::Bool = true)
             dc_control = cfg.mode,
             ac_control = PSY.VSCACControlModes.AC_REACTIVE_POWER,
             dc_setpoint = cfg.set,
-            loss_function = PSY.QuadraticCurve(0.005, 0.01, 0.002),
+            loss_function = PSY.LossCurve(
+                PSY.QuadraticCurve(0.005, 0.01, 0.002),
+                PSY.NaturalUnit(),
+            ),
         )
         PSY.add_component!(sys, ic)
     end

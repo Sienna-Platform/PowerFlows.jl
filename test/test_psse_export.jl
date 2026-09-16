@@ -517,6 +517,24 @@ end
     export_location = joinpath(test_psse_export_dir, "v33", "case16_vsc_roundtrip")
     exporter = PSSEExporter(sys, :v33, export_location; write_comments = true)
     test_psse_round_trip(DCPowerFlow(), sys, exporter, "basic", export_location)
+
+    # Focused check on the converter loss curve slope/intercept: BLOSS is normalized by
+    # `rated_dc_voltage`, not `base_power`, so this pins the p.u.-per-p.u.-current inversion
+    # `compare_systems_loosely` only exercises indirectly.
+    sys2 = read_system_with_metadata(joinpath(export_location, "basic"))
+    for vsc1 in PSY.get_components(PSY.TwoTerminalVSCLine, sys)
+        vsc2 = PSY.get_component(PSY.TwoTerminalVSCLine, sys2, PSY.get_name(vsc1))
+        for get_loss in (PSY.get_converter_loss_from, PSY.get_converter_loss_to)
+            fd1 = PSY.get_function_data(get_loss(vsc1))
+            fd2 = PSY.get_function_data(get_loss(vsc2))
+            @test isapprox(
+                PSY.get_proportional_term(fd1), PSY.get_proportional_term(fd2);
+                rtol = 1e-9)
+            @test isapprox(
+                PSY.get_constant_term(fd1), PSY.get_constant_term(fd2);
+                rtol = 1e-9)
+        end
+    end
 end
 
 # @testset "Parsed VSC lowers to p.u.-sane setpoints and the AC power flow solves (v33)" begin
@@ -966,3 +984,79 @@ end
 end
 
 # # TODO add tests for unit system agnosticism
+
+@testset "Solve parameters reach the exported v35 solution records" begin
+    sys = _make_solvable_tap_shunt_system()
+    pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
+        solution_parameters = SolutionParameters(;
+            tol = 1e-6,
+            maxIterations = 30,
+            check_reactive_power_limits = true,
+            control_discrete_devices = true,
+        ),
+    )
+    data = PowerFlowData(pf, sys)
+    @test PowerFlows.solve_power_flow!(data)
+
+    export_location = joinpath(test_psse_export_dir, "v35", "solution_records")
+    exporter = PSSEExporter(sys, :v35, export_location)
+
+    # With no solve attached the block is written at the format defaults, so an export
+    # that never saw a solve is unchanged.
+    write_export(exporter, "before"; overwrite = true)
+    raw_before, _ = get_psse_export_paths(joinpath(export_location, "before"))
+    @test occursin("ACTAPS=0", read(raw_before, String))
+
+    # `update_exporter!(::PowerFlowData)` is what marks a solve as having happened.
+    update_exporter!(exporter, data)
+    write_export(exporter, "after"; overwrite = true)
+    raw_after, _ = get_psse_export_paths(joinpath(export_location, "after"))
+    text = read(raw_after, String)
+    @test occursin("ACTAPS=1", text)
+    @test occursin("SWSHNT=1", text)
+    @test occursin("VARLIM=0", text)
+    @test occursin("ITMXN=30", text)
+    @test occursin("FNSL", text)
+
+    recovered = read_solution_parameters(raw_after)
+    @test !isnothing(recovered)
+    @test recovered.maxIterations == 30
+    @test recovered.control_discrete_devices
+    @test recovered.check_reactive_power_limits
+    @test recovered.tol ≈ 1e-6
+
+    write_export(exporter, "after2"; overwrite = true)
+    test_psse_export_strict_equality(
+        get_psse_export_paths(joinpath(export_location, "after"))...,
+        get_psse_export_paths(joinpath(export_location, "after2"))...)
+end
+
+@testset "A v33 export warns that solve parameters are dropped" begin
+    sys = _make_solvable_tap_shunt_system()
+    pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
+        solution_parameters = SolutionParameters(; control_discrete_devices = true),
+    )
+    data = PowerFlowData(pf, sys)
+    @test PowerFlows.solve_power_flow!(data)
+
+    export_location = joinpath(test_psse_export_dir, "v33", "solution_records_dropped")
+    exporter = PSSEExporter(sys, :v33, export_location)
+    # The v33 raw format has no system-wide solution data section at all.
+    @test_logs (:warn, r"v33") match_mode = :any update_exporter!(exporter, data)
+end
+
+@testset "Call-site solve parameters can be attached explicitly" begin
+    sys = _make_solvable_tap_shunt_system()
+    pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}()
+    export_location = joinpath(test_psse_export_dir, "v35", "solution_records_kwargs")
+    exporter = PSSEExporter(sys, :v35, export_location)
+
+    # `tol` passed to the solve call is never stored on the model, so only the caller can
+    # report it.
+    update_exporter!(exporter, pf; solver_kwargs = (; tol = 1e-5, maxIterations = 17))
+    write_export(exporter, "kwargs"; overwrite = true)
+    raw, _ = get_psse_export_paths(joinpath(export_location, "kwargs"))
+    text = read(raw, String)
+    @test occursin("ITMXN=17", text)
+    @test occursin("TOLN=0.001", text)
+end

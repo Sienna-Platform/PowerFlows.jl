@@ -877,7 +877,6 @@ end
     @test PF.n_controlled_areas(data) == 2
 
     converged = @test_logs(
-        (:error, r"solver failed to converge"),
         (
             :error,
             r"Area interchange:.*Area3.*de-enrolling it and re-solving with the remaining 1",
@@ -899,7 +898,6 @@ end
     @test only(data.area_interchange.relaxed[1]).name == "Area3"
 
     df_results = @test_logs(
-        (:error, r"solver failed to converge"),
         (:error, r"Area interchange:.*Area3.*de-enrolling"),
         (
             :error,
@@ -939,7 +937,7 @@ end
     pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; area_interchange_control = true)
     data = PowerFlowData(pf, sys)
     converged = @test_logs(
-        (:error, r"solver failed to converge"),
+        (:error, r"did not converge in"),
         (:error, r"Area interchange:.*Newton did not converge with area"),
         (
             :warn,
@@ -963,7 +961,7 @@ end
     # ts=1: force exhaustion via maxIterations = 1 -- greedy relax drops both areas one at
     # a time, and the final 0-area plain solve still fails in a single iteration from flat.
     converged1 = @test_logs(
-        (:error, r"solver failed to converge"),
+        (:error, r"did not converge in"),
         (:error, r"Area interchange:.*Newton did not converge with area"),
         (
             :warn,
@@ -1033,7 +1031,8 @@ end
 
     # Converge the reduced (1-area) working set for ts=2 for real, then persist it exactly as
     # `_ac_power_flow_with_area_relax!` would on a successful post-relax retry.
-    @test PF._ac_power_flow(data, pf, 2; PF.get_solver_kwargs(pf)...)
+    converged = PF._ac_power_flow(data, pf, 2; PF.get_solver_kwargs(pf)...)
+    @test converged
     PF._sync_pristine_delta_p!(data, 2)
 
     df1 = PF.area_interchange_results_dataframe(sys, data, 1)
@@ -1370,7 +1369,6 @@ end
     @test PF.n_controlled_areas(data) == 2
 
     converged = @test_logs(
-        (:error, r"solver failed to converge"),
         (
             :error,
             r"Area interchange:.*Area3.*de-enrolling it and re-solving with the remaining 1",
@@ -1391,7 +1389,6 @@ end
     @test only(data.area_interchange.relaxed[1]).name == "Area3"
 
     df_results = @test_logs(
-        (:error, r"solver failed to converge"),
         (:error, r"Area interchange:.*Area3.*de-enrolling"),
         (
             :error,
@@ -1492,7 +1489,6 @@ end
     @test PF.n_controlled_areas(data_fd) == 2
 
     converged_fd = @test_logs(
-        (:error, r"solver failed to converge"),
         (
             :error,
             r"Area interchange:.*Area3.*de-enrolling it and re-solving with the remaining 1",
@@ -1513,7 +1509,6 @@ end
     @test only(data_fd.area_interchange.relaxed[1]).name == "Area3"
 
     df_results_fd = @test_logs(
-        (:error, r"solver failed to converge"),
         (:error, r"Area interchange:.*Area3.*de-enrolling"),
         (
             :error,
@@ -1542,7 +1537,6 @@ end
     @test PF.n_controlled_areas(data_fdfj) == 2
 
     converged_fdfj = @test_logs(
-        (:error, r"solver failed to converge"),
         (
             :error,
             r"Area interchange:.*Area3.*de-enrolling it and re-solving with the remaining 1",
@@ -1563,7 +1557,6 @@ end
     @test only(data_fdfj.area_interchange.relaxed[1]).name == "Area3"
 
     df_results_fdfj = @test_logs(
-        (:error, r"solver failed to converge"),
         (:error, r"Area interchange:.*Area3.*de-enrolling"),
         (
             :error,
@@ -1598,7 +1591,6 @@ end
     @test PF.n_controlled_areas(data) == 2
 
     converged = @test_logs(
-        (:error, r"solver failed to converge"),
         (
             :error,
             r"Area interchange:.*Area3.*de-enrolling it and re-solving with the remaining 1",

@@ -89,7 +89,7 @@ end
             )
             supported = !any([(typeof(nr), typeof(pf)) in UNSUPPORTED for nr in v])
             if !supported
-                results = @test_logs((:error, r"failed to converge"),
+                results = @test_logs((:error, r"did not converge in 1 of 1"),
                     match_mode = :any,
                     solve_power_flow(pf, sys)
                 )
@@ -417,7 +417,6 @@ end
     for bus_number in 1:6
         expected = get_component(ACBus, sys_unreduced, "bus_$bus_number")
         actual = get_component(ACBus, sys_reduced, "bus_$bus_number")
-        @error get_magnitude(actual)
         @test isapprox(get_magnitude(actual), get_magnitude(expected); atol = 1e-5)
         @test isapprox(get_angle(actual), get_angle(expected); atol = 1e-5)
     end

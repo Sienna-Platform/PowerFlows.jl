@@ -117,6 +117,7 @@ Public = false
 Private = true
 Pages = [
     "psse_export.jl",
+    "psse_solution_records.jl",
 ]
 ```
 

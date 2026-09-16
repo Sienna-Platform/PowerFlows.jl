@@ -81,17 +81,18 @@ end
 end
 
 @testset "discrete control: pf field defaults" begin
-    @test ACPolarPowerFlow().control_discrete_devices == false
-    @test ACRectangularPowerFlow().control_discrete_devices == false
-    @test ACMixedPowerFlow().control_discrete_devices == false
-    @test ACPolarPowerFlow(; control_discrete_devices = true).control_discrete_devices ==
-          true
-    @test ACRectangularPowerFlow(;
-        control_discrete_devices = true,
-    ).control_discrete_devices ==
-          true
-    @test ACMixedPowerFlow(; control_discrete_devices = true).control_discrete_devices ==
-          true
+    @test PowerFlows.get_control_discrete_devices(ACPolarPowerFlow()) == false
+    @test PowerFlows.get_control_discrete_devices(ACRectangularPowerFlow()) == false
+    @test PowerFlows.get_control_discrete_devices(ACMixedPowerFlow()) == false
+    @test PowerFlows.get_control_discrete_devices(
+        ACPolarPowerFlow(; control_discrete_devices = true),
+    ) == true
+    @test PowerFlows.get_control_discrete_devices(
+        ACRectangularPowerFlow(; control_discrete_devices = true),
+    ) == true
+    @test PowerFlows.get_control_discrete_devices(
+        ACMixedPowerFlow(; control_discrete_devices = true),
+    ) == true
     @test PowerFlows.get_control_discrete_devices(ACPolarPowerFlow()) == false
     @test PowerFlows.get_control_discrete_devices(
         ACPolarPowerFlow(; control_discrete_devices = true),
@@ -1053,6 +1054,70 @@ end
     @test dVdp[1] == 0.05
 end
 
+@testset "discrete control: analytic sensitivity is available on every AC formulation" begin
+    # Every formulation must reach the analytic path and earn batched passes via a
+    # `_refresh_residual_inputs!`/`_refresh_jacobian_yb_caches!` pair that re-syncs its caches.
+    for pf in (
+        ACPolarPowerFlow(; control_discrete_devices = true),
+        ACRectangularPowerFlow(; control_discrete_devices = true),
+        ACMixedPowerFlow(; control_discrete_devices = true),
+    )
+        data = PowerFlowData(pf, _make_solvable_tap_shunt_system())
+        PowerFlows._solve_with_q_limits!(pf, data, 1)
+        ctx = PowerFlows._sensitivity_context(pf, data, 1)
+        @test !isnothing(ctx)
+        @test PowerFlows._supports_batched_refresh(ctx)
+    end
+    # No context at all ⇒ no batching, and the predicate must not throw.
+    @test !PowerFlows._supports_batched_refresh(nothing)
+end
+
+@testset "discrete control: analytic sensitivity agrees across AC formulations" begin
+    # `∂F/∂p` uses three different row/sign conventions per formulation (polar power balance;
+    # rectangular `I_spec − Y·V` real-first; MCPB mixes imag-first PQ, PV power, and
+    # real-first REF rows) — a sign error there would silently invert a control's feedback
+    # while still clearing the `CONTROL_GAIN_FLOOR` gate. Assert against the FD probe AND
+    # across formulations.
+    for build in (_make_solvable_tap_shunt_system, build_lcc_control_system)
+        reference = nothing
+        for pf in (
+            ACPolarPowerFlow(; control_discrete_devices = true),
+            ACRectangularPowerFlow(; control_discrete_devices = true),
+            ACMixedPowerFlow(; control_discrete_devices = true),
+        )
+            data = PowerFlowData(pf, build())
+            PowerFlows._solve_with_q_limits!(pf, data, 1)
+            set = data.controlled_devices
+            ctx = PowerFlows._sensitivity_context(pf, data, 1)
+            @test !isnothing(ctx)
+            snap = PowerFlows._snapshot_state(data, 1)
+            gains = Dict{String, Float64}()
+            for devices in (set.taps, set.shunts, set.facts)
+                for d in devices
+                    lin, ok_lin = PowerFlows._linear_plant_sign(d, data, 1, ctx)
+                    fd, ok_fd = PowerFlows._plant_sign(d, data, 1, pf, snap)
+                    @test ok_lin && ok_fd
+                    @test sign(lin) == sign(fd)
+                    @test isapprox(lin, fd; rtol = 1e-2)
+                    gains[d.name] = lin
+                end
+            end
+            @test !isempty(gains)
+            if isnothing(reference)
+                reference = gains       # polar runs first and is the already-validated path
+            else
+                @test keys(gains) == keys(reference)
+                for (name, g) in gains
+                    # Looser than the shunt's ~1e-16: a tap touches two buses and the three
+                    # Jacobians differ structurally, so the linear solve rounds differently
+                    # (measured worst case ~6e-11).
+                    @test isapprox(g, reference[name]; rtol = 1e-6)
+                end
+            end
+        end
+    end
+end
+
 @testset "discrete control: linearized plant sensitivity matches FD probe (P2)" begin
     # The linearized sensitivity dy/dp = (−J⁻¹ ∂F/∂p)[Vm(controlled)] must agree with the
     # finite-difference probe in SIGN and magnitude (the FD probe carries O(δ) truncation, so
@@ -1186,13 +1251,10 @@ end
     # poisoned start) while still failing to converge from such a bad warm start.
     data.bus_magnitude[:, ts] .= 0.05
     snapshot_v = copy(data.bus_magnitude[:, ts])
-    # The forced non-convergence emits an @error at finalization; capture it with @test_logs so
-    # it does not trip run_tests()'s zero-Logging.Error-events assertion (full suite).
     scratch_snap = PowerFlows._snapshot_state(data, ts)
-    ok =
-        @test_logs (:error, r"failed to converge") match_mode = :any PowerFlows._restore_one!(
-            d, data, ts, PowerFlows.current_parameter(d), pf, scratch_snap;
-            maxIterations = 2)
+    ok = PowerFlows._restore_one!(
+        d, data, ts, PowerFlows.current_parameter(d), pf, scratch_snap;
+        maxIterations = 2)
     @test !ok
     # On failure the pre-call state must be untouched (no diverged iterate left).
     @test data.bus_magnitude[:, ts] == snapshot_v
