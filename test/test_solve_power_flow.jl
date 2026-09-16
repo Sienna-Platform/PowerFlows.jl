@@ -375,7 +375,10 @@ end
         J_block[(npvpq + 1):end, 1:npvpq] *
         inv(collect(J_block[1:npvpq, 1:npvpq])) *
         J_block[1:npvpq, (npvpq + 1):end]
-    u_1, (σ_1,), v_1, _ = PROPACK.tsvd_irl(Gs; smallest = true, k = 1)
+    # dense reference; PROPACK's native binding is order-fragile on 1.13
+    F = LinearAlgebra.svd(Gs)
+    @assert issorted(F.S; rev = true)
+    σ_1, u_1, v_1 = F.S[end], F.U[:, end], F.V[:, end]
     σ, u, v = PowerFlows._singular_value_decomposition(J_block, npvpq)
 
     @assert isapprox(σ_1, σ, atol = 1e-6)

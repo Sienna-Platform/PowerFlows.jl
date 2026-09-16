@@ -22,7 +22,6 @@ using DataStructures
 import SparseArrays
 import SparseArrays: SparseMatrixCSC, sparse, sprandn, sprand
 import Random
-import PROPACK
 
 import Aqua
 Aqua.test_unbound_args(PowerFlows)
