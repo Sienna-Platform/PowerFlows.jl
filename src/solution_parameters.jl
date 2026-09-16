@@ -174,22 +174,27 @@ SolutionParameters(settings::AbstractDict) =
     _override(SolutionParameters(), _settings_overrides(settings))
 
 """
-    _override(params::SolutionParameters, overrides::AbstractDict) -> SolutionParameters
+    _override(x, overrides::AbstractDict) -> typeof(x)
 
-A copy of `params` with the named fields replaced. Used by the evaluation-model
-constructors to store a validated value (a floored `interchange_tolerance`, say) and to
-fold the legacy keyword spellings in, without rebuilding the parameter set by hand.
+A copy of `x` with the named fields replaced. Generic over any struct type with a
+`T(field_values...)` constructor. Used by the evaluation-model constructors to store a
+validated value (a floored `interchange_tolerance`, say), to fold the legacy keyword
+spellings in, and by `SolutionRecordValues`'s copy-with-overrides — without rebuilding the
+struct by hand.
 """
-function _override(params::SolutionParameters, overrides::AbstractDict)
-    isempty(overrides) && return params
-    values = map(fieldnames(SolutionParameters)) do name
-        haskey(overrides, name) ? overrides[name] : getfield(params, name)
+function _override(x::T, overrides::AbstractDict) where {T}
+    isempty(overrides) && return x
+    values = map(fieldnames(T)) do name
+        if haskey(overrides, name)
+            overrides[name]
+        else
+            getfield(x, name)
+        end
     end
-    return SolutionParameters(values...)
+    return T(values...)
 end
 
-_override(params::SolutionParameters; kwargs...) =
-    _override(params, Dict{Symbol, Any}(kwargs))
+_override(x; kwargs...) = _override(x, Dict{Symbol, Any}(kwargs))
 
 function _settings_overrides(settings)
     overrides = Dict{Symbol, Any}()
@@ -210,11 +215,11 @@ function _settings_overrides(settings)
 end
 
 """
-    _fold_legacy_parameters(params, solver_settings, legacy) -> SolutionParameters
+    _fold_legacy_parameters(params, solver_settings; legacy_kwargs...) -> SolutionParameters
 
 Merge the deprecated ways of specifying solve parameters into `params`, in increasing
 order of precedence: `params` itself, then the `solver_settings` dictionary, then any
-explicitly-passed legacy keyword (a `nothing` entry in `legacy` means "not passed").
+explicitly-passed legacy keyword (a `nothing` value means "not passed").
 
 The named keywords (`check_reactive_power_limits`, `control_discrete_devices`, ...) remain
 supported spellings and are not deprecated; only the untyped `solver_settings` dictionary
@@ -222,8 +227,13 @@ is, so only it raises a `depwarn`.
 """
 function _fold_legacy_parameters(
     params::SolutionParameters,
-    solver_settings,
-    legacy::NamedTuple,
+    solver_settings;
+    check_reactive_power_limits::Union{Nothing, Bool} = nothing,
+    enhanced_flat_start::Union{Nothing, Bool} = nothing,
+    control_discrete_devices::Union{Nothing, Bool} = nothing,
+    area_interchange_control::Union{Nothing, Bool} = nothing,
+    interchange_tolerance::Union{Nothing, Float64} = nothing,
+    tie_definition::Union{Nothing, Symbol} = nothing,
 )
     if !isnothing(solver_settings)
         Base.depwarn(
@@ -233,6 +243,14 @@ function _fold_legacy_parameters(
         )
     end
     overrides = _settings_overrides(solver_settings)
+    legacy = (;
+        check_reactive_power_limits,
+        enhanced_flat_start,
+        control_discrete_devices,
+        area_interchange_control,
+        interchange_tolerance,
+        tie_definition,
+    )
     for (name, value) in pairs(legacy)
         isnothing(value) || (overrides[name] = value)
     end

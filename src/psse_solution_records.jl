@@ -125,6 +125,24 @@ _solver_code(::Type{<:ACPowerFlowSolverType}) = SOLUTION_RECORD_SOLVER_FULL_NEWT
 
 _solver_type(::AbstractACPowerFlow{S}) where {S} = S
 
+# The fast-decoupled step-control fields; every other solver reports the format defaults.
+_solution_record_step_control(
+    ::Type{<:FastDecoupledACPowerFlow},
+    params::SolutionParameters,
+) =
+    (;
+        blowup = params.fd_blowup,
+        dvlim = params.fd_dvlim,
+        ndvfct = params.fd_ndvfct,
+        nondiv = Int(params.fd_non_divergent),
+    )
+_solution_record_step_control(::Type{<:ACPowerFlowSolverType}, ::SolutionParameters) = (;
+    blowup = SOLUTION_RECORD_DEFAULT_BLOWUP,
+    dvlim = SOLUTION_RECORD_DEFAULT_DVLIM,
+    ndvfct = SOLUTION_RECORD_DEFAULT_NDVFCT,
+    nondiv = 0,
+)
+
 """
     solution_record_values(pf, params, base_power) -> SolutionRecordValues
 
@@ -142,10 +160,15 @@ function solution_record_values(
 )
     solver = _solver_type(pf)
     fd = _is_fast_decoupled(solver)
+    step_control = _solution_record_step_control(solver, params)
 
     # A discrete-control solve moves both tap changers and switched shunts; PowerFlows has
     # one flag where the format has two.
-    tap_and_shunt = params.control_discrete_devices ? 1 : 0
+    if params.control_discrete_devices
+        tap_and_shunt = 1
+    else
+        tap_and_shunt = 0
+    end
 
     area = if !params.area_interchange_control
         0
@@ -157,31 +180,39 @@ function solution_record_values(
 
     # 0 applies the limits, -1 ignores them. PowerFlows enforces them between solves, so
     # there is no counterpart to the "apply after n iterations" form.
-    varlim = params.check_reactive_power_limits ? 0 : -1
+    if params.check_reactive_power_limits
+        varlim = 0
+    else
+        varlim = -1
+    end
 
-    iterations = something(
-        params.maxIterations,
-        fd ? DEFAULT_FD_MAX_ITER : DEFAULT_NR_MAX_ITER,
-    )
+    if fd
+        iterations = something(params.maxIterations, DEFAULT_FD_MAX_ITER)
+    else
+        iterations = something(params.maxIterations, DEFAULT_NR_MAX_ITER)
+    end
+
+    if params.enhanced_flat_start
+        flatst = 1
+    else
+        flatst = 0
+    end
 
     return SolutionRecordValues(;
         solver = _solver_code(solver),
-        blowup = fd ? params.fd_blowup : SOLUTION_RECORD_DEFAULT_BLOWUP,
         itmxn = iterations,
         # Rounded: the per-unit-to-MW conversion leaves float noise (1e-7*100 =
         # 9.999999999999999e-6), and no solver tolerance is meaningful past twelve digits.
         toln = round(params.tol * base_power; sigdigits = 12),
-        dvlim = fd ? params.fd_dvlim : SOLUTION_RECORD_DEFAULT_DVLIM,
-        ndvfct = fd ? params.fd_ndvfct : SOLUTION_RECORD_DEFAULT_NDVFCT,
         actaps = tap_and_shunt,
         swshnt = tap_and_shunt,
         areain = area,
         varlim = varlim,
-        flatst = params.enhanced_flat_start ? 1 : 0,
-        nondiv = (fd && params.fd_non_divergent) ? 1 : 0,
+        flatst = flatst,
         # No PowerFlows counterpart: there is no phase-shift or DC-tap control to report.
         phshft = 0,
         dctaps = 0,
+        step_control...,
     )
 end
 
@@ -370,7 +401,11 @@ function _read_solution_records(records::Vector{<:AbstractString})
         elseif keyword == "SOLVER"
             found = true
             # The first field after the keyword is the positional method name.
-            name = length(fields) >= 2 ? strip(fields[2]) : ""
+            if length(fields) >= 2
+                name = strip(fields[2])
+            else
+                name = ""
+            end
             occursin('=', name) && (name = "")
             values = SolutionRecordValues(
                 values;
@@ -390,16 +425,16 @@ function _read_solution_records(records::Vector{<:AbstractString})
             @debug "Ignoring unrecognized solution record: $keyword"
         end
     end
-    return found ? values : nothing
+    if found
+        return values
+    else
+        return nothing
+    end
 end
 
 # Copy-with-overrides, so each record's parse only has to name the fields it sets.
-function SolutionRecordValues(base::SolutionRecordValues; kwargs...)
-    values = map(fieldnames(SolutionRecordValues)) do name
-        haskey(kwargs, name) ? kwargs[name] : getfield(base, name)
-    end
-    return SolutionRecordValues(values...)
-end
+SolutionRecordValues(base::SolutionRecordValues; kwargs...) =
+    _override(base, Dict{Symbol, Any}(kwargs))
 
 """
     solution_parameters(values::SolutionRecordValues, base_power) -> SolutionParameters
@@ -415,7 +450,17 @@ function solution_parameters(values::SolutionRecordValues, base_power::Float64)
 
     # A zero mismatch target is not a tolerance anyone can converge to; fall back rather
     # than hand a solver `tol = 0`.
-    tol = values.toln > 0 ? values.toln / base_power : DEFAULT_NR_TOL
+    if values.toln > 0
+        tol = values.toln / base_power
+    else
+        tol = DEFAULT_NR_TOL
+    end
+
+    if values.itmxn > 0
+        maxIterations = values.itmxn
+    else
+        maxIterations = nothing
+    end
 
     # Tie-line-and-load interchange is not implemented and the model constructor rejects
     # it, so a case using it is read as the tie-line form rather than failing to load.
@@ -428,18 +473,31 @@ function solution_parameters(values::SolutionRecordValues, base_power::Float64)
         )
     end
 
+    if fd
+        fd_step_control = (;
+            fd_blowup = values.blowup,
+            fd_dvlim = values.dvlim,
+            fd_ndvfct = values.ndvfct,
+            fd_non_divergent = values.nondiv == 1,
+        )
+    else
+        fd_step_control = (;
+            fd_blowup = DEFAULT_FD_BLOWUP,
+            fd_dvlim = DEFAULT_FD_DVLIM,
+            fd_ndvfct = DEFAULT_FD_NDVFCT,
+            fd_non_divergent = DEFAULT_FD_NON_DIVERGENT,
+        )
+    end
+
     return SolutionParameters(;
         tol = tol,
-        maxIterations = values.itmxn > 0 ? values.itmxn : nothing,
+        maxIterations = maxIterations,
         check_reactive_power_limits = values.varlim >= 0,
         enhanced_flat_start = values.flatst == 1,
         control_discrete_devices = values.actaps != 0 || values.swshnt != 0,
         area_interchange_control = values.areain != 0,
         tie_definition = tie_definition,
-        fd_blowup = fd ? values.blowup : DEFAULT_FD_BLOWUP,
-        fd_dvlim = fd ? values.dvlim : DEFAULT_FD_DVLIM,
-        fd_ndvfct = fd ? values.ndvfct : DEFAULT_FD_NDVFCT,
-        fd_non_divergent = fd ? values.nondiv == 1 : DEFAULT_FD_NON_DIVERGENT,
+        fd_step_control...,
     )
 end
 
@@ -471,7 +529,11 @@ function read_solution_parameters(
     records = _significant_records(readlines(path))
     values = _read_solution_records(records)
     isnothing(values) && return nothing
-    sbase = isnothing(base_power) ? _case_base_power(records) : Float64(base_power)
+    if isnothing(base_power)
+        sbase = _case_base_power(records)
+    else
+        sbase = Float64(base_power)
+    end
     return solution_parameters(values, sbase)
 end
 

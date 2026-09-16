@@ -5,7 +5,7 @@ function _sensitivity_residual_jacobian(::ACPolarPowerFlow, data, ts::Int)
     residual = ACPowerFlowResidual(data, ts)
     # Not `initialize_power_flow_variables`: it routes through `improve_x0` and would build
     # the context at a warm-start candidate, not the converged base.
-    x = calculate_x0(data, ts)
+    x = _sensitivity_x0(residual, data, ts)
     residual(x, ts)
     J = ACPowerFlowJacobian(residual, ts)
     J(ts)
@@ -102,6 +102,15 @@ function _refresh_sensitivity_context!(ctx::_SensitivityContext, data, ts::Int):
     return true
 end
 
+# ∂Y/∂p of the from-side terms (t_c = p·cis(α)); Y_tt = yt is p-independent (see `_branch_terms`).
+function _tap_dY(d::ControlledTap)
+    p, a = d.current, d.alpha
+    dYff = -2.0 * d.yt / p^3
+    dYft = d.yt * cis(a) / p^2
+    dYtf = d.yt * cis(-a) / p^2
+    return dYff, dYft, dYtf
+end
+
 # Row convention: F[2b−1] active, F[2b] reactive balance at bus b (see `_update_residual_values!`).
 # Returns `false` when no analytic form exists here; caller then falls back to the FD probe.
 function _dF_dp!(
@@ -115,11 +124,7 @@ function _dF_dp!(
     f, t = d.from_ix, d.to_ix
     Vf = data.bus_magnitude[f, ts] * cis(data.bus_angles[f, ts])
     Vt = data.bus_magnitude[t, ts] * cis(data.bus_angles[t, ts])
-    p, a = d.current, d.alpha
-    # ∂Y/∂p of the from-side terms (t_c = p·cis(a)); Y_tt = yt is p-independent (see `_branch_terms`).
-    dYff = -2.0 * d.yt / p^3
-    dYft = d.yt * cis(a) / p^2
-    dYtf = d.yt * cis(-a) / p^2
+    dYff, dYft, dYtf = _tap_dY(d)
     # ∂S_i/∂p = V_i·conj(Σ_k ∂Y_ik/∂p·V_k); only Y_ff,Y_ft (row f) and Y_tf (row t) change.
     dSf = Vf * conj(dYff * Vf + dYft * Vt)
     dSt = Vt * conj(dYtf * Vf)
@@ -210,7 +215,6 @@ function _refresh_jacobian_yb_caches!(J, r::ACMixedCPBResidual, ts::Int)
     return
 end
 
-# Mirrors `_sensitivity_residual_jacobian`'s and `improve_x0`'s initial state for each formulation.
 function _sensitivity_x0(r::ACRectangularCIResidual, data, ts::Int)
     x = zeros(length(r.Rv))
     rect_initial_state!(x, data, r.bus_state_offset, r.bus_block_size, ts)
@@ -237,14 +241,10 @@ _bus_voltage(r::_RectOrMixedResidual, i::Int) = complex(r.e_state[i], r.f_state[
 _dI_dp(d::Union{ControlledSwitchedShunt, ControlledFACTS}, r::_RectOrMixedResidual) =
     ((d.bus_ix, im * _bus_voltage(r, d.bus_ix)),)
 
-# Same ∂Y/∂p as the polar tap method above (t_c = p·cis(α); Y_tt is p-independent).
 function _dI_dp(d::ControlledTap, r::_RectOrMixedResidual)
     f, t = d.from_ix, d.to_ix
     Vf, Vt = _bus_voltage(r, f), _bus_voltage(r, t)
-    p, a = d.current, d.alpha
-    dYff = -2.0 * d.yt / p^3
-    dYft = d.yt * cis(a) / p^2
-    dYtf = d.yt * cis(-a) / p^2
+    dYff, dYft, dYtf = _tap_dY(d)
     return ((f, dYff * Vf + dYft * Vt), (t, dYtf * Vf))
 end
 
@@ -325,10 +325,7 @@ end
 
 function _sensitivity_residual_jacobian(::ACRectangularPowerFlow, data, ts::Int)
     residual = ACRectangularCIResidual(data, ts)
-    # `Rv` is the full residual/state length (bus blocks + the LCC/VSC/area tail), so it sizes
-    # `x` without re-deriving the tail.
-    x = zeros(length(residual.Rv))
-    rect_initial_state!(x, data, residual.bus_state_offset, residual.bus_block_size, ts)
+    x = _sensitivity_x0(residual, data, ts)
     residual(x, ts)
     J = ACRectangularCIJacobian(residual, ts)
     J(ts)
@@ -337,8 +334,7 @@ end
 
 function _sensitivity_residual_jacobian(::ACMixedPowerFlow, data, ts::Int)
     residual = ACMixedCPBResidual(data, ts)
-    x = zeros(length(residual.Rv))
-    mixed_initial_state!(x, data, residual.bus_state_offset, residual.bus_block_size, ts)
+    x = _sensitivity_x0(residual, data, ts)
     residual(x, ts)
     J = ACMixedCPBJacobian(residual, ts)
     J(ts)

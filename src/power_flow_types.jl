@@ -459,15 +459,13 @@ function ACPolarPowerFlow{ACSolver}(;
     end
     params = _fold_legacy_parameters(
         solution_parameters,
-        solver_settings,
-        (;
-            check_reactive_power_limits,
-            enhanced_flat_start,
-            control_discrete_devices,
-            area_interchange_control,
-            interchange_tolerance,
-            tie_definition,
-        ),
+        solver_settings;
+        check_reactive_power_limits,
+        enhanced_flat_start,
+        control_discrete_devices,
+        area_interchange_control,
+        interchange_tolerance,
+        tie_definition,
     )
     _validate_slack_distribution_settings(
         distribute_slack_proportional_to_headroom,
@@ -660,15 +658,13 @@ function ACRectangularPowerFlow{ACSolver}(;
     _reject_fd_decoupled_on_nonpolar(ACSolver, "ACRectangularPowerFlow")
     params = _fold_legacy_parameters(
         solution_parameters,
-        solver_settings,
-        (;
-            check_reactive_power_limits,
-            enhanced_flat_start,
-            control_discrete_devices,
-            area_interchange_control,
-            interchange_tolerance,
-            tie_definition,
-        ),
+        solver_settings;
+        check_reactive_power_limits,
+        enhanced_flat_start,
+        control_discrete_devices,
+        area_interchange_control,
+        interchange_tolerance,
+        tie_definition,
     )
     _reject_area_interchange_on_nonpolar(
         params.area_interchange_control,
@@ -798,15 +794,13 @@ function ACMixedPowerFlow{ACSolver}(;
     _reject_fd_decoupled_on_nonpolar(ACSolver, "ACMixedPowerFlow")
     params = _fold_legacy_parameters(
         solution_parameters,
-        solver_settings,
-        (;
-            check_reactive_power_limits,
-            enhanced_flat_start,
-            control_discrete_devices,
-            area_interchange_control,
-            interchange_tolerance,
-            tie_definition,
-        ),
+        solver_settings;
+        check_reactive_power_limits,
+        enhanced_flat_start,
+        control_discrete_devices,
+        area_interchange_control,
+        interchange_tolerance,
+        tie_definition,
     )
     _reject_area_interchange_on_nonpolar(
         params.area_interchange_control,
