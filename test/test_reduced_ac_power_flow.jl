@@ -89,7 +89,7 @@ end
             )
             supported = !any([(typeof(nr), typeof(pf)) in UNSUPPORTED for nr in v])
             if !supported
-                results = @test_logs((:error, r"failed to converge"),
+                results = @test_logs((:error, r"did not converge in 1 of 1"),
                     match_mode = :any,
                     solve_power_flow(pf, sys)
                 )

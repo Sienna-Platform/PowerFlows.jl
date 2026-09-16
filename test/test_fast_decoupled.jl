@@ -386,18 +386,12 @@ end
         residual_flat(x0_flat, 1)
         flat_ss = sum(abs2, residual_flat.Rv)
 
-        # The non-convergence emits an @error at finalization; capture it with @test_logs so
-        # it does not trip run_tests()'s zero-Logging.Error-events assertion (full suite), while
-        # also asserting the expected error is logged.
-        converged = nothing
-        @test_logs (:error, r"failed to converge") match_mode = :any begin
-            converged = _drive_fd_directly(pf, data;
-                fd_non_divergent = true,
-                refreeze_on_stall = false,
-                maxIterations = 8,
-                validate_voltage_magnitudes = false,
-            )
-        end
+        converged = _drive_fd_directly(pf, data;
+            fd_non_divergent = true,
+            refreeze_on_stall = false,
+            maxIterations = 8,
+            validate_voltage_magnitudes = false,
+        )
         @test !converged   # this pathological case does NOT converge under pure frozen FD
 
         # State left in `data` is the best one seen: its residual is finite, all voltages
@@ -1462,13 +1456,10 @@ end
         sys = _stressed_high_rx_system(; load_scale = 6.0)
         pf = ACPowerFlow{PF.FastDecoupledACPowerFlow}()
         data = PowerFlowData(pf, sys)
-        converged = nothing
-        @test_logs (:error, r"failed to converge") match_mode = :any begin
-            converged = _drive_fd_directly(pf, data;
-                fd_non_divergent = true,
-                maxIterations = 8,
-                validate_voltage_magnitudes = false)
-        end
+        converged = _drive_fd_directly(pf, data;
+            fd_non_divergent = true,
+            maxIterations = 8,
+            validate_voltage_magnitudes = false)
         @test !converged
         @test all(isfinite, data.bus_magnitude[:, 1])
         @test all(data.bus_magnitude[:, 1] .> 0.0)

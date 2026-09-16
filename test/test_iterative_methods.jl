@@ -215,7 +215,7 @@ end
     data.bus_magnitude .= 0.0
     # Solver should fail to converge, and terminate early (not exhaust maxIterations).
     @test_logs(
-        (:error, r".*solver failed to converge"),
+        (:error, r"did not converge in 1 of 1"),
         match_mode = :any,
         @test !solve_power_flow!(data)
     )

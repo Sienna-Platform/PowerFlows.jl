@@ -143,7 +143,7 @@ function test_ac_convergence_fail(ACSolver)
 
     # This is a negative test. The data passed for sys5_re is known to be infeasible.
     @test_logs(
-        (:error, "The power flow solver returned convergence = false"),
+        (:error, r"did not converge in 1 of 1"),
         match_mode = :any,
         @test !solve_and_store_power_flow!(pf, pf_sys5_re)
     )

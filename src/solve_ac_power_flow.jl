@@ -69,8 +69,6 @@ function solve_and_store_power_flow!(
             get(kwargs, :maxIterations, DEFAULT_NR_MAX_ITER),
         )
         @info("PowerFlow solve converged, the results have been stored in the system")
-    else
-        @error("The power flow solver returned convergence = $converged")
     end
 
     return converged
@@ -193,7 +191,6 @@ function solve_power_flow(
         df_results = write_results(pf, system, data, time_step, flow_reporting)
     else
         df_results = missing
-        @error("The power flow solver returned convergence = $(converged)")
     end
 
     return df_results
@@ -323,6 +320,11 @@ function solve_power_flow!(
     end
 
     data.converged[sorted_time_steps] .= ts_converged
+
+    if !all(ts_converged)
+        failed = sorted_time_steps[.!ts_converged]
+        @error "AC power flow did not converge in $(length(failed)) of $(length(ts_converged)) time step(s): $failed"
+    end
 
     return all(ts_converged)
 end

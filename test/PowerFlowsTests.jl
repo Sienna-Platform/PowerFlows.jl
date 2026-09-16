@@ -84,29 +84,14 @@ end
 # already-@test_logs-asserted events still reach this global tracker under the full-suite
 # ReTest schedule, so the gate must exclude exactly them.
 const _AREA_RELAX_ERROR_MARKER = "Area interchange:"
-const _CONVERGENCE_FAILURE_MARKER = "solver failed to converge after"
 
 _is_area_relax_error(event) = occursin(_AREA_RELAX_ERROR_MARKER, event.message)
-_is_convergence_failure_error(event) =
-    occursin(_CONVERGENCE_FAILURE_MARKER, event.message)
 
 """Error-level log events the stray-error gate should fail on: everything except the
-area-interchange greedy-relax sequence (and the pre-relax convergence failure it causes, which
-is excused only when a relax actually happened)."""
+area-interchange greedy-relax sequence."""
 function unexpected_error_events(tracker)
     events = IS.get_log_events(tracker, Logging.Error)
-    saw_relax = any(_is_area_relax_error, events)
-    unexpected = Vector{eltype(events)}()
-    for event in events
-        if _is_area_relax_error(event)
-            continue
-        end
-        if saw_relax && _is_convergence_failure_error(event)
-            continue
-        end
-        push!(unexpected, event)
-    end
-    return unexpected
+    return [event for event in events if !_is_area_relax_error(event)]
 end
 
 # See also `load_tests.jl` for running tests interactively with ReTest.jl

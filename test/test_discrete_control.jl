@@ -1251,13 +1251,10 @@ end
     # poisoned start) while still failing to converge from such a bad warm start.
     data.bus_magnitude[:, ts] .= 0.05
     snapshot_v = copy(data.bus_magnitude[:, ts])
-    # The forced non-convergence emits an @error at finalization; capture it with @test_logs so
-    # it does not trip run_tests()'s zero-Logging.Error-events assertion (full suite).
     scratch_snap = PowerFlows._snapshot_state(data, ts)
-    ok =
-        @test_logs (:error, r"failed to converge") match_mode = :any PowerFlows._restore_one!(
-            d, data, ts, PowerFlows.current_parameter(d), pf, scratch_snap;
-            maxIterations = 2)
+    ok = PowerFlows._restore_one!(
+        d, data, ts, PowerFlows.current_parameter(d), pf, scratch_snap;
+        maxIterations = 2)
     @test !ok
     # On failure the pre-call state must be untouched (no diverged iterate left).
     @test data.bus_magnitude[:, ts] == snapshot_v
