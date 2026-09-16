@@ -3,8 +3,7 @@
 
 function _sensitivity_residual_jacobian(::ACPolarPowerFlow, data, ts::Int)
     residual = ACPowerFlowResidual(data, ts)
-    # Not `initialize_power_flow_variables`: it routes through `improve_x0` and would build
-    # the context at a warm-start candidate, not the converged base.
+    # Not `initialize_power_flow_variables`: `improve_x0` would move x off the converged base.
     x = _sensitivity_x0(residual, data, ts)
     residual(x, ts)
     J = ACPowerFlowJacobian(residual, ts)
