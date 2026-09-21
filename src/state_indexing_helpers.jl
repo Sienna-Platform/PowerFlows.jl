@@ -4,7 +4,7 @@ of length equal to the number of buses, with `NaN`s in the positions where that 
 quantity is not part of the state vector for that bus. (Currently not intended for use in 
 spots where performance is critical.)"""
 function partition_state(x::Vector{Float64},
-    bus_types::AbstractVector{PSY.ACBusTypes},
+    bus_types::AbstractVector{PSY.ACBusTypes.Value},
 )
     # usually, bus_types will be data.bus_type[:, time_step]
     nbuses = div(size(x, 1), 2)
@@ -171,7 +171,7 @@ end
 function update_net_power!(P_net::Vector{Float64},
     Q_net::Vector{Float64},
     x::Vector{Float64},
-    bus_types::AbstractVector{PSY.ACBusTypes},
+    bus_types::AbstractVector{PSY.ACBusTypes.Value},
 )
     # usually, bus_types will be data.bus_type[:, time_step]
     for (ix, bt) in enumerate(bus_types)

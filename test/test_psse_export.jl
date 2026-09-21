@@ -70,7 +70,7 @@ loose_system_match_fn(a, b) = IS.isequivalent(a, b)
 
 """PSS/E's COD field has no spelling for `UNDEFINED`, so an unset control objective exports
 blank and re-parses as `FIXED`. Every other objective round-trips exactly."""
-function expected_reimported_objective(objective::PSY.TransformerControlObjective)
+function expected_reimported_objective(objective::PSY.TransformerControlObjective.Value)
     if objective == PSY.TransformerControlObjective.UNDEFINED
         return PSY.TransformerControlObjective.FIXED
     end

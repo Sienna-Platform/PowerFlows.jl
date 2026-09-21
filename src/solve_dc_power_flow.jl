@@ -455,7 +455,7 @@ end
     solve_power_flow(
         pf::T,
         sys::PSY.System,
-        flow_reporting::FlowReporting = FlowReporting.ARC_FLOWS,
+        flow_reporting::FlowReporting.Value = FlowReporting.ARC_FLOWS,
     ) where T <: AbstractDCPowerFlow
 
 
@@ -479,7 +479,7 @@ display(d["1"]["bus_results"])
 function solve_power_flow(
     pf::T,
     sys::PSY.System,
-    flow_reporting::FlowReporting = FlowReporting.ARC_FLOWS;
+    flow_reporting::FlowReporting.Value = FlowReporting.ARC_FLOWS;
     linear_solver::Union{Nothing, AbstractString} = nothing,
 ) where {T <: AbstractDCPowerFlow}
     data = PowerFlowData(pf, sys)
@@ -493,7 +493,7 @@ end
     solve_power_flow(
         data::Union{PTDFPowerFlowData, vPTDFPowerFlowData, ABAPowerFlowData},
         sys::PSY.System,
-        flow_reporting::FlowReporting,
+        flow_reporting::FlowReporting.Value,
     )
 
 Evaluates the power flows on the system's branches by means of the method associated with
@@ -510,7 +510,7 @@ or for branches (`FlowReporting.BRANCH_FLOWS`).
         considered, as well as the associated matrix for the power flow.
 - `sys::PSY.System`:
         container gathering the system data.
-- `flow_reporting::FlowReporting`:
+- `flow_reporting::FlowReporting.Value`:
         Format for reporting flows
 
 Note that `data` must have been created from the [`PowerSystems.System`](@extref)
@@ -528,7 +528,7 @@ display(d["2"]["flow_results"])
 function solve_power_flow(
     data::Union{PTDFPowerFlowData, vPTDFPowerFlowData, ABAPowerFlowData},
     sys::PSY.System,
-    flow_reporting::FlowReporting;
+    flow_reporting::FlowReporting.Value;
     linear_solver::Union{Nothing, AbstractString} = nothing,
 )
     solve_power_flow!(data; linear_solver)

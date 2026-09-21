@@ -28,7 +28,7 @@ function initialize_power_flow_data!(
     )
 
     # bus types, angles, magnitudes
-    bus_type = Vector{PSY.ACBusTypes}(undef, n_buses)
+    bus_type = Vector{PSY.ACBusTypes.Value}(undef, n_buses)
     bus_angles = zeros(Float64, n_buses)
     bus_magnitude = ones(Float64, n_buses)
     _initialize_bus_data!(

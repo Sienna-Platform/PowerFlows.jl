@@ -206,13 +206,13 @@ function _check_name(sys::System, name::String, component_type::DataType)
 end
 
 """
-    _add_simple_bus!(sys::System, number::Int, bus_type::ACBusTypes, base_voltage::Number, voltage_magnitude::Float64=1.0, voltage_angle::Float64=0.0)
+    _add_simple_bus!(sys::System, number::Int, bus_type::ACBusTypes.Value, base_voltage::Number, voltage_magnitude::Float64=1.0, voltage_angle::Float64=0.0)
     Simplified function to create and add a bus to the system with the given parameters.
 """
 function _add_simple_bus!(
     sys::System,
     number::Int,
-    bus_type::ACBusTypes,
+    bus_type::ACBusTypes.Value,
     base_voltage::Number,
     voltage_magnitude::Float64 = 1.0,
     voltage_angle::Float64 = 0.0,

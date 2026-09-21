@@ -422,7 +422,7 @@ Row layout of `pv_extra_nz` (only populated for PV; 0 for non-PV):
 function _build_diag_nz_cache(
     Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
     bus_state_offset::Vector{REC_INDEX_TYPE},
-    bus_types::AbstractVector{PSY.ACBusTypes},
+    bus_types::AbstractVector{PSY.ACBusTypes.Value},
 )
     n_buses = length(bus_types)
     diag_base_nz = Matrix{Int}(undef, 4, n_buses)
@@ -635,7 +635,7 @@ function _populate_constant_yb_blocks!(
     Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
     Y_bus_eff::SparseMatrixCSC{ComplexF64, Int},
     bus_state_offset::Vector{REC_INDEX_TYPE},
-    bus_types::AbstractVector{PSY.ACBusTypes},
+    bus_types::AbstractVector{PSY.ACBusTypes.Value},
 )
     n_buses = length(bus_types)
     Yvals = SparseArrays.nonzeros(Y_bus_eff)
