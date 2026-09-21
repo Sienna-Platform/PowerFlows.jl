@@ -221,16 +221,23 @@ function _singular_matrix_family(; backend = PNM.KLUSolver())
     return (; A, n, cache, set_t!, g_at, t_star = d0 / (d0 - d1))
 end
 
-@testset "bordering vectors are deterministic and normalized" begin
-    # Reproducible logs depend on the bordering being identical run to run.
+@testset "bordering vectors are deterministic, normalized and independent" begin
+    # Reproducible logs depend on the bordering being identical run to run, and the
+    # zero-vs-pole test depends on the borderings not being the same vector.
     v1, v2, v3 = (Vector{Float64}(undef, 64) for _ in 1:3)
-    PF._fill_border_vector!(v1, UInt64(12345))
-    PF._fill_border_vector!(v2, UInt64(12345))
-    PF._fill_border_vector!(v3, UInt64(12346))
-    @test v1 == v2                       # same seed, same vector
-    @test v1 != v3                       # different seed, different vector
+    PF._fill_border_vector!(v1, 3)
+    PF._fill_border_vector!(v2, 3)
+    PF._fill_border_vector!(v3, 4)
+    @test v1 == v2                       # same index, same vector
+    @test v1 != v3                       # different index, different vector
     @test isapprox(LinearAlgebra.norm(v1), 1.0; atol = 1e-12)
     @test all(isfinite, v1)
+
+    # The monitor's own slots must differ from each other.
+    mon = PF.BorderedFoldMonitor(64)
+    @test length(mon.b) == PF.FOLD_N_BORDERINGS >= 2
+    @test allunique(mon.b)
+    @test allunique(mon.c)
 end
 
 @testset "sign(g) tracks sign(det J) across a singularity" begin
@@ -260,94 +267,76 @@ end
     @test length(unique(offsets)) == 1
 end
 
-@testset "bisection classifies a genuine zero as a fold" begin
-    fam = _singular_matrix_family()
-    mon = PF.BorderedFoldMonitor(fam.n)
-    mon.has_prev_x = true    # the synthetic bracket below stands in for the iterate
-
-    t_lo, t_hi = fam.t_star - 0.25, fam.t_star + 0.25
-    g_of = t -> PF._fold_monitor_value!(mon, fam.g_at(t)[2])
-    g_lo, g_hi = g_of(t_lo), g_of(t_hi)
-    @test sign(g_lo) != sign(g_hi)       # the interval brackets the singularity
-
-    bracket = θ -> g_of(t_lo + θ * (t_hi - t_lo))
-    event = PF._bracket_fold_flip!(
-        mon, "test", bracket, abs(g_lo), abs(g_hi), Int8(sign(g_lo)))
-    @test event === :zero
-end
-
-@testset "bisection classifies a bordering pole, not a fold" begin
-    # det M = det J · s crosses zero somewhere; there sign(g) flips while det J does
-    # NOT. Locate such a bracket by scanning, then check it is called a pole.
-    fam = _singular_matrix_family()
-    mon = PF.BorderedFoldMonitor(fam.n)
-    mon.has_prev_x = true
-    g_of = t -> PF._fold_monitor_value!(mon, fam.g_at(t)[2])
-
-    ts = collect(range(fam.t_star + 0.05, fam.t_star + 3.0; length = 60))
-    gs = [g_of(t) for t in ts]
-    ds = [(fam.set_t!(t); LinearAlgebra.det(Matrix(fam.A))) for t in ts]
-    k = findfirst(
-        i ->
-            isfinite(gs[i]) && isfinite(gs[i - 1]) &&
-                sign(gs[i]) != sign(gs[i - 1]) &&
-                sign(ds[i]) == sign(ds[i - 1]), 2:length(ts))
-    @test !isnothing(k)                  # this bordering does hit a pole
-    i = k + 1
-    t_lo, t_hi = ts[i - 1], ts[i]
-    bracket = θ -> g_of(t_lo + θ * (t_hi - t_lo))
-    event = PF._bracket_fold_flip!(
-        mon, "test", bracket, abs(gs[i - 1]), abs(gs[i]), Int8(sign(gs[i - 1])))
-    @test event === :pole
-end
-
-@testset "a flip with no bracket is unavailable, not a verdict" begin
-    mon = PF.BorderedFoldMonitor(8)
-    @test PF._bracket_fold_flip!(mon, "test", nothing, 1.0, 1.0, Int8(1)) ===
-          :unavailable
-    # Even with a bracket, an unseen previous iterate cannot define a segment.
-    @test PF._bracket_fold_flip!(mon, "test", θ -> 1.0, 1.0, 1.0, Int8(1)) ===
-          :unavailable
-end
-
-@testset "an unclassifiable flip is read conservatively as a fold" begin
-    # Without a bracket (LM) nothing can be established about the flip, so the
-    # monitor must bail rather than wave it through.
+@testset "a flip on every bordering is a fold" begin
+    # Independent borderings agree only when det J itself crossed zero.
     mon = PF.BorderedFoldMonitor(8)
     tl = Test.TestLogger(; min_level = Logging.Warn)
     bailed = Logging.with_logger(tl) do
-        PF._decide_det_sign_switch!(mon, "t1", 1.0, true)   # first sign, no flip
-        PF._decide_det_sign_switch!(mon, "t2", -1.0, true)  # flip, no bracket
+        PF._decide_det_sign_switch!(mon, "t1", [1.0, 1.0], true)   # first signs
+        PF._decide_det_sign_switch!(mon, "t2", [-1.0, -1.0], true) # both flip
     end
     @test bailed
-    msgs = [r.message for r in tl.logs]
-    @test any(m -> occursin("no bracketing", m), msgs)
-    @test any(m -> occursin("read conservatively as zero", m), msgs)
+    @test any(m -> occursin("sign(det J) flipped on all", m), [r.message for r in tl.logs])
+
     # `bail = false` classifies and logs identically but never aborts.
     mon2 = PF.BorderedFoldMonitor(8)
     Logging.with_logger(Logging.NullLogger()) do
-        PF._decide_det_sign_switch!(mon2, "t1", 1.0, false)
-        @test !PF._decide_det_sign_switch!(mon2, "t2", -1.0, false)
+        PF._decide_det_sign_switch!(mon2, "t1", [1.0, 1.0], false)
+        @test !PF._decide_det_sign_switch!(mon2, "t2", [-1.0, -1.0], false)
     end
+end
+
+@testset "a lone flip is a degenerate bordering, not a fold" begin
+    # Only det(M) of that one bordering crossed zero: re-pick it, never cry fold.
+    mon = PF.BorderedFoldMonitor(8)
+    b1_first = copy(mon.b[1])
+    bailed = Logging.with_logger(Logging.NullLogger()) do
+        PF._decide_det_sign_switch!(mon, "t1", [1.0, 1.0], true)
+        PF._decide_det_sign_switch!(mon, "t2", [-1.0, 1.0], true)
+    end
+    @test !bailed
+    @test mon.b[1] != b1_first           # the flipping bordering was re-picked
+    @test mon.signs[1] == 0              # and its sign history forgotten
+    @test mon.signs[2] == 1              # the other one is untouched
+    @test mon.enabled
+end
+
+@testset "a non-finite g re-picks that bordering; all non-finite is a fold" begin
+    mon = PF.BorderedFoldMonitor(8)
+    b1_first = copy(mon.b[1])
+    bailed = Logging.with_logger(Logging.NullLogger()) do
+        PF._decide_det_sign_switch!(mon, "t1", [Inf, 1.0], true)
+    end
+    @test !bailed                        # the live bordering still covers it
+    @test mon.b[1] != b1_first
+
+    mon2 = PF.BorderedFoldMonitor(8)
+    tl = Test.TestLogger(; min_level = Logging.Warn)
+    bailed2 = Logging.with_logger(tl) do
+        PF._decide_det_sign_switch!(mon2, "t1", [NaN, NaN], true)
+    end
+    @test bailed2                        # nothing left to see with: bail
+    @test any(m -> occursin("every fold-monitor bordering is degenerate", m),
+        [r.message for r in tl.logs])
 end
 
 @testset "repeated bordering poles disable the monitor rather than cry fold" begin
     mon = PF.BorderedFoldMonitor(8)
-    b_first = copy(mon.b)
+    b_first = copy(mon.b[1])
     @test mon.enabled
     for _ in 1:(PF.FOLD_MAX_BORDER_REPICKS)
         Logging.with_logger(Logging.NullLogger()) do
-            PF._handle_border_pole!(mon, "test", "synthetic")
+            PF._handle_border_pole!(mon, "test", 1)
         end
     end
     @test mon.enabled                    # still re-picking
-    @test mon.b != b_first               # with a genuinely different bordering
+    @test mon.b[1] != b_first            # with a genuinely different bordering
     Logging.with_logger(Logging.NullLogger()) do
-        PF._handle_border_pole!(mon, "test", "synthetic")
+        PF._handle_border_pole!(mon, "test", 1)
     end
     @test !mon.enabled                   # gives up instead of reporting a fold
     # A disabled monitor never bails, whatever it is fed.
-    @test !PF._decide_det_sign_switch!(mon, "test", -1.0, true)
+    @test !PF._decide_det_sign_switch!(mon, "test", [-1.0, -1.0], true)
 end
 
 @testset "the monitor line reports sign(det J)" begin
@@ -382,8 +371,8 @@ end
 end
 
 @testset "diagnostics never perturb the solve" begin
-    # Bracketing re-evaluates residual/J at interpolated iterates. If the restore is
-    # exact, the iterates must be bit-identical to a solve with diagnostics off.
+    # The monitor only back-solves against the existing factorization, so the iterates
+    # must stay bit-identical to a solve with the fold bail-out off.
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14")
     function final_state(; stop_at_fold, scale, maxiter)
         pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(; correct_bustypes = true,

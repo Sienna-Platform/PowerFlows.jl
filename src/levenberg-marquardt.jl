@@ -205,9 +205,6 @@ function _run_power_flow_method(
             # One-iterate lag: update_damping_factor! evaluated J at the pre-step
             # iterate but residual.Rv is already post-step, so κ̂/λ_min describe the
             # linearization J while the reported ‖F‖∞ is after the step. Not realigned.
-            # That lag is also why no iterate is passed: bracketing an ambiguous fold
-            # flip would have to re-evaluate residual/J together, which cannot be
-            # restored to this deliberately mismatched pair.
             run_solver_diagnostics!(
                 diag_state, "LM iter $i", residual, J, time_step,
                 diag_cache, monitor, stop_at_fold) &&

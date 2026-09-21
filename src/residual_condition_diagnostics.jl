@@ -199,24 +199,16 @@ end
 # Fold / voltage-collapse bail-out state and the shared per-iteration hook.
 # ---------------------------------------------------------------------------
 
-# FIXME a bit over-engineered.
-"""Deterministic pseudo-random unit vector, filled by an LCG so the bordering — and
-therefore every logged monitor value — is reproducible across runs, platforms, and
-Julia versions (no `Random` dependency, whose streams are not version-stable)."""
-function _fill_border_vector!(v::Vector{Float64}, seed::UInt64)
-    s = seed * 0x9E3779B97F4A7C15 + 0x1
-    @inbounds for i in eachindex(v)
-        s = s * 0x5851F42D4C957F2D + 0x14057B7EF767814F
-        v[i] = 2.0 * ((s >> 11) * 2.0^-53) - 1.0   # uniform in [-1, 1)
-    end
-    v ./= norm(v)
-    return v
-end
+"""Deterministic pseudo-random unit vector: a *generic* direction is all the
+bordering needs, and determinism keeps the logged monitor values reproducible across
+runs and Julia versions (`Random`'s streams are not version-stable)."""
+_fill_border_vector!(v::Vector{Float64}, k::Int) =
+    normalize!(v .= sin.((1:length(v)) .* (k * FOLD_BORDER_STRIDE)))
 
 """
     BorderedFoldMonitor(n_state)
 
-Fold monitor tracking `sign(det J)` through a bordered system. For fixed vectors
+Fold monitor tracking `sign(det J)` through bordered systems. For fixed vectors
 `b`, `c` and scalar `d`, border `J` as
 
     M = [ J   b
@@ -228,213 +220,142 @@ The Schur complement gives `det(M) = det(J) · (d − cᵀJ⁻¹b)`, so with
 
 `g` is smooth along the continuation and vanishes exactly when `J` is singular:
 `det M` is a fixed smooth function, nonzero near a simple fold for generic `b`, `c`,
-so `sign(g)` differs from `sign(det J)` only by the constant factor `sign(det M)`. Therefore
-**flips of `g` are flips of `det J`**: we can monitor which branch we're on via tracking `g`.
+so `sign(g)` differs from `sign(det J)` only by the constant factor `sign(det M)`.
+Therefore **flips of `g` are flips of `det J`**: tracking `g` tells us which branch
+we are on.
 
-Cost per iteration: one back-solve `J y = b` against the *existing* factorization
-plus a dot product.
+`g` can also flip through a **pole**, where `det M` — not `det J` — crossed zero; the
+bordering degenerated and `g` says nothing about `J`. Two *independent* borderings
+settle that without any extra machinery: a zero of `det J` flips both on the same
+step, a pole flips only the bordering that degenerated. A lone flip re-picks that
+bordering and the solve continues, up to `FOLD_MAX_BORDER_REPICKS` times before the
+monitor disables itself.
 
-`g` can flip sign two ways:
-
-  - through **zero**: a genuine singularity of `J` — the fold;
-  - through a **pole**: `det M` crossed zero. The bordering degenerated and `g` says
-    nothing about `J`. The monitor re-picks `b`, `c` and restarts its sign tracking
-    (it cannot recompute over past iterates, which are gone), up to
-    `FOLD_MAX_BORDER_REPICKS` times before disabling itself.
-
-The two are told apart by bisecting the *step* that produced the flip
-(`_bracket_fold_flip!`): as the bracket tightens onto the event one determinant
-vanishes there while the other stays continuous and nonzero, so `|g|` shrinks
-geometrically onto a zero and grows onto a pole. Only that limiting *trend* is used.
-The magnitude of `|g|` carries no usable information on its own — `|g| =
-|det J|/|det M|`, and nothing pins `|det M|`, so a small `|g|` may mean a vanishing
-`det J` or merely a swollen `det M`.
-
-Bisection needs `residual` and `J` evaluated at the passed iterate: NR/TR supply one,
-LM does not (its `J` lags the residual by a step). Without it a flip cannot be
-classified at all and is read conservatively as a fold.
-"""
+Cost per iteration: `FOLD_N_BORDERINGS` back-solves against the *existing*
+factorization plus a dot product each."""
 mutable struct BorderedFoldMonitor
-    b::Vector{Float64}
-    c::Vector{Float64}
-    d::Float64
-    y::Vector{Float64}      # work buffer: holds J⁻¹b after `solve!`
-    attempt::Int            # bordering index; bumped on every re-pick
-    sign::Int8              # sign(g) last seen; 0 = nothing seen yet
-    prev_abs_g::Float64     # |g| at the previous iteration (NaN = none)
-    enabled::Bool           # false once the bordering has degenerated too often
-    prev_x::Vector{Float64} # previous iterate, the low end of a bracketed step
-    has_prev_x::Bool
-    x_work::Vector{Float64} # interpolated iterate used while bracketing
+    b::Vector{Vector{Float64}}
+    c::Vector{Vector{Float64}}
+    y::Vector{Float64}          # work buffer: holds J⁻¹b after `solve!`
+    gs::Vector{Float64}         # this iteration's g per bordering
+    signs::Vector{Int8}         # sign(g) last seen per bordering; 0 = nothing yet
+    attempts::Vector{Int}       # bordering index per slot; bumped on every re-pick
+    enabled::Bool               # false once the borderings degenerated too often
 end
 
 function BorderedFoldMonitor(n_state::Int)
     mon = BorderedFoldMonitor(
-        Vector{Float64}(undef, n_state), Vector{Float64}(undef, n_state),
-        FOLD_BORDER_D, Vector{Float64}(undef, n_state),
-        0, Int8(0), NaN, true,
-        Vector{Float64}(undef, n_state), false, Vector{Float64}(undef, n_state),
+        [Vector{Float64}(undef, n_state) for _ in 1:FOLD_N_BORDERINGS],
+        [Vector{Float64}(undef, n_state) for _ in 1:FOLD_N_BORDERINGS],
+        Vector{Float64}(undef, n_state), Vector{Float64}(undef, FOLD_N_BORDERINGS),
+        zeros(Int8, FOLD_N_BORDERINGS), zeros(Int, FOLD_N_BORDERINGS), true,
     )
-    _repick_bordering!(mon)
+    for k in 1:FOLD_N_BORDERINGS
+        _repick_bordering!(mon, k)
+    end
     return mon
 end
 
-"""Draw a fresh bordering `(b, c)` and reset the sign/magnitude history: after a
-re-pick `sign(det M)` is a different constant, so old signs are not comparable."""
-function _repick_bordering!(mon::BorderedFoldMonitor)
-    mon.attempt += 1
-    seed = FOLD_BORDER_SEED * UInt64(mon.attempt)
-    _fill_border_vector!(mon.b, seed)
-    _fill_border_vector!(mon.c, seed + 0x9E37)
-    mon.sign = Int8(0)
-    mon.prev_abs_g = NaN
+"""Draw a fresh bordering into slot `k` and forget its sign: after a re-pick
+`sign(det M)` is a different constant, so old signs are not comparable."""
+function _repick_bordering!(mon::BorderedFoldMonitor, k::Int)
+    mon.attempts[k] += 1
+    # Distinct strides per (slot, attempt) so the two borderings are never the same
+    # vector — independence is the whole zero-vs-pole test.
+    _fill_border_vector!(mon.b[k], 2 * (k + FOLD_N_BORDERINGS * mon.attempts[k]))
+    _fill_border_vector!(mon.c[k], 2 * (k + FOLD_N_BORDERINGS * mon.attempts[k]) + 1)
+    mon.signs[k] = Int8(0)
     return mon
 end
 
-"""`g = 1/(d − cᵀJ⁻¹b)` at the current iterate, via one back-solve against `cache`'s
-existing factorization. Returns `Inf` when the bordering is exactly degenerate
-(`s == 0`) and `NaN` if the back-solve produced a non-finite `s`."""
-function _fold_monitor_value!(mon::BorderedFoldMonitor, cache::PFLinearSolverCache)
-    copyto!(mon.y, mon.b)
+"""`g = 1/(d − cᵀJ⁻¹b)` for bordering `k` at the current iterate, via one back-solve
+against `cache`'s existing factorization. Non-finite (`±Inf`/`NaN`) means the
+bordering is degenerate or the back-solve failed."""
+function _fold_monitor_value!(
+    mon::BorderedFoldMonitor,
+    cache::PFLinearSolverCache,
+    k::Int = 1,
+)
+    copyto!(mon.y, mon.b[k])
     solve!(cache, mon.y)
-    s = mon.d - dot(mon.c, mon.y)
-    isfinite(s) || return NaN
-    return inv(s)   # ±Inf when s == 0: a pole, handled as a degenerate bordering
+    return inv(FOLD_BORDER_D - dot(mon.c[k], mon.y))
 end
 
-"""Update the monitor with this iteration's `g` and decide the bail-out. Returns
-`true` to abort the search. A sign flip through zero (or an indeterminate `g`) is a
-fold; a flip through a pole is a degenerate bordering, which re-picks `(b, c)` and
-continues. An ambiguous flip is resolved by `bracket` (see
-[`_bracket_fold_flip!`](@ref)) when the caller supplies one. With `bail = false` the
-same classification is logged but never aborts."""
+"""Update the monitor with this iteration's `g` values and decide the bail-out.
+Returns `true` to abort the search. Every bordering flipping sign is a singular `J`
+— the fold; a lone flip (or a non-finite `g`) is that bordering degenerating, which
+re-picks it and continues. With `bail = false` the same classification is logged but
+never aborts."""
 function _decide_det_sign_switch!(
     mon::BorderedFoldMonitor,
     label::AbstractString,
-    g::Float64,
+    gs::AbstractVector{Float64},
     bail::Bool,
-    bracket::Union{Function, Nothing} = nothing,
 )::Bool
     mon.enabled || return false
 
-    if isnan(g)
-        @warn "$label: fold monitor g = det(J)/det(M) indeterminate (non-finite " *
-              "back-solve); read as a fold$(bail ? ", aborting." : ".")"
-        return bail
-    end
-
-    abs_g = abs(g)
-    current = Int8(sign(g))
-    prev, prev_abs = mon.sign, mon.prev_abs_g
-
-    # s == 0, |g| = Inf: a pole by definition.
-    if !isfinite(abs_g)
-        _handle_border_pole!(mon, label, "|g| = Inf (cᵀJ⁻¹b hit d exactly)")
-        return false
-    end
-
-    # No flip: first observation, or unchanged sign.
-    if prev == 0 || current == 0 || current == prev
-        current == 0 || (mon.sign = current)
-        mon.prev_abs_g = abs_g
-        return false
-    end
-
-    # Flipped. Zero (fold) or pole (degenerate bordering)? Bisect the step: as the
-    # bracket tightens onto the event, |g| → 0 at a zero and → ∞ at a pole whatever
-    # det(M) is doing.
-    event = _bracket_fold_flip!(mon, label, bracket, prev_abs, abs_g, prev)
-    if event === :pole
-        _handle_border_pole!(mon, label, _fold_evidence(event))
-        return false
-    end
-    mon.sign = current
-    mon.prev_abs_g = abs_g
-
-    @warn "$label: sign(det J) flipped " *
-          "($(prev > 0 ? "+" : "−") → $(current > 0 ? "+" : "−")); " *
-          "$(_fold_evidence(event)). Fold / voltage-collapse " *
-          "signature$(bail ? ", aborting." : ".")"
-    return bail
-end
-
-"""Phrase the evidence behind a flip verdict."""
-_fold_evidence(event::Symbol) =
-    if event === :zero
-        "bisection drove |g| DOWN — through zero"
-    elseif event === :pole
-        "bisection drove |g| UP"
-    elseif event === :unavailable
-        "no bracketing (unsupported by this solver) — read conservatively as zero"
-    else  # :unresolved
-        "bisection inconclusive — read conservatively as zero"
-    end
-
-"""Classify a sign flip of `g` by bisecting the step that produced it.
-
-`bracket(θ)` re-evaluates `g` at the interpolated iterate
-`x_prev + θ·(x − x_prev)`; the caller is responsible for restoring `residual`/`J`
-afterwards. Bisection keeps the sub-interval that still brackets the sign change, so
-after `FOLD_BRACKET_STEPS` steps both ends sit next to the event. Near a simple
-zero, `|g| ∼ C·|θ − θ*|` shrinks geometrically as the bracket tightens; near a
-simple pole, `|g| ∼ C/|θ − θ*|` grows.
-
-Returns `:zero`, `:pole`, `:unavailable` (no bracket callable, or no previous
-iterate), or `:unresolved` (bisection did not separate the two)."""
-function _bracket_fold_flip!(
-    mon::BorderedFoldMonitor,
-    label::AbstractString,
-    bracket::Union{Function, Nothing},
-    abs_lo::Float64,
-    abs_hi::Float64,
-    sign_lo::Int8,
-)::Symbol
-    (isnothing(bracket) && return :unavailable)
-    mon.has_prev_x || return :unavailable
-
-    θ_lo, θ_hi = 0.0, 1.0
-    a_lo, a_hi = abs_lo, abs_hi
-    for _ in 1:FOLD_BRACKET_STEPS
-        θ_mid = 0.5 * (θ_lo + θ_hi)
-        g_mid = bracket(θ_mid)
-        # An exactly singular J mid-step IS the zero we were looking for; a
-        # non-finite g there is the pole.
-        isnan(g_mid) && return :zero
-        isfinite(g_mid) || return :pole
-        a_mid = abs(g_mid)
-        if Int8(sign(g_mid)) == sign_lo
-            θ_lo, a_lo = θ_mid, a_mid
-        else
-            θ_hi, a_hi = θ_mid, a_mid
+    flipped = UInt8(0)          # bit k set = bordering k flipped this iteration
+    n_flipped = 0
+    n_finite = 0
+    n_voting = 0                # borderings with an established previous sign
+    for k in eachindex(gs)
+        g = gs[k]
+        if !isfinite(g)
+            # s == 0 (|g| = Inf) or a failed back-solve: this bordering says nothing
+            # about J. Re-pick it; the others still cover this iteration.
+            _handle_border_pole!(mon, label, k)
+            mon.enabled || return false
+            continue
+        end
+        n_finite += 1
+        current = Int8(sign(g))
+        current == 0 && continue         # exactly zero: hold the previous sign
+        prev = mon.signs[k]
+        mon.signs[k] = current
+        prev == 0 && continue            # first observation for this bordering
+        n_voting += 1
+        if current != prev
+            flipped |= UInt8(1) << (k - 1)
+            n_flipped += 1
         end
     end
 
-    outer, inner = min(abs_lo, abs_hi), max(a_lo, a_hi)
-    inner < outer && return :zero
-    min(a_lo, a_hi) > max(abs_lo, abs_hi) && return :pole
-    @debug "$label: bisection did not separate a zero from a pole " *
-           "(flanking |g| ∈ [$(_sf4(min(abs_lo, abs_hi))), $(_sf4(max(abs_lo, abs_hi)))], " *
-           "bracketed |g| ∈ [$(_sf4(min(a_lo, a_hi))), $(_sf4(inner))])"
-    return :unresolved
+    if n_finite == 0
+        @warn "$label: every fold-monitor bordering is degenerate; read as a " *
+              "fold$(bail ? ", aborting." : ".")"
+        return bail
+    end
+    n_flipped == 0 && return false
+
+    # A bordering re-picked last iteration has no previous sign to vote with, so the
+    # verdict is taken over the ones that do.
+    if n_flipped < n_voting
+        # Independent borderings disagree, so det(J) did not cross zero: the ones that
+        # flipped hit a pole of their own det(M). Re-pick them and keep going.
+        for k in eachindex(gs)
+            iszero(flipped & (UInt8(1) << (k - 1))) || _handle_border_pole!(mon, label, k)
+        end
+        return false
+    end
+
+    @warn "$label: sign(det J) flipped on all $(n_voting) borderings. Fold / " *
+          "voltage-collapse signature$(bail ? ", aborting." : ".")"
+    return bail
 end
 
-"""Handle a pole of `g`: `det M` crossed zero, so the bordering — not `J` — went
-singular. Re-pick `(b, c)` and keep going; after `FOLD_MAX_BORDER_REPICKS` failures
-disable the monitor rather than report a fold that was never observed."""
-function _handle_border_pole!(
-    mon::BorderedFoldMonitor,
-    label::AbstractString,
-    detail::AbstractString,
-)
-    if mon.attempt > FOLD_MAX_BORDER_REPICKS
+"""Handle a degenerate bordering: `det M` — not `J` — went singular. Re-pick slot `k`
+and keep going; after `FOLD_MAX_BORDER_REPICKS` failures disable the monitor rather
+than report a fold that was never observed."""
+function _handle_border_pole!(mon::BorderedFoldMonitor, label::AbstractString, k::Int)
+    if mon.attempts[k] > FOLD_MAX_BORDER_REPICKS
         mon.enabled = false
-        @warn "$label: bordering degenerated $(mon.attempt)× ($detail); " *
-              "disabling fold detection — solve continues with NO fold bail-out."
+        @warn "$label: bordering $k degenerated $(mon.attempts[k])×; disabling fold " *
+              "detection — solve continues with NO fold bail-out."
         return
     end
-    @warn "$label: g passed through a pole ($detail): det(M) crossed zero — " *
-          "degenerate bordering, not a property of J. Re-picking (b, c)."
-    _repick_bordering!(mon)
+    @debug "$label: bordering $k passed through a pole of det(M) — degenerate " *
+           "bordering, not a property of J. Re-picking it."
+    _repick_bordering!(mon, k)
     return
 end
 
@@ -464,17 +385,11 @@ end
 
 """Run one iteration's diagnostics against the current `J`/residual. Does the
 *single* per-iteration refactor of `cache` on `J.Jv` (NR/TR pass `linSolveCache`, LM
-its own KLU `diag_cache`), then the bordered `sign(det J)` monitor (one back-solve)
-and, when the log line is on, the Schur eigensolve behind `λ_min(S)`. Returns `true`
-iff the caller should abort. A `SingularException` is itself a fold signature: under
-`bail` it aborts, under monitor-only it reports `singular` and continues; any other
-exception is rethrown.
-
-Pass `x` (the current iterate) only when `residual` and `J` are both evaluated *at*
-it: that lets an ambiguous sign flip be resolved by bracketing the step, which
-re-evaluates both at interpolated iterates and restores them afterwards. NR/TR
-satisfy this; LM does not (its `J` lags the residual by a step) and passes
-`nothing`."""
+its own KLU `diag_cache`), then the bordered `sign(det J)` monitor (one back-solve
+per bordering) and, when the log line is on, the Schur eigensolve behind `λ_min(S)`.
+Returns `true` iff the caller should abort. A `SingularException` is itself a fold
+signature: under `bail` it aborts, under monitor-only it reports `singular` and
+continues; any other exception is rethrown."""
 function run_solver_diagnostics!(
     state::SolverDiagnosticsState,
     label::AbstractString,
@@ -484,7 +399,6 @@ function run_solver_diagnostics!(
     cache::PFLinearSolverCache,
     monitor::Bool,
     bail::Bool,
-    x::Union{AbstractVector{Float64}, Nothing} = nothing,
 )::Bool
     # KLU throws `SingularException` on a singular J; AppleAccelerate does not (it
     # silently returns garbage but still factors), so only KLU reaches the catch.
@@ -512,10 +426,16 @@ function run_solver_diagnostics!(
         return false
     end
 
-    # The bordered monitor is one back-solve, so it runs whenever diagnostics are on;
-    # only `bail` decides whether a fold signature aborts the search.
+    # The bordered monitor is a back-solve per bordering, so it runs whenever
+    # diagnostics are on; only `bail` decides whether a fold signature aborts.
     fold = state.fold
-    g = fold.enabled ? _fold_monitor_value!(fold, cache) : NaN
+    if fold.enabled
+        for k in eachindex(fold.gs)
+            fold.gs[k] = _fold_monitor_value!(fold, cache, k)
+        end
+    else
+        fill!(fold.gs, NaN)
+    end
 
     if monitor
         # Trailing block is the FULL non-bus tail (LCC + VSC + area interchange), not
@@ -540,7 +460,7 @@ function run_solver_diagnostics!(
             "λ_min(S) = $λ_str",
             # sign(g) = sign(det J)·sign(det M); det M is a fixed constant, so only
             # FLIPS of this sign are meaningful, not the sign itself.
-            "sign(det J) = $(_fmt_det_sign(g))",
+            "sign(det J) = $(_fmt_det_sign(first(fold.gs)))",
         ]
         if !isnan(state.prev_F) && state.prev_F > 0
             push!(parts, "contraction = $(_sf4(abs_max / state.prev_F))")
@@ -549,83 +469,11 @@ function run_solver_diagnostics!(
         state.prev_F = abs_max
     end
 
-    # Bracketing re-evaluates `residual`/`J` at interpolated iterates, so it is only
-    # offered when the caller vouches that both are at `x`, and it always restores
-    # them (and the factorization) before returning.
-    # `bracketed` keeps the restore off the hot path: bracketing only runs on an
-    # ambiguous sign flip, so the common iteration pays nothing for this.
-    bracketed = Ref(false)
-    bracket = if (isnothing(x) || !fold.has_prev_x)
-        nothing
-    else
-        function (θ::Float64)
-            bracketed[] = true
-            return _fold_value_at_interpolated_iterate!(
-                fold, residual, J, time_step, cache, x, θ)
-        end
-    end
-    abort = try
-        _decide_det_sign_switch!(fold, label, g, bail, bracket)
-    finally
-        bracketed[] && _restore_iterate!(residual, J, time_step, cache, x)
-    end
-
-    if !isnothing(x)
-        copyto!(fold.prev_x, x)
-        fold.has_prev_x = true
-    end
-    return abort
-end
-
-"""Evaluate the bordered monitor `g` at `x_prev + θ·(x − x_prev)`. Leaves `residual`,
-`J`, and `cache` at that interpolated iterate — [`_restore_iterate!`](@ref) puts them
-back. Returns `NaN` when the interpolated `J` is outright singular, which
-[`_bracket_fold_flip!`](@ref) reads as the zero it was hunting for."""
-function _fold_value_at_interpolated_iterate!(
-    mon::BorderedFoldMonitor,
-    residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
-    J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
-    time_step::Int,
-    cache::PFLinearSolverCache,
-    x::AbstractVector{Float64},
-    θ::Float64,
-)
-    @. mon.x_work = mon.prev_x + θ * (x - mon.prev_x)
-    residual(mon.x_work, time_step)
-    J(time_step)
-    try
-        numeric_refactor!(cache, J.Jv)
-    catch e
-        e isa LinearAlgebra.SingularException || rethrow()
-        return NaN
-    end
-    return _fold_monitor_value!(mon, cache)
-end
-
-"""Put `residual`, `J`, and `cache`'s factorization back at the iterate `x` after
-bracketing perturbed them. The solver loop reads `residual.Rv` for its convergence
-test immediately after the diagnostics hook, so this is not optional."""
-function _restore_iterate!(
-    residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
-    J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
-    time_step::Int,
-    cache::PFLinearSolverCache,
-    x::AbstractVector{Float64},
-)
-    residual(x, time_step)
-    J(time_step)
-    try
-        numeric_refactor!(cache, J.Jv)
-    catch e
-        # A singular J at the restored iterate is the caller's problem to report, not
-        # something to raise from inside a diagnostic's cleanup.
-        e isa LinearAlgebra.SingularException || rethrow()
-    end
-    return
+    return _decide_det_sign_switch!(fold, label, fold.gs, bail)
 end
 
 """`+`/`−` for the monitor's sign, or `n/a` when `g` is unavailable."""
-_fmt_det_sign(g::Float64) = isnan(g) ? "n/a" : (g > 0 ? "+" : (g < 0 ? "−" : "0"))
+_fmt_det_sign(g::Float64) = !isfinite(g) ? "n/a" : (g > 0 ? "+" : (g < 0 ? "−" : "0"))
 
 """
     _report_area_interchange_failure(data, time_step)

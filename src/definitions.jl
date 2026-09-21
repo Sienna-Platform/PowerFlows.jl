@@ -196,11 +196,11 @@ IS.@scoped_enum(
 # The monitor is g = 1/(d − cᵀJ⁻¹b) = det(J)/det(M) for the bordered matrix
 # M = [J b; cᵀ d]; sign(g) tracks sign(det J) up to the constant sign(det M).
 const FOLD_BORDER_D = 0.0 # the (n+1, n+1) entry `d` of the bordering
-const FOLD_BORDER_SEED = 0x5eed_f01d # seed of the deterministic bordering vectors b, c
 const FOLD_MAX_BORDER_REPICKS = 3 # re-picks of (b, c) after a degenerate (pole) event
-# A sign flip of g is classified by bisecting the step that produced it
-# (`_bracket_fold_flip!`): |g| shrinks onto a zero (a genuine singularity of J, i.e. a
-# fold) and grows onto a pole (det M crossed zero — the bordering degenerated, not a
-# property of J). Bisections of that step; near a simple zero or pole |g| moves
-# geometrically as the bracket tightens, so enough steps separate the two.
-const FOLD_BRACKET_STEPS = 20
+# Independent borderings run in parallel: det J = 0 flips sign(g) on all of them at the
+# same step, while a degenerate bordering (det M = 0) flips only its own. Two is enough
+# to tell those apart, and each costs one extra back-solve per iteration.
+const FOLD_N_BORDERINGS = 2
+# Stride of the deterministic bordering vectors: v[i] = sin(i * k * stride). Irrational
+# so the samples never fall into a short cycle whatever the state size.
+const FOLD_BORDER_STRIDE = 0.7390851332151607

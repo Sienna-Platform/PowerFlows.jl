@@ -828,7 +828,7 @@ function _run_power_flow_method(time_step::Int,
             # one refactor feeds both the log line and the bail-out.
             run_solver_diagnostics!(
                 diag_state, "NR iter $i", residual, J, time_step,
-                linSolveCache, monitor, stop_at_fold, stateVector.x) &&
+                linSolveCache, monitor, stop_at_fold) &&
                 return false, i
         end
         converged = norm(residual.Rv, Inf) < tol
@@ -915,7 +915,7 @@ function _run_power_flow_method(time_step::Int,
             # residual.Rv are at the same iterate, so one refactor feeds both.
             run_solver_diagnostics!(
                 diag_state, "TR iter $i", residual, J, time_step,
-                linSolveCache, monitor, stop_at_fold, stateVector.x) &&
+                linSolveCache, monitor, stop_at_fold) &&
                 return false, i
         end
         converged = norm(residual.Rv, Inf) < tol
