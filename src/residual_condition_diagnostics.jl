@@ -199,9 +199,9 @@ end
 # Fold / voltage-collapse bail-out state and the shared per-iteration hook.
 # ---------------------------------------------------------------------------
 
-"""Deterministic pseudo-random unit vector: a *generic* direction is all the
-bordering needs, and determinism keeps the logged monitor values reproducible across
-runs and Julia versions (`Random`'s streams are not version-stable)."""
+"""Deterministic pseudo-random unit vector indexed by `k`. Any generic direction
+works; `Random` is avoided because its streams are not version-stable and the logged
+monitor values should reproduce across runs and Julia versions."""
 _fill_border_vector!(v::Vector{Float64}, k::Int) =
     normalize!(v .= sin.((1:length(v)) .* (k * FOLD_BORDER_STRIDE)))
 
@@ -221,15 +221,13 @@ The Schur complement gives `det(M) = det(J) · (d − cᵀJ⁻¹b)`, so with
 `g` is smooth along the continuation and vanishes exactly when `J` is singular:
 `det M` is a fixed smooth function, nonzero near a simple fold for generic `b`, `c`,
 so `sign(g)` differs from `sign(det J)` only by the constant factor `sign(det M)`.
-Therefore **flips of `g` are flips of `det J`**: tracking `g` tells us which branch
-we are on.
+Therefore **flips of `g` are flips of `det J`**.
 
-`g` can also flip through a **pole**, where `det M` — not `det J` — crossed zero; the
-bordering degenerated and `g` says nothing about `J`. Two *independent* borderings
-settle that without any extra machinery: a zero of `det J` flips both on the same
-step, a pole flips only the bordering that degenerated. A lone flip re-picks that
-bordering and the solve continues, up to `FOLD_MAX_BORDER_REPICKS` times before the
-monitor disables itself.
+`g` can also flip through a **pole**, where `det M` — not `det J` — crossed zero: the
+bordering degenerated and `g` says nothing about `J`. Two independent borderings
+separate the cases, since a zero of `det J` flips both on the same step while a pole
+flips only the bordering that degenerated. A lone flip re-picks that bordering, up to
+`FOLD_MAX_BORDER_REPICKS` times before the monitor disables itself.
 
 Cost per iteration: `FOLD_N_BORDERINGS` back-solves against the *existing*
 factorization plus a dot product each."""
@@ -239,8 +237,8 @@ mutable struct BorderedFoldMonitor
     y::Vector{Float64}          # work buffer: holds J⁻¹b after `solve!`
     gs::Vector{Float64}         # this iteration's g per bordering
     signs::Vector{Int8}         # sign(g) last seen per bordering; 0 = nothing yet
-    attempts::Vector{Int}       # bordering index per slot; bumped on every re-pick
-    enabled::Bool               # false once the borderings degenerated too often
+    attempts::Vector{Int}       # re-pick count per slot; also indexes its vectors
+    enabled::Bool               # false once a bordering has degenerated too often
 end
 
 function BorderedFoldMonitor(n_state::Int)
@@ -260,8 +258,8 @@ end
 `sign(det M)` is a different constant, so old signs are not comparable."""
 function _repick_bordering!(mon::BorderedFoldMonitor, k::Int)
     mon.attempts[k] += 1
-    # Distinct strides per (slot, attempt) so the two borderings are never the same
-    # vector — independence is the whole zero-vs-pole test.
+    # A distinct index per (slot, attempt), so no two borderings are ever the same
+    # vector: their independence is what separates a zero from a pole.
     _fill_border_vector!(mon.b[k], 2 * (k + FOLD_N_BORDERINGS * mon.attempts[k]))
     _fill_border_vector!(mon.c[k], 2 * (k + FOLD_N_BORDERINGS * mon.attempts[k]) + 1)
     mon.signs[k] = Int8(0)
@@ -283,9 +281,9 @@ end
 
 """Update the monitor with this iteration's `g` values and decide the bail-out.
 Returns `true` to abort the search. Every bordering flipping sign is a singular `J`
-— the fold; a lone flip (or a non-finite `g`) is that bordering degenerating, which
-re-picks it and continues. With `bail = false` the same classification is logged but
-never aborts."""
+— the fold; a lone flip, or a non-finite `g`, is that bordering degenerating and
+re-picks it. With `bail = false` the same classification is logged but never
+aborts."""
 function _decide_det_sign_switch!(
     mon::BorderedFoldMonitor,
     label::AbstractString,
@@ -299,7 +297,7 @@ function _decide_det_sign_switch!(
         g = gs[k]
         if !isfinite(g)
             # s == 0 (|g| = Inf) or a failed back-solve: this bordering says nothing
-            # about J. Re-pick it; the others still cover this iteration.
+            # about J. The others still cover this iteration.
             _handle_border_pole!(mon, label, k)
             mon.enabled || return false
             continue
@@ -317,13 +315,12 @@ function _decide_det_sign_switch!(
         return bail
     end
     # A bordering re-picked last iteration has no previous sign to vote with, so the
-    # verdict is taken over the ones that do. A split vote means independent
-    # borderings disagree, so det(J) did not cross zero: the ones that flipped hit a
-    # pole of their own det(M).
+    # verdict is taken over the ones that do. A split vote means det(J) did not cross
+    # zero, and the borderings that flipped hit a pole of their own det(M).
     split = 0 < n_flipped < n_voting
 
-    # Commit: re-pick the borderings that hit a pole (`_repick_bordering!` blanks
-    # their sign), and record this iteration's sign for the rest.
+    # Re-pick those (`_repick_bordering!` blanks their sign) and record this
+    # iteration's sign for the rest.
     for k in eachindex(gs)
         g = gs[k]
         isfinite(g) || continue
@@ -342,18 +339,19 @@ function _decide_det_sign_switch!(
 end
 
 """Did bordering `k` flip sign this iteration? `nothing` when it has no vote to cast:
-no previous sign yet (a fresh or just re-picked bordering), or an exactly zero `g`,
-which holds the previous sign rather than replacing it. Reads `mon.signs` without
-writing, so it gives the same answer before and after the verdict."""
+no previous sign yet (fresh or just re-picked), or an exactly zero `g`, which holds
+the previous sign rather than replacing it. Reads `mon.signs` without writing, so it
+answers the same before and after the verdict — which is why the signs are committed
+in a second pass."""
 function _bordering_flipped(mon::BorderedFoldMonitor, g::Float64, k::Int)
     current = Int8(sign(g))
     (iszero(current) || iszero(mon.signs[k])) && return nothing
     return current != mon.signs[k]
 end
 
-"""Handle a degenerate bordering: `det M` — not `J` — went singular. Re-pick slot `k`
-and keep going; after `FOLD_MAX_BORDER_REPICKS` failures disable the monitor rather
-than report a fold that was never observed."""
+"""Handle a degenerate bordering: `det M` — not `J` — went singular. Re-pick slot `k`;
+after `FOLD_MAX_BORDER_REPICKS` failures disable the monitor rather than report a
+fold that was never observed."""
 function _handle_border_pole!(mon::BorderedFoldMonitor, label::AbstractString, k::Int)
     if mon.attempts[k] > FOLD_MAX_BORDER_REPICKS
         mon.enabled = false
