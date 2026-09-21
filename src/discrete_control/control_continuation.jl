@@ -3,10 +3,25 @@
 # It also bounds the relaxation factor itself: ω = (1−θ)/(1+gbound) ≤ 1−θ = 0.5.
 const CONTROL_CONTRACTION = 0.5
 
-# State a rolled-back trial must not permanently change: V/θ, `bus_type` (one-way PV→PQ flips), the
-# injection columns (Q clamps, distributed-slack setpoint updates), and the VSC DC-network state
-# (`_read_vsc_state!` writes the iterate into dcn.p_c/q_c/node_vdc every residual eval, so a
-# diverged trial corrupts it exactly like bus state).
+# State a rolled-back trial must restore. `bus_type` is here because the inner solve's Q-limit
+# logic makes one-way PV→PQ flips. An absent VSC or LCC subsystem is carried as empty vectors,
+# which is what the capture/restore guards test.
+struct ControlStateSnapshot
+    vmag::Vector{Float64}
+    vang::Vector{Float64}
+    btype::Vector{PSY.ACBusTypes.Value}
+    pinj::Vector{Float64}
+    qinj::Vector{Float64}
+    dc_p::Vector{Float64}
+    dc_q::Vector{Float64}
+    dc_v::Vector{Float64}
+    lcc_rectifier_tap::Vector{Float64}
+    lcc_inverter_tap::Vector{Float64}
+    lcc_rectifier_angle::Vector{Float64}
+    lcc_inverter_angle::Vector{Float64}
+    lcc_i_dc::Vector{Float64}
+end
+
 @inline function _dc_state_cols(data, ts::Int)
     dcn = get_dc_network(data)
     if has_dc_network(dcn)
@@ -14,50 +29,71 @@ const CONTROL_CONTRACTION = 0.5
     end
     return Float64[], Float64[], Float64[]
 end
+@inline function _lcc_state_cols(data, ts::Int)
+    if get_lcc_count(data) > 0
+        lcc = data.lcc
+        return lcc.rectifier.tap[:, ts], lcc.inverter.tap[:, ts],
+        lcc.rectifier.thyristor_angle[:, ts], lcc.inverter.thyristor_angle[:, ts],
+        lcc.i_dc[:, ts]
+    end
+    return Float64[], Float64[], Float64[], Float64[], Float64[]
+end
 @inline function _snapshot_state(data, ts::Int)
     dc_p, dc_q, dc_v = _dc_state_cols(data, ts)
-    return (
+    lcc_rt, lcc_it, lcc_ra, lcc_ia, lcc_idc = _lcc_state_cols(data, ts)
+    return ControlStateSnapshot(
         data.bus_magnitude[:, ts],
         data.bus_angles[:, ts],
         data.bus_type[:, ts],
         data.bus_active_power_injections[:, ts],
         data.bus_reactive_power_injections[:, ts],
         dc_p, dc_q, dc_v,
+        lcc_rt, lcc_it, lcc_ra, lcc_ia, lcc_idc,
     )
 end
-@inline function _capture_state!(
-    (vmag, vang, btype, pinj, qinj, dc_p, dc_q, dc_v),
-    data,
-    ts::Int,
-)
-    vmag .= view(data.bus_magnitude, :, ts)
-    vang .= view(data.bus_angles, :, ts)
-    btype .= view(data.bus_type, :, ts)
-    pinj .= view(data.bus_active_power_injections, :, ts)
-    qinj .= view(data.bus_reactive_power_injections, :, ts)
-    if !isempty(dc_v)
+@inline function _capture_state!(snap::ControlStateSnapshot, data, ts::Int)
+    snap.vmag .= view(data.bus_magnitude, :, ts)
+    snap.vang .= view(data.bus_angles, :, ts)
+    snap.btype .= view(data.bus_type, :, ts)
+    snap.pinj .= view(data.bus_active_power_injections, :, ts)
+    snap.qinj .= view(data.bus_reactive_power_injections, :, ts)
+    if !isempty(snap.dc_v)
         dcn = get_dc_network(data)
-        dc_p .= view(dcn.p_c, :, ts)
-        dc_q .= view(dcn.q_c, :, ts)
-        dc_v .= view(dcn.node_vdc, :, ts)
+        snap.dc_p .= view(dcn.p_c, :, ts)
+        snap.dc_q .= view(dcn.q_c, :, ts)
+        snap.dc_v .= view(dcn.node_vdc, :, ts)
+    end
+    if !isempty(snap.lcc_i_dc)
+        lcc = data.lcc
+        snap.lcc_rectifier_tap .= view(lcc.rectifier.tap, :, ts)
+        snap.lcc_inverter_tap .= view(lcc.inverter.tap, :, ts)
+        snap.lcc_rectifier_angle .= view(lcc.rectifier.thyristor_angle, :, ts)
+        snap.lcc_inverter_angle .= view(lcc.inverter.thyristor_angle, :, ts)
+        snap.lcc_i_dc .= view(lcc.i_dc, :, ts)
     end
     return
 end
-@inline function _restore_state!(
-    data,
-    ts::Int,
-    (vmag, vang, btype, pinj, qinj, dc_p, dc_q, dc_v),
-)
-    data.bus_magnitude[:, ts] .= vmag
-    data.bus_angles[:, ts] .= vang
-    data.bus_type[:, ts] .= btype
-    data.bus_active_power_injections[:, ts] .= pinj
-    data.bus_reactive_power_injections[:, ts] .= qinj
-    if !isempty(dc_v)
+@inline function _restore_state!(data, ts::Int, snap::ControlStateSnapshot)
+    data.bus_magnitude[:, ts] .= snap.vmag
+    data.bus_angles[:, ts] .= snap.vang
+    data.bus_type[:, ts] .= snap.btype
+    data.bus_active_power_injections[:, ts] .= snap.pinj
+    data.bus_reactive_power_injections[:, ts] .= snap.qinj
+    if !isempty(snap.dc_v)
         dcn = get_dc_network(data)
-        dcn.p_c[:, ts] .= dc_p
-        dcn.q_c[:, ts] .= dc_q
-        dcn.node_vdc[:, ts] .= dc_v
+        dcn.p_c[:, ts] .= snap.dc_p
+        dcn.q_c[:, ts] .= snap.dc_q
+        dcn.node_vdc[:, ts] .= snap.dc_v
+    end
+    if !isempty(snap.lcc_i_dc)
+        lcc = data.lcc
+        lcc.rectifier.tap[:, ts] .= snap.lcc_rectifier_tap
+        lcc.inverter.tap[:, ts] .= snap.lcc_inverter_tap
+        lcc.rectifier.thyristor_angle[:, ts] .= snap.lcc_rectifier_angle
+        lcc.inverter.thyristor_angle[:, ts] .= snap.lcc_inverter_angle
+        lcc.i_dc[:, ts] .= snap.lcc_i_dc
+        # Re-derive phi/branch_admittances at the restored state.
+        _update_ybus_lcc!(data, ts)
     end
     return
 end
@@ -98,11 +134,12 @@ end
 # which also makes the second re-converging solve unnecessary. `reliable=false` (the
 # probe solve failed) ⇒ orientation unknown, so the caller freezes the device rather
 # than stepping it with an unknown sign.
-function _plant_sign(d, data, ts::Int, pf, scratch_snap; kwargs...)::Tuple{Float64, Bool}
+function _plant_sign(
+    d, data, ts::Int, pf, snap::ControlStateSnapshot; kwargs...,
+)::Tuple{Float64, Bool}
     p0 = current_parameter(d)
     y0 = measured_value(d, data, ts)
-    _capture_state!(scratch_snap, data, ts)
-    snap = scratch_snap
+    _capture_state!(snap, data, ts)
     lo, hi = parameter_limits(d)
     δ = 1e-3 * (hi - lo)
     if δ <= 0.0
@@ -147,34 +184,7 @@ struct _SensitivityContext{C, R, JT}
     # recomputed by the residual functor — a Q-limit PV→PQ flip elsewhere in the network after
     # this ctx was built silently stales that structure. `_refresh_sensitivity_context!` checks
     # this snapshot and refuses to reuse a ctx whose bus-type pattern has since changed.
-    bus_type::Vector{PSY.ACBusTypes}
-end
-
-_sensitivity_context(::AbstractACPowerFlow, data, ts::Int; kwargs...) = nothing
-function _sensitivity_context(pf::ACPolarPowerFlow, data, ts::Int; kwargs...)
-    backend = resolve_linear_solver_backend(get(kwargs, :linear_solver, nothing))
-    residual = ACPowerFlowResidual(data, ts)
-    x = calculate_x0(data, ts)
-    residual(x, ts)                       # evaluate at current state; fills P_net/Q_net
-    J = ACPowerFlowJacobian(residual, ts)
-    J(ts)                                 # Jacobian values at current state
-    lin_cache =
-        _nr_linear_solver_cache!(data, J, backend, residual.bus_slack_participation_factors)
-    try
-        numeric_refactor!(lin_cache, J.Jv)
-    catch e
-        e isa LinearAlgebra.SingularException || rethrow()
-        return                    # singular base Jacobian ⇒ fall back to FD probes
-    end
-    # One full sensitivity-context build (fresh residual + Jacobian structure + refactor) per
-    # continuation. `_refresh_sensitivity_context!` re-evaluates VALUES into these same objects
-    # on every subsequent batched pass and does NOT count here — the Jacobian structure (and thus
-    # the persisted symbolic factorization this counter tracks) is topology-invariant across the
-    # continuation, so only this one build should ever register.
-    _count_symbolic_factor!(data)
-    n = length(residual.Rv)
-    return _SensitivityContext(
-        lin_cache, residual, J, zeros(n), zeros(n), copy(view(data.bus_type, :, ts)))
+    bus_type::Vector{PSY.ACBusTypes.Value}
 end
 
 # Values-only refresh at a new converged base state: the Jacobian sparsity depends only on
@@ -196,106 +206,6 @@ end
 # `apply_parameter!` for switched shunts/FACTS writes device moves directly into
 # `data.bus_reactive_power_constant_impedance_withdrawals`, so the four constant-I/Z vectors need
 # the same re-sync.
-function _refresh_sensitivity_context!(ctx::_SensitivityContext, data, ts::Int)::Bool
-    view(data.bus_type, :, ts) == ctx.bus_type || return false
-    residual = ctx.residual
-    copyto!(
-        residual.bus_active_constant_I,
-        view(data.bus_active_power_constant_current_withdrawals, :, ts),
-    )
-    copyto!(
-        residual.bus_reactive_constant_I,
-        view(data.bus_reactive_power_constant_current_withdrawals, :, ts),
-    )
-    copyto!(
-        residual.bus_active_constant_Z,
-        view(data.bus_active_power_constant_impedance_withdrawals, :, ts),
-    )
-    copyto!(
-        residual.bus_reactive_constant_Z,
-        view(data.bus_reactive_power_constant_impedance_withdrawals, :, ts),
-    )
-    @inbounds for ix in eachindex(residual.P_net)
-        residual.P_net[ix] =
-            data.bus_active_power_injections[ix, ts] -
-            get_bus_active_power_total_withdrawals(data, ix, ts) +
-            data.bus_hvdc_net_power[ix, ts]
-        residual.Q_net[ix] =
-            data.bus_reactive_power_injections[ix, ts] -
-            get_bus_reactive_power_total_withdrawals(data, ix, ts)
-        residual.P_net_set[ix] = residual.P_net[ix]
-    end
-    x = calculate_x0(data, ts)
-    ctx.residual(x, ts)
-    ctx.J(ts)
-    try
-        numeric_refactor!(ctx.lin_cache, ctx.J.Jv)
-    catch e
-        e isa LinearAlgebra.SingularException || rethrow()
-        return false
-    end
-    return true
-end
-
-# ∂F/∂p into `rhs` (zeroed first). Returns `true` iff the family has an analytic polar form here;
-# the `false` path is reserved for a future family without one — the caller then uses the FD probe
-# (see `_linear_plant_sign`). Row convention: F[2b−1] active, F[2b] reactive balance at bus b
-# (see `_update_residual_values!`).
-function _dF_dp!(rhs::Vector{Float64}, d::ControlledTap, data, ts::Int)
-    fill!(rhs, 0.0)
-    f, t = d.from_ix, d.to_ix
-    Vf = data.bus_magnitude[f, ts] * cis(data.bus_angles[f, ts])
-    Vt = data.bus_magnitude[t, ts] * cis(data.bus_angles[t, ts])
-    p, a = d.current, d.alpha
-    # ∂Y/∂p of the from-side terms (t_c = p·cis(a)); Y_tt = yt is p-independent (see `_branch_terms`).
-    dYff = -2.0 * d.yt / p^3
-    dYft = d.yt * cis(a) / p^2
-    dYtf = d.yt * cis(-a) / p^2
-    # ∂S_i/∂p = V_i·conj(Σ_k ∂Y_ik/∂p·V_k); only Y_ff,Y_ft (row f) and Y_tf (row t) change.
-    dSf = Vf * conj(dYff * Vf + dYft * Vt)
-    dSt = Vt * conj(dYtf * Vf)
-    @inbounds begin
-        rhs[2 * f - 1] = real(dSf)
-        rhs[2 * f] = imag(dSf)
-        rhs[2 * t - 1] = real(dSt)
-        rhs[2 * t] = imag(dSt)
-    end
-    return true
-end
-
-function _dF_dp!(
-    rhs::Vector{Float64},
-    d::Union{ControlledSwitchedShunt, ControlledFACTS},
-    data,
-    ts::Int,
-)
-    fill!(rhs, 0.0)
-    b = d.bus_ix
-    Vm = data.bus_magnitude[b, ts]
-    # Constant-Z reactive withdrawal w enters Q_net as −w·Vm²; apply_parameter! sets ∂w/∂susc = −1,
-    # so ∂Q_net/∂susc = +Vm² and ∂F[2b]/∂susc = −∂Q_net/∂susc = −Vm² (reactive row only).
-    @inbounds rhs[2 * b] = -Vm^2
-    return true
-end
-
-# Linearized dy/dp for a voltage device via the factored Jacobian. `y = Vm(controlled_bus)`
-# = x[2·cbus−1], and dx/dp = −J⁻¹·(∂F/∂p). Returns `(dy/dp, true)`, or `(0.0, false)` when the
-# family has no analytic form (caller then uses the FD probe).
-function _linear_plant_sign(d, data, ts::Int, ctx::_SensitivityContext)
-    _dF_dp!(ctx.rhs, d, data, ts) || return 0.0, false
-    cbus = controlled_bus_ix(d)
-    # x[2b−1] is Vm ONLY at PQ buses (Q_gen at PV, P at REF — see update_state!). At a
-    # PV/REF controlled bus the voltage is pinned by the bus model, so dVm/dp = 0 exactly:
-    # return a reliable zero so the caller's gain floor freezes the device, matching the
-    # FD probe's behavior.
-    if data.bus_type[cbus, ts] != PSY.ACBusTypes.PQ
-        return 0.0, true
-    end
-    copyto!(ctx.sol, ctx.rhs)
-    solve!(ctx.lin_cache, ctx.sol)        # sol = J⁻¹·(∂F/∂p)
-    return -ctx.sol[2 * cbus - 1], true       # dy/dp = (dx/dp)[Vm(cbus)] = −sol[2·cbus−1]
-end
-
 # Shared bisection sub-step walk for the robust continuation applicators
 # (`_continuation_to!` and `_restore_one!`). The full move having failed, step from `start`
 # toward `target` (each interpolated point clamped to `[lo, hi]`), growing the step on NR
@@ -304,7 +214,7 @@ end
 # last converged iterate and returns `(reached, completed)`: the parameter reached (== `start`
 # if nothing budged) and whether the full `[start, target]` interval was traversed.
 function _bisection_walk!(d, data, ts::Int, start::Float64, target::Float64,
-    lo::Float64, hi::Float64, pf, snap; kwargs...)
+    lo::Float64, hi::Float64, pf, snap::ControlStateSnapshot; kwargs...)
     done = 0.0                       # fraction of [start, target] applied so far
     step = 0.5
     reached = start
@@ -335,13 +245,14 @@ end
 # the parameter actually reached (solver left converged there) and whether ANY
 # sub-step was applied — a requested move that could not budge at all must not
 # masquerade as a settled device.
-function _continuation_to!(d, data, ts::Int, target::Float64, pf, scratch_snap; kwargs...)
+function _continuation_to!(
+    d, data, ts::Int, target::Float64, pf, snap::ControlStateSnapshot; kwargs...,
+)
     start = current_parameter(d)
     abs(target - start) < _param_tol(d) && return start, true
     lo, hi = parameter_limits(d)
-    _capture_state!(scratch_snap, data, ts)  # last converged state, restored on a failed trial
-    snap = scratch_snap
-    clamped = clamp(target, lo, hi)          # no-op here (damped target is pre-clamped)
+    _capture_state!(snap, data, ts)  # last converged state, restored on a failed trial
+    clamped = clamp(target, lo, hi)  # no-op here (damped target is pre-clamped)
     # Full move first: the damped target is usually within the warm-started solver's
     # reach, so the common case costs ONE inner solve instead of a multi-sub-step walk.
     apply_parameter!(d, data, clamped, ts)
@@ -485,7 +396,7 @@ function _step_device!(
     ts::Int,
     S::Float64,
     pf,
-    scratch_snap,
+    scratch_snap::ControlStateSnapshot,
     frozen::Vector{Bool},
     dVdp::Vector{Float64},
     osc::Vector{Int},
@@ -518,10 +429,12 @@ end
 
 # One device's plant sign: the linear sensitivity when a polar `ctx` is live and the family has an
 # analytic form (tap/shunt/FACTS), else the FD probe (non-polar formulations, singular base).
-_probe_one_sign(d, data, ts::Int, pf, scratch_snap, ::Nothing; kwargs...) =
-    _plant_sign(d, data, ts, pf, scratch_snap; kwargs...)
+_probe_one_sign(
+    d, data, ts::Int, pf, scratch_snap::ControlStateSnapshot, ::Nothing; kwargs...,
+) = _plant_sign(d, data, ts, pf, scratch_snap; kwargs...)
 function _probe_one_sign(
-    d, data, ts::Int, pf, scratch_snap, ctx::_SensitivityContext; kwargs...,
+    d, data, ts::Int, pf, scratch_snap::ControlStateSnapshot,
+    ctx::_SensitivityContext; kwargs...,
 )
     dydp, ok = _linear_plant_sign(d, data, ts, ctx)
     ok && return dydp, true
@@ -533,7 +446,8 @@ end
 # effect is below the gain floor (e.g. a PV-pinned bus, sensitivity 0) — stepping them would rail.
 function _probe_device_signs!(
     devices, offset::Int, dVdp::Vector{Float64}, frozen::Vector{Bool},
-    ctx::Union{Nothing, _SensitivityContext}, data, ts::Int, pf, scratch_snap; kwargs...,
+    ctx::Union{Nothing, _SensitivityContext}, data, ts::Int, pf,
+    scratch_snap::ControlStateSnapshot; kwargs...,
 )
     for (i, d) in enumerate(devices)
         s, reliable = _probe_one_sign(d, data, ts, pf, scratch_snap, ctx; kwargs...)
@@ -551,7 +465,8 @@ end
 # in it settled (parameter change below its scale-aware tolerance). Same function-barrier
 # + `offset` indexing.
 function _step_device_group!(
-    devices, offset::Int, data, ts::Int, S::Float64, pf, scratch_snap,
+    devices, offset::Int, data, ts::Int, S::Float64, pf,
+    scratch_snap::ControlStateSnapshot,
     frozen::Vector{Bool}, dVdp::Vector{Float64}, osc::Vector{Int},
     prev_sign::Vector{Int}, n_shared::Vector{Int}; kwargs...,
 )::Bool
@@ -632,13 +547,13 @@ end
 # `_control_continuation!`); a converged joint solve refreshes it in place instead of rebuilding.
 function _batched_pass!(
     set::ControlledDeviceSet, n_taps::Int, n_shunts::Int, data, ts::Int, S::Float64, pf,
-    scratch_snap, frozen::Vector{Bool}, dVdp::Vector{Float64}, osc::Vector{Int},
-    prev_sign::Vector{Int}, n_shared::Vector{Int}, p_prev::Vector{Float64},
-    did_move::Vector{Bool}, ctx::_SensitivityContext; kwargs...,
+    snap::ControlStateSnapshot, frozen::Vector{Bool}, dVdp::Vector{Float64},
+    osc::Vector{Int}, prev_sign::Vector{Int}, n_shared::Vector{Int},
+    p_prev::Vector{Float64}, did_move::Vector{Bool},
+    ctx::_SensitivityContext; kwargs...,
 )
     fill!(did_move, false)
-    _capture_state!(scratch_snap, data, ts)
-    snap = scratch_snap
+    _capture_state!(snap, data, ts)
     # A failed+rolled-back batched attempt must leave NO trace, so the sequential fallback is the
     # authoritative pass: snapshot the per-device bookkeeping `_damped_target!` mutates
     # (oscillation counter, direction, freezes) and restore it on rollback.
@@ -690,8 +605,8 @@ end
 # Sequential update of the three voltage-device groups; returns whether all settled.
 function _step_voltage_groups!(
     set::ControlledDeviceSet, n_taps::Int, n_shunts::Int, data, ts::Int, S::Float64, pf,
-    scratch_snap, frozen::Vector{Bool}, dVdp::Vector{Float64}, osc::Vector{Int},
-    prev_sign::Vector{Int}, n_shared::Vector{Int}; kwargs...,
+    scratch_snap::ControlStateSnapshot, frozen::Vector{Bool}, dVdp::Vector{Float64},
+    osc::Vector{Int}, prev_sign::Vector{Int}, n_shared::Vector{Int}; kwargs...,
 )
     settled = _step_device_group!(set.taps, 0, data, ts, S, pf, scratch_snap, frozen, dVdp,
         osc, prev_sign, n_shared; kwargs...)
@@ -712,8 +627,8 @@ end
 # so `_batched_pass!` can refresh it in place.
 function _control_pass!(
     set::ControlledDeviceSet, n_taps::Int, n_shunts::Int, use_batched::Bool,
-    data, ts::Int, S::Float64, pf, scratch_snap, frozen::Vector{Bool},
-    dVdp::Vector{Float64},
+    data, ts::Int, S::Float64, pf, scratch_snap::ControlStateSnapshot,
+    frozen::Vector{Bool}, dVdp::Vector{Float64},
     osc::Vector{Int}, prev_sign::Vector{Int}, n_shared::Vector{Int},
     p_prev::Vector{Float64}, did_move::Vector{Bool},
     ctx::Union{Nothing, _SensitivityContext}; kwargs...,
@@ -761,11 +676,9 @@ function _control_continuation!(
     _fill_shared!(n_shared, n_taps, counts, set.shunts)
     _fill_shared!(n_shared, n_taps + n_shunts, counts, set.facts)
 
-    # Single reused snapshot buffer for the probe phase, the pass loop, and the post-loop
-    # per-device restore (`_plant_sign`, `_continuation_to!`, `_batched_pass!`, `_restore_one!`):
-    # those phases run one after another and are never simultaneously live, so one buffer
-    # suffices. `snap_and_restore!`'s own `pre` snapshot is the exception — it stays live WHILE
-    # it calls `_restore_one!`, so it gets its own separate buffer, never this one.
+    # One buffer shared by the probe phase, the pass loop, and the post-loop per-device
+    # restore: those phases run in sequence and are never simultaneously live. The exception
+    # is `snap_and_restore!`'s `pre`, which allocates its own.
     scratch_snap = _snapshot_state(data, ts)
 
     # Build the linearized-sensitivity context ONCE (one numeric factorization reusing the base NR
@@ -811,10 +724,10 @@ function _control_continuation!(
     # once). Intermediate stages solve at CONTROL_STAGE_TOL; full tol only at the final stage and
     # snap/restore, and never looser than a user-supplied tol.
     user_tol = Float64(get(kwargs, :tol, DEFAULT_NR_TOL))
-    # Batch the voltage-device passes when the polar linear path is live (a non-`nothing` probe
-    # `ctx`): one joint solve per pass with analytic per-pass gain refresh, falling back to the
-    # sequential path on a failed joint solve. Non-polar formulations step sequentially.
-    use_batched = !isnothing(ctx)
+    # Gated on `_refreshable`, not just `ctx`'s presence: a formulation can supply analytic
+    # sensitivities before it supplies a per-pass refresh, and batching without one would read
+    # a stale Jacobian after the first device move.
+    use_batched = _supports_batched_refresh(ctx)
     p_prev = zeros(n_dev)
     did_move = fill(false, n_dev)
     S = INITIAL_CONTROL_STEEPNESS
@@ -864,22 +777,20 @@ end
 # continuous value (used only if snapping made the system infeasible).  First
 # probe is a SMALL step, matching `_continuation_to!`.
 function _restore_one!(
-    d, data, ts::Int, continuous::Float64, pf, scratch_snap; kwargs...,
+    d, data, ts::Int, continuous::Float64, pf, snap::ControlStateSnapshot; kwargs...,
 )::Bool
     snapped = current_parameter(d)
     if abs(continuous - snapped) < _param_tol(d)
         # No parameter to walk, but the solve can still fail (another device's snap
         # made the network infeasible): protect it like every other solve path so a
         # diverged iterate never leaks into the next device's "last converged" snapshot.
-        _capture_state!(scratch_snap, data, ts)
-        snap = scratch_snap
+        _capture_state!(snap, data, ts)
         ok = _ctrl_solve!(pf, data, ts; kwargs...)
         ok || _restore_state!(data, ts, snap)
         return ok
     end
     lo, hi = parameter_limits(d)
-    _capture_state!(scratch_snap, data, ts)  # last converged state, restored on a failed trial
-    snap = scratch_snap
+    _capture_state!(snap, data, ts)  # last converged state, restored on a failed trial
     # Full move first, matching `_continuation_to!`.
     apply_parameter!(d, data, clamp(continuous, lo, hi), ts)
     _ctrl_solve!(pf, data, ts; kwargs...) && return true
@@ -913,7 +824,8 @@ end
 # λ-restore a concrete device vector toward its stashed continuous value; returns `true`
 # iff all restored to a converged state.
 function _restore_device_group!(
-    devices, data, ts::Int, cont::Vector{Float64}, pf, scratch_snap; kwargs...,
+    devices, data, ts::Int, cont::Vector{Float64}, pf,
+    scratch_snap::ControlStateSnapshot; kwargs...,
 )::Bool
     ok = true
     for (i, d) in enumerate(devices)
@@ -927,13 +839,13 @@ function snap_and_restore!(
     data,
     set::ControlledDeviceSet,
     ts::Int,
-    scratch_snap;
+    scratch_snap::ControlStateSnapshot;
     kwargs...,
 )::Bool
     # Last continuous converged state: the restore path must start from here, not from
-    # whatever diverged iterate a failed post-snap solve leaves in `data`. This snapshot
-    # stays LIVE across the `_restore_one!` calls below, so it needs its OWN buffer —
-    # it must NOT alias `scratch_snap`, which those nested `_restore_one!` calls reuse.
+    # whatever diverged iterate a failed post-snap solve leaves in `data`. Needs its OWN
+    # buffer because it stays live across the `_restore_one!` calls below, which reuse
+    # `scratch_snap`.
     pre = _snapshot_state(data, ts)
     cont_taps = _snap_device_group!(set.taps, data, ts)
     cont_shunts = _snap_device_group!(set.shunts, data, ts)

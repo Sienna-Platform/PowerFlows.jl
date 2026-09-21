@@ -82,27 +82,6 @@ const PSSE_V35_EXTRA_GROUPS = [
 const PSSE_RAW_BUFFER_SIZEHINT = 1024
 const PSSE_MD_BUFFER_SIZEHINT = 1024
 
-# Default PSS/E v35 system-wide data block
-const PSSE_V35_DEFAULT_SYSTEM_WIDE_DATA = """GENERAL, THRSHZ=0.0001, PQBRAK=0.7, BLOWUP=5.0, MaxIsolLvls=4, CAMaxReptSln=20, ChkDupCntLbl=0
-GAUSS, ITMX=100, ACCP=1.6, ACCQ=1.6, ACCM=1.0, TOL=0.0001
-NEWTON, ITMXN=20, ACCN=1.0, TOLN=0.1, VCTOLQ=0.1, VCTOLV=0.00001, DVLIM=0.99, NDVFCT=0.99
-ADJUST, ADJTHR=0.005, ACCTAP=1.0, TAPLIM=0.05, SWVBND=100.0, MXTPSS=99, MXSWIM=10
-TYSL, ITMXTY=20, ACCTY=1.0, TOLTY=0.00001
-SOLVER,     , ACTAPS=0, AREAIN=0, PHSHFT=0, DCTAPS=0, SWSHNT=0, FLATST=0, VARLIM=0, NONDIV=0
-RATING, 1, "RATE1 ", "RATING SET 1                    "
-RATING, 2, "RATE2 ", "RATING SET 2                    "
-RATING, 3, "RATE3 ", "RATING SET 3                    "
-RATING, 4, "RATE4 ", "RATING SET 4                    "
-RATING, 5, "RATE5 ", "RATING SET 5                    "
-RATING, 6, "RATE6 ", "RATING SET 6                    "
-RATING, 7, "RATE7 ", "RATING SET 7                    "
-RATING, 8, "RATE8 ", "RATING SET 8                    "
-RATING, 9, "RATE9 ", "RATING SET 9                    "
-RATING,10, "RATE10", "RATING SET 10                   "
-RATING,11, "RATE11", "RATING SET 11                   "
-RATING,12, "RATE12", "RATING SET 12                   "
-"""
-
 # Header comments for v35 format (ordered by data section)
 const PSSE_V35_HEADERS = Dict{String, String}(
     "Case Identification Data" => "@!IC,SBASE,REV,XFRRAT,NXFRAT,BASFRQ",
@@ -193,6 +172,13 @@ update using `update_exporter` with any new data as relevant, and perform the ex
 transformations that had to be made to conform to PSS/E naming rules, which can be parsed by
 PowerSystems.jl to perform a round trip with the names restored.
 
+A v35 export also carries the parameters of the solve that produced the data, in the
+system-wide solution records, so the exported case reloads as the problem PowerFlows
+actually solved rather than one with every adjustment disabled. The exporter learns them
+from `update_exporter!` — either the `PowerFlowData` of a solve, or an evaluation model
+passed directly. Without that it writes the format defaults, unchanged. The v33 raw format
+has no such section, so a v33 export warns and drops them.
+
 # Arguments:
   - `base_system::PSY.System`: the system to be exported. Later updates may change power
     flow-related values but may not fundamentally alter the system
@@ -210,6 +196,10 @@ PowerSystems.jl to perform a round trip with the names restored.
 """
 mutable struct PSSEExporter <: SystemPowerFlowContainer
     system::PSY.System
+    # Identity of the system passed at construction. `system` is a `fast_deepcopy_system`,
+    # which mints a fresh metadata UUID, so its own UUID cannot serve as the identity to
+    # validate later `update_exporter!` calls against.
+    base_system_uuid::Base.UUID
     psse_version::Symbol
     export_dir::String
     name::String
@@ -221,6 +211,10 @@ mutable struct PSSEExporter <: SystemPowerFlowContainer
     md_valid::Bool  # If this is true, the metadata need not be reserialized
     md_buffer::IOBuffer  # Cache a serialized version of the metadata
     components_cache::Dict{String, Any}  # Cache sorted lists of components to reduce allocations
+    # `nothing` when driven standalone. Held separately from the model because a call-site
+    # keyword can override the parameters; see `write_solution_records`.
+    source_model::Union{Nothing, PowerFlowEvaluationModel}
+    source_parameters::Union{Nothing, SolutionParameters}
 
     function PSSEExporter(
         base_system::PSY.System,
@@ -241,6 +235,7 @@ mutable struct PSSEExporter <: SystemPowerFlowContainer
         mkpath(export_dir)
         new(
             system,
+            PSY.get_system_uuid(base_system),
             psse_version,
             String(export_dir),
             String(name),
@@ -252,6 +247,8 @@ mutable struct PSSEExporter <: SystemPowerFlowContainer
             false,
             IOBuffer(),
             Dict{String, Any}(),
+            nothing,
+            nothing,
         )
     end
 end
@@ -282,8 +279,8 @@ function update_version_group(psse_version::Symbol)
     return groups
 end
 
-function _validate_same_system(sys1::PSY.System, sys2::PSY.System)
-    return IS.get_uuid(PSY.get_internal(sys1)) == IS.get_uuid(PSY.get_internal(sys2))
+function _validate_same_system(exporter::PSSEExporter, sys::PSY.System)
+    return exporter.base_system_uuid == PSY.get_system_uuid(sys)
 end
 
 """
@@ -300,8 +297,59 @@ function update_exporter!(exporter::PSSEExporter, data::PowerFlowData)
         # the exported case self-consistent without touching the user's system.
         write_device_settings!(exporter.system, data)
     end
+    # This call marks a solve as having happened, so it's where the exporter learns the
+    # parameters the solve ran with.
+    _attach_source_model!(exporter, get_pf(data))
     # NOTE this relies on exporter.system being a deepcopy of the original system so we're not changing that one here
     update_system!(exporter.system, data)
+end
+
+"""
+Update the `PSSEExporter` with the evaluation model whose parameters the export should
+report, without also updating the system.
+
+Use this when the solve parameters were passed at the call site rather than stored on the
+model — `solve_power_flow!(data; tol = 1e-8)` — since only the caller knows them:
+
+```julia
+update_exporter!(exporter, pf; solver_kwargs = (; tol = 1e-8))
+```
+
+# Arguments:
+  - `exporter::PSSEExporter`: the exporter to update
+  - `pf::PowerFlowEvaluationModel`: the model that was solved
+  - `solver_kwargs`: parameters passed at the call site, which override the model's own
+"""
+function update_exporter!(
+    exporter::PSSEExporter,
+    pf::PowerFlowEvaluationModel;
+    solver_kwargs = (;),
+)
+    _attach_source_model!(exporter, pf; solver_kwargs = solver_kwargs)
+    return
+end
+
+# Keeps the model and parameters separate rather than rebuilding the model around overridden
+# parameters — a generic rebuild would silently drop each formulation's own fields.
+function _attach_source_model!(
+    exporter::PSSEExporter,
+    pf::PowerFlowEvaluationModel;
+    solver_kwargs = (;),
+)
+    if exporter.psse_version == :v33
+        @warn(
+            "The PSS/E v33 raw format has no system-wide solution data section, so the " *
+            "power flow solve parameters are not exported. Use psse_version = :v35 to " *
+            "carry them.",
+            maxlog = 1,
+        )
+    end
+    params = get_solution_parameters(pf)
+    isempty(solver_kwargs) ||
+        (params = _override(params, Dict{Symbol, Any}(pairs(solver_kwargs))))
+    exporter.source_model = pf
+    exporter.source_parameters = params
+    return
 end
 
 "Force all cached information (serialized metadata, component lists, etc.) to be regenerated"
@@ -323,7 +371,7 @@ Update the `PSSEExporter` with new `data`.
     exhaustively verify it.
 """
 function update_exporter!(exporter::PSSEExporter, data::PSY.System)
-    _validate_same_system(exporter.system, data) || throw(
+    _validate_same_system(exporter, data) || throw(
         ArgumentError(
             "System passed to update_exporter must be the same system as the one with which the exporter was constructed, just with different values",
         ),
@@ -564,10 +612,16 @@ function write_to_buffers!(
         println(io, line3)
     end
 
-    # v35 requires a System-Wide Data block between Case Identification Data and Bus Data
+    # v35 requires a System-Wide Data block between Case Identification Data and Bus Data.
+    # With no solve attached, it's written at the format defaults via `update_exporter!`.
     if exporter.psse_version == :v35
         println(io)  # blank line
-        print(io, PSSE_V35_DEFAULT_SYSTEM_WIDE_DATA)
+        write_solution_records(
+            io,
+            exporter.source_model,
+            exporter.source_parameters,
+            Float64(SBASE),
+        )
         println(io, "0 / END OF SYSTEM-WIDE DATA, BEGIN BUS DATA")
     end
 
@@ -866,7 +920,7 @@ function _psse_enum_code(value, undefined)
     if value == undefined
         return PSSE_DEFAULT
     end
-    return value.value
+    return Integer(value)
 end
 
 const _PSSE_PHASE_SHIFT_OBJECTIVES = (
@@ -916,7 +970,7 @@ function _write_2w_transformer_record3_winding1!(
     NOD1 = PSSE_DEFAULT
     CONT1 = PSY.get_regulated_bus_number(circuit)
 
-    supp_attr = PSY.get_supplemental_attributes(transformer)
+    supp_attr = PSY.get_supplemental_attributes(PSY.ImpedanceCorrectionData, transformer)
     TAB1 = !isempty(supp_attr) ? PSY.get_table_number(supp_attr[1]) : 0
     CR1 = PSSE_DEFAULT
     CX1 = PSSE_DEFAULT
@@ -924,9 +978,15 @@ function _write_2w_transformer_record3_winding1!(
 
     if exporter.psse_version == :v35
         # Using 0.0 as default for rating exporter, since PSSEv35 does not allow blank values
-        RATA1 = _value_or_default(PSY.get_rating(circuit, PSY.NU), 0.0)
-        RATB1 = _value_or_default(PSY.get_rating_b(circuit, PSY.NU), 0.0)
-        RATC1 = _value_or_default(PSY.get_rating_c(circuit, PSY.NU), 0.0)
+        RATA1 = _fix_3w_transformer_rating(
+            _value_or_default(PSY.get_rating(circuit, PSY.NU), 0.0),
+        )
+        RATB1 = _fix_3w_transformer_rating(
+            _value_or_default(PSY.get_rating_b(circuit, PSY.NU), 0.0),
+        )
+        RATC1 = _fix_3w_transformer_rating(
+            _value_or_default(PSY.get_rating_c(circuit, PSY.NU), 0.0),
+        )
 
         rates_1 = [RATA1, RATB1, RATC1]
         for _ in 4:12
@@ -1015,9 +1075,15 @@ function _collect_3w_winding_data(
         if exporter.psse_version == :v35
             # Using 0.0 as default for rating exporter, since PSSEv35 does not allow blank values
             rates = [
-                _value_or_default(PSY.get_rating(circuit, PSY.NU), 0.0),
-                _value_or_default(PSY.get_rating_b(circuit, PSY.NU), 0.0),
-                _value_or_default(PSY.get_rating_c(circuit, PSY.NU), 0.0),
+                _fix_3w_transformer_rating(
+                    _value_or_default(PSY.get_rating(circuit, PSY.NU), 0.0),
+                ),
+                _fix_3w_transformer_rating(
+                    _value_or_default(PSY.get_rating_b(circuit, PSY.NU), 0.0),
+                ),
+                _fix_3w_transformer_rating(
+                    _value_or_default(PSY.get_rating_c(circuit, PSY.NU), 0.0),
+                ),
             ]
             for _ in 4:12
                 push!(rates, 0.0)
@@ -1044,10 +1110,11 @@ function _collect_3w_winding_data(
         VMI = controlled_quantity_limits.min
         NTP = PSY.get_number_of_tap_positions(circuit)
         TAB = 0
-        supp_attr = PSY.get_supplemental_attributes(transformer)
+        supp_attr =
+            PSY.get_supplemental_attributes(PSY.ImpedanceCorrectionData, transformer)
         for icd_tr in supp_attr
             if PSY.get_transformer_winding(icd_tr) == category
-                TAB = !isempty(supp_attr) ? PSY.get_table_number(icd_tr) : 0
+                TAB = PSY.get_table_number(icd_tr)
             end
         end
         CR = PSSE_DEFAULT
@@ -1373,7 +1440,7 @@ function _make_gens_from_hvdc(
     return PSY.ThermalStandard(;
         name = "$(PSY.get_name(hvdc_line))_$suffix",
         available = PSY.get_available(hvdc_line) ? 1 : 0,
-        status = true,
+        status = PSY.OperationalStates.ONLINE,
         bus = bus,
         active_power = active_power,
         reactive_power = 0.0,
@@ -1409,7 +1476,11 @@ function _update_gens_from_hvdc!(
             PSY.get_to(PSY.get_arc(hvdc_line))
         end
         gen.available = PSY.get_available(hvdc_line) ? 1 : 0
-        gen.status = gen.available == 1
+        if gen.available == 1
+            PSY.set_status!(gen, PSY.OperationalStates.ONLINE)
+        else
+            PSY.set_status!(gen, PSY.OperationalStates.OFFLINE)
+        end
         gen.bus = bus
         gen.active_power = PSY.get_active_power_flow(hvdc_line, PSY.SU)
         gen.rating = if suffix == "FR"
@@ -1744,7 +1815,7 @@ function _write_discrete_branch_record!(
     J::Int,
     CKT::String,
     branch::PSY.DiscreteControlledACBranch,
-    branch_type::PSY.DiscreteControlledBranchType,
+    branch_type::PSY.DiscreteControlledBranchType.Value,
 )
     ST = PSY.get_available(branch) ? 1 : 0
     MET = PSSE_DEFAULT
@@ -1752,10 +1823,12 @@ function _write_discrete_branch_record!(
     R = PSY.get_r(branch, PSY.SU)
     X = PSY.get_x(branch, PSY.SU)
     B = 0.0
-    GI = PSSE_DEFAULT
-    BI = PSSE_DEFAULT
-    GJ = PSSE_DEFAULT
-    BJ = PSSE_DEFAULT
+    # Emit numeric zeros instead of PSSE_DEFAULT blanks because the parser checks these fields
+    # with iszero, and blank values are represented as SubString{String}.
+    GI = 0.0
+    BI = 0.0
+    GJ = 0.0
+    BJ = 0.0
 
     RATEA = _value_or_default(PSY.get_rating(branch, PSY.NU), PSSE_DEFAULT)
     RATEB = 0.0
@@ -1995,9 +2068,8 @@ function _collect_control_objective!(
     t::PSY.TwoWindingTransformer,
 )
     cod1 = PSY.get_control_objective(PSY.get_circuit(t))
-    cod1 ==
-    PSY.TransformerControlObjectiveModule.TransformerControlObjective.UNDEFINED &&
-        (mapping[name] = cod1.value)
+    cod1 == PSY.TransformerControlObjective.UNDEFINED &&
+        (mapping[name] = Integer(cod1))
     return
 end
 
@@ -2212,9 +2284,9 @@ function _compute_dcline_common_fields(
     NAME = _is_valid_psse_name(dcline_name) ? dcline_name : last(dcline_name, 12)
     NAME = _psse_quote_string(NAME)
     MDC = Int(PSY.get_power_mode(dcline))
-    # FIXME HVDC getters like `get_transfer_setpoint` aren't using units. Did they ever
-    # use units? should they use units?
-    SETVL = PSY.get_transfer_setpoint(dcline)
+    # PSS/E stores SETVL in MW, while the PSY value is in system-base per unit.
+    SETVL =
+        PSY.get_transfer_setpoint(dcline) * PSY.get_base_power(exporter.system, PSY.NU)
     VSCHD = PSY.get_scheduled_dc_voltage(dcline)
     # RDC is a DC-circuit resistance: PSY per-unitizes it against the DC base (VSCHD^2 /
     # baseMVA), not the rectifier AC commutating base, so the inverse conversion must use
@@ -2473,13 +2545,18 @@ function _compute_vsc_converter_fields(
         RMPCT = PSY.get_rmpct_to(vscline)
     end
 
-    # Invert the parser's loss normalization: the parser always reads BLOSS, ALOSS, and MINLOSS
-    # as kW/kW-per-A normalized by 1e3 * baseMVA, never by rated_dc_voltage. The PSS/E constant
-    # loss splits into ALOSS + MINLOSS, but only the sum is a model quantity (the curve's constant
-    # term), so the whole constant is exported as ALOSS with MINLOSS = 0 (re-parse recovers the
-    # same curve).
+    # Invert the parser's loss normalization: ALOSS/MINLOSS are kW normalized by
+    # 1e3 * baseMVA; BLOSS is kW-per-DC-ampere normalized by rated_dc_voltage (kV), giving a
+    # p.u. slope per p.u. current. The constant loss splits into ALOSS + MINLOSS, but only
+    # the sum is a model quantity, so it is exported as ALOSS with MINLOSS = 0 (re-parse
+    # recovers the same curve).
     fd = PSY.get_function_data(converter_loss)
-    BLOSS = PSY.get_proportional_term(fd) * 1e3 * base_power
+    vdc_base = PSY.get_rated_dc_voltage(vscline)
+    BLOSS = if iszero(vdc_base)
+        PSY.get_proportional_term(fd)
+    else
+        PSY.get_proportional_term(fd) * vdc_base
+    end
     ALOSS = PSY.get_constant_term(fd) * 1e3 * base_power
     MINLOSS = 0.0
 
@@ -2776,8 +2853,8 @@ function write_to_buffers!(
         PDES = PSSE_DEFAULT
         QDES = PSSE_DEFAULT
         VSET = PSY.get_voltage_setpoint(facts)
-        SHMX = PSY.get_max_shunt_current(facts)
-        TRMX = PSSE_INFINITY
+        SHMX = PSY.get_max_shunt_current(facts, PSY.NU)
+        TRMX = PSY.get_max_reactive_power(facts, PSY.NU)
         VTMX = PSSE_DEFAULT
         VTMN = PSSE_DEFAULT
         VSMX = PSSE_DEFAULT
@@ -2810,6 +2887,16 @@ function write_to_buffers!(
         (md["facts_name_mapping"] = serialize_component_ids(facts_name_mapping))
 end
 
+# Total switched-shunt susceptance for BINIT: `solved_admittance` when the case was read in
+# as solved, else the currently engaged blocks.
+_switched_shunt_binit(solved::Float64, ::Vector{Int}, ::Vector{Complex{Float64}}) = solved
+_switched_shunt_binit(
+    ::Nothing,
+    engaged::Vector{Int},
+    y_increase::Vector{Complex{Float64}},
+) =
+    imag(sum(engaged .* y_increase; init = 0.0 + 0.0im))
+
 """Build v35 switched shunt step data (S, N, B triplets padded to 8)."""
 function _build_switched_shunt_steps_v35(
     shunt::PSY.SwitchedAdmittance,
@@ -2817,12 +2904,12 @@ function _build_switched_shunt_steps_v35(
     increases::Vector{Complex{Float64}},
     base_power::Float64,
 )
-    initial_status = PSY.get_initial_status(shunt)
+    engaged = PSY.get_number_engaged(shunt)
     S_vals = []
     N_vals = []
     B_vals = []
     for (N, B) in zip(steps, increases)
-        push!(S_vals, get(initial_status, length(S_vals) + 1, 1))
+        push!(S_vals, get(engaged, length(S_vals) + 1, 1))
         push!(N_vals, N)
         push!(B_vals, imag(B) * base_power)
     end
@@ -2917,7 +3004,12 @@ function write_to_buffers!(
 
         RMPCT = PSSE_DEFAULT
         RMIDNT = _psse_quote_string("")
-        BINIT = imag(PSY.get_Y(shunt)) * base_power
+        BINIT =
+            _switched_shunt_binit(
+                PSY.get_solved_admittance(shunt),
+                PSY.get_number_engaged(shunt),
+                PSY.get_Y_increase(shunt),
+            ) * base_power
 
         steps = PSY.get_number_of_steps(shunt)
         increases = PSY.get_Y_increase(shunt)

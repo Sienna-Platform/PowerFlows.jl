@@ -59,7 +59,7 @@ the respective type of power flow evaluations.
 - `bus_reactive_power_bounds::Matrix{Float64}`:
         matrix containing upper and lower bounds for the reactive supply at each
         bus at each time period.
-- `bus_type::Matrix{PSY.ACBusTypes}`:
+- `bus_type::Matrix{PSY.ACBusTypes.Value}`:
         matrix containing type of buses present in the system.
 - `bus_magnitude::Matrix{Float64}`:
         matrix containing the bus voltage magnitudes.
@@ -119,7 +119,7 @@ struct PowerFlowData{
     computed_generator_slack_participation_factors::Vector{
         Dict{Tuple{DataType, String}, Float64},
     }
-    bus_type::Matrix{PSY.ACBusTypes}
+    bus_type::Matrix{PSY.ACBusTypes.Value}
     bus_magnitude::Matrix{Float64}
     bus_angles::Matrix{Float64}
     arc_active_power_flow_from_to::Matrix{Float64}
@@ -624,8 +624,7 @@ function _signed_arc_bus_incidence(ybus::PNM.Ybus, metadata_matrix::PNM.PowerNet
 end
 
 # Build the controlled-device set for a solve, or `nothing` when discrete control is off or the
-# system has no enrollable devices. LCC HVDC is rejected: the continuation's rollback does not yet
-# cover the per-time-step LCC state. Taps support time_steps>1 via reset-to-baseline
+# system has no enrollable devices. Taps support time_steps>1 via reset-to-baseline
 # (`load_device_state!` resets the shared Y-bus to `d.initial` before each step).
 function _build_controlled_devices(
     pf::AbstractACPowerFlow,
@@ -634,15 +633,6 @@ function _build_controlled_devices(
 )
     if !get_control_discrete_devices(pf)
         return nothing
-    end
-    if !isempty(PSY.get_available_components(PSY.TwoTerminalLCCLine, sys))
-        throw(
-            ArgumentError(
-                "control_discrete_devices=true is not supported on systems with " *
-                "LCC HVDC lines: the continuation's rollback does not yet cover " *
-                "the per-time-step LCC state.",
-            ),
-        )
     end
     n_time_steps = get_time_steps(pf)
     nrd = PNM.get_network_reduction_data(power_network_matrix)

@@ -81,6 +81,15 @@ function _compute_bus_active_power_range!(
     return
 end
 
+# `solved_admittance` replaces the engaged blocks; it is a pure susceptance.
+_switched_admittance(solved::Float64, ::Vector{Int}, ::Vector{Complex{Float64}}) =
+    im * solved
+_switched_admittance(
+    ::Nothing,
+    engaged::Vector{Int},
+    y_increase::Vector{Complex{Float64}},
+) = sum(engaged .* y_increase; init = 0.0 + 0.0im)
+
 function _get_withdrawals!(
     pf::PowerFlowEvaluationModel,
     bus_active_power_withdrawals::Vector{Float64},
@@ -134,7 +143,11 @@ function _get_withdrawals!(
         bus = PSY.get_bus(sa)
         PSY.get_number(bus) in removed_buses && continue
         bus_ix = _get_bus_ix(bus_lookup, reverse_bus_search_map, PSY.get_number(bus))
-        Y = PSY.get_Y(sa) + sum(PSY.get_initial_status(sa) .* PSY.get_Y_increase(sa))
+        Y = _switched_admittance(
+            PSY.get_solved_admittance(sa),
+            PSY.get_number_engaged(sa),
+            PSY.get_Y_increase(sa),
+        )
         # Here we implement the switched admittance element as a constant impedance load.
         # The inputs for ZIP loads are provided for V = 1.0 p.u., so
         # the following is equivalent to S = V * conj(Y * V) for V = 1.0 p.u.
@@ -184,7 +197,7 @@ end
 
 function _set_bus_angles_and_magnitudes!(
     ::AbstractDCPowerFlow,
-    bus_type::Vector{PSY.ACBusTypes},
+    bus_type::Vector{PSY.ACBusTypes.Value},
     bus_angles::Vector{Float64},
     bus_magnitude::Vector{Float64},
     bus_lookup::Dict{Int, Int},
@@ -211,7 +224,7 @@ end
 
 function _set_bus_angles_and_magnitudes!(
     ::AbstractACPowerFlow{<:ACPowerFlowSolverType},
-    bus_type::Vector{PSY.ACBusTypes},
+    bus_type::Vector{PSY.ACBusTypes.Value},
     bus_angles::Vector{Float64},
     bus_magnitude::Vector{Float64},
     bus_lookup::Dict{Int, Int},
@@ -253,8 +266,10 @@ function _set_bus_angles_and_magnitudes!(
 end
 
 # ensures that we don't error/warn for PV vs PQ bus types in DC power flow.
-_considers_bustype(::AbstractACPowerFlow{<:ACPowerFlowSolverType}, ::PSY.ACBusTypes) = true
-_considers_bustype(::AbstractDCPowerFlow, bt::PSY.ACBusTypes) = (bt == PSY.ACBusTypes.REF)
+_considers_bustype(::AbstractACPowerFlow{<:ACPowerFlowSolverType}, ::PSY.ACBusTypes.Value) =
+    true
+_considers_bustype(::AbstractDCPowerFlow, bt::PSY.ACBusTypes.Value) =
+    (bt == PSY.ACBusTypes.REF)
 
 """Voltage regulation is irrelevant to DC power flow, so the PQ demotion in
 `_normalize_slack_bustype` warns only for AC evaluation models; DC demotes silently."""
@@ -278,7 +293,7 @@ A SLACK bus that normalizes to PQ cannot serve as an area slack; the area-interc
 enrollment guard then de-enrolls its area."""
 function _normalize_slack_bustype(
     pf::PowerFlowEvaluationModel,
-    bt::PSY.ACBusTypes,
+    bt::PSY.ACBusTypes.Value,
     bus_no::Int,
     bus_name::String,
     possible_PV::Set{Int},
@@ -301,8 +316,8 @@ end
 interchange control on the next `PowerFlowData` build. A SLACK→PQ demotion is still
 written back: it mirrors the PV→PQ Q-limit flip and is already warned about."""
 function _bustype_write_back_needed(
-    bus_bt::PSY.ACBusTypes,
-    solved_bt::PSY.ACBusTypes,
+    bus_bt::PSY.ACBusTypes.Value,
+    solved_bt::PSY.ACBusTypes.Value,
 )
     if bus_bt == PSY.ACBusTypes.SLACK && solved_bt == PSY.ACBusTypes.PV
         return false
@@ -312,7 +327,7 @@ end
 
 function _initialize_bus_data!(
     pf::PowerFlowEvaluationModel,
-    bus_type::Vector{PSY.ACBusTypes},
+    bus_type::Vector{PSY.ACBusTypes.Value},
     bus_angles::Vector{Float64},
     bus_magnitude::Vector{Float64},
     bus_lookup::Dict{Int, Int},
@@ -327,12 +342,24 @@ function _initialize_bus_data!(
     subnetworks = PNM.find_subnetworks(sys)
     subnetwork_keys = keys(subnetworks)
     # so that we don't warn if there's just 1 component.
-    main_ref_bus = argmax(x -> length(x[2]), subnetworks)[1]
+    #
+    # The main subnetwork's key is the one exempted from the REF promotion below, so it has
+    # to be a bus that already IS a REF: a subnetwork with no REF of its own is keyed by an
+    # arbitrary member, and exempting that one leaves it with no slack. Ranking on "is
+    # already REF" first and the bus number last also makes the choice independent of Dict
+    # iteration order, which is not stable across Julia versions and silently flipped this
+    # on two equal-sized islands.
+    system_ref_buses = Set(
+        PSY.get_number(b) for b in PSY.get_components(PSY.ACBus, sys) if
+        PSY.get_bustype(b) == PSY.ACBusTypes.REF
+    )
+    main_ref_bus =
+        argmax(x -> (x[1] in system_ref_buses, length(x[2]), -x[1]), subnetworks)[1]
     # correct/validate the bus types.
     forced_PV = must_be_PV(sys)
     possible_PV = can_be_PV(sys)
     bus_numbers = PSY.get_bus_numbers(sys)
-    temp_bus_types = Dict{Int, PSY.ACBusTypes}()
+    temp_bus_types = Dict{Int, PSY.ACBusTypes.Value}()
     sizehint!(temp_bus_types, length(bus_numbers))
     temp_bus_map = Dict{Int, String}()
     sizehint!(temp_bus_map, length(bus_numbers))
@@ -515,7 +542,7 @@ function make_bus_slack_participation_factors!(
     removed_buses::Set{Int},
     time_steps::Int,
     n_buses::Int,
-    ::Matrix{PSY.ACBusTypes},
+    ::Matrix{PSY.ACBusTypes.Value},
 )
     I = Int[]
     J = Int[]
@@ -552,7 +579,7 @@ function make_bus_slack_participation_factors!(
     removed_buses::Set{Int},
     time_steps::Int,
     n_buses::Int,
-    bus_type::Matrix{PSY.ACBusTypes},
+    bus_type::Matrix{PSY.ACBusTypes.Value},
 )
     if length(generator_slack_participation_factors_input) == 1
         make_bus_slack_participation_factors!(
@@ -623,7 +650,7 @@ function make_bus_slack_participation_factors!(
     ::Set{Int},
     time_steps::Int,
     n_buses::Int,
-    bus_type::Matrix{PSY.ACBusTypes},
+    bus_type::Matrix{PSY.ACBusTypes.Value},
 )
     I = Int[]
     J = Int[]
@@ -662,7 +689,7 @@ layout are invariant across NR/TR iterations, so this filtering is hoisted out
 of the per-iteration validator. `offsets[i]` is the start of bus `i`'s block;
 `(e, f) = (x[off], x[off + 1])`. REF is fixed and excluded here."""
 function _pqpv_validate_offsets(
-    bus_type::AbstractVector{PSY.ACBusTypes},
+    bus_type::AbstractVector{PSY.ACBusTypes.Value},
     offsets::AbstractVector{<:Integer},
 )
     validate_offsets = Int[]
@@ -678,7 +705,7 @@ end
 polar state layout (`x[2i-1]` = |V| of bus `i`). Bus types are invariant
 across NR/TR iterations, so this filtering is hoisted out of the per-iteration
 validator. Only PQ is checked (PV/REF have |V| pinned to a set-point)."""
-function _pq_validate_indices(bus_type::AbstractVector{PSY.ACBusTypes})
+function _pq_validate_indices(bus_type::AbstractVector{PSY.ACBusTypes.Value})
     validate_indices = Int[]
     for (i, bt) in enumerate(bus_type)
         bt == PSY.ACBusTypes.PQ && push!(validate_indices, 2 * i - 1)

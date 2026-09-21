@@ -965,7 +965,11 @@ function _finalize_power_flow(
 end
 
 """Log the final residual size and convergence/non-convergence, returning `converged`. Shared by
-both `_finalize_power_flow` methods (Jacobian and Jacobian-free)."""
+both `_finalize_power_flow` methods (Jacobian and Jacobian-free). Non-convergence is reported at
+debug level because this is the innermost layer: callers (e.g. discrete-control continuation
+trials, the area-interchange de-enroll loop) may treat the failure as an expected trial to roll
+back rather than a terminal error; the entry point that returns the failure to the user logs it
+once at error level."""
 function _report_power_flow_convergence(
     converged::Bool,
     i::Int,
@@ -977,7 +981,7 @@ function _report_power_flow_convergence(
         @info("The $solver_name solver converged after $i iterations.")
         return true
     end
-    @error("The $solver_name solver failed to converge after $i iterations.")
+    @debug("The $solver_name solver failed to converge after $i iterations.")
     return false
 end
 

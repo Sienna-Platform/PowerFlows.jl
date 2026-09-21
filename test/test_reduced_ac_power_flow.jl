@@ -89,7 +89,7 @@ end
             )
             supported = !any([(typeof(nr), typeof(pf)) in UNSUPPORTED for nr in v])
             if !supported
-                results = @test_logs((:error, r"failed to converge"),
+                results = @test_logs((:error, r"did not converge in 1 of 1"),
                     match_mode = :any,
                     solve_power_flow(pf, sys)
                 )
@@ -100,16 +100,16 @@ end
             if supported
                 arc_flows = results["flow_results"]
                 # Look up 3WT winding flows by bus_from/bus_to (arc endpoints).
-                temp_nrd = PNM.get_network_reduction_data(
+                # The branch index exists because the matrix exists; no populate step.
+                temp_catalog = PNM.get_branch_catalog(
                     PNM.Ybus(sys; network_reductions = deepcopy(v)))
-                PNM.populate_branch_maps_by_type!(temp_nrd)
                 test_trf =
                     first(collect(PSY.get_components(PSY.ThreeWindingTransformer, sys)))
                 trf_arc_flows = zeros(ComplexF32, 3)
                 # 3WT circuits share the direct branch map with ordinary branches; select the
                 # per-type bucket rather than filtering the merged map.
                 for (arc, winding) in PNM.get_typed_direct_branch_map(
-                    PNM.get_all_branch_maps_by_type(temp_nrd),
+                    PNM.get_all_branch_maps_by_type(temp_catalog),
                     PSY.ThreeWindingTransformer,
                 )
                     PNM.get_transformer(winding) !== test_trf && continue
@@ -331,4 +331,93 @@ end
     data = PF.PowerFlowData(pf, sys)   # must not throw (isolated-bus load skipped)
     @test !haskey(PF.get_bus_lookup(data), 99)
     @test PF.solve_power_flow!(data)
+end
+
+# Two degree-two chains that share an endpoint pair are electrically parallel, so the
+# reduction groups them onto one arc: `parallel_branch_map` holds a group whose members are
+# `BranchesSeries` rather than physical branches. Per-branch reporting therefore has to
+# recurse through both aggregate kinds, and the interior buses of a grouped chain still need
+# their solved voltages written back.
+function _sibling_degree_two_chains_sys()
+    sys = System(100.0)
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.0, 0.0)
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.PQ, 230, 1.0, 0.0)
+    b3 = _add_simple_bus!(sys, 3, ACBusTypes.PQ, 230, 1.0, 0.0)
+    b4 = _add_simple_bus!(sys, 4, ACBusTypes.PQ, 230, 1.0, 0.0)
+    b5 = _add_simple_bus!(sys, 5, ACBusTypes.PQ, 230, 1.0, 0.0)
+    b6 = _add_simple_bus!(sys, 6, ACBusTypes.PQ, 230, 1.0, 0.0)
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    _add_simple_line!(sys, b1, b2, 0.01, 0.05, 0.002)
+    # Chain 2-3-5 and chain 2-4-5: buses 3 and 4 are the only degree-two buses.
+    _add_simple_line!(sys, b2, b3, 0.01, 0.07, 0.002)
+    _add_simple_line!(sys, b3, b5, 0.01, 0.09, 0.002)
+    _add_simple_line!(sys, b2, b4, 0.01, 0.11, 0.002)
+    _add_simple_line!(sys, b4, b5, 0.01, 0.13, 0.002)
+    _add_simple_line!(sys, b5, b6, 0.01, 0.06, 0.002)
+    _add_simple_load!(sys, b2, 30, 10)
+    _add_simple_load!(sys, b6, 50, 15)
+    return sys
+end
+
+@testset "Degree-2 reduction: parallel group of series chains" begin
+    sys = _sibling_degree_two_chains_sys()
+    reductions = PNM.NetworkReduction[PNM.DegreeTwoReduction(;
+        reduce_reactive_power_injectors = false,
+    )]
+    nrd = PNM.get_network_reduction_data(PNM.Ybus(sys; network_reductions = reductions))
+
+    # Pin the structure under test: a single composite arc holding both chains. Without this
+    # the flow assertions below could pass on a topology that never builds the group.
+    grouped = [
+        (arc, group) for (arc, group) in PNM.get_parallel_branch_map(nrd) if
+        any(m -> m isa PNM.BranchesSeries, group)
+    ]
+    @test length(grouped) == 1
+    (group_arc, group) = only(grouped)
+    @test Set(group_arc) == Set((2, 5))
+    @test all(m -> m isa PNM.BranchesSeries, group)
+    @test length(collect(group)) == 2
+
+    n_lines = length(collect(get_components(Line, sys)))
+    # AC returns the frames flat for a single period; DC nests them under the time step.
+    _flows(results) =
+        if haskey(results, "flow_results")
+            results["flow_results"]
+        else
+            results["1"]["flow_results"]
+        end
+    ac_models = (
+        PF.ACPowerFlow{NewtonRaphsonACPowerFlow}(),
+        PF.ACPowerFlow{NewtonRaphsonACPowerFlow}(; network_reductions = reductions),
+    )
+    dc_models = (DCPowerFlow(), DCPowerFlow(; network_reductions = reductions))
+    for (unreduced_model, reduced_model) in (ac_models, dc_models)
+        unreduced =
+            _flows(solve_power_flow(unreduced_model, sys, PF.FlowReporting.BRANCH_FLOWS))
+        reduced =
+            _flows(solve_power_flow(reduced_model, sys, PF.FlowReporting.BRANCH_FLOWS))
+        # Every physical branch is reported exactly once, including those inside the group.
+        @test nrow(reduced) == n_lines
+        @test Set(reduced.flow_name) == Set(unreduced.flow_name)
+        for row in eachrow(unreduced)
+            reduced_row = only(eachrow(filter(:flow_name => ==(row.flow_name), reduced)))
+            @test isapprox(reduced_row.P_from_to, row.P_from_to; atol = 1e-3)
+        end
+    end
+
+    # Buses 3 and 4 live only inside the grouped chains; their voltages must still be solved
+    # and written back, not left at the flat start.
+    sys_unreduced = _sibling_degree_two_chains_sys()
+    solve_and_store_power_flow!(PF.ACPowerFlow{NewtonRaphsonACPowerFlow}(), sys_unreduced)
+    sys_reduced = _sibling_degree_two_chains_sys()
+    solve_and_store_power_flow!(
+        PF.ACPowerFlow{NewtonRaphsonACPowerFlow}(; network_reductions = reductions),
+        sys_reduced,
+    )
+    for bus_number in 1:6
+        expected = get_component(ACBus, sys_unreduced, "bus_$bus_number")
+        actual = get_component(ACBus, sys_reduced, "bus_$bus_number")
+        @test isapprox(get_magnitude(actual), get_magnitude(expected); atol = 1e-5)
+        @test isapprox(get_angle(actual), get_angle(expected); atol = 1e-5)
+    end
 end

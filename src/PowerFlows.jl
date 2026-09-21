@@ -26,6 +26,8 @@ export AbstractDCPowerFlow
 export PowerFlowEvaluationModel
 export PTDFDCPowerFlow
 export vPTDFDCPowerFlow
+export SolutionParameters
+export read_solution_parameters
 export PSSEExportPowerFlow
 export PSSEExporter
 export update_exporter!
@@ -47,7 +49,6 @@ import PowerSystems as PSY
 import PowerSystems: System
 import LinearAlgebra
 import LinearAlgebra: norm, dot, ldiv!, mul!
-import LinearAlgebra: norm, dot
 import JSON3
 import SparseArrays
 import InfrastructureSystems as IS
@@ -56,15 +57,16 @@ import PowerNetworkMatrices: YBUS_ELTYPE
 import KrylovKit
 import SparseArrays:
     SparseMatrixCSC, SparseVector, sparse, sparsevec, AbstractSparseMatrix, spzeros
-import StaticArrays: MVector
 import DataStructures: OrderedDict
 import Dates
+import Printf: @sprintf
 import LineSearches: BackTracking
 
 include("definitions.jl")
 # Before PowerFlowData.jl: defines PFLinearSolverCache and AbstractNRCache, which
 # type the lazily-populated cache slots on PowerFlowData.
 include("linear_solver_backend.jl")
+include("solution_parameters.jl")
 # `AreaInterchangeData` must be defined before `power_flow_types.jl` references it in
 # `ACJacobianStructureCache`; the rest of the `area_interchange/` family has its own
 # later dependencies (LCC/VSC/discrete-control types, PowerFlowData).
@@ -85,6 +87,7 @@ include("vsc_utils.jl")
 include("common.jl")
 include("area_interchange/enrollment.jl")
 include("initialize_power_flow_data.jl")
+include("psse_solution_records.jl")
 include("psse_export.jl")
 include("dcpf_loss_injection.jl")
 include("solve_dc_power_flow.jl")
@@ -99,6 +102,7 @@ include("rectangular_ci_power_flow_jacobian.jl")
 include("mixed_cpb_setup.jl")
 include("mixed_cpb_power_flow_residual.jl")
 include("mixed_cpb_power_flow_jacobian.jl")
+include("discrete_control/control_sensitivity.jl")
 include("solve_ac_power_flow.jl")
 include("residual_condition_diagnostics.jl")
 include("power_flow_setup.jl")

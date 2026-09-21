@@ -81,26 +81,24 @@ function _mixed_polar_parity_data(
     @test PowerFlows.solve_power_flow!(data_h)
     n_ts = size(data_p.bus_magnitude, 2)
     for ts in 1:n_ts
-        @testset "time step $ts" begin
-            @test maximum(
-                abs.(data_p.bus_magnitude[:, ts] - data_h.bus_magnitude[:, ts]),
-            ) < atol
-            @test maximum(
-                abs.(data_p.bus_angles[:, ts] - data_h.bus_angles[:, ts]),
-            ) < atol
-            @test maximum(
-                abs.(
-                    data_p.bus_active_power_injections[:, ts] -
-                    data_h.bus_active_power_injections[:, ts]
-                ),
-            ) < atol
-            @test maximum(
-                abs.(
-                    data_p.bus_reactive_power_injections[:, ts] -
-                    data_h.bus_reactive_power_injections[:, ts]
-                ),
-            ) < atol
-        end
+        @test maximum(
+            abs.(data_p.bus_magnitude[:, ts] - data_h.bus_magnitude[:, ts]),
+        ) < atol
+        @test maximum(
+            abs.(data_p.bus_angles[:, ts] - data_h.bus_angles[:, ts]),
+        ) < atol
+        @test maximum(
+            abs.(
+                data_p.bus_active_power_injections[:, ts] -
+                data_h.bus_active_power_injections[:, ts]
+            ),
+        ) < atol
+        @test maximum(
+            abs.(
+                data_p.bus_reactive_power_injections[:, ts] -
+                data_h.bus_reactive_power_injections[:, ts]
+            ),
+        ) < atol
     end
     return
 end

@@ -661,7 +661,7 @@ retrieval through the abstract `solver_cache` slot stays type-stable.
 - `theta_x_idx::Vector{Int}`: `x`-indices of the θ state at `pvpq` (`2i`).
 - `p_row_idx::Vector{Int}`: `Rv`-indices of the P-mismatch rows at `pvpq` (`2i-1`).
 - `rp::Vector{Float64}`: preallocated active half-step buffer (length `length(pvpq)`).
-- `pq_data::Dict{Vector{PSY.ACBusTypes}, FDPQData}`: bus-type column → per-PQ-set data (the
+- `pq_data::Dict{Vector{PSY.ACBusTypes.Value}, FDPQData}`: bus-type column → per-PQ-set data (the
   materialized column is the key, so distinct PQ sets can never collide).
 - `bp_factor_count::Int`: number of B′ factorizations (must be 1 over the cache lifetime).
 - `bpp_factor_count::Int`: number of B″ factorizations (one per distinct PQ signature).
@@ -688,7 +688,7 @@ mutable struct FastDecoupledCache{S <: FDScheme} <: SolverCache
     theta_x_idx::Vector{Int}
     p_row_idx::Vector{Int}
     rp::Vector{Float64}
-    pq_data::Dict{Vector{PSY.ACBusTypes}, FDPQData}
+    pq_data::Dict{Vector{PSY.ACBusTypes.Value}, FDPQData}
     bp_factor_count::Int
     bpp_factor_count::Int
     pvpq_pos::Vector{Int}
@@ -754,7 +754,7 @@ function _get_or_build_fd_cache!(
         theta_x_idx,
         p_row_idx,
         rp,
-        Dict{Vector{PSY.ACBusTypes}, FDPQData}(),
+        Dict{Vector{PSY.ACBusTypes.Value}, FDPQData}(),
         1,   # bp_factor_count: build_fd_matrices factored B′ exactly once
         0,   # bpp_factor_count: bumped per distinct PQ signature in _get_pq_data!
         pvpq_pos,

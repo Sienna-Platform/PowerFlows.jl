@@ -386,18 +386,12 @@ end
         residual_flat(x0_flat, 1)
         flat_ss = sum(abs2, residual_flat.Rv)
 
-        # The non-convergence emits an @error at finalization; capture it with @test_logs so
-        # it does not trip run_tests()'s zero-Logging.Error-events assertion (full suite), while
-        # also asserting the expected error is logged.
-        converged = nothing
-        @test_logs (:error, r"failed to converge") match_mode = :any begin
-            converged = _drive_fd_directly(pf, data;
-                fd_non_divergent = true,
-                refreeze_on_stall = false,
-                maxIterations = 8,
-                validate_voltage_magnitudes = false,
-            )
-        end
+        converged = _drive_fd_directly(pf, data;
+            fd_non_divergent = true,
+            refreeze_on_stall = false,
+            maxIterations = 8,
+            validate_voltage_magnitudes = false,
+        )
         @test !converged   # this pathological case does NOT converge under pure frozen FD
 
         # State left in `data` is the best one seen: its residual is finite, all voltages
@@ -1352,17 +1346,14 @@ end
     fill_rq!()   # warm
     @test (@allocated fill_rq!()) == 0
 
-    # The cached-factorization solves reuse the buffer in place. The buffer is preallocated
-    # (no per-iteration vector allocation from OUR loop), but the backend's `solve!` (KLU/AA)
-    # may do a tiny bounded internal allocation — the NR allocation test likewise warms
-    # `solve!` without asserting it is exactly 0. Bound it small (a few hundred bytes) to
-    # catch any per-solve buffer regrowth while tolerating the backend's fixed overhead. Do
-    # NOT loosen silently: if this ever fails, the cause is a NEW allocation in our path, not
-    # the (fixed) backend overhead.
-    PF.solve!(fd.bp_cache, rp)   # warm
-    @test (@allocated PF.solve!(fd.bp_cache, rp)) < 256
-    PF.solve!(bpp.bpp_cache, rq)  # warm
-    @test (@allocated PF.solve!(bpp.bpp_cache, rq)) < 256
+    # Need the extra function barrier, else `@allocated PF.solve!(fd.bp_cache, rp)` may
+    # also include the one-time compilation of the expression `@allocated` wraps.
+    bp_solve!() = PF.solve!(fd.bp_cache, rp)
+    bpp_solve!() = PF.solve!(bpp.bpp_cache, rq)
+    bp_solve!()    # warm
+    bpp_solve!()   # warm
+    @test (@allocated bp_solve!()) == 0
+    @test (@allocated bpp_solve!()) == 0
 end
 
 @testset "FastDecoupled WP5b: :decoupled skips the formulation Jacobian (T11 lazy-J)" begin
@@ -1465,13 +1456,10 @@ end
         sys = _stressed_high_rx_system(; load_scale = 6.0)
         pf = ACPowerFlow{PF.FastDecoupledACPowerFlow}()
         data = PowerFlowData(pf, sys)
-        converged = nothing
-        @test_logs (:error, r"failed to converge") match_mode = :any begin
-            converged = _drive_fd_directly(pf, data;
-                fd_non_divergent = true,
-                maxIterations = 8,
-                validate_voltage_magnitudes = false)
-        end
+        converged = _drive_fd_directly(pf, data;
+            fd_non_divergent = true,
+            maxIterations = 8,
+            validate_voltage_magnitudes = false)
         @test !converged
         @test all(isfinite, data.bus_magnitude[:, 1])
         @test all(data.bus_magnitude[:, 1] .> 0.0)

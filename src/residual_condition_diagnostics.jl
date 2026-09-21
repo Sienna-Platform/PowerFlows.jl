@@ -91,6 +91,37 @@ function _describe_lcc_residual_entry(data::ACPowerFlowData, tail_ix::Int)
     return "LCC $(from_no)→$(to_no) ($(_LCC_RESIDUAL_ROW_NAMES[row]))"
 end
 
+"""Describe a residual entry that falls in the VSC tail: two control rows per converter
+(`r1` active-power/V_dc, `r2` reactive-power/|V_ac|) followed by one DC-node KCL row per DC
+node -- the layout [`_set_vsc_tail_residuals!`](@ref) writes."""
+function _describe_vsc_residual_entry(
+    data::ACPowerFlowData,
+    dcn::DCNetwork,
+    tail_ix::Int,
+)
+    nconv = n_vsc_converters(dcn)
+    if tail_ix <= 2 * nconv
+        c = div(tail_ix - 1, 2) + 1
+        row = isodd(tail_ix) ? "P/V_dc control" : "Q/|V_ac| control"
+        bus_no = _diag_bus_number(data, dcn.converter_ac_bus_ix[c])
+        return "VSC converter $c at bus $bus_no ($row)"
+    end
+    return "DC node $(tail_ix - 2 * nconv) (DC KCL)"
+end
+
+"""Describe a residual entry in the non-bus tail, `tail_ix` being 1-based within the tail.
+Bands are `[LCC][VSC][area]`, sized from the same terms as
+[`state_tail_length`](@ref); every index in `1:state_tail_length(...)` lands in exactly one."""
+function _describe_tail_residual_entry(data::ACPowerFlowData, tail_ix::Int)
+    n_lcc_rows = 4 * size(data.lcc.p_set, 1)
+    tail_ix <= n_lcc_rows && return _describe_lcc_residual_entry(data, tail_ix)
+    dcn = get_dc_network(data)
+    n_vsc_rows = vsc_tail_length(dcn)
+    tail_ix <= n_lcc_rows + n_vsc_rows &&
+        return _describe_vsc_residual_entry(data, dcn, tail_ix - n_lcc_rows)
+    return _describe_area_residual_entry(data, tail_ix - n_lcc_rows - n_vsc_rows)
+end
+
 """Describe a residual entry that falls in the area-interchange tail (1 row per
 controlled area, keyed by `tail_ix` rather than vector position so a mid-solve
 de-enrollment renumbering can't desync this from `_set_area_tail_residuals!`)."""
@@ -126,13 +157,7 @@ function _describe_residual_entry(
         bus_ix = div(ix - 1, 2) + 1
         return "bus $(_diag_bus_number(data, bus_ix)) ($(isodd(ix) ? "P" : "Q"))"
     end
-    if n_controlled_areas(data) > 0
-        area_off = area_tail_offset(data, get_dc_network(data))
-        if ix > area_off
-            return _describe_area_residual_entry(data, ix - area_off)
-        end
-    end
-    return _describe_lcc_residual_entry(data, ix - n_bus_eqs)
+    return _describe_tail_residual_entry(data, ix - n_bus_eqs)
 end
 
 function _describe_residual_entry(
@@ -146,7 +171,7 @@ function _describe_residual_entry(
         labels = ("ΔI_re", "ΔI_im", "|V|²−V_set²")   # PV uses the 3rd row
         return "bus $(_diag_bus_number(data, b)) ($(labels[row]))"
     end
-    return _describe_lcc_residual_entry(data, ix - r.total_bus_state)
+    return _describe_tail_residual_entry(data, ix - r.total_bus_state)
 end
 
 function _describe_residual_entry(
@@ -167,7 +192,7 @@ function _describe_residual_entry(
         end
         return "bus $(_diag_bus_number(data, b)) ($(labels[row]))"
     end
-    return _describe_lcc_residual_entry(data, ix - r.total_bus_state)
+    return _describe_tail_residual_entry(data, ix - r.total_bus_state)
 end
 
 # ---------------------------------------------------------------------------

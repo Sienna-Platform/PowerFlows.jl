@@ -7,15 +7,27 @@ jobs:
   comparison:
     runs-on: ubuntu-latest
     steps:
+      # PR head, checked out at the workspace root.
+      - uses: actions/checkout@v4
+      # Base branch, checked out separately so its own test/Project.toml [sources] path (`..`)
+      # resolves to the base tree instead of the PR tree.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.base_ref }}
+          path: base
+          fetch-depth: 1
       - uses: julia-actions/setup-julia@latest
-      - uses: actions/checkout@v1
-      - name: Run Performance Test Main
+        with:
+          version: '1'
+      - name: Run Performance Test Main (base branch)
         run: |
-          julia --project=test -e 'using Pkg; Pkg.add(PackageSpec(name="PowerFlows", rev="main")); Pkg.instantiate()'
+          cd base
+          julia --project=test -e 'using Pkg; Pkg.instantiate()'
           julia --project=test test/performance/performance_test.jl "Main"
+          mv solve_time_Main.csv precompile_time_Main.txt ..
       - name: Run Performance Test Branch
         run: |
-          julia --project=test -e 'using Pkg; Pkg.develop(PackageSpec(path=pwd())); Pkg.instantiate()'
+          julia --project=test -e 'using Pkg; Pkg.instantiate()'
           julia --project=test test/performance/performance_test.jl "Branch"
       - name: Format results
         run: |
@@ -28,11 +40,7 @@ jobs:
       - name: Read results
         id: results
         run: |
-          body="$(cat performance_results.md)"
-          body="${body//'%'/'%25'}"
-          body="${body//$'\n'/'%0A'}"
-          body="${body//$'\r'/'%0D'}"
-          echo "::set-output name=body::$body"
+          { echo "body<<EOF"; cat performance_results.md; echo "EOF"; } >> "$GITHUB_OUTPUT"
       - name: Find Comment
         uses: peter-evans/find-comment@v4
         id: fc

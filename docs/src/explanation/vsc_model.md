@@ -21,7 +21,7 @@ Every PSY DC component lowers into a single internal `DCNetwork` that the AC pow
 jointly with the AC buses. A point-to-point `TwoTerminalVSCLine` becomes two converters, two DC
 nodes, and one DC branch; a multi-terminal grid (`InterconnectingConverter` on `DCBus` nodes joined
 by `TModelHVDCLine` branches) lowers into the same structure, so all residual/Jacobian kernels are
-written once. The escape hatch `solver_settings = Dict(:model_dc_network => false)` restores the
+written once. The escape hatch `SolutionParameters(; model_dc_network = false)` restores the
 historical behavior (DC components ignored in the AC solve).
 
 The state vector is extended with a VSC tail: per converter the AC injections $(P_c, Q_c)$, and per

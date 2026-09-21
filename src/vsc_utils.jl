@@ -20,6 +20,15 @@ function _loss_coefficients(curve::PSY.QuadraticCurve)
     )
 end
 
+function _loss_coefficients(curve::PSY.LossCurve, sys_base::Float64, dev_base::Float64)
+    # `PSY.LossCurve` x-axis ratio (system base / curve's own base, see `_loss_curve_own_base`)
+    # to reach `PSY.SU`. When the curve is already `SystemBaseUnit`, `convert_power_units`
+    # dispatches to its identity method and ignores this ratio entirely.
+    ratio = sys_base / _loss_curve_own_base(PSY.get_power_units(curve), sys_base, dev_base)
+    su_curve = IS.convert_power_units(curve, PSY.SystemBaseUnit(), ratio)
+    return _loss_coefficients(PSY.get_value_curve(su_curve))
+end
+
 # Map the PSY per-terminal DC-side / AC-side control enums to a `DCNetwork` control mode.
 function _vsc_control_mode(dc_control, ac_control)
     if dc_control == PSY.VSCDCControlModes.DC_VOLTAGE_DROOP
@@ -312,7 +321,9 @@ function _push_converter!(
     dc_control,
     ac_control,
     droop::Float64,
-    loss_curve,
+    loss_curve::PSY.LossCurve,
+    sys_base::Float64,
+    dev_base::Float64,
     s_max::Float64,
     p_lim,
     q_lim,
@@ -325,7 +336,7 @@ function _push_converter!(
     push!(b.dc_node_ix, dc_node_ix)
     push!(b.mode, mode)
     push!(b.ac_bus_number, ac_bus_number)
-    (la, lb, lc) = _loss_coefficients(loss_curve)
+    (la, lb, lc) = _loss_coefficients(loss_curve, sys_base, dev_base)
     push!(b.loss_a, la)
     push!(b.loss_b, lb)
     push!(b.loss_c, lc)
@@ -350,7 +361,13 @@ function _push_converter!(
 end
 
 # Lower point-to-point `TwoTerminalVSCLine`: 2 implicit DC nodes + 2 converters + 1 DC branch.
-function _lower_vsc_lines!(b::_DCNetworkBuilder, lines, bus_lookup, reverse_bus_search_map)
+function _lower_vsc_lines!(
+    b::_DCNetworkBuilder,
+    lines,
+    bus_lookup,
+    reverse_bus_search_map,
+    sys_base::Float64,
+)
     for line in lines
         arc = PSY.get_arc(line)
         from_number = PSY.get_number(PSY.get_from(arc))
@@ -359,10 +376,12 @@ function _lower_vsc_lines!(b::_DCNetworkBuilder, lines, bus_lookup, reverse_bus_
         to_ix = _get_bus_ix(bus_lookup, reverse_bus_search_map, to_number)
         nf = _new_dc_node!(b, -1)
         nt = _new_dc_node!(b, -1)
+        dev_base = PSY.get_base_power(line)
         _push_converter!(
             b, from_ix, from_number, nf,
             PSY.get_dc_control_from(line), PSY.get_ac_control_from(line),
             PSY.get_dc_voltage_droop_from(line), PSY.get_converter_loss_from(line),
+            sys_base, dev_base,
             PSY.get_rating_from(line, PSY.SU),
             PSY.get_active_power_limits_from(line, PSY.SU),
             PSY.get_reactive_power_limits_from(line, PSY.SU),
@@ -373,6 +392,7 @@ function _lower_vsc_lines!(b::_DCNetworkBuilder, lines, bus_lookup, reverse_bus_
             b, to_ix, to_number, nt,
             PSY.get_dc_control_to(line), PSY.get_ac_control_to(line),
             PSY.get_dc_voltage_droop_to(line), PSY.get_converter_loss_to(line),
+            sys_base, dev_base,
             PSY.get_rating_to(line, PSY.SU), PSY.get_active_power_limits_to(line, PSY.SU),
             PSY.get_reactive_power_limits_to(line, PSY.SU), PSY.get_dc_setpoint_to(line),
             PSY.get_ac_setpoint_to(line), PSY.get_reactive_power_to(line, PSY.SU),
@@ -393,6 +413,7 @@ function _lower_mtdc!(
     reverse_bus_search_map,
     removed_buses,
 )
+    sys_base = PSY.get_base_power(sys)
     for ic in PSY.get_available_components(PSY.InterconnectingConverter, sys)
         bus_number = PSY.get_number(PSY.get_bus(ic))
         bus_number in removed_buses && continue
@@ -402,6 +423,7 @@ function _lower_mtdc!(
             b, ac_ix, bus_number, node,
             PSY.get_dc_control(ic), PSY.get_ac_control(ic),
             PSY.get_dc_voltage_droop(ic), PSY.get_loss_function(ic),
+            sys_base, PSY.get_base_power(ic),
             PSY.get_rating(ic, PSY.SU), PSY.get_active_power_limits(ic, PSY.SU),
             PSY.get_reactive_power_limits(ic, PSY.SU), PSY.get_dc_setpoint(ic),
             PSY.get_ac_setpoint(ic), 0.0,
@@ -436,9 +458,10 @@ function initialize_DCNetwork!(
     # A system that has a DC network should model it, so this is ON by default — the DC equipment is
     # solved as part of the power flow. A sequential decoupled DC warm-start (see
     # `_vsc_warm_start!`) seeds the joint AC↔DC Newton for robustness. The escape hatch
-    # `solver_settings = Dict(:model_dc_network => false)` restores the historical behavior (DC
-    # components ignored in the AC solve, kept as fixed injections only on the DC path).
-    get(get_solver_kwargs(data.pf), :model_dc_network, true) || return
+    # `solution_parameters = SolutionParameters(; model_dc_network = false)` restores the
+    # historical DC-ignored behavior. Read off the model directly, not merged kwargs — this
+    # runs during `PowerFlowData` construction, before any call-site keyword exists.
+    get_solution_parameters(data.pf).model_dc_network || return
 
     vsc_lines = _available_vsc_lines(sys, removed_buses)
     # Count only converters whose AC bus survives network reduction: if reduction removed every
@@ -453,7 +476,9 @@ function initialize_DCNetwork!(
     has_ic && _validate_ic_ac_buses(sys, removed_buses)
 
     b = _DCNetworkBuilder()
-    _lower_vsc_lines!(b, vsc_lines, bus_lookup, reverse_bus_search_map)
+    _lower_vsc_lines!(
+        b, vsc_lines, bus_lookup, reverse_bus_search_map, PSY.get_base_power(sys),
+    )
     has_ic && _lower_mtdc!(b, sys, bus_lookup, reverse_bus_search_map, removed_buses)
 
     n_time = size(data.bus_active_power_injections, 2)
@@ -740,8 +765,10 @@ function _apply_vsc_bus_injections_polar!(
     return
 end
 
-# Write the VSC tail residual rows: 2 control rows per converter, then 1 DC-KCL row per DC node.
-# `Vm` is the per-bus voltage magnitude (polar). `vsc_off` is the index just before the VSC tail.
+"""
+Write the VSC tail residual rows: 2 control rows per converter, then 1 DC-KCL row per DC node.
+`Vm` is the per-bus voltage magnitude (polar). `vsc_off` is the index just before the VSC tail.
+"""
 function _set_vsc_tail_residuals!(
     F::Vector{Float64},
     dcn::DCNetwork,

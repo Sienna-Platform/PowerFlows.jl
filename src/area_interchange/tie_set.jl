@@ -220,7 +220,7 @@ end
 `dcn`, so converter pair `(2i-1, 2i)` here matches line `i` there (from-side, to-side; see
 `DCNetwork`/`_lower_vsc_lines!`). `dcn.converter_ac_bus_ix` is already the reduced-network AC
 bus index. `iszero(n_vsc_converters(dcn))` with nonempty VSC lines means DC-network joint
-modeling was turned off (`solver_settings[:model_dc_network] = false`) — no `P_c` state
+modeling was turned off (`SolutionParameters(; model_dc_network = false)`) — no `P_c` state
 exists to feed `NI_a` then, so no DC ties are enumerated (silent, mirrors "DC network off"
 already meaning "VSC ignored by the AC solve" elsewhere)."""
 function _vsc_dc_ties(

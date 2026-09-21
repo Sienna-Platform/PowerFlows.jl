@@ -162,7 +162,7 @@ function HomotopyHessian(data::ACPowerFlowData, time_step::Int)
                 "(found $(n_vsc_converters(dcn)) converters). The DC tail adds state " *
                 "variables the homotopy Hessian formulation does not account for. Use a " *
                 "different AC power flow method, or set " *
-                "solver_settings = Dict(:model_dc_network => false) to ignore DC components.",
+                "solution_parameters = SolutionParameters(; model_dc_network = false) to ignore DC components.",
             ),
         )
     end

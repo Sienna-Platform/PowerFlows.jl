@@ -15,6 +15,7 @@ Public = false
 Private = true
 Pages = [
     "power_flow_types.jl",
+    "solution_parameters.jl",
 ]
 ```
 

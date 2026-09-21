@@ -151,9 +151,9 @@ function set_zip_loads_active_power!(
     load::StandardLoad,
     tp::Tuple{Float64, Float64, Float64},
 )
-    set_constant_active_power!(load, tp[1] * PSY.MW)
-    set_impedance_active_power!(load, tp[2] * PSY.MW)
-    set_current_active_power!(load, tp[3] * PSY.MW)
+    set_constant_active_power!(load, tp[1] * u"MW")
+    set_impedance_active_power!(load, tp[2] * u"MW")
+    set_current_active_power!(load, tp[3] * u"MW")
 end
 
 @testset "DC power flow: StandardLoad" begin

@@ -7,7 +7,7 @@ slots (no PV→3 expansion). Returns `(offsets, block_sizes, total_bus_state)`:
 start (`== total_bus_state + 1`), `block_sizes[i] == 2`.
 """
 function compute_mixed_bus_state_offsets(
-    bus_type::AbstractVector{PSY.ACBusTypes},
+    bus_type::AbstractVector{PSY.ACBusTypes.Value},
 )
     n_buses = length(bus_type)
     offsets = Vector{REC_INDEX_TYPE}(undef, n_buses + 1)

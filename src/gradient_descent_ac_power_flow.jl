@@ -4,7 +4,7 @@
 An [`ACPowerFlowSolverType`](@ref) that solves AC power flow by minimising ½‖F(x)‖² with
 the Adam optimizer and backtracking line search.
 
-# Solver settings (pass via `solver_settings` Dict)
+# Solver settings (pass via `solution_parameters = SolutionParameters(...)`)
 | Key              | Default | Description                          |
 |------------------|---------|--------------------------------------|
 | `:learning_rate` | `0.01`  | Adam step size η                     |

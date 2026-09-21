@@ -109,7 +109,7 @@ function _reset_gen_power!(
 )
     for (g, og) in
         zip(get_components(Union{Generator, Source}, sys), original_gen_power)
-        set_active_power!(g, og * PSY.MW)
+        set_active_power!(g, og * u"MW")
     end
 end
 
@@ -206,13 +206,13 @@ function _check_name(sys::System, name::String, component_type::DataType)
 end
 
 """
-    _add_simple_bus!(sys::System, number::Int, bus_type::ACBusTypes, base_voltage::Number, voltage_magnitude::Float64=1.0, voltage_angle::Float64=0.0)
+    _add_simple_bus!(sys::System, number::Int, bus_type::ACBusTypes.Value, base_voltage::Number, voltage_magnitude::Float64=1.0, voltage_angle::Float64=0.0)
     Simplified function to create and add a bus to the system with the given parameters.
 """
 function _add_simple_bus!(
     sys::System,
     number::Int,
-    bus_type::ACBusTypes,
+    bus_type::ACBusTypes.Value,
     base_voltage::Number,
     voltage_magnitude::Float64 = 1.0,
     voltage_angle::Float64 = 0.0,
@@ -292,7 +292,7 @@ function _add_simple_thermal_standard!(
     gen = ThermalStandard(;
         name = _check_name(sys, "thermal_standard_$(get_number(bus))", ThermalStandard),
         available = true,
-        status = true,
+        status = OperationalStates.ONLINE,
         bus = bus,
         active_power = Float64(active_power),
         reactive_power = Float64(reactive_power),
@@ -447,7 +447,7 @@ function _add_simple_vsc!(
         ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
         dc_setpoint_from = 0.0,
         ac_setpoint_from = 1.0,
-        converter_loss_from = LinearCurve(loss_coefficient),
+        converter_loss_from = LossCurve(LinearCurve(loss_coefficient), NaturalUnit()),
         max_dc_current_from = 1.0,
         rating_from = 1.0,
         reactive_power_limits_from = (min = -1.0, max = 1.0),
@@ -458,7 +458,7 @@ function _add_simple_vsc!(
         ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
         dc_setpoint_to = 0.0,
         ac_setpoint_to = 1.0,
-        converter_loss_to = LinearCurve(loss_coefficient),
+        converter_loss_to = LossCurve(LinearCurve(loss_coefficient), NaturalUnit()),
         max_dc_current_to = 1.0,
         rating_to = 1.0,
         reactive_power_limits_to = (min = -1.0, max = 1.0),
@@ -582,8 +582,7 @@ function _make_tap_shunt_system()
         name = "shunt_3",
         available = true,
         bus = b3,
-        Y = 0.0 + 0.0im,
-        initial_status = [0],
+        number_engaged = [0],
         number_of_steps = [4],
         Y_increase = [0.0 + 0.05im],
         admittance_limits = (min = 0.9, max = 1.1),
@@ -658,8 +657,7 @@ function _make_solvable_tap_shunt_system()
         name = "shunt_3",
         available = true,
         bus = b3,
-        Y = 0.0 + 0.0im,
-        initial_status = [0],
+        number_engaged = [0],
         number_of_steps = [4],
         Y_increase = [0.0 + 0.05im],
         admittance_limits = (min = 0.9, max = 1.1),
@@ -704,9 +702,9 @@ function _make_svc_system(;
         voltage_setpoint = 1.0,
         reactive_power_required = 100.0,
     )
-    # `max_shunt_current` is stored in device base; the constructor kwarg takes a raw DU
+    # `max_shunt_current` is stored in device base; the constructor kwarg takes a raw CU
     # value, so set it through the units-aware setter to honor the caller's MVA input.
-    set_max_shunt_current!(svc, max_shunt_current * MVA)
+    set_max_shunt_current!(svc, max_shunt_current * u"MVA")
     add_component!(sys, svc)
     return sys
 end
@@ -734,16 +732,16 @@ end
 
 """Add a CONTINUOUS_VOLTAGE `SwitchedAdmittance` (named `shunt_<busno>`) regulating `bus`. The
 narrow `admittance_limits` band (±5e-4 around 1.0) settles the continuous continuation tight to
-the setpoint. `Y` is the FIXED susceptance (a nonzero value adds a constant-Z baseline, "b0")."""
+the setpoint. `Y` is the FIXED susceptance, folded in as an always-fully-engaged block (nonzero
+= a constant-Z baseline, "b0"); the second block is the CONTINUOUS_VOLTAGE-adjustable one."""
 function _add_cv_shunt!(sys::System, bus::ACBus; Y = 0.0 + 0.0im)
     sa = SwitchedAdmittance(;
         name = "shunt_$(get_number(bus))",
         available = true,
         bus = bus,
-        Y = Y,
-        initial_status = [0],
-        number_of_steps = [12],
-        Y_increase = [0.0 + 0.1im],
+        number_engaged = [1, 0],
+        number_of_steps = [1, 12],
+        Y_increase = [Y, 0.0 + 0.1im],
         admittance_limits = (min = 0.9995, max = 1.0005),
         control_mode = PSY.SwitchedAdmittanceControlMode.CONTINUOUS_VOLTAGE,
     )
@@ -890,9 +888,9 @@ function _make_multiperiod_facts_system()
         shunt_control_type = PSY.FACTSShuntControlType.SVC,
         reactive_power_required = 100.0,
     )
-    # `max_shunt_current` is stored in device base; the constructor kwarg takes a raw DU
+    # `max_shunt_current` is stored in device base; the constructor kwarg takes a raw CU
     # value, so set it through the units-aware setter to honor the MVA input.
-    set_max_shunt_current!(svc, 100.0 * MVA)
+    set_max_shunt_current!(svc, 100.0 * u"MVA")
     add_component!(sys, svc)
     return sys
 end
@@ -979,8 +977,7 @@ function _make_shunt_snap_system()
         name = "shunt_2",
         available = true,
         bus = b2,
-        Y = 0.0 + 0.0im,
-        initial_status = Int[],
+        number_engaged = Int[],
         number_of_steps = [4],
         Y_increase = [0.0 + 0.05im],
         admittance_limits = (min = 0.98, max = 1.02),
@@ -1051,9 +1048,9 @@ function _add_facts_shunt!(
         voltage_setpoint = voltage_setpoint,
         reactive_power_required = 100.0,
     )
-    # `max_shunt_current` is stored in device base; the constructor kwarg takes a raw DU
+    # `max_shunt_current` is stored in device base; the constructor kwarg takes a raw CU
     # value, so set it through the units-aware setter to honor the caller's MVA input.
-    set_max_shunt_current!(facts, max_shunt_current * MVA)
+    set_max_shunt_current!(facts, max_shunt_current * u"MVA")
     add_component!(sys, facts)
     return facts
 end
@@ -1078,8 +1075,7 @@ function _add_switched_shunt!(
         name = "shunt_$bus_number",
         available = true,
         bus = b,
-        Y = 0.0 + 0.0im,
-        initial_status = [0],
+        number_engaged = [0],
         number_of_steps = [n_steps],
         Y_increase = [0.0 + (mvar_per_step / base_power) * im],
         admittance_limits = (
@@ -1410,6 +1406,7 @@ function _build_mtdc_system()
             available = true,
             active_power_flow = 0.0,
             arc = arc,
+            base_current = 100.0,
             r = 0.01,
             l = 0.0,
             c = 0.0,

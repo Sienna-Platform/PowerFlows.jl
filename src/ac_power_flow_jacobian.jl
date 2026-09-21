@@ -831,7 +831,7 @@ end
 self-balances its own P-slot (`∂F_P/∂x[2i−1] = −1`) instead of the distributed island
 scalar; single-swing islands are excluded and keep the distributed-slack path."""
 function _multi_swing_ref_indices(
-    bus_type::AbstractMatrix{PSY.ACBusTypes},
+    bus_type::AbstractMatrix{PSY.ACBusTypes.Value},
     subnetworks::Dict{Int64, Vector{Int64}},
     time_step::Int64,
 )

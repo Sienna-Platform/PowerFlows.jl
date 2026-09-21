@@ -255,7 +255,10 @@ end
         ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
         dc_setpoint_to = 0.35,
         reactive_power_to = 0.05,
-        converter_loss_to = PSY.QuadraticCurve(0.01, 0.02, 0.005),
+        converter_loss_to = PSY.LossCurve(
+            PSY.QuadraticCurve(0.01, 0.02, 0.005),
+            PSY.NaturalUnit(),
+        ),
     )
     data = PowerFlowData(
         ACPowerFlow{NewtonRaphsonACPowerFlow}(; solver_settings = VSC_SETTINGS),
@@ -303,7 +306,10 @@ function _vsc_system_pv_terminal(; g = 45.0)
         ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
         dc_setpoint_to = 0.35,
         reactive_power_to = 0.05,
-        converter_loss_to = PSY.QuadraticCurve(0.01, 0.02, 0.005),
+        converter_loss_to = PSY.LossCurve(
+            PSY.QuadraticCurve(0.01, 0.02, 0.005),
+            PSY.NaturalUnit(),
+        ),
     )
     PSY.add_component!(sys, vsc)
     return sys
@@ -404,7 +410,10 @@ end
         ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
         dc_setpoint_to = 0.35,
         reactive_power_to = 0.05,
-        converter_loss_to = PSY.QuadraticCurve(0.01, 0.02, 0.005),
+        converter_loss_to = PSY.LossCurve(
+            PSY.QuadraticCurve(0.01, 0.02, 0.005),
+            PSY.NaturalUnit(),
+        ),
     )
     pf = PF.ACMixedPowerFlow{NewtonRaphsonACPowerFlow}(; solver_settings = VSC_SETTINGS)
     data = PowerFlowData(pf, sys)
@@ -426,7 +435,10 @@ end
         ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
         dc_setpoint_to = 0.35,
         reactive_power_to = 0.05,
-        converter_loss_to = PSY.QuadraticCurve(0.01, 0.02, 0.005),
+        converter_loss_to = PSY.LossCurve(
+            PSY.QuadraticCurve(0.01, 0.02, 0.005),
+            PSY.NaturalUnit(),
+        ),
     )
     pf = PF.ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
         solver_settings = VSC_SETTINGS,
@@ -461,7 +473,10 @@ function _vsc_droop_system()
         dc_voltage_droop_to = 0.03,
         dc_setpoint_to = 1.03,
         reactive_power_to = 0.0,
-        converter_loss_to = PSY.QuadraticCurve(0.01, 0.02, 0.005),
+        converter_loss_to = PSY.LossCurve(
+            PSY.QuadraticCurve(0.01, 0.02, 0.005),
+            PSY.NaturalUnit(),
+        ),
     )
     return sys
 end
@@ -793,7 +808,10 @@ function _build_parallel_ic_system(; shared_ac::Bool = true)
             dc_control = cfg.mode,
             ac_control = PSY.VSCACControlModes.AC_REACTIVE_POWER,
             dc_setpoint = cfg.set,
-            loss_function = PSY.QuadraticCurve(0.005, 0.01, 0.002),
+            loss_function = PSY.LossCurve(
+                PSY.QuadraticCurve(0.005, 0.01, 0.002),
+                PSY.NaturalUnit(),
+            ),
         )
         PSY.add_component!(sys, ic)
     end
@@ -804,6 +822,7 @@ function _build_parallel_ic_system(; shared_ac::Bool = true)
         available = true,
         active_power_flow = 0.0,
         arc = arc,
+        base_current = 100.0,
         r = 0.01,
         l = 0.0,
         c = 0.0,
@@ -858,7 +877,10 @@ function _vsc_system_ref_terminal(; g = 45.0)
         ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
         dc_setpoint_to = 0.35,
         reactive_power_to = 0.05,
-        converter_loss_to = PSY.QuadraticCurve(0.01, 0.02, 0.005),
+        converter_loss_to = PSY.LossCurve(
+            PSY.QuadraticCurve(0.01, 0.02, 0.005),
+            PSY.NaturalUnit(),
+        ),
     )
     PSY.add_component!(sys, vsc)
     return sys
@@ -1051,7 +1073,10 @@ end
         ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
         dc_setpoint_to = 0.35,
         reactive_power_to = 0.05,
-        converter_loss_to = PSY.QuadraticCurve(0.01, 0.02, 0.005),
+        converter_loss_to = PSY.LossCurve(
+            PSY.QuadraticCurve(0.01, 0.02, 0.005),
+            PSY.NaturalUnit(),
+        ),
     )
     sol = Dict{String, Any}()
     for (label, S) in

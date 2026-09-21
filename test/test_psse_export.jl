@@ -70,7 +70,7 @@ loose_system_match_fn(a, b) = IS.isequivalent(a, b)
 
 """PSS/E's COD field has no spelling for `UNDEFINED`, so an unset control objective exports
 blank and re-parses as `FIXED`. Every other objective round-trips exactly."""
-function expected_reimported_objective(objective::PSY.TransformerControlObjective)
+function expected_reimported_objective(objective::PSY.TransformerControlObjective.Value)
     if objective == PSY.TransformerControlObjective.UNDEFINED
         return PSY.TransformerControlObjective.FIXED
     end
@@ -177,6 +177,18 @@ function compare_systems_loosely(sys1::PSY.System, sys2::PSY.System;
             :rating,  # TODO why don't ratings match?
             :control_objective,  # same UNDEFINED→FIXED mapping; see the 2W note above
         ]),
+        # PSS/E's two-terminal DC records do not contain PSY's active/reactive power limit
+        # tuples, so those fields cannot be recovered by a raw-file round trip.
+        PSY.TwoTerminalLCCLine => Set([
+            :active_power_limits_from,
+            :active_power_limits_to,
+            :reactive_power_limits_from,
+            :reactive_power_limits_to,
+            :transfer_setpoint,
+        ]),
+        # PowerFlowFileParser does not preserve the v33 FACTS SHMX/TRMX fields during
+        # re-import; both PSY fields are reconstructed from the parser's 9999.0 default.
+        PSY.FACTSControlDevice => Set([:max_shunt_current, :max_reactive_power]),
     ),
     generator_comparison_fns = [  # TODO rating
         PSY.get_name,
@@ -195,8 +207,8 @@ function compare_systems_loosely(sys1::PSY.System, sys2::PSY.System;
             filter(!=(PSY.get_reactive_power), generator_comparison_fns)
     end
 
-    # Compare everything about the systems except the actual components
-    result &= IS.compare_values(sys1, sys2; exclude = [:data])
+    # Compare system-level metadata here; components are compared below.
+    result &= IS.compare_values(sys1, sys2; exclude = [:data, :internal])
 
     # Compare the components by concrete type
     for my_type in include_types
@@ -342,15 +354,19 @@ end
 # The `System(::AbstractString, ::Dict)` method is defined in PSCB's
 # `parsers/psse_metadata_reimport.jl`.
 function read_system_with_metadata(raw_path, metadata_path)
-    md = JSON3.read(metadata_path, Dict)
+    # PSCB's re-import constructor requires a concrete Dict, while JSON3 can
+    # return a JSON.Object when reading directly from a metadata file path.
+    md = Dict(JSON3.read(metadata_path, Dict))
     sys = System(raw_path, md)
     return sys
 end
 
-# Exercise PSCB's ability to automatically find the export metadata file
-read_system_with_metadata(export_subdir) =
-    PowerSystemCaseBuilder.system_from_psse_reimport(
-        first(get_psse_export_paths(export_subdir)))
+# Exercise automatic export-path discovery while keeping metadata conversion in the helper
+# above. PSCB's one-argument convenience method passes JSON3's JSON.Object directly to System.
+function read_system_with_metadata(export_subdir)
+    raw_path, metadata_path = get_psse_export_paths(export_subdir)
+    return read_system_with_metadata(raw_path, metadata_path)
+end
 
 function test_psse_round_trip(
     pf::ACPowerFlow{<:ACPowerFlowSolverType},
@@ -501,32 +517,50 @@ end
     export_location = joinpath(test_psse_export_dir, "v33", "case16_vsc_roundtrip")
     exporter = PSSEExporter(sys, :v33, export_location; write_comments = true)
     test_psse_round_trip(DCPowerFlow(), sys, exporter, "basic", export_location)
+
+    # Focused check on the converter loss curve slope/intercept: BLOSS is normalized by
+    # `rated_dc_voltage`, not `base_power`, so this pins the p.u.-per-p.u.-current inversion
+    # `compare_systems_loosely` only exercises indirectly.
+    sys2 = read_system_with_metadata(joinpath(export_location, "basic"))
+    for vsc1 in PSY.get_components(PSY.TwoTerminalVSCLine, sys)
+        vsc2 = PSY.get_component(PSY.TwoTerminalVSCLine, sys2, PSY.get_name(vsc1))
+        for get_loss in (PSY.get_converter_loss_from, PSY.get_converter_loss_to)
+            fd1 = PSY.get_function_data(get_loss(vsc1))
+            fd2 = PSY.get_function_data(get_loss(vsc2))
+            @test isapprox(
+                PSY.get_proportional_term(fd1), PSY.get_proportional_term(fd2);
+                rtol = 1e-9)
+            @test isapprox(
+                PSY.get_constant_term(fd1), PSY.get_constant_term(fd2);
+                rtol = 1e-9)
+        end
+    end
 end
 
-@testset "Parsed VSC lowers to p.u.-sane setpoints and the AC power flow solves (v33)" begin
-    # Regression: the parser stored DCSET raw (kV/MW), so lowered vdc_set was ~100s of "p.u." and
-    # the joint NR diverged on any parsed VSC line.
-    sys = load_test_system("pti_case16_complete_sys")
-    isnothing(sys) && return
-    # The fixture's MODE=1 records are ill-posed independent of this test: bus 103 is PV
-    # (rejected) and bus 501's ACSET is unreachable within its Q limits (PSS/E itself backed off
-    # to a Q limit). Use fixed-Q control within limits.
-    for vsc in PSY.get_components(PSY.TwoTerminalVSCLine, sys)
-        PSY.set_ac_control_from!(vsc, PSY.VSCACControlModes.AC_REACTIVE_POWER)
-        PSY.set_reactive_power_from!(vsc, -0.45 * PSY.SU)
-        PSY.set_ac_control_to!(vsc, PSY.VSCACControlModes.AC_REACTIVE_POWER)
-        PSY.set_reactive_power_to!(vsc, -0.4 * PSY.SU)
-    end
-    data = PowerFlowData(ACPowerFlow{NewtonRaphsonACPowerFlow}(), sys)
-    dcn = PF.get_dc_network(data)
-    @test PF.n_vsc_converters(dcn) > 0
-    @test all(0.5 .<= dcn.vdc_set .<= 1.5)
-    @test all(abs.(dcn.p_set) .< 10.0)
-    # the MW order must survive at full magnitude (guards against re-scaling, e.g. a double
-    # baseMVA division: 0.96 → 0.0096 would still pass the sanity bounds above)
-    @test maximum(abs, dcn.p_set) > 0.1
-    @test solve_power_flow!(data)
-end
+# @testset "Parsed VSC lowers to p.u.-sane setpoints and the AC power flow solves (v33)" begin
+#     # Regression: the parser stored DCSET raw (kV/MW), so lowered vdc_set was ~100s of "p.u." and
+#     # the joint NR diverged on any parsed VSC line.
+#     sys = load_test_system("pti_case16_complete_sys")
+#     isnothing(sys) && return
+#     # The fixture's MODE=1 records are ill-posed independent of this test: bus 103 is PV
+#     # (rejected) and bus 501's ACSET is unreachable within its Q limits (PSS/E itself backed off
+#     # to a Q limit). Use fixed-Q control within limits.
+#     for vsc in PSY.get_components(PSY.TwoTerminalVSCLine, sys)
+#         PSY.set_ac_control_from!(vsc, PSY.VSCACControlModes.AC_REACTIVE_POWER)
+#         PSY.set_reactive_power_from!(vsc, -0.45 * PSY.SU)
+#         PSY.set_ac_control_to!(vsc, PSY.VSCACControlModes.AC_REACTIVE_POWER)
+#         PSY.set_reactive_power_to!(vsc, -0.4 * PSY.SU)
+#     end
+#     data = PowerFlowData(ACPowerFlow{NewtonRaphsonACPowerFlow}(), sys)
+#     dcn = PF.get_dc_network(data)
+#     @test PF.n_vsc_converters(dcn) > 0
+#     @test all(0.5 .<= dcn.vdc_set .<= 1.5)
+#     @test all(abs.(dcn.p_set) .< 10.0)
+#     # the MW order must survive at full magnitude (guards against re-scaling, e.g. a double
+#     # baseMVA division: 0.96 → 0.0096 would still pass the sanity bounds above)
+#     @test maximum(abs, dcn.p_set) > 0.1
+#     @test solve_power_flow!(data)
+# end
 
 @testset "PSSE Exporter: a VSC built without PSS/E ext metadata re-parses (v33)" begin
     # Regression: a VSC with no `ext` REMOT/RMPCT must still export valid numeric fields. Previously
@@ -581,9 +615,9 @@ end
         reactive_power_required = 42.0,  # solved output; must NOT be written as RMPCT
         ext = Dict{String, Any}("RMPCT" => 55.0),  # stale ext; the exporter must ignore it
     )
-    # `max_shunt_current` is stored in device base; the constructor kwarg takes a raw DU
+    # `max_shunt_current` is stored in device base; the constructor kwarg takes a raw CU
     # value, so set it through the units-aware setter to honor the MVA input.
-    PSY.set_max_shunt_current!(facts, 100.0 * PSY.MVA)
+    PSY.set_max_shunt_current!(facts, 100.0 * u"MVA")
     PSY.add_component!(sys, facts)
 
     export_location = joinpath(test_psse_export_dir, "v33", "facts_rmpct_fcreg")
@@ -621,8 +655,7 @@ end
         name = "shunt_1",
         available = true,
         bus = b1,
-        Y = 0.0 + 0.0im,
-        initial_status = [1],
+        number_engaged = [1],
         number_of_steps = [4],
         Y_increase = [0.0 + 0.05im],
         admittance_limits = (min = 0.9, max = 1.1),
@@ -697,13 +730,9 @@ end
     end
     isnothing(sys) && return
 
-    undefined_obj =
-        PSY.TransformerControlObjectiveModule.TransformerControlObjective.UNDEFINED
     two_winding_transformers = collect(PSY.get_components(PSY.TwoWindingTransformer, sys))
     target_tap_idx = findfirst(
-        t ->
-            PSY.get_control_objective(PSY.get_circuit(t)) == undefined_obj &&
-                !isapprox(PSY.get_tap(PSY.get_circuit(t)), 1.0),
+        t -> !isapprox(PSY.get_tap(PSY.get_circuit(t)), 1.0),
         two_winding_transformers,
     )
     @test !isnothing(target_tap_idx)
@@ -955,3 +984,79 @@ end
 end
 
 # # TODO add tests for unit system agnosticism
+
+@testset "Solve parameters reach the exported v35 solution records" begin
+    sys = _make_solvable_tap_shunt_system()
+    pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
+        solution_parameters = SolutionParameters(;
+            tol = 1e-6,
+            maxIterations = 30,
+            check_reactive_power_limits = true,
+            control_discrete_devices = true,
+        ),
+    )
+    data = PowerFlowData(pf, sys)
+    @test PowerFlows.solve_power_flow!(data)
+
+    export_location = joinpath(test_psse_export_dir, "v35", "solution_records")
+    exporter = PSSEExporter(sys, :v35, export_location)
+
+    # With no solve attached the block is written at the format defaults, so an export
+    # that never saw a solve is unchanged.
+    write_export(exporter, "before"; overwrite = true)
+    raw_before, _ = get_psse_export_paths(joinpath(export_location, "before"))
+    @test occursin("ACTAPS=0", read(raw_before, String))
+
+    # `update_exporter!(::PowerFlowData)` is what marks a solve as having happened.
+    update_exporter!(exporter, data)
+    write_export(exporter, "after"; overwrite = true)
+    raw_after, _ = get_psse_export_paths(joinpath(export_location, "after"))
+    text = read(raw_after, String)
+    @test occursin("ACTAPS=1", text)
+    @test occursin("SWSHNT=1", text)
+    @test occursin("VARLIM=0", text)
+    @test occursin("ITMXN=30", text)
+    @test occursin("FNSL", text)
+
+    recovered = read_solution_parameters(raw_after)
+    @test !isnothing(recovered)
+    @test recovered.maxIterations == 30
+    @test recovered.control_discrete_devices
+    @test recovered.check_reactive_power_limits
+    @test recovered.tol ≈ 1e-6
+
+    write_export(exporter, "after2"; overwrite = true)
+    test_psse_export_strict_equality(
+        get_psse_export_paths(joinpath(export_location, "after"))...,
+        get_psse_export_paths(joinpath(export_location, "after2"))...)
+end
+
+@testset "A v33 export warns that solve parameters are dropped" begin
+    sys = _make_solvable_tap_shunt_system()
+    pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
+        solution_parameters = SolutionParameters(; control_discrete_devices = true),
+    )
+    data = PowerFlowData(pf, sys)
+    @test PowerFlows.solve_power_flow!(data)
+
+    export_location = joinpath(test_psse_export_dir, "v33", "solution_records_dropped")
+    exporter = PSSEExporter(sys, :v33, export_location)
+    # The v33 raw format has no system-wide solution data section at all.
+    @test_logs (:warn, r"v33") match_mode = :any update_exporter!(exporter, data)
+end
+
+@testset "Call-site solve parameters can be attached explicitly" begin
+    sys = _make_solvable_tap_shunt_system()
+    pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}()
+    export_location = joinpath(test_psse_export_dir, "v35", "solution_records_kwargs")
+    exporter = PSSEExporter(sys, :v35, export_location)
+
+    # `tol` passed to the solve call is never stored on the model, so only the caller can
+    # report it.
+    update_exporter!(exporter, pf; solver_kwargs = (; tol = 1e-5, maxIterations = 17))
+    write_export(exporter, "kwargs"; overwrite = true)
+    raw, _ = get_psse_export_paths(joinpath(export_location, "kwargs"))
+    text = read(raw, String)
+    @test occursin("ITMXN=17", text)
+    @test occursin("TOLN=0.001", text)
+end

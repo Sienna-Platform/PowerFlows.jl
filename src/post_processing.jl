@@ -478,7 +478,9 @@ end
     _segment_flow_entry(segment, V_from, V_to)
 
 Compute a `BranchFlowEntry` for a single segment given its endpoint voltages. Returns the
-from-to and to-from complex power flows, plus losses.
+from-to and to-from complex power flows, plus losses. For non-line segments, the
+reactive loss is the sum of the terminal reactive powers from the complete branch
+admittance model.
 """
 function _segment_flow_entry(
     segment::PSY.ACTransmission,
@@ -500,6 +502,132 @@ function _segment_flow_entry(
         imag(S_tf),
         imag(S_ft) + imag(S_tf),
     ))
+end
+
+"""
+    _segment_flow_entry(segment::PSY.Line, V_from, V_to)
+
+Compute a `BranchFlowEntry` for a transmission line using its endpoint voltages.
+Terminal active and reactive powers use the complete line admittance model. Active
+losses and reactive losses are reported from the series element, excluding line
+charging and line-connected shunt contributions.
+"""
+function _segment_flow_entry(
+    segment::PSY.Line,
+    V_from::ComplexF64,
+    V_to::ComplexF64,
+)
+    (y11, y12, y21, y22) = PNM.ybus_branch_entries(segment)
+    S_ft = V_from * conj(y11 * V_from + y12 * V_to)
+    S_tf = V_to * conj(y21 * V_from + y22 * V_to)
+    S_ft_series = V_from * conj(y12 * (V_to - V_from))
+    S_tf_series = V_to * conj(y21 * (V_from - V_to))
+    arc_tuple = PNM.get_arc_tuple(segment)
+    return BranchFlowEntry((
+        PNM.get_name(segment),
+        arc_tuple[1],
+        arc_tuple[2],
+        real(S_ft),
+        real(S_tf),
+        real(S_ft) + real(S_tf),
+        imag(S_ft),
+        imag(S_tf),
+        imag(S_ft_series) + imag(S_tf_series),
+    ))
+end
+
+"""
+    _set_group_interior_voltages!(sys, group, arc, V_endpoints, temp_bus_map, nrd)
+
+Set interior bus voltages for every series chain held inside a parallel group. All members of
+a group span the same bus pair, so each chain is solved from the group's endpoint voltages,
+swapped for a member keyed the other way. A group of physical branches has no interior buses
+and is a no-op.
+"""
+function _set_group_interior_voltages!(
+    sys::PSY.System,
+    group::PNM.AbstractBranchesParallel,
+    arc::Tuple{Int, Int},
+    V_endpoints::Tuple{ComplexF64, ComplexF64},
+    temp_bus_map::Dict{Int, String},
+    nrd::PNM.NetworkReductionData,
+)
+    for member in group
+        member_arc = PNM.get_arc_tuple(member, nrd)
+        V_member =
+            member_arc[1] == arc[1] ? V_endpoints : (V_endpoints[2], V_endpoints[1])
+        _set_group_interior_voltages!(
+            sys,
+            member,
+            member_arc,
+            V_member,
+            temp_bus_map,
+            nrd,
+        )
+    end
+    return
+end
+
+function _set_group_interior_voltages!(
+    sys::PSY.System,
+    chain::PNM.BranchesSeries,
+    arc::Tuple{Int, Int},
+    V_endpoints::Tuple{ComplexF64, ComplexF64},
+    temp_bus_map::Dict{Int, String},
+    nrd::PNM.NetworkReductionData,
+)
+    _set_series_interior_voltages!(sys, chain, arc, V_endpoints, temp_bus_map, nrd)
+    return
+end
+
+# A physical branch has no interior buses.
+_set_group_interior_voltages!(
+    ::PSY.System,
+    ::PSY.ACTransmission,
+    ::Tuple{Int, Int},
+    ::Tuple{ComplexF64, ComplexF64},
+    ::Dict{Int, String},
+    ::PNM.NetworkReductionData,
+) = nothing
+
+"""
+    _segment_group_flow_entries(group, V_from, V_to, from_bus, nrd)
+
+Per-branch `BranchFlowEntry`s for an aggregate that spans a single bus pair, given that
+pair's voltages in the `from_bus`-first orientation. A member keyed the other way has its
+voltages swapped, so anti-parallel members folded in by a bus merge are handled.
+"""
+function _segment_group_flow_entries(
+    group::PNM.AbstractReductionAggregate,
+    V_from::ComplexF64,
+    V_to::ComplexF64,
+    from_bus::Int,
+    nrd::PNM.NetworkReductionData,
+)
+    entries = BranchFlowEntry[]
+    for member in group
+        (member_from, _) = PNM.get_arc_tuple(member, nrd)
+        (V_f, V_t) = member_from == from_bus ? (V_from, V_to) : (V_to, V_from)
+        if member isa PNM.BranchesSeries
+            # A chain has interior buses whose voltages are not on the reduced bus axis, so it
+            # cannot be evaluated from its endpoints alone. Reductions do not currently nest a
+            # chain inside a chain segment; erroring names the structure that changed rather
+            # than silently reporting a two-port flow for a multi-segment path.
+            error(
+                "Series chain $(PNM.get_name(member)) appears as a member of the group on " *
+                "arc $(PNM.get_arc_tuple(group, nrd)), which is nested inside another " *
+                "series chain. Per-branch flow reporting cannot resolve its interior buses.",
+            )
+        elseif member isa PNM.AbstractReductionAggregate
+            append!(
+                entries,
+                _segment_group_flow_entries(member, V_f, V_t, member_from, nrd),
+            )
+        else
+            push!(entries, _segment_flow_entry(member, V_f, V_t))
+        end
+    end
+    return entries
 end
 
 """
@@ -547,11 +675,22 @@ function _compute_segment_flows(
     arc::Tuple{Int, Int},
     time_step::Int,
 )
-    (V_from, V_to) = _get_arc_endpoint_voltages(data, arc, time_step)
+    nrd = get_network_reduction_data(data)
     entries = BranchFlowEntry[]
-    for segment in arc_entry
-        entry = _segment_flow_entry(segment, V_from, V_to)
-        push!(entries, entry)
+    for member in arc_entry
+        # A member is not necessarily a physical branch: a degree-two reduction groups sibling
+        # chains onto one arc, and a bus merge can fold an anti-parallel branch into a group.
+        # Resolving each member in its own arc frame handles both, since the members of a group
+        # all span the same bus pair.
+        append!(
+            entries,
+            _compute_segment_flows(
+                member,
+                data,
+                PNM.get_arc_tuple(member, nrd),
+                time_step,
+            ),
+        )
     end
     return entries
 end
@@ -575,12 +714,13 @@ function _compute_segment_flows(
         current_V = (i == length(arc_entry)) ? V_endpoints[2] : x[i]
 
         (V_from, V_to) = reversed ? (current_V, prev_V) : (prev_V, current_V)
-        if segment isa PNM.AbstractBranchesParallel
-            # All branches in a parallel set share the same arc orientation,
-            # so _segment_flow_entry works directly on each individual branch.
-            for branch in segment
-                push!(entries, _segment_flow_entry(branch, V_from, V_to))
-            end
+        if segment isa PNM.AbstractReductionAggregate
+            # A chain segment can itself be a group of arcs resolved onto the same bus pair,
+            # whose members need not share the segment's orientation.
+            append!(
+                entries,
+                _segment_group_flow_entries(segment, V_from, V_to, segment_from, nrd),
+            )
         else
             push!(entries, _segment_flow_entry(segment, V_from, V_to))
         end
@@ -834,8 +974,17 @@ function write_power_flow_solution!(
         _apply_flow_entries!(flow_entries, segments)
     end
 
-    # Parallel branches: compute individual flows and set on each branch.
+    # Parallel branches: compute individual flows and set on each branch. A group whose
+    # members are series chains also owns interior buses, so those are set here too.
     for (equiv_arc, parallel_branches) in PNM.get_parallel_branch_map(nrd)
+        _set_group_interior_voltages!(
+            sys,
+            parallel_branches,
+            equiv_arc,
+            _get_arc_endpoint_voltages(data, equiv_arc, time_step),
+            temp_bus_map,
+            nrd,
+        )
         flow_entries = _compute_segment_flows(parallel_branches, data, equiv_arc, time_step)
         _apply_flow_entries!(flow_entries, parallel_branches)
     end
@@ -922,11 +1071,11 @@ function _apply_flow_entries!(
     segment::PNM.AbstractBranchesParallel,
     entry_ix::Int = 1,
 )
-    for branch in segment
-        entry = entries[entry_ix]
-        @assert entry.name == PNM.get_name(branch)
-        set_power_flow!(branch, entry.P_from_to + im * entry.Q_from_to)
-        entry_ix += 1
+    # Members are dispatched rather than assumed to be physical branches: a degree-two
+    # reduction groups sibling chains onto one arc, and each chain contributes one entry per
+    # segment, not one entry for itself.
+    for member in segment
+        entry_ix = _apply_flow_entries!(entries, member, entry_ix)
     end
     return entry_ix
 end
@@ -1646,11 +1795,28 @@ function _distribute_arc_flows(
 )
     entries = BranchFlowEntry[]
     for br in arc_entry
-        arc_tuple = PNM.get_arc_tuple(br)
         m = PNM.compute_parallel_multiplier(arc_entry, br)
         c = PNM.compute_parallel_circulating_flow(arc_entry, nrd, br)
         P_ft = P_from_to * m + c
         P_tf = P_to_from * m - c
+        if br isa PNM.AbstractReductionAggregate
+            # A member can be a whole series chain, which contributes one entry per segment
+            # once its share of the arc flow is known.
+            append!(
+                entries,
+                _distribute_arc_flows(
+                    br,
+                    nrd,
+                    P_ft,
+                    Q_from_to * m,
+                    P_tf,
+                    Q_to_from * m,
+                    arc_P_losses * m,
+                ),
+            )
+            continue
+        end
+        arc_tuple = PNM.get_arc_tuple(br)
         push!(
             entries,
             BranchFlowEntry((
@@ -1763,7 +1929,7 @@ results.
 function write_results(
     data::Union{PTDFPowerFlowData, vPTDFPowerFlowData, ABAPowerFlowData},
     sys::PSY.System,
-    flow_reporting::FlowReporting,
+    flow_reporting::FlowReporting.Value,
 )
     @info("Voltages are exported in pu. Powers are exported in MW/MVAr.")
     @info(
@@ -1838,7 +2004,7 @@ function write_results(
     sys::PSY.System,
     data::ACPowerFlowData,
     time_step::Int64,
-    flow_reporting::FlowReporting,
+    flow_reporting::FlowReporting.Value,
 )
     @info("Voltages are exported in pu. Powers are exported in MW/MVAr.")
     busIxToFAPower = _calculate_fixed_admittance_powers(sys, data, time_step)
