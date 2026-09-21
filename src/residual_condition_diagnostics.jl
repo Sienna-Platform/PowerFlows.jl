@@ -294,10 +294,7 @@ function _decide_det_sign_switch!(
 )::Bool
     mon.enabled || return false
 
-    flipped = UInt8(0)          # bit k set = bordering k flipped this iteration
-    n_flipped = 0
-    n_finite = 0
-    n_voting = 0                # borderings with an established previous sign
+    n_finite, n_voting, n_flipped = 0, 0, 0
     for k in eachindex(gs)
         g = gs[k]
         if !isfinite(g)
@@ -308,16 +305,10 @@ function _decide_det_sign_switch!(
             continue
         end
         n_finite += 1
-        current = Int8(sign(g))
-        current == 0 && continue         # exactly zero: hold the previous sign
-        prev = mon.signs[k]
-        mon.signs[k] = current
-        prev == 0 && continue            # first observation for this bordering
+        vote = _bordering_flipped(mon, g, k)
+        isnothing(vote) && continue
         n_voting += 1
-        if current != prev
-            flipped |= UInt8(1) << (k - 1)
-            n_flipped += 1
-        end
+        n_flipped += vote
     end
 
     if n_finite == 0
@@ -325,22 +316,39 @@ function _decide_det_sign_switch!(
               "fold$(bail ? ", aborting." : ".")"
         return bail
     end
-    n_flipped == 0 && return false
-
     # A bordering re-picked last iteration has no previous sign to vote with, so the
-    # verdict is taken over the ones that do.
-    if n_flipped < n_voting
-        # Independent borderings disagree, so det(J) did not cross zero: the ones that
-        # flipped hit a pole of their own det(M). Re-pick them and keep going.
-        for k in eachindex(gs)
-            iszero(flipped & (UInt8(1) << (k - 1))) || _handle_border_pole!(mon, label, k)
+    # verdict is taken over the ones that do. A split vote means independent
+    # borderings disagree, so det(J) did not cross zero: the ones that flipped hit a
+    # pole of their own det(M).
+    split = 0 < n_flipped < n_voting
+
+    # Commit: re-pick the borderings that hit a pole (`_repick_bordering!` blanks
+    # their sign), and record this iteration's sign for the rest.
+    for k in eachindex(gs)
+        g = gs[k]
+        isfinite(g) || continue
+        if split && _bordering_flipped(mon, g, k) === true
+            _handle_border_pole!(mon, label, k)
+        elseif !iszero(sign(g))
+            mon.signs[k] = Int8(sign(g))
         end
-        return false
     end
+
+    (split || n_flipped == 0) && return false
 
     @warn "$label: sign(det J) flipped on all $(n_voting) borderings. Fold / " *
           "voltage-collapse signature$(bail ? ", aborting." : ".")"
     return bail
+end
+
+"""Did bordering `k` flip sign this iteration? `nothing` when it has no vote to cast:
+no previous sign yet (a fresh or just re-picked bordering), or an exactly zero `g`,
+which holds the previous sign rather than replacing it. Reads `mon.signs` without
+writing, so it gives the same answer before and after the verdict."""
+function _bordering_flipped(mon::BorderedFoldMonitor, g::Float64, k::Int)
+    current = Int8(sign(g))
+    (iszero(current) || iszero(mon.signs[k])) && return nothing
+    return current != mon.signs[k]
 end
 
 """Handle a degenerate bordering: `det M` — not `J` — went singular. Re-pick slot `k`
