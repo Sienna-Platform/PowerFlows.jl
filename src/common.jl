@@ -266,8 +266,10 @@ function _set_bus_angles_and_magnitudes!(
 end
 
 # ensures that we don't error/warn for PV vs PQ bus types in DC power flow.
-_considers_bustype(::AbstractACPowerFlow{<:ACPowerFlowSolverType}, ::PSY.ACBusTypes.Value) = true
-_considers_bustype(::AbstractDCPowerFlow, bt::PSY.ACBusTypes.Value) = (bt == PSY.ACBusTypes.REF)
+_considers_bustype(::AbstractACPowerFlow{<:ACPowerFlowSolverType}, ::PSY.ACBusTypes.Value) =
+    true
+_considers_bustype(::AbstractDCPowerFlow, bt::PSY.ACBusTypes.Value) =
+    (bt == PSY.ACBusTypes.REF)
 
 """Voltage regulation is irrelevant to DC power flow, so the PQ demotion in
 `_normalize_slack_bustype` warns only for AC evaluation models; DC demotes silently."""
@@ -357,7 +359,7 @@ function _initialize_bus_data!(
     forced_PV = must_be_PV(sys)
     possible_PV = can_be_PV(sys)
     bus_numbers = PSY.get_bus_numbers(sys)
-    temp_bus_types = Dict{Int, PSY.ACBusTypes}()
+    temp_bus_types = Dict{Int, PSY.ACBusTypes.Value}()
     sizehint!(temp_bus_types, length(bus_numbers))
     temp_bus_map = Dict{Int, String}()
     sizehint!(temp_bus_map, length(bus_numbers))
