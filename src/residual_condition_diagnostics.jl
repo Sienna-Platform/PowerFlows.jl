@@ -208,7 +208,7 @@ last-seen sign of `real(λ_min)` (`eig_sign`), and a reusable padded RHS (`buffe
 the Schur operator allocates nothing per iteration."""
 mutable struct SolverDiagnosticsState
     prev_F::Float64
-    eig_sign::EigvalSign
+    eig_sign::EigvalSign.Value
     buffer::Vector{Float64}
 end
 

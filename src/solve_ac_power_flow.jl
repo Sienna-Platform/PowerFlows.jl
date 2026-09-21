@@ -175,7 +175,7 @@ end
 function solve_power_flow(
     pf::AbstractACPowerFlow{<:ACPowerFlowSolverType},
     system::PSY.System,
-    flow_reporting::FlowReporting;
+    flow_reporting::FlowReporting.Value;
     kwargs...,
 )
     # df_results must be defined in the outer scope first to be visible for return
@@ -475,7 +475,7 @@ end
 function bus_type_idx(
     data::ACPowerFlowData,
     time_step::Int64 = 1,
-    bus_types::Tuple{Vararg{PSY.ACBusTypes}} = (
+    bus_types::Tuple{Vararg{PSY.ACBusTypes.Value}} = (
         PSY.ACBusTypes.REF,
         PSY.ACBusTypes.PV,
         PSY.ACBusTypes.PQ,

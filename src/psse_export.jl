@@ -920,7 +920,7 @@ function _psse_enum_code(value, undefined)
     if value == undefined
         return PSSE_DEFAULT
     end
-    return value.value
+    return Integer(value)
 end
 
 const _PSSE_PHASE_SHIFT_OBJECTIVES = (
@@ -1815,7 +1815,7 @@ function _write_discrete_branch_record!(
     J::Int,
     CKT::String,
     branch::PSY.DiscreteControlledACBranch,
-    branch_type::PSY.DiscreteControlledBranchType,
+    branch_type::PSY.DiscreteControlledBranchType.Value,
 )
     ST = PSY.get_available(branch) ? 1 : 0
     MET = PSSE_DEFAULT
@@ -2068,9 +2068,8 @@ function _collect_control_objective!(
     t::PSY.TwoWindingTransformer,
 )
     cod1 = PSY.get_control_objective(PSY.get_circuit(t))
-    cod1 ==
-    PSY.TransformerControlObjectiveModule.TransformerControlObjective.UNDEFINED &&
-        (mapping[name] = cod1.value)
+    cod1 == PSY.TransformerControlObjective.UNDEFINED &&
+        (mapping[name] = Integer(cod1))
     return
 end
 

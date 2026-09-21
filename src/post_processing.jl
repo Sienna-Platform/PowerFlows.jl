@@ -1929,7 +1929,7 @@ results.
 function write_results(
     data::Union{PTDFPowerFlowData, vPTDFPowerFlowData, ABAPowerFlowData},
     sys::PSY.System,
-    flow_reporting::FlowReporting,
+    flow_reporting::FlowReporting.Value,
 )
     @info("Voltages are exported in pu. Powers are exported in MW/MVAr.")
     @info(
@@ -2004,7 +2004,7 @@ function write_results(
     sys::PSY.System,
     data::ACPowerFlowData,
     time_step::Int64,
-    flow_reporting::FlowReporting,
+    flow_reporting::FlowReporting.Value,
 )
     @info("Voltages are exported in pu. Powers are exported in MW/MVAr.")
     busIxToFAPower = _calculate_fixed_admittance_powers(sys, data, time_step)

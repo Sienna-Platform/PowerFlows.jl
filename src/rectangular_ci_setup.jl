@@ -12,7 +12,7 @@ Returns `(offsets, block_sizes, total_bus_state)` where
 - `total_bus_state` is the total count of bus-state slots (excluding LCC tail)
 """
 function compute_bus_state_offsets(
-    bus_type::AbstractVector{PSY.ACBusTypes},
+    bus_type::AbstractVector{PSY.ACBusTypes.Value},
 )
     n_buses = length(bus_type)
     offsets = Vector{REC_INDEX_TYPE}(undef, n_buses + 1)

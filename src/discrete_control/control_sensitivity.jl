@@ -256,7 +256,7 @@ function _stamp_dI!(
     r::ACRectangularCIResidual,
     i::Int,
     dI::ComplexF64,
-    ::PSY.ACBusTypes,
+    ::PSY.ACBusTypes.Value,
 )
     off = _state_offset(r, i)
     @inbounds begin
@@ -275,7 +275,7 @@ function _stamp_dI!(
     r::ACMixedCPBResidual,
     i::Int,
     dI::ComplexF64,
-    bt::PSY.ACBusTypes,
+    bt::PSY.ACBusTypes.Value,
 )
     off = _state_offset(r, i)
     @inbounds if bt == PSY.ACBusTypes.PV

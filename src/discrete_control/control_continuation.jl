@@ -9,7 +9,7 @@ const CONTROL_CONTRACTION = 0.5
 struct ControlStateSnapshot
     vmag::Vector{Float64}
     vang::Vector{Float64}
-    btype::Vector{PSY.ACBusTypes}
+    btype::Vector{PSY.ACBusTypes.Value}
     pinj::Vector{Float64}
     qinj::Vector{Float64}
     dc_p::Vector{Float64}
@@ -184,7 +184,7 @@ struct _SensitivityContext{C, R, JT}
     # recomputed by the residual functor — a Q-limit PV→PQ flip elsewhere in the network after
     # this ctx was built silently stales that structure. `_refresh_sensitivity_context!` checks
     # this snapshot and refuses to reuse a ctx whose bus-type pattern has since changed.
-    bus_type::Vector{PSY.ACBusTypes}
+    bus_type::Vector{PSY.ACBusTypes.Value}
 end
 
 # Values-only refresh at a new converged base state: the Jacobian sparsity depends only on

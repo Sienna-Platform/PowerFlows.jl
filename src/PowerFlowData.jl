@@ -59,7 +59,7 @@ the respective type of power flow evaluations.
 - `bus_reactive_power_bounds::Matrix{Float64}`:
         matrix containing upper and lower bounds for the reactive supply at each
         bus at each time period.
-- `bus_type::Matrix{PSY.ACBusTypes}`:
+- `bus_type::Matrix{PSY.ACBusTypes.Value}`:
         matrix containing type of buses present in the system.
 - `bus_magnitude::Matrix{Float64}`:
         matrix containing the bus voltage magnitudes.
@@ -119,7 +119,7 @@ struct PowerFlowData{
     computed_generator_slack_participation_factors::Vector{
         Dict{Tuple{DataType, String}, Float64},
     }
-    bus_type::Matrix{PSY.ACBusTypes}
+    bus_type::Matrix{PSY.ACBusTypes.Value}
     bus_magnitude::Matrix{Float64}
     bus_angles::Matrix{Float64}
     arc_active_power_flow_from_to::Matrix{Float64}
