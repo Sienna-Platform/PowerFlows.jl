@@ -175,7 +175,7 @@ end
     data = PowerFlowData(pf, sys)
     time_step = 1
     Yb = ComplexF64.(Matrix(data.power_network_matrix.data))
-    Yrec = Matrix(PF._restamp_ybus(PF._recover_arc_params(data)))
+    Yrec = Matrix(PF._restamp_ybus(PF._arc_params(data)))
     @test isapprox(Yrec, Yb; atol = 1e-4, rtol = 0)
 
     # B″ symmetric; B′ symmetric here (c_sys14 has no phase shifters).
@@ -203,7 +203,7 @@ end
     pf = ACPowerFlow(; skip_redistribution = true, correct_bustypes = true)
     data = PowerFlowData(pf, system)
     Yb = ComplexF64.(Matrix(data.power_network_matrix.data))
-    Yrec = Matrix(PF._restamp_ybus(PF._recover_arc_params(data)))
+    Yrec = Matrix(PF._restamp_ybus(PF._arc_params(data)))
     relerr = norm(Yrec - Yb) / norm(Yb)
     @test relerr <= 1e-4
 end
@@ -211,9 +211,8 @@ end
 # WP1 regression: a mostly-resistive branch whose reactance sits BELOW PNM's reactance floor but
 # whose resistance is non-negligible (so PNM, which floors x only when r==x==0, leaves it
 # untouched). The near-zero-x cap lives ONLY on the resistance-drop B-stamp path (`_fd_series`),
-# so the recovered `ys`/`b_c`/shunt and the restamp stay at their true values. Before the cap was
-# moved out of `_recover_arc_params`, this branch overwrote `ys`'s imaginary part with `-1/x_cap`,
-# injecting a ~1e6 susceptance into the restamp off-diagonal and the full-`ys` half of B′/B″.
+# so the π params and the restamp stay at their true values: capping them instead would inject a
+# ~1e6 susceptance into the restamp off-diagonal and the full-`ys` half of B′/B″.
 function _resistive_near_zero_x_system()
     sys = PSY.System(100.0)
     b1 = _add_simple_bus!(sys, 1, PSY.ACBusTypes.REF, 230.0, 1.0, 0.0)
@@ -238,10 +237,10 @@ end
     # resistance-drop cap path; the cap is locked to PNM's reactance floor.
     @test PF.FD_INV_X_CAP == 1 / PNM.ZERO_IMPEDANCE_X_EPSILON
 
-    # Recovered params / restamp must stay at TRUE values (no 1e6 susceptance leak): the restamp
+    # π params / restamp must stay at TRUE values (no 1e6 susceptance leak): the restamp
     # reconstructs the original Ybus within ComplexF32 noise even for this branch.
     Yb = ComplexF64.(Matrix(data.power_network_matrix.data))
-    Yrec = Matrix(PF._restamp_ybus(PF._recover_arc_params(data)))
+    Yrec = Matrix(PF._restamp_ybus(PF._arc_params(data)))
     relerr = norm(Yrec - Yb) / norm(Yb)
     @test relerr <= 1e-4
 
@@ -253,6 +252,83 @@ end
         @test all(isfinite, PF.get_bp_matrix(fd).nzval)
         @test all(isfinite, PF.get_bpp_matrix(PF.extract_bpp(fd, sort(pq))).nzval)
     end
+end
+
+# WP1: a tapped transformer whose magnetizing shunt sits on the PRIMARY (from) side. PNM stamps
+# `yff = ys/|τ|² + y_fr` — the shunt is OUTSIDE the `1/|τ|²` — so a π model that folds the shunt
+# into a tap-scaled charging term mis-splits it by a factor of |τ|². The from-bus shunt residual
+# is the sharp detector: it must come out as the bus's true FixedAdmittance (here zero), since
+# every branch term is accounted for exactly.
+function _tapped_magnetizing_shunt_system()
+    sys = PSY.System(100.0)
+    b1 = _add_simple_bus!(sys, 1, PSY.ACBusTypes.REF, 230.0, 1.0, 0.0)
+    b2 = _add_simple_bus!(sys, 2, PSY.ACBusTypes.PV, 230.0, 1.0, 0.0)
+    b3 = _add_simple_bus!(sys, 3, PSY.ACBusTypes.PQ, 230.0, 1.0, 0.0)
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    _add_simple_thermal_standard!(sys, b2, 0.3, 0.0)
+    _add_simple_load!(sys, b3, 15.0, 6.0)
+    _add_simple_line!(sys, b1, b2, 0.01, 0.10, 0.05)
+    # Off-nominal tap plus a magnetizing shunt on the from side of the transformer.
+    tx = PSY.TwoWindingTransformer(;
+        name = "tap_2_3",
+        circuit = PSY.TransformerCircuit(;
+            available = true,
+            arc = PSY.Arc(; from = b2, to = b3),
+            r = 0.005,
+            x = 0.08,
+            tap = 1.05,
+            α = 0.0,
+            rating = 2.0,
+            base_power = 100.0,
+        ),
+        magnetizing_shunt = 0.0 + 0.04im,
+        shunt_location = PSY.TwoWindingTransformerShuntLocation.PRIMARY,
+    )
+    add_component!(sys, tx)
+    # A FixedAdmittance at b3 so a true bus shunt is distinguished from a mis-split branch shunt.
+    add_component!(
+        sys,
+        PSY.FixedAdmittance(;
+            name = "shunt_3",
+            available = true,
+            bus = b3,
+            Y = 0.0 + 0.03im,
+        ),
+    )
+    return sys
+end
+
+@testset "FastDecoupled WP1: tapped transformer magnetizing shunt (π split)" begin
+    sys = _tapped_magnetizing_shunt_system()
+    data = PowerFlowData(ACPowerFlow(), sys)
+    p = PF._arc_params(data)
+
+    # π params must be PNM's own, branch for branch.
+    nrd = PNM.get_network_reduction_data(PF.get_power_network_matrix(data))
+    bus_lookup = PF.get_bus_lookup(data)
+    b2_ix = bus_lookup[2]
+    b3_ix = bus_lookup[3]
+    a = findfirst(k -> p.from[k] == b2_ix && p.to[k] == b3_ix, eachindex(p.from))
+    @test !isnothing(a)
+    eb = PNM.arc_equivalent_branch(nrd, (2, 3))
+    @test p.tau[a] ≈ PNM.get_equivalent_tap(eb) * cis(PNM.get_equivalent_shift(eb))
+    @test p.ys[a] ≈ 1 / complex(PNM.get_equivalent_r(eb), PNM.get_equivalent_x(eb))
+    @test p.y_fr[a] ≈
+          complex(PNM.get_equivalent_g_from(eb), PNM.get_equivalent_b_from(eb))
+    @test p.y_to[a] ≈ complex(PNM.get_equivalent_g_to(eb), PNM.get_equivalent_b_to(eb))
+    # The magnetizing shunt is on the from side and the tap is off-nominal, so a tap-scaled
+    # split would show up here.
+    @test PNM.get_equivalent_b_from(eb) ≈ 0.04
+    @test PNM.get_equivalent_tap(eb) ≈ 1.05
+
+    # The bus-shunt residual is exactly the FixedAdmittance set: zero at b1/b2, 0.03im at b3.
+    @test isapprox(p.shunt[bus_lookup[1]], 0.0 + 0.0im; atol = 1e-5)
+    @test isapprox(p.shunt[b2_ix], 0.0 + 0.0im; atol = 1e-5)
+    @test isapprox(p.shunt[b3_ix], 0.0 + 0.03im; atol = 1e-5)
+
+    # Restamp still reconstructs the original Ybus.
+    Yb = ComplexF64.(Matrix(data.power_network_matrix.data))
+    @test norm(Matrix(PF._restamp_ybus(p)) - Yb) / norm(Yb) <= 1e-4
 end
 
 # =====================================================================================
@@ -477,7 +553,7 @@ end
 # (|τ|=1 in B′ but phase shift retained) is otherwise untested. Build a small
 # system WITH a phase-shifting transformer (constructed directly via PowerSystems) plus a
 # FixedAdmittance shunt, and assert:
-#   (a) restamp(_recover_arc_params) ≈ original Ybus within ComplexF32 noise,
+#   (a) restamp(_arc_params) ≈ original Ybus within ComplexF32 noise,
 #   (b) B′ is ASYMMETRIC (phase shifter retained) while B″ is SYMMETRIC (phase dropped).
 # If this FAILS it is a real WP1 phase-shifter bug — DO NOT patch WP1 here; report it.
 function _phase_shifter_system()
@@ -527,7 +603,7 @@ end
 
     # (a) Restamp reconstruction must recover the original Ybus within ComplexF32 noise.
     Yb = ComplexF64.(Matrix(data.power_network_matrix.data))
-    Yrec = Matrix(PF._restamp_ybus(PF._recover_arc_params(data)))
+    Yrec = Matrix(PF._restamp_ybus(PF._arc_params(data)))
     relerr = norm(Yrec - Yb) / norm(Yb)
     @test relerr <= 1e-4
 

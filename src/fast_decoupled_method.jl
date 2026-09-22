@@ -646,7 +646,7 @@ end
 
 Factor-once cache for the polar :decoupled FD loop, stored in `data.solver_cache[]` (a
 [`SolverCache`](@ref) subtype, type-disjoint from the DC path's [`DCSolverCache`](@ref)). Holds the
-[`FDCacheKey`](@ref) invalidation key, the constant [`FDMatrices`](@ref) (recovered params +
+[`FDCacheKey`](@ref) invalidation key, the constant [`FDMatrices`](@ref) (arc π params +
 factored B′ + assembled B″_full), the `pvpq`-invariant half-step buffers/index vectors (factored
 ONCE per `(data, scheme, backend)` lifetime), and a `Dict` of per-PQ-set [`FDPQData`](@ref) keyed on
 a bus-type signature. `bp_factor_count`/`bpp_factor_count` count B′ and B″ factorizations for
@@ -656,7 +656,7 @@ retrieval through the abstract `solver_cache` slot stays type-stable.
 
 # Fields
 - `key::FDCacheKey{S}`: invalidation key (network identity, scheme, backend).
-- `fd::FDMatrices{S}`: recovered params + factored B′ + B″_full.
+- `fd::FDMatrices{S}`: arc π params + factored B′ + B″_full.
 - `pvpq::Vector{Int}`: non-REF bus indices (`== fd.pvpq`).
 - `theta_x_idx::Vector{Int}`: `x`-indices of the θ state at `pvpq` (`2i`).
 - `p_row_idx::Vector{Int}`: `Rv`-indices of the P-mismatch rows at `pvpq` (`2i-1`).
