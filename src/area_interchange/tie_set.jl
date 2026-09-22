@@ -67,8 +67,8 @@ end
 # from/to — i.e. the SAME orientation `build_area_ties` resolves `fix`/`tix` from (both read
 # `PSY.get_from(arc)`/`PSY.get_to(arc)`), so `y11` lands at `fix` and `y22` at `tix` with no
 # separate bookkeeping. This is the corridor member's contribution to `AreaTie.diag_pollution`.
-function _primitive_diag(entry)
-    (y11, _, _, y22) = PNM.ybus_branch_entries(entry)
+function _primitive_diag(entry, nrd)
+    (y11, _, _, y22) = PNM.ybus_branch_entries(entry, nrd)
     return (ComplexF64(y11), ComplexF64(y22))
 end
 
@@ -356,7 +356,7 @@ function build_area_ties(
             tail_from = get(bus_area_map, fix, 0)
             tail_to = get(bus_area_map, tix, 0)
             tail_from == tail_to && continue
-            (y11, y22) = _primitive_diag(primitive_entry)
+            (y11, y22) = _primitive_diag(primitive_entry, nrd)
             push!(
                 candidates,
                 _TieCandidate(

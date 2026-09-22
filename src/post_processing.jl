@@ -475,7 +475,7 @@ function _set_series_interior_voltages!(
 end
 
 """
-    _segment_flow_entry(segment, V_from, V_to)
+    _segment_flow_entry(segment, V_from, V_to, nrd)
 
 Compute a `BranchFlowEntry` for a single segment given its endpoint voltages. Returns the
 from-to and to-from complex power flows, plus losses. For non-line segments, the
@@ -486,8 +486,9 @@ function _segment_flow_entry(
     segment::PSY.ACTransmission,
     V_from::ComplexF64,
     V_to::ComplexF64,
+    nrd::PNM.NetworkReductionData,
 )
-    (y11, y12, y21, y22) = PNM.ybus_branch_entries(segment)
+    (y11, y12, y21, y22) = PNM.ybus_branch_entries(segment, nrd)
     S_ft = V_from * conj(y11 * V_from + y12 * V_to)
     S_tf = V_to * conj(y21 * V_from + y22 * V_to)
     arc_tuple = PNM.get_arc_tuple(segment)
@@ -505,7 +506,7 @@ function _segment_flow_entry(
 end
 
 """
-    _segment_flow_entry(segment::PSY.Line, V_from, V_to)
+    _segment_flow_entry(segment::PSY.Line, V_from, V_to, nrd)
 
 Compute a `BranchFlowEntry` for a transmission line using its endpoint voltages.
 Terminal active and reactive powers use the complete line admittance model. Active
@@ -516,8 +517,9 @@ function _segment_flow_entry(
     segment::PSY.Line,
     V_from::ComplexF64,
     V_to::ComplexF64,
+    nrd::PNM.NetworkReductionData,
 )
-    (y11, y12, y21, y22) = PNM.ybus_branch_entries(segment)
+    (y11, y12, y21, y22) = PNM.ybus_branch_entries(segment, nrd)
     S_ft = V_from * conj(y11 * V_from + y12 * V_to)
     S_tf = V_to * conj(y21 * V_from + y22 * V_to)
     S_ft_series = V_from * conj(y12 * (V_to - V_from))
@@ -624,7 +626,7 @@ function _segment_group_flow_entries(
                 _segment_group_flow_entries(member, V_f, V_t, member_from, nrd),
             )
         else
-            push!(entries, _segment_flow_entry(member, V_f, V_t))
+            push!(entries, _segment_flow_entry(member, V_f, V_t, nrd))
         end
     end
     return entries
@@ -666,7 +668,7 @@ function _compute_segment_flows(
     time_step::Int,
 )
     (V_from, V_to) = _get_arc_endpoint_voltages(data, arc, time_step)
-    return [_segment_flow_entry(arc_entry, V_from, V_to)]
+    return [_segment_flow_entry(arc_entry, V_from, V_to, get_network_reduction_data(data))]
 end
 
 function _compute_segment_flows(
@@ -722,7 +724,7 @@ function _compute_segment_flows(
                 _segment_group_flow_entries(segment, V_from, V_to, segment_from, nrd),
             )
         else
-            push!(entries, _segment_flow_entry(segment, V_from, V_to))
+            push!(entries, _segment_flow_entry(segment, V_from, V_to, nrd))
         end
 
         prev_bus_no = current_bus_no
