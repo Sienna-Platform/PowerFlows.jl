@@ -4,6 +4,7 @@ function test_reduced_power_flow(
     nrs::Vector{PNM.NetworkReduction},
 )
     data = PF.PowerFlowData(pf, sys)
+    @test map(typeof, PF.get_network_reductions(pf)) == map(typeof, nrs)
     if pf isa PF.ACPowerFlow
         PF.solve_power_flow!(data; pf = pf)
     else
@@ -53,6 +54,7 @@ function validate_reduced_power_flow(
     unreduced_solved_data::PF.PowerFlowData,
 )
     data = PF.PowerFlowData(pf, sys)
+    @test map(typeof, PF.get_network_reductions(pf)) == map(typeof, nrs)
     if pf isa PF.ACPowerFlow
         PF.solve_power_flow!(data; pf = pf)
     else

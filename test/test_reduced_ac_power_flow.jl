@@ -9,6 +9,9 @@ const UNSUPPORTED =
         (PNM.WardReduction, PF.ACPowerFlow{PF.TrustRegionACPowerFlow}),
     ],
     )
+# PNM's radial reduction is exact only under the DC approximation; AC drops the leaf
+# branch's losses/Q and the radial bus's voltage regulation, so retained-bus results
+# aren't expected to match the unreduced solve (convergence-only check).
 const NOT_EQUIVALENT =
     Set(
         [
@@ -34,9 +37,12 @@ ac_reduction_types = Dict{String, Vector{PNM.NetworkReduction}}(
     unreduced = PF.PowerFlowData(pf_unreduced, sys)
     PF.solve_power_flow!(unreduced)
     @assert all(unreduced.converged)
-    pf = ACPowerFlow{PF.TrustRegionACPowerFlow}(; correct_bustypes = true)
     for (k, v) in ac_reduction_types
         isempty(v) && continue # no reduction at all.
+        pf = ACPowerFlow{PF.TrustRegionACPowerFlow}(;
+            correct_bustypes = true,
+            network_reductions = deepcopy(v),
+        )
         if any([(typeof(nr), typeof(pf)) in UNSUPPORTED for nr in v])
             @warn "Skipping unsupported combination"
             continue
@@ -54,9 +60,12 @@ end
 
 @testset "all reductions on psse_14_network_reduction_test_system" begin
     sys = PSB.build_system(PSSEParsingTestSystems, "psse_14_network_reduction_test_system")
-    pf = ACPowerFlow{PF.TrustRegionACPowerFlow}(; correct_bustypes = true)
 
     for (k, v) in ac_reduction_types
+        pf = ACPowerFlow{PF.TrustRegionACPowerFlow}(;
+            correct_bustypes = true,
+            network_reductions = deepcopy(v),
+        )
         if any([(typeof(nr), typeof(pf)) in UNSUPPORTED for nr in v])
             @warn "Skipping unsupported combination"
             continue
@@ -66,19 +75,6 @@ end
             @test all(result.converged)
         end
     end
-
-    # not yet implemented.
-    #=
-    @testset "ward reduction" begin
-        study_buses = [101, 114, 110, 111]
-        result = test_reduced_power_flow(
-            pf,
-            sys,
-            PNM.NetworkReduction[PNM.WardReduction(study_buses)],
-        )
-        @test all(result.converged) broken = true
-    end
-    =#
 end
 
 @testset "system + power flow solver calls" begin
