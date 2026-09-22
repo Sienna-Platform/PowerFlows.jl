@@ -2,28 +2,31 @@
 #
 # Builds the constant fast-decoupled Jacobian approximations B′ (active-power/angle) and
 # B″ (reactive-power/voltage) from the PowerFlowData network matrices. Everything here is a
-# pure function of (Ybus, arc-admittance matrices, bus types); nothing reads or mutates the
+# pure function of (Ybus, network reduction data, bus types); nothing reads or mutates the
 # per-iteration state, so the matrices can be assembled and factored once and reused across all
 # iterations and time steps.
 #
-# Conventions (verified against PowerNetworkMatrices ^0.23 on c_sys14 / WECC240):
+# Conventions:
 #
-#   * Per-arc π-model stamp (tap on the FROM side):
-#       yff = (ys + j·b_c/2) / |τ|²
+#   * Per-branch π-model parameters come straight from PowerNetworkMatrices as
+#     `PNM.EquivalentBranch` (`r`, `x`, from/to shunts, `tap`, `shift`), resolved per retained arc
+#     by `PNM.arc_equivalent_branches`. PNM owns the reduction bookkeeping, so a direct branch, a
+#     parallel group, a series chain and a Ward-added impedance all resolve through that one
+#     accessor. An arc yields more than one π branch only for a parallel group mixing phase-shift
+#     angles with impedance angles; B′/B″ are linear stamps, so each is stamped in turn.
+#
+#   * Ybus stamp for one π branch (tap on the FROM side, matching `PNM._pi_to_ybus`):
+#       yff = ys / |τ|² + y_fr
 #       yft = −ys / conj(τ)
 #       ytf = −ys / τ
-#       ytt =  ys + j·b_c/2
-#     with `Yft[a, f] = yff`, `Yft[a, t] = yft`, `Ytf[a, f] = ytf`, `Ytf[a, t] = ytt`
-#     (`Yft = arc_admittance_from_to`, `Ytf = arc_admittance_to_from`; row `a` is nonzero only
-#     at the from/to bus columns).
+#       ytt = ys + y_to
+#     with `ys = 1/(r + j·x)` and `τ = tap·e^{j·shift}`. The from/to shunts are independent and
+#     complex (they carry the real conductance), and the from shunt sits OUTSIDE the `1/|τ|²`.
 #
-#   * Recovery (algebraically exact, independent of any sign choice):
-#       |τ| = sqrt(real(ytt / yff)),  θτ = −angle(ytf / yft) / 2,  τ = |τ|·e^{jθτ},
-#       ys  = −yft · conj(τ),         b_c = 2·imag(ytt − ys).
-#     Per-bus shunt is taken as the residual against the *reconstructed* arc self-terms
-#     (`ysh_i = Ybus[i,i] − Σ reconstructed self-terms`), so `_restamp_ybus` is exact by
-#     construction even when a transformer carries a magnetizing admittance that PNM does not
-#     fold into the π-model `b_c` (validated on WECC240, rel err ≈ 1e-8 vs the ComplexF32 Ybus).
+#   * Per-bus shunt is taken as the residual against the reconstructed arc self-terms
+#     (`ysh_i = Ybus[i,i] − Σ self-terms`). The self-terms use PNM's own stamp, so the residual is
+#     the true bus shunt — fixed admittances plus anything a reduction folded onto the diagonal —
+#     and `_restamp_ybus` is exact by construction.
 #
 #   * Sign convention for B′/B″: they approximate the codebase's OWN Jacobian sub-blocks. On a
 #     lossless, shunt-free, nominal-tap network at flat start, B′ = (P-θ block)/V over pvpq and
@@ -39,33 +42,36 @@
 # largest series susceptance that Ybus can contain. Deriving it here (rather than hard-coding)
 # keeps the FD near-zero-reactance threshold from drifting away from PNM's definition. The cap is
 # applied ONLY in `_fd_series` (the `1/x` resistance-drop path, where a true x→0 would otherwise
-# blow up to Inf/NaN); the recovered `ys`/`b_c`/shunt and the restamp stay at their true values so
-# the restamp invariant holds exactly for every branch (incl. mostly-resistive near-zero-x ones).
+# blow up to Inf/NaN); the π parameters and the restamp stay at their true values so the restamp
+# invariant holds exactly for every branch (incl. mostly-resistive near-zero-x ones).
 const FD_INV_X_CAP = 1 / PNM.ZERO_IMPEDANCE_X_EPSILON  # = 1e6
-const FD_TAU_FLOOR = 1e-8       # |τ| floor guarding the ytt/yff ratio
 
 """
-    FDRecoveredParams
+    FDArcParams
 
-Per-arc π-model parameters recovered from the PowerNetworkMatrices arc-admittance matrices,
-plus per-bus shunt admittances. Promoted to `ComplexF64` from the stored `ComplexF32`.
+Per-branch π-model parameters read from PowerNetworkMatrices' `EquivalentBranch`, plus per-bus
+shunt admittances. One entry per π branch: an arc contributes more than one only when a parallel
+group has no single-π equivalent.
 
 # Fields
 - `nbus::Int`: number of buses (Ybus dimension).
-- `from::Vector{Int}` / `to::Vector{Int}`: per-arc from/to bus row indices (Ybus order).
-- `tau::Vector{ComplexF64}`: per-arc complex tap ratio `τ = |τ|·e^{jθτ}` (tap on the from side).
-- `ys::Vector{ComplexF64}`: per-arc series admittance.
-- `bc::Vector{Float64}`: per-arc total line charging `b_c` (sum of both π half-shunts).
+- `from::Vector{Int}` / `to::Vector{Int}`: from/to bus row indices (Ybus order).
+- `tau::Vector{ComplexF64}`: complex tap ratio `τ = tap·e^{j·shift}` (tap on the from side).
+- `ys::Vector{ComplexF64}`: series admittance `1/(r + j·x)`.
+- `x::Vector{Float64}`: series reactance, kept alongside `ys` for the resistance-drop stamp.
+- `y_fr::Vector{ComplexF64}` / `y_to::Vector{ComplexF64}`: from/to π shunt admittances.
 - `shunt::Vector{ComplexF64}`: per-bus shunt admittance (residual of `Ybus[i,i]` minus the
   reconstructed incident arc self-terms).
 """
-struct FDRecoveredParams
+struct FDArcParams
     nbus::Int
     from::Vector{Int}
     to::Vector{Int}
     tau::Vector{ComplexF64}
     ys::Vector{ComplexF64}
-    bc::Vector{Float64}
+    x::Vector{Float64}
+    y_fr::Vector{ComplexF64}
+    y_to::Vector{ComplexF64}
     shunt::Vector{ComplexF64}
 end
 
@@ -77,7 +83,7 @@ scheme type `S` so `scheme` is a concretely-typed field.
 
 # Fields
 - `scheme::S`: the B′/B″ scheme instance, [`FDSchemeXB`](@ref) or [`FDSchemeBX`](@ref).
-- `recovered::FDRecoveredParams`: cached arc/shunt recovery (shared by B′ and B″_full).
+- `arc_params::FDArcParams`: cached arc π params + bus shunts (shared by B′ and B″_full).
 - `pvpq::Vector{Int}`: non-REF bus indices (rows/cols of B′), sorted.
 - `bp::SparseMatrixCSC{Float64, J_INDEX_TYPE}`: B′ over `pvpq` (assembled; symmetric except with
   phase shifters).
@@ -87,7 +93,7 @@ scheme type `S` so `scheme` is a concretely-typed field.
 """
 struct FDMatrices{S <: FDScheme}
     scheme::S
-    recovered::FDRecoveredParams
+    arc_params::FDArcParams
     pvpq::Vector{Int}
     bp::SparseMatrixCSC{Float64, J_INDEX_TYPE}
     bp_cache::PFLinearSolverCache
@@ -118,69 +124,65 @@ get_bp_matrix(fd::FDMatrices) = fd.bp
 get_bpp_matrix(c::FDBppCache) = c.bpp
 
 # -------------------------------------------------------------------------------------------
-# Per-arc parameter recovery
+# Per-arc parameters
 # -------------------------------------------------------------------------------------------
 
 """
-    _recover_arc_params(data::ACPowerFlowData) -> FDRecoveredParams
+    _arc_params(data::ACPowerFlowData) -> FDArcParams
 
-Recover per-arc π-model parameters (`τ`, `ys`, `b_c`) and per-bus shunt admittances from the
-PowerNetworkMatrices arc-admittance matrices and the Ybus diagonal. See the file header for the
-stamp/recovery conventions. Guards `|τ| ≥ FD_TAU_FLOOR` and NaN/Inf. Recovered `ys`/`b_c`/shunt
-are left at their true values (the near-zero-reactance cap lives in `_fd_series`, applied only on
-the resistance-drop stamp path), so the restamp invariant holds exactly for every branch.
+Read per-branch π-model parameters from PowerNetworkMatrices and take the per-bus shunts as the
+residual against the reconstructed arc self-terms. See the file header for the stamp convention.
+The near-zero-reactance cap lives in `_fd_series`, applied only on the resistance-drop stamp
+path, so these parameters and the restamp stay at their true values.
 """
-function _recover_arc_params(data::ACPowerFlowData)
-    Yb = data.power_network_matrix.data
-    Yft = data.power_network_matrix.arc_admittance_from_to
-    Ytf = data.power_network_matrix.arc_admittance_to_from
+function _arc_params(data::ACPowerFlowData)
+    ybus = get_power_network_matrix(data)
+    Yb = ybus.data
+    nrd = PNM.get_network_reduction_data(ybus)
     bus_lookup = get_bus_lookup(data)
-    arcs = PNM.get_arc_axis(Yft)
-    Yft_d = Yft.data
-    Ytf_d = Ytf.data
+    arcs = PNM.get_arc_axis(nrd)
     nbus = size(Yb, 1)
+
+    # One π branch per arc is the rule; only a parallel group that mixes phase-shift angles with
+    # impedance angles emits more, so `length(arcs)` sizes these exactly on every ordinary
+    # network and is a lower bound otherwise.
     narc = length(arcs)
+    from = Int[]
+    to = Int[]
+    tau = ComplexF64[]
+    ys = ComplexF64[]
+    xs = Float64[]
+    y_fr = ComplexF64[]
+    y_to = ComplexF64[]
+    for v in (from, to, tau, ys, xs, y_fr, y_to)
+        sizehint!(v, narc)
+    end
 
-    from = Vector{Int}(undef, narc)
-    to = Vector{Int}(undef, narc)
-    tau = Vector{ComplexF64}(undef, narc)
-    ys = Vector{ComplexF64}(undef, narc)
-    bc = Vector{Float64}(undef, narc)
-
-    # Self-terms reconstructed from the recovered params, used to back out the per-bus shunt.
+    # Self-terms, used to back out the per-bus shunt; must match `_restamp_ybus` exactly.
     self_acc = zeros(ComplexF64, nbus)
 
-    for (a, arc) in enumerate(arcs)
+    for arc in arcs
         f = bus_lookup[first(arc)]
         t = bus_lookup[last(arc)]
-        yff = ComplexF64(Yft_d[a, f])
-        yft = ComplexF64(Yft_d[a, t])
-        ytf = ComplexF64(Ytf_d[a, f])
-        ytt = ComplexF64(Ytf_d[a, t])
+        for eb in PNM.arc_equivalent_branches(nrd, arc)
+            x_b = PNM.get_equivalent_x(eb)
+            ys_b = 1 / complex(PNM.get_equivalent_r(eb), x_b)
+            τ = PNM.get_equivalent_tap(eb) * cis(PNM.get_equivalent_shift(eb))
+            yfr_b =
+                complex(PNM.get_equivalent_g_from(eb), PNM.get_equivalent_b_from(eb))
+            yto_b = complex(PNM.get_equivalent_g_to(eb), PNM.get_equivalent_b_to(eb))
 
-        τmag = sqrt(max(real(ytt / yff), FD_TAU_FLOOR^2))
-        (isfinite(τmag) && τmag >= FD_TAU_FLOOR) || (τmag = 1.0)
-        θτ = -angle(ytf / yft) / 2
-        isfinite(θτ) || (θτ = 0.0)
-        τ = τmag * cis(θτ)
-        ys_a = -yft * conj(τ)
-        if !isfinite(ys_a)
-            @debug "FDNR arc recovery: non-finite ys on arc $a ($(first(arc))→$(last(arc)))"
-            ys_a = ComplexF64(yff)
+            push!(from, f)
+            push!(to, t)
+            push!(tau, τ)
+            push!(ys, ys_b)
+            push!(xs, x_b)
+            push!(y_fr, yfr_b)
+            push!(y_to, yto_b)
+
+            self_acc[f] += ys_b / abs2(τ) + yfr_b
+            self_acc[t] += ys_b + yto_b
         end
-        bc_a = 2 * imag(ytt - ys_a)
-        isfinite(bc_a) || (bc_a = 0.0)
-
-        from[a] = f
-        to[a] = t
-        tau[a] = τ
-        ys[a] = ys_a
-        bc[a] = bc_a
-
-        # Reconstructed self terms (must match the restamp formula exactly so the shunt residual
-        # absorbs everything the π-model can't represent).
-        self_acc[f] += (ys_a + im * bc_a / 2) / abs2(τ)
-        self_acc[t] += ys_a + im * bc_a / 2
     end
 
     shunt = Vector{ComplexF64}(undef, nbus)
@@ -188,7 +190,7 @@ function _recover_arc_params(data::ACPowerFlowData)
         shunt[i] = ComplexF64(Yb[i, i]) - self_acc[i]
     end
 
-    return FDRecoveredParams(nbus, from, to, tau, ys, bc, shunt)
+    return FDArcParams(nbus, from, to, tau, ys, xs, y_fr, y_to, shunt)
 end
 
 # -------------------------------------------------------------------------------------------
@@ -196,12 +198,12 @@ end
 # -------------------------------------------------------------------------------------------
 
 """
-    _restamp_ybus(p::FDRecoveredParams) -> SparseMatrixCSC{ComplexF64, Int}
+    _restamp_ybus(p::FDArcParams) -> SparseMatrixCSC{ComplexF64, Int}
 
-Rebuild the full Ybus from recovered π-model parameters plus per-bus shunts. Used by the WP1
+Rebuild the full Ybus from the π-model parameters plus per-bus shunts. Used by the WP1
 restamp-reconstruction tests; should match the original Ybus within ComplexF32 noise.
 """
-function _restamp_ybus(p::FDRecoveredParams)
+function _restamp_ybus(p::FDArcParams)
     I = Int[]
     J = Int[]
     V = ComplexF64[]
@@ -210,13 +212,12 @@ function _restamp_ybus(p::FDRecoveredParams)
         t = p.to[a]
         τ = p.tau[a]
         ys = p.ys[a]
-        half = im * p.bc[a] / 2
         push!(I, f)
         push!(J, f)
-        push!(V, (ys + half) / abs2(τ))
+        push!(V, ys / abs2(τ) + p.y_fr[a])
         push!(I, t)
         push!(J, t)
-        push!(V, ys + half)
+        push!(V, ys + p.y_to[a])
         push!(I, f)
         push!(J, t)
         push!(V, -ys / conj(τ))
@@ -237,16 +238,15 @@ end
 # -------------------------------------------------------------------------------------------
 
 # Series admittance for the B′/B″ stamp. When `drop_resistance` is set the branch resistance is
-# neglected (ys → 1/(j·x), x = imag(1/ys)), else the full ys is kept. The resistance-neglect side
-# differs by scheme: B′ drops it under XB, B″ drops it under BX (MATPOWER makeB).
+# neglected (ys → 1/(j·x)), else the full ys is kept. The resistance-neglect side differs by
+# scheme: B′ drops it under XB, B″ drops it under BX (MATPOWER makeB).
 #
-# The cap lives here (not in `_recover_arc_params`) so it touches ONLY the resistance-drop path: a
-# branch with |x| below PNM's reactance floor (incl. a true x=0, where `1/(j·x)` would be Inf/NaN)
-# has its `1/x` clamped to `FD_INV_X_CAP`, sign preserved for series capacitors. The full-`ys`
-# branch and the recovered params/restamp are left untouched.
-@inline function _fd_series(ys::ComplexF64, drop_resistance::Bool)
+# The cap lives here (not in `_arc_params`) so it touches ONLY the resistance-drop path: a branch
+# with |x| below PNM's reactance floor (incl. a true x=0, where `1/(j·x)` would be Inf/NaN) has
+# its `1/x` clamped to `FD_INV_X_CAP`, sign preserved for series capacitors. The full-`ys` branch
+# and the π params/restamp are left untouched.
+@inline function _fd_series(ys::ComplexF64, x::Float64, drop_resistance::Bool)
     drop_resistance || return ys
-    x = imag(1 / ys)
     if abs(x) < 1 / FD_INV_X_CAP
         x = ifelse(x == 0, one(x), sign(x)) / FD_INV_X_CAP
     end
@@ -261,14 +261,14 @@ _bpp_drops_resistance(::FDSchemeXB) = false
 _bpp_drops_resistance(::FDSchemeBX) = true
 
 """
-    _assemble_bp_full(p::FDRecoveredParams, scheme::Symbol)
+    _assemble_bp_full(p::FDArcParams, scheme::FDScheme)
         -> SparseMatrixCSC{Float64, J_INDEX_TYPE}
 
-Assemble the full-bus B′ matrix `−imag(Ybus_temp)`, where `Ybus_temp` is stamped with `b_c = 0`,
-bus shunts = 0, `|τ| = 1` (phase shift retained → mildly unsymmetric only with phase shifters).
-The REF rows/cols are removed later by the `pvpq` restriction.
+Assemble the full-bus B′ matrix `−imag(Ybus_temp)`, where `Ybus_temp` is stamped with branch and
+bus shunts = 0 and `|τ| = 1` (phase shift retained → mildly unsymmetric only with phase
+shifters). The REF rows/cols are removed later by the `pvpq` restriction.
 """
-function _assemble_bp_full(p::FDRecoveredParams, scheme::FDScheme)
+function _assemble_bp_full(p::FDArcParams, scheme::FDScheme)
     n = p.nbus
     I = J_INDEX_TYPE[]
     Jc = J_INDEX_TYPE[]
@@ -277,9 +277,10 @@ function _assemble_bp_full(p::FDRecoveredParams, scheme::FDScheme)
     for a in eachindex(p.from)
         f = p.from[a]
         t = p.to[a]
-        ys = _fd_series(p.ys[a], _bp_drops_resistance(scheme))   # B′: XB neglects resistance
+        # B′: XB neglects resistance
+        ys = _fd_series(p.ys[a], p.x[a], _bp_drops_resistance(scheme))
         phase = cis(angle(p.tau[a]))   # |τ| = 1, retain phase shift
-        # b_c = 0, shunt = 0:  yff = ys, ytt = ys, yft = −ys/conj(phase), ytf = −ys/phase.
+        # shunts = 0:  yff = ys, ytt = ys, yft = −ys/conj(phase), ytf = −ys/phase.
         b_ff = -imag(ys)
         b_tt = -imag(ys)
         b_ft = -imag(-ys / conj(phase))
@@ -302,14 +303,14 @@ function _assemble_bp_full(p::FDRecoveredParams, scheme::FDScheme)
 end
 
 """
-    _assemble_bpp_full(p::FDRecoveredParams, scheme::Symbol)
+    _assemble_bpp_full(p::FDArcParams, scheme::FDScheme)
         -> SparseMatrixCSC{Float64, J_INDEX_TYPE}
 
 Assemble the full-bus B″ matrix `−imag(Ybus_temp)`, where `Ybus_temp` is stamped with phase
-shift = 0 (`|τ|` retained), and `b_c` + bus shunts INCLUDED. The `[pq, pq]` submatrix is
+shift = 0 (`|τ|` retained), and branch + bus shunts INCLUDED. The `[pq, pq]` submatrix is
 extracted per driver invocation by [`extract_bpp`](@ref).
 """
-function _assemble_bpp_full(p::FDRecoveredParams, scheme::FDScheme)
+function _assemble_bpp_full(p::FDArcParams, scheme::FDScheme)
     n = p.nbus
     I = J_INDEX_TYPE[]
     Jc = J_INDEX_TYPE[]
@@ -318,12 +319,12 @@ function _assemble_bpp_full(p::FDRecoveredParams, scheme::FDScheme)
     for a in eachindex(p.from)
         f = p.from[a]
         t = p.to[a]
-        ys = _fd_series(p.ys[a], _bpp_drops_resistance(scheme))   # B″: BX neglects resistance
+        # B″: BX neglects resistance
+        ys = _fd_series(p.ys[a], p.x[a], _bpp_drops_resistance(scheme))
         τmag = abs(p.tau[a])      # retain magnitude, drop phase shift
-        half = im * p.bc[a] / 2
-        # yff = (ys + j b_c/2)/|τ|², ytt = ys + j b_c/2, yft = ytf = −ys/|τ| (real tap, no phase).
-        yff = (ys + half) / τmag^2
-        ytt = ys + half
+        # yff = ys/|τ|² + y_fr, ytt = ys + y_to, yft = ytf = −ys/|τ| (real tap, no phase).
+        yff = ys / τmag^2 + p.y_fr[a]
+        ytt = ys + p.y_to[a]
         yoff = -ys / τmag
         diag[f] += -imag(yff)
         diag[t] += -imag(ytt)
@@ -351,17 +352,17 @@ end
 # -------------------------------------------------------------------------------------------
 
 """
-    _warn_low_reactance(p::FDRecoveredParams)
+    _warn_low_reactance(p::FDArcParams)
 
-Warn (once) if any recovered branch reactance `|x| = |imag(1/ys)|` is below
-[`FD_LOW_REACTANCE_WARNING`](@ref): such super-low reactances make the B′/B″ decoupling
-ill-conditioned, so the `:decoupled` variant converges only at a slow linear rate. The
-`:fixed_jacobian` variant and the Newton family are unaffected.
+Warn (once) if any branch reactance `|x|` is below [`FD_LOW_REACTANCE_WARNING`](@ref): such
+super-low reactances make the B′/B″ decoupling ill-conditioned, so the `:decoupled` variant
+converges only at a slow linear rate. The `:fixed_jacobian` variant and the Newton family are
+unaffected.
 """
-function _warn_low_reactance(p::FDRecoveredParams)
+function _warn_low_reactance(p::FDArcParams)
     min_x = Inf
-    @inbounds for ys in p.ys
-        x = abs(imag(1 / ys))
+    @inbounds for x_b in p.x
+        x = abs(x_b)
         x < min_x && (min_x = x)
     end
     if min_x < FD_LOW_REACTANCE_WARNING
@@ -381,7 +382,7 @@ end
 Build the constant fast-decoupled matrices for the given `scheme` ([`FDSchemeXB`](@ref) or
 [`FDSchemeBX`](@ref)):
 
-  * recover per-arc params + per-bus shunts (cached on the result),
+  * read per-arc π params + per-bus shunts (cached on the result),
   * assemble B′ over the non-REF (`pvpq`) buses for `time_step`'s bus types and factor it once,
   * assemble the full-bus B″ (the `[pq, pq]` submatrix is extracted later via `extract_bpp`).
 
@@ -395,12 +396,12 @@ function build_fd_matrices(
     scheme::FDScheme;
     linear_solver = nothing,
 )
-    recovered = _recover_arc_params(data)
-    _warn_low_reactance(recovered)
+    arc_params = _arc_params(data)
+    _warn_low_reactance(arc_params)
     ref, pv, pq = bus_type_idx(data, time_step)
     pvpq = sort(vcat(pv, pq))
 
-    bp_full = _assemble_bp_full(recovered, scheme)
+    bp_full = _assemble_bp_full(arc_params, scheme)
     bp = bp_full[pvpq, pvpq]
     backend = resolve_linear_solver_backend(linear_solver)
     bp_cache = make_linear_solver_cache(backend, bp)
@@ -409,8 +410,8 @@ function build_fd_matrices(
     # system errors in the sparse backends (AppleAccelerate: "columnCount must be > 0").
     isempty(pvpq) || full_factor!(bp_cache, bp)
 
-    bpp_full = _assemble_bpp_full(recovered, scheme)
-    return FDMatrices(scheme, recovered, pvpq, bp, bp_cache, bpp_full)
+    bpp_full = _assemble_bpp_full(arc_params, scheme)
+    return FDMatrices(scheme, arc_params, pvpq, bp, bp_cache, bpp_full)
 end
 
 """

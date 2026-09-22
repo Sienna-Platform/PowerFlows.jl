@@ -108,6 +108,7 @@ function _oracle_accumulate(
     sums,
     bus_lookup,
     reverse_bus_search_map,
+    nrd,
     tie::PF.AreaTie,
     arc,
     primitive_entry,
@@ -117,7 +118,7 @@ function _oracle_accumulate(
     tix = PF._resolve_bus_ix(
         bus_lookup, reverse_bus_search_map, PSY.get_number(PSY.get_to(arc)))
     (isnothing(fix) || isnothing(tix)) && return sums
-    (y11, y12, y21, y22) = PNM.ybus_branch_entries(primitive_entry)
+    (y11, y12, y21, y22) = PNM.ybus_branch_entries(primitive_entry, nrd)
     (s11, s12, s21, s22) = sums
     fix == tie.from_bus_ix && tix == tie.to_bus_ix &&
         return (s11 + y11, s12 + y12, s21 + y21, s22 + y22)
@@ -141,6 +142,7 @@ function _oracle_tie_metered_power(sys, data, tie::PF.AreaTie, time_step::Int)
                 sums,
                 bus_lookup,
                 reverse_bus_search_map,
+                nrd,
                 tie,
                 arc,
                 primitive_entry,

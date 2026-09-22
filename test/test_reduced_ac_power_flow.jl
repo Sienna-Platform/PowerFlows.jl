@@ -1,3 +1,8 @@
+# Select three-winding windings out of the merged direct branch map by dispatch; the house
+# rule forbids an `isa` gate even in tests.
+_is_3wt_winding(::PNM.ThreeWindingTransformerCircuit) = true
+_is_3wt_winding(::PSY.ACTransmission) = false
+
 const UNSUPPORTED =
     Set(
         [
@@ -106,12 +111,11 @@ end
                 test_trf =
                     first(collect(PSY.get_components(PSY.ThreeWindingTransformer, sys)))
                 trf_arc_flows = zeros(ComplexF32, 3)
-                # 3WT circuits share the direct branch map with ordinary branches; select the
-                # per-type bucket rather than filtering the merged map.
-                for (arc, winding) in PNM.get_typed_direct_branch_map(
-                    PNM.get_all_branch_maps_by_type(temp_catalog),
-                    PSY.ThreeWindingTransformer,
-                )
+                # 3WT circuits share the direct branch map with ordinary branches, so gate on
+                # a dispatched predicate rather than a type check.
+                for (arc, winding) in
+                    PNM.get_direct_branch_map(PNM.get_network_reduction_data(temp_catalog))
+                    _is_3wt_winding(winding) || continue
                     PNM.get_transformer(winding) !== test_trf && continue
                     wnum = PNM.get_winding_number(winding)
                     ix =
