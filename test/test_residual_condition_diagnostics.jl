@@ -174,6 +174,225 @@ end
     end
 end
 
+# ---------------------------------------------------------------------------
+# Bordered fold monitor: g = 1/(d − cᵀJ⁻¹b) = det(J)/det(M).
+# ---------------------------------------------------------------------------
+
+# A one-parameter family of Jacobians with a KNOWN singularity, on a single fixed
+# sparsity pattern (so the sweep is a pure numeric refactor, as in a solver loop).
+# det is AFFINE in one diagonal entry, so sweeping A[1,1] crosses zero exactly once
+# and the crossing point is recoverable from two samples.
+function _singular_matrix_family(; backend = PNM.KLUSolver())
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14")
+    pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(; correct_bustypes = true)
+    data = PF.PowerFlowData(pf, sys)
+    residual = PF.ACPowerFlowResidual(data, 1)
+    jac = PF.ACPowerFlowJacobian(residual, 1)
+    x0 = PF.calculate_x0(data, 1)
+    residual(x0, 1)
+    jac(1)
+
+    n = size(jac.Jv, 1)
+    # An odd shift keeps every diagonal entry structurally stored (a cancelling
+    # sum would be pruned, and the pattern must not change across the sweep).
+    shift = 0.3141592653589793
+    A = jac.Jv + shift * SparseArrays.sparse(LinearAlgebra.I, n, n)
+    dptr = [
+        only(filter(k -> A.rowval[k] == i, A.colptr[i]:(A.colptr[i + 1] - 1)))
+        for i in 1:n
+    ]
+    for i in 1:n
+        A.nzval[dptr[i]] -= shift
+    end
+    diag_11 = A.nzval[dptr[1]]
+    set_t! = t -> (A.nzval[dptr[1]] = diag_11 + t)
+
+    cache = PF.make_linear_solver_cache(backend, A)
+    PF.symbolic_factor!(cache, A)
+    g_at = function (t)
+        set_t!(t)
+        PF.numeric_refactor!(cache, A)
+        return A, cache
+    end
+    set_t!(0.0)
+    d0 = LinearAlgebra.det(Matrix(A))
+    set_t!(1.0)
+    d1 = LinearAlgebra.det(Matrix(A))
+    return (; A, n, cache, set_t!, g_at, t_star = d0 / (d0 - d1))
+end
+
+@testset "bordering vectors are deterministic, normalized and independent" begin
+    # Reproducible logs depend on the bordering being identical run to run, and the
+    # zero-vs-pole test depends on the borderings not being the same vector.
+    v1, v2, v3 = (Vector{Float64}(undef, 64) for _ in 1:3)
+    PF._fill_border_vector!(v1, 3)
+    PF._fill_border_vector!(v2, 3)
+    PF._fill_border_vector!(v3, 4)
+    @test v1 == v2                       # same index, same vector
+    @test v1 != v3                       # different index, different vector
+    @test isapprox(LinearAlgebra.norm(v1), 1.0; atol = 1e-12)
+    @test all(isfinite, v1)
+
+    # The monitor's own slots must differ from each other.
+    mon = PF.BorderedFoldMonitor(64)
+    @test length(mon.b) == PF.FOLD_N_BORDERINGS >= 2
+    @test allunique(mon.b)
+    @test allunique(mon.c)
+end
+
+@testset "sign(g) tracks sign(det J) across a singularity" begin
+    fam = _singular_matrix_family()
+    mon = PF.BorderedFoldMonitor(fam.n)
+    # A window tight around the singularity, so the sweep contains the zero and no
+    # pole; the exact crossing itself is skipped (det = 0 there, g = NaN).
+    ts = [
+        t for t in range(fam.t_star - 0.3, fam.t_star + 0.3; length = 21)
+        if abs(t - fam.t_star) > 1e-12
+    ]
+    offsets = Int[]
+    signs_g, signs_d = Int[], Int[]
+    for t in ts
+        _, cache = fam.g_at(t)
+        g = PF._fold_monitor_value!(mon, cache)
+        d = LinearAlgebra.det(Matrix(fam.A))
+        @test isfinite(g)
+        push!(signs_g, Int(sign(g)))
+        push!(signs_d, Int(sign(d)))
+        push!(offsets, Int(sign(g) * sign(d)))
+    end
+    # det J and g each flip signs once in the interval
+    @test count(i -> signs_g[i] != signs_g[i - 1], 2:length(signs_g)) == 1
+    @test count(i -> signs_d[i] != signs_d[i - 1], 2:length(signs_d)) == 1
+    # one flips signs exactly when the other flips signs.
+    @test length(unique(offsets)) == 1
+end
+
+@testset "a flip on every bordering is a fold" begin
+    # Independent borderings agree only when det J itself crossed zero.
+    mon = PF.BorderedFoldMonitor(8)
+    tl = Test.TestLogger(; min_level = Logging.Warn)
+    bailed = Logging.with_logger(tl) do
+        PF._decide_det_sign_switch!(mon, "t1", [1.0, 1.0], true)   # first signs
+        PF._decide_det_sign_switch!(mon, "t2", [-1.0, -1.0], true) # both flip
+    end
+    @test bailed
+    @test any(m -> occursin("sign(det J) flipped on all", m), [r.message for r in tl.logs])
+
+    # `bail = false` classifies and logs identically but never aborts.
+    mon2 = PF.BorderedFoldMonitor(8)
+    Logging.with_logger(Logging.NullLogger()) do
+        PF._decide_det_sign_switch!(mon2, "t1", [1.0, 1.0], false)
+        @test !PF._decide_det_sign_switch!(mon2, "t2", [-1.0, -1.0], false)
+    end
+end
+
+@testset "a lone flip is a degenerate bordering, not a fold" begin
+    # Only det(M) of that one bordering crossed zero: re-pick it, never cry fold.
+    mon = PF.BorderedFoldMonitor(8)
+    b1_first = copy(mon.b[1])
+    bailed = Logging.with_logger(Logging.NullLogger()) do
+        PF._decide_det_sign_switch!(mon, "t1", [1.0, 1.0], true)
+        PF._decide_det_sign_switch!(mon, "t2", [-1.0, 1.0], true)
+    end
+    @test !bailed
+    @test mon.b[1] != b1_first           # the flipping bordering was re-picked
+    @test mon.signs[1] == 0              # and its sign history forgotten
+    @test mon.signs[2] == 1              # the other one is untouched
+    @test mon.enabled
+end
+
+@testset "a non-finite g re-picks that bordering; all non-finite is a fold" begin
+    mon = PF.BorderedFoldMonitor(8)
+    b1_first = copy(mon.b[1])
+    bailed = Logging.with_logger(Logging.NullLogger()) do
+        PF._decide_det_sign_switch!(mon, "t1", [Inf, 1.0], true)
+    end
+    @test !bailed                        # the live bordering still covers it
+    @test mon.b[1] != b1_first
+
+    mon2 = PF.BorderedFoldMonitor(8)
+    tl = Test.TestLogger(; min_level = Logging.Warn)
+    bailed2 = Logging.with_logger(tl) do
+        PF._decide_det_sign_switch!(mon2, "t1", [NaN, NaN], true)
+    end
+    @test bailed2                        # nothing left to see with: bail
+    @test any(m -> occursin("every fold-monitor bordering is degenerate", m),
+        [r.message for r in tl.logs])
+end
+
+@testset "repeated bordering poles disable the monitor rather than cry fold" begin
+    mon = PF.BorderedFoldMonitor(8)
+    b_first = copy(mon.b[1])
+    @test mon.enabled
+    for _ in 1:(PF.FOLD_MAX_BORDER_REPICKS)
+        Logging.with_logger(Logging.NullLogger()) do
+            PF._handle_border_pole!(mon, "test", 1)
+        end
+    end
+    @test mon.enabled                    # still re-picking
+    @test mon.b[1] != b_first            # with a genuinely different bordering
+    Logging.with_logger(Logging.NullLogger()) do
+        PF._handle_border_pole!(mon, "test", 1)
+    end
+    @test !mon.enabled                   # gives up instead of reporting a fold
+    # A disabled monitor never bails, whatever it is fed.
+    @test !PF._decide_det_sign_switch!(mon, "test", [-1.0, -1.0], true)
+end
+
+@testset "the monitor line reports sign(det J)" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14")
+    pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(; correct_bustypes = true,
+        log_solver_diagnostics = true, solver_settings = _KLU_SETTINGS)
+    lines = _solver_diagnostic_lines(pf, sys)
+    @test length(lines) >= 2
+    for line in lines
+        @test occursin(r"sign\(det J\) = [+−]", line)
+    end
+end
+
+@testset "stop_at_fold aborts on a stressed system with a det-sign warning" begin
+    # c_sys14 with every load scaled well past the nose: the solve must not report
+    # convergence, and must say WHY in terms of sign(det J).
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14")
+    pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(; correct_bustypes = true,
+        solver_settings = Dict{Symbol, Any}(
+            :linear_solver => "KLU", :stop_at_fold => true))
+    data = PF.PowerFlowData(pf, sys)
+    data.bus_active_power_withdrawals .*= 6.0
+    data.bus_reactive_power_withdrawals .*= 6.0
+    tl = Test.TestLogger(; min_level = Logging.Warn)
+    converged = Logging.with_logger(tl) do
+        solve_power_flow!(data)
+    end
+    @test !converged
+    msgs = [r.message for r in tl.logs]
+    @test any(m -> occursin("sign(det J) flipped", m), msgs)
+    @test any(m -> occursin("Fold / voltage-collapse signature", m), msgs)
+end
+
+@testset "diagnostics never perturb the solve" begin
+    # The monitor only back-solves against the existing factorization, so the iterates
+    # must stay bit-identical to a solve with the fold bail-out off.
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14")
+    function final_state(; stop_at_fold, scale, maxiter)
+        pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(; correct_bustypes = true,
+            solver_settings = Dict{Symbol, Any}(:linear_solver => "KLU",
+                :stop_at_fold => stop_at_fold, :maxIterations => maxiter))
+        data = PF.PowerFlowData(pf, sys)
+        data.bus_active_power_withdrawals .*= scale
+        data.bus_reactive_power_withdrawals .*= scale
+        Logging.with_logger(Logging.NullLogger()) do
+            solve_power_flow!(data)
+        end
+        return vcat(vec(copy(data.bus_magnitude)), vec(copy(data.bus_angles)))
+    end
+    for scale in (3.0, 6.0, 12.0), maxiter in (2, 7)
+        off = final_state(; stop_at_fold = false, scale, maxiter)
+        on = final_state(; stop_at_fold = true, scale, maxiter)
+        @test isequal(off, on)           # `isequal` so NaN == NaN on aborted solves
+    end
+end
+
 # Residual-entry labelling. Only the leading 2·n_bus rows are bus quantities; the rest is the
 # LCC, VSC and area-interchange tail, in that order.
 

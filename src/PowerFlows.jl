@@ -48,7 +48,7 @@ import DataFrames: Not
 import PowerSystems as PSY
 import PowerSystems: System
 import LinearAlgebra
-import LinearAlgebra: norm, dot, ldiv!, mul!
+import LinearAlgebra: norm, normalize!, dot, ldiv!, mul!
 import JSON3
 import SparseArrays
 import InfrastructureSystems as IS

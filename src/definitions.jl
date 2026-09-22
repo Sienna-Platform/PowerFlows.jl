@@ -191,3 +191,16 @@ IS.@scoped_enum(
   - ARC_FLOWS = 0: Report total flows corresponding to arcs.
   - BRANCH_FLOWS = 1: Report flows for individual branches.
  " FlowReporting
+
+# Bordered fold monitor (`stop_at_fold`, see `residual_condition_diagnostics.jl`).
+# The monitor is g = 1/(d − cᵀJ⁻¹b) = det(J)/det(M) for the bordered matrix
+# M = [J b; cᵀ d]; sign(g) tracks sign(det J) up to the constant sign(det M).
+const FOLD_BORDER_D = 0.0 # the (n+1, n+1) entry `d` of the bordering
+const FOLD_MAX_BORDER_REPICKS = 3 # re-picks of (b, c) after a degenerate (pole) event
+# det J = 0 flips sign(g) on every bordering at the same step, while a degenerate
+# bordering (det M = 0) flips only its own. Two is enough to tell those apart; each
+# costs one back-solve per iteration.
+const FOLD_N_BORDERINGS = 2
+# Stride of the deterministic bordering vectors: v[i] = sin(i * k * stride). Irrational
+# so the samples never fall into a short cycle, whatever the state size.
+const FOLD_BORDER_STRIDE = 0.7390851332151607
