@@ -1,29 +1,16 @@
 #=
 Flow reporting for reduction aggregates that contain other reduction aggregates.
 
-`DegreeTwoReduction` deliberately builds two nested shapes (PNM `degree_two_reduction.jl`,
-and PNM's own `test_nested_reduction_aggregates.jl`):
+`DegreeTwoReduction` builds three nested shapes (PNM `degree_two_reduction.jl`, and PNM's own
+`test_nested_reduction_aggregates.jl`):
 
   - a parallel group as a chain segment -- `BranchesSeries` holding a `BranchesParallel`
   - sibling chains in parallel          -- `BranchesParallel{BranchesSeries}`
+  - both at once                        -- a `BranchesParallel{BranchesSeries}` whose chains
+    themselves carry a parallel segment
 
-and the two compose, giving a `BranchesParallel{BranchesSeries}` whose chains themselves
-carry a parallel segment.
-
-PowerFlows expands an aggregate arc back to its physical branches in two places, and both
-descend only into the first shape:
-
-  - AC:  `_compute_segment_flows` (`post_processing.jl`), which special-cases
-    `segment isa AbstractBranchesParallel` inside the `BranchesSeries` method but hands every
-    member of a `AbstractBranchesParallel` straight to `_segment_flow_entry`.
-  - DC/PTDF: `_distribute_arc_flows`, with the same asymmetry.
-
-The first shape is covered here as a passing test. For `series_in_parallel` the reporting
-and write-back paths no longer throw; only the per-branch expansion of the nested chains
-(the reported flow names) remains `@test_broken`. Real
-datasets rarely nest this far -- ACTIVSg2000 under `DegreeTwoReduction` has 410 parallel
-groups, none of them parallel-of-chains, and 7 chains with a parallel segment -- so this is
-documented rather than fixed.
+AC, DC and PTDF branch-flow reporting, and AC write-back, expand every nested aggregate to
+its physical branches for all three shapes.
 =#
 
 # Minimal systems that produce one nested aggregate each. Buses 1 and 2 carry injections, so
@@ -135,17 +122,6 @@ function _nested_reduction_data(sys)
     )
 end
 
-"""Run `f` and report `:ok` or the exception, so a currently-throwing reporting path can be
-pinned with `@test_broken` without the throw escaping the testset."""
-function _reporting_outcome(f)
-    try
-        f()
-        return :ok
-    catch e
-        return e
-    end
-end
-
 _ac_pf(; kwargs...) = PF.ACPowerFlow(; network_reductions = _degree_two(), kwargs...)
 
 @testset "nested aggregates: parallel group inside a chain" begin
@@ -191,10 +167,8 @@ _ac_pf(; kwargs...) = PF.ACPowerFlow(; network_reductions = _degree_two(), kwarg
     @test isapprox(PSY.get_angle(b3), full_b3[1, :θ]; atol = 1e-6)
 end
 
-# Both remaining shapes fail the same way and for the same reason: the expanders treat every
-# member of a parallel group as a physical branch, so a `BranchesSeries` member is never
-# descended into. `:series_in_parallel` shows the defect needs only two levels of nesting;
-# `:nested` is the three-level case.
+# `:series_in_parallel` nests a chain inside a parallel group (two levels); `:nested` adds a
+# parallel segment inside one of those chains (three levels).
 _NESTED_PARALLEL_SHAPES = (:series_in_parallel, :nested)
 
 @testset "nested aggregates: chains inside a parallel group ($shape)" for shape in
@@ -217,29 +191,47 @@ _NESTED_PARALLEL_SHAPES = (:series_in_parallel, :nested)
         Set(["L13", "L32", "L14", "L42"])
     end
 
-    # AC: the per-branch expansion of the chains is what remains broken (next assertion).
-    ac_outcome = _reporting_outcome(
-        () -> solve_power_flow(_ac_pf(), sys, PF.FlowReporting.BRANCH_FLOWS),
-    )
-    @test ac_outcome === :ok
-    @test_broken Set(ac_outcome["flow_results"].flow_name) == expected_names
-
-    for pf in (
-        PF.DCPowerFlow(; network_reductions = _degree_two()),
-        PF.PTDFDCPowerFlow(; network_reductions = _degree_two()),
-    )
-        dc_outcome = _reporting_outcome(
-            () -> solve_power_flow(pf, sys, PF.FlowReporting.BRANCH_FLOWS),
-        )
-        @test dc_outcome === :ok
+    # Every physical branch is reported, and reported flows match an unreduced solve.
+    reduced = solve_power_flow(_ac_pf(), sys, PF.FlowReporting.BRANCH_FLOWS)["flow_results"]
+    full =
+        solve_power_flow(PF.ACPowerFlow(), sys, PF.FlowReporting.BRANCH_FLOWS)["flow_results"]
+    @test Set(reduced.flow_name) == expected_names
+    joined = DataFrames.innerjoin(reduced, full; on = :flow_name, makeunique = true)
+    @test size(joined, 1) == length(expected_names)
+    for row in eachrow(joined)
+        @test isapprox(row.P_from_to, row.P_from_to_1; atol = 1e-3)
+        @test isapprox(row.Q_from_to, row.Q_from_to_1; atol = 1e-3)
     end
 
-    sys2 = _nested_reduction_system(shape)
-    store_outcome = _reporting_outcome(() -> solve_and_store_power_flow!(_ac_pf(), sys2))
-    @test store_outcome === :ok
+    for PFType in (PF.DCPowerFlow, PF.PTDFDCPowerFlow)
+        df = solve_power_flow(
+            PFType(; network_reductions = _degree_two()),
+            sys,
+            PF.FlowReporting.BRANCH_FLOWS,
+        )["1"]["flow_results"]
+        full_df =
+            solve_power_flow(PFType(), sys, PF.FlowReporting.BRANCH_FLOWS)["1"]["flow_results"]
+        @test Set(df.flow_name) == expected_names
+        joined = DataFrames.innerjoin(df, full_df; on = :flow_name, makeunique = true)
+        @test size(joined, 1) == length(expected_names)
+        for row in eachrow(joined)
+            @test isapprox(row.P_from_to, row.P_from_to_1; atol = 1e-3)
+        end
+    end
 
-    # Arc-level reporting does not throw, but silently reports only the equivalent arc: the
-    # whole nest collapses to a single 1-2 row rather than the physical branches.
+    # The chain interiors' bus voltages are recovered on write-back.
+    sys2 = _nested_reduction_system(shape)
+    solve_and_store_power_flow!(_ac_pf(), sys2)
+    full_bus = solve_power_flow(PF.ACPowerFlow(), sys2)["bus_results"]
+    for name in ("b3", "b4")
+        bus = PSY.get_component(PSY.ACBus, sys2, name)
+        full_row = filter(row -> row.bus_number == PSY.get_number(bus), full_bus)
+        @test isapprox(PSY.get_magnitude(bus), full_row[1, :Vm]; atol = 1e-6)
+        @test isapprox(PSY.get_angle(bus), full_row[1, :θ]; atol = 1e-6)
+    end
+
+    # Arc-level reporting reports the equivalent arc by design: the whole nest collapses to
+    # a single 1-2 row rather than the physical branches.
     arc_df = solve_power_flow(_ac_pf(), sys)["flow_results"]
     @test size(arc_df, 1) == 1
     @test arc_df[1, :bus_from] == 1 && arc_df[1, :bus_to] == 2
