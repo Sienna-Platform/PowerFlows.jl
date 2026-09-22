@@ -272,17 +272,17 @@ function _update_mixed_cpb_residual_values!(
             # so rect's `_update_ref_diag_block!` is reusable.
             if i in independent_ref
                 # Multi-swing island: this swing self-balances at its own P-slot
-                # (∂P_gen/∂x[off] = 1), not the distributed c_ref share.
-                P_gen = x[off]
+                # (∂P_net_cp/∂x[off] = 1), not the distributed c_ref share.
+                P_net_cp = x[off]
             else
                 c_ref = bus_slack_participation_factors[i]
                 P_slack_total = x[off] - P_net_set[i]
-                P_gen = P_net_set[i] + c_ref * P_slack_total
+                P_net_cp = P_net_set[i] + c_ref * P_slack_total
             end
-            Q_gen = x[off + 1]
+            Q_net_cp = x[off + 1]
             Vm = sqrt(D)
-            P_eff = P_gen - const_I_P[i] * Vm
-            Q_eff = Q_gen - const_I_Q[i] * Vm
+            P_eff = P_net_cp - const_I_P[i] * Vm
+            Q_eff = Q_net_cp - const_I_Q[i] * Vm
             F[off] = (P_eff * e_i + Q_eff * f_i) / D - Ir_acc[i]
             F[off + 1] = (P_eff * f_i - Q_eff * e_i) / D - Ii_acc[i]
         elseif bt == PSY.ACBusTypes.PV
