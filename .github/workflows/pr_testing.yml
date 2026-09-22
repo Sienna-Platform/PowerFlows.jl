@@ -9,36 +9,39 @@ jobs:
     name: Julia ${{ matrix.julia-version }} - ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
-      fail-fast: false
       matrix:
         julia-version: ['1']
         julia-arch: [x64]
         os: [ubuntu-latest, windows-latest, macOS-latest]
 
     steps:
-      - uses: actions/checkout@v2
-      - uses: julia-actions/setup-julia@latest
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
         with:
           version: ${{ matrix.julia-version }}
           arch: ${{ matrix.julia-arch }}
-      - uses: julia-actions/julia-buildpkg@latest
+      - uses: julia-actions/julia-buildpkg@v1
         env:
           PYTHON: ""
-      - uses: julia-actions/julia-runtest@latest
+      - uses: julia-actions/julia-runtest@v1
         env:
           PYTHON: ""
-      # Coverage is reported from a single job: the matrix would otherwise submit three
-      # reports per commit, and the Windows ones carry backslash paths Codecov cannot
-      # match against the repo tree.
+      # Report coverage from a single job: uploading all three OS legs sent
+      # duplicate reports per commit, and the Windows leg carries backslash paths
+      # Codecov cannot match against the repo tree.
       - uses: julia-actions/julia-processcoverage@v1
-        if: matrix.os == 'ubuntu-latest' && matrix.julia-version == '1'
+        if: matrix.os == 'ubuntu-latest'
+      # Fork PRs cannot read repository secrets, so the upload is unauthenticated
+      # and will fail. Keep this non-fatal here; main-tests.yml is the workflow
+      # that hard-fails on upload errors.
       - uses: codecov/codecov-action@v7
-        if: matrix.os == 'ubuntu-latest' && matrix.julia-version == '1'
+        if: matrix.os == 'ubuntu-latest'
         with:
           files: ./lcov.info
           disable_search: true
           flags: unittests
           name: codecov-umbrella
-          slug: ${{ github.repository }}
-          fail_ci_if_error: true
+          fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}
+          # Required when CODECOV_TOKEN is an organization-level token.
+          slug: ${{ github.repository }}

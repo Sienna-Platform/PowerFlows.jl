@@ -44,7 +44,13 @@ function area_tail_offset(data::ACPowerFlowData, dcn::DCNetwork)
     return 2 * n_buses + 4 * size(data.lcc.p_set, 1) + vsc_tail_length(dcn)
 end
 
-"""Update state vector based on values of fields of data."""
+"""Update state vector based on values of fields of data.
+
+The REF/PV power slots hold the *net* injection `P_gen - P_load_total`, where
+`P_load_total` includes the constant-current and constant-impedance ZIP terms evaluated at
+the bus's current voltage magnitude (see [`get_bus_active_power_total_withdrawals`](@ref)) —
+matching how `ACPowerFlowResidual` forms `P_net`/`Q_net`. Inverse of [`update_data!`](@ref).
+"""
 function update_state!(x::Vector{Float64},
     data::ACPowerFlowData,
     time_step::Int64,
@@ -59,15 +65,15 @@ function update_state!(x::Vector{Float64},
         if b == PSY.ACBusTypes.REF
             x[state_variable_count] =
                 data.bus_active_power_injections[ix, time_step] -
-                data.bus_active_power_withdrawals[ix, time_step]
+                get_bus_active_power_total_withdrawals(data, ix, time_step)
             x[state_variable_count + 1] =
                 data.bus_reactive_power_injections[ix, time_step] -
-                data.bus_reactive_power_withdrawals[ix, time_step]
+                get_bus_reactive_power_total_withdrawals(data, ix, time_step)
             state_variable_count += 2
         elseif b == PSY.ACBusTypes.PV
             x[state_variable_count] =
                 data.bus_reactive_power_injections[ix, time_step] -
-                data.bus_reactive_power_withdrawals[ix, time_step]
+                get_bus_reactive_power_total_withdrawals(data, ix, time_step)
             x[state_variable_count + 1] = data.bus_angles[ix, time_step]
             state_variable_count += 2
         elseif b == PSY.ACBusTypes.PQ
@@ -107,7 +113,14 @@ function update_state!(x::Vector{Float64},
     @assert state_variable_count - 1 == length(x)
 end
 
-"""Update the fields of data based on the values of the state vector."""
+"""Update the fields of data based on the values of the state vector.
+
+At REF/PV buses the bus injections are recovered by adding back the total withdrawals,
+including the constant-current and constant-impedance ZIP terms at the bus's voltage
+magnitude. PQ magnitudes are written before they are read for any ZIP term, because a bus's
+ZIP withdrawal depends only on its own magnitude and REF/PV magnitudes are fixed setpoints.
+Inverse of [`update_state!`](@ref).
+"""
 function update_data!(data::ACPowerFlowData,
     x::Vector{Float64},
     time_step::Int64,
@@ -138,9 +151,11 @@ function _set_state_variables_at_bus(
     ::Val{PSY.ACBusTypes.REF})
     # When bustype == REFERENCE PSY.Bus, state variables are Active and Reactive Power Generated
     data.bus_active_power_injections[ix, time_step] =
-        StateVector[2 * ix - 1] + data.bus_active_power_withdrawals[ix, time_step]
+        StateVector[2 * ix - 1] +
+        get_bus_active_power_total_withdrawals(data, ix, time_step)
     data.bus_reactive_power_injections[ix, time_step] =
-        StateVector[2 * ix] + data.bus_reactive_power_withdrawals[ix, time_step]
+        StateVector[2 * ix] +
+        get_bus_reactive_power_total_withdrawals(data, ix, time_step)
 end
 
 function _set_state_variables_at_bus(
@@ -151,7 +166,8 @@ function _set_state_variables_at_bus(
     ::Val{PSY.ACBusTypes.PV})
     # When bustype == PV PSY.Bus, state variables are Reactive Power Generated and Voltage Angle
     data.bus_reactive_power_injections[ix, time_step] =
-        StateVector[2 * ix - 1] + data.bus_reactive_power_withdrawals[ix, time_step]
+        StateVector[2 * ix - 1] +
+        get_bus_reactive_power_total_withdrawals(data, ix, time_step)
     data.bus_angles[ix, time_step] = StateVector[2 * ix]
 end
 
