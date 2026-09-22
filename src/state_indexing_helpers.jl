@@ -1,13 +1,17 @@
-"""Partitions the state vector's variables based on what physical quantity each represents. 
-Returns a `NamedTuple`, with the 4 keys `Va`, `Vm`, `P`, and `Q`. The 4 values are vectors 
-of length equal to the number of buses, with `NaN`s in the positions where that physical 
-quantity is not part of the state vector for that bus. (Currently not intended for use in 
-spots where performance is critical.)"""
+"""Partitions the polar state vector's variables based on what physical quantity each 
+represents. Returns a `NamedTuple`, with the 4 keys `Va`, `Vm`, `P`, and `Q`. The 4 values 
+are vectors of length equal to the number of buses, with `NaN`s in the positions where that 
+physical quantity is not part of the state vector for that bus. Any LCC/VSC/area tail is 
+ignored. (Currently not intended for use in spots where performance is critical.)"""
 function partition_state(x::Vector{Float64},
     bus_types::AbstractVector{PSY.ACBusTypes.Value},
 )
     # usually, bus_types will be data.bus_type[:, time_step]
-    nbuses = div(size(x, 1), 2)
+    nbuses = length(bus_types)
+    if length(x) != 2 * nbuses
+        @warn "partition_state: `x` carries a non-bus tail (LCC/VSC/area interchange); \
+               only the leading $(2 * nbuses) bus entries are partitioned."
+    end
     (Vms, Vas, Ps, Qs) = (fill(NaN, nbuses) for _ in 1:4)
     for i in 1:nbuses
         if bus_types[i] == PSY.ACBusTypes.REF
@@ -59,15 +63,15 @@ function update_state!(x::Vector{Float64},
         if b == PSY.ACBusTypes.REF
             x[state_variable_count] =
                 data.bus_active_power_injections[ix, time_step] -
-                data.bus_active_power_withdrawals[ix, time_step]
+                get_bus_active_power_total_withdrawals(data, ix, time_step)
             x[state_variable_count + 1] =
                 data.bus_reactive_power_injections[ix, time_step] -
-                data.bus_reactive_power_withdrawals[ix, time_step]
+                get_bus_reactive_power_total_withdrawals(data, ix, time_step)
             state_variable_count += 2
         elseif b == PSY.ACBusTypes.PV
             x[state_variable_count] =
                 data.bus_reactive_power_injections[ix, time_step] -
-                data.bus_reactive_power_withdrawals[ix, time_step]
+                get_bus_reactive_power_total_withdrawals(data, ix, time_step)
             x[state_variable_count + 1] = data.bus_angles[ix, time_step]
             state_variable_count += 2
         elseif b == PSY.ACBusTypes.PQ
@@ -114,6 +118,10 @@ function update_data!(data::ACPowerFlowData,
 )
     # same as above. I really only need access to 3 classes of fields of data:
     # bus types, bus power contributions [inj/widthdrawal], and bus voltage [angle/mag]
+    if state_tail_length(data, get_dc_network(data)) > 0
+        @warn "update_data!: the LCC/VSC/area-interchange tail of `x` is not written back \
+               to `data`; those fields keep their previous values."
+    end
     bus_types = view(data.bus_type, :, time_step)
     for (ix, bt) in enumerate(bus_types)
         # PERF: try indexing outside of the call and passing references, instead of indexing
@@ -138,9 +146,10 @@ function _set_state_variables_at_bus(
     ::Val{PSY.ACBusTypes.REF})
     # When bustype == REFERENCE PSY.Bus, state variables are Active and Reactive Power Generated
     data.bus_active_power_injections[ix, time_step] =
-        StateVector[2 * ix - 1] + data.bus_active_power_withdrawals[ix, time_step]
+        StateVector[2 * ix - 1] +
+        get_bus_active_power_total_withdrawals(data, ix, time_step)
     data.bus_reactive_power_injections[ix, time_step] =
-        StateVector[2 * ix] + data.bus_reactive_power_withdrawals[ix, time_step]
+        StateVector[2 * ix] + get_bus_reactive_power_total_withdrawals(data, ix, time_step)
 end
 
 function _set_state_variables_at_bus(
@@ -151,7 +160,8 @@ function _set_state_variables_at_bus(
     ::Val{PSY.ACBusTypes.PV})
     # When bustype == PV PSY.Bus, state variables are Reactive Power Generated and Voltage Angle
     data.bus_reactive_power_injections[ix, time_step] =
-        StateVector[2 * ix - 1] + data.bus_reactive_power_withdrawals[ix, time_step]
+        StateVector[2 * ix - 1] +
+        get_bus_reactive_power_total_withdrawals(data, ix, time_step)
     data.bus_angles[ix, time_step] = StateVector[2 * ix]
 end
 

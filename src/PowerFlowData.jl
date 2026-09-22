@@ -496,6 +496,28 @@ function get_bus_reactive_power_total_withdrawals(
            pfd.bus_magnitude[ix, time_step]^2
 end
 
+"""Withdrawals excluding the constant-impedance term, which rectangular/mixed fold into
+`Y_bus_eff` (`fold_zip_constant_z!`) instead of carrying in the state."""
+function get_bus_active_power_non_impedance_withdrawals(
+    pfd::PowerFlowData,
+    ix::Int,
+    time_step::Int,
+)
+    return pfd.bus_active_power_withdrawals[ix, time_step] +
+           pfd.bus_active_power_constant_current_withdrawals[ix, time_step] *
+           pfd.bus_magnitude[ix, time_step]
+end
+
+function get_bus_reactive_power_non_impedance_withdrawals(
+    pfd::PowerFlowData,
+    ix::Int,
+    time_step::Int,
+)
+    return pfd.bus_reactive_power_withdrawals[ix, time_step] +
+           pfd.bus_reactive_power_constant_current_withdrawals[ix, time_step] *
+           pfd.bus_magnitude[ix, time_step]
+end
+
 function clear_injection_data!(pfd::PowerFlowData)
     # anything overwritten with NaNs in the case of non-convergence should be reset here.
     pfd.bus_active_power_injections .= 0.0

@@ -259,7 +259,7 @@ function _update_rect_ci_residual_values!(
     # 4) Add per-bus I_spec contributions and PV's ΔV² row.
     # NOTE on REF distributed slack: x[off] holds `P_net_set[ref] + total_slack`
     # (polar convention — the state variable carries the WHOLE subnetwork slack,
-    # not just REF's share). REF's actual P_gen is `P_net_set + c_ref · total_slack`.
+    # not just REF's share). REF's own share is `P_net_set + c_ref · total_slack`.
     # For the default case c_ref = 1, this collapses to x[off].
     @inbounds for i in 1:n_buses
         off = Int(bus_state_offset[i])
@@ -273,26 +273,26 @@ function _update_rect_ci_residual_values!(
         if bt == PSY.ACBusTypes.REF
             if i in independent_ref
                 # Multi-swing island: this swing self-balances at its own P-slot
-                # (∂P_gen/∂x[off] = 1), not the distributed c_ref share.
-                P_gen = x[off]
+                # (∂P_net_cp/∂x[off] = 1), not the distributed c_ref share.
+                P_net_cp = x[off]
             else
                 c_ref = bus_slack_participation_factors[i]
                 P_slack_total = x[off] - P_net_set[i]
-                P_gen = P_net_set[i] + c_ref * P_slack_total
+                P_net_cp = P_net_set[i] + c_ref * P_slack_total
             end
-            Q_gen = x[off + 1]
+            Q_net_cp = x[off + 1]
             # |V| at REF is fixed at V_set; subtract the ZIP constant-current draw
             # so the recovered injection matches polar's `bus_active_power_injections`
             # (which includes `const_I * V_set` via `get_bus_active_power_total_withdrawals`).
             Vm = sqrt(D)
-            P_eff = P_gen - const_I_P[i] * Vm
-            Q_eff = Q_gen - const_I_Q[i] * Vm
+            P_eff = P_net_cp - const_I_P[i] * Vm
+            Q_eff = Q_net_cp - const_I_Q[i] * Vm
             F[off] += (P_eff * e_i + Q_eff * f_i) / D
             F[off + 1] += (P_eff * f_i - Q_eff * e_i) / D
         else
             P_i = P_eff_cache[i]
             # PV: Q_state is the net injection unknown — at convergence it equals
-            # Q_gen − Q_load_total(|V_set|), so the ZIP-I term is implicit and a
+            # Q_gen − Q_load(|V_set|) net of constant Z, so the ZIP-I term is implicit and a
             # `−const_I_Q·|V|` correction here would double-count. For PQ, Q is a
             # known input, so Q_eff_cache pre-subtracts the constant-current draw.
             Q_i = bt == PSY.ACBusTypes.PV ? Q_state[i] : Q_eff_cache[i]
