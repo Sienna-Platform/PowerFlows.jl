@@ -22,6 +22,15 @@ Pages = [
 ]
 ```
 
+## Flow Reporting
+
+`FlowReporting` is bound to a module by `@scoped_enum`, which the `Public = true` filter
+over `definitions.jl` below does not collect, so it is registered here by name.
+
+```@docs
+FlowReporting
+```
+
 ## Solving Power Flows
 
 ```@autodocs
