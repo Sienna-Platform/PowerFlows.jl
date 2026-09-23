@@ -2262,7 +2262,7 @@ function _compute_dcline_common_fields(
     NAME = _psse_quote_string(NAME)
     MDC = Int(PSY.get_power_mode(dcline))
     # SETVL is MW (power mode) or A (current mode).
-    SETVL = _lcc_transfer_setpoint(dcline, PSY.NU)
+    SETVL = PSY.get_transfer_setpoint(dcline, PSY.NU)
     VSCHD = PSY.get_scheduled_dc_voltage(dcline)
     # RDC is a DC-circuit resistance: PSY per-unitizes it against the DC base (VSCHD^2 /
     # baseMVA), not the rectifier AC commutating base, so the inverse conversion must use

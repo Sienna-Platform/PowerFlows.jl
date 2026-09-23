@@ -259,12 +259,3 @@ function convert_zip_to_constant_power!(p_load::AbstractArray{T, N},
     i_load .= zero(T)
     z_load .= zero(T)
 end
-
-# PSY stores a power-mode `transfer_setpoint` per-unit on the LCC's base (the system base); a
-# current-mode one is amperes, which no power base converts.
-function _lcc_transfer_setpoint(lcc::PSY.TwoTerminalLCCLine, units)
-    if PSY.get_power_mode(lcc)
-        return IS._strip_units(PSY.get_value(lcc, Val(:transfer_setpoint), Val(:mw), units))
-    end
-    return PSY.get_transfer_setpoint(lcc)
-end
