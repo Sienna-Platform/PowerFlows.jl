@@ -675,6 +675,27 @@ end
     @test PSY.get_regulated_bus_number(shunt2) == 7
 end
 
+@testset "PSSE Exporter: v35 switched shunt Si is a 0/1 block status" begin
+    sys = System(100.0)
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.0, 0.0)
+    shunt = PSY.SwitchedAdmittance(;
+        name = "shunt_1",
+        available = true,
+        bus = b1,
+        number_engaged = [3, 1, 0],
+        number_of_steps = [3, 2, 4],
+        Y_increase = [0.05im, 0.02im, 0.01im],
+    )
+    S, N, _ = PF._build_switched_shunt_steps_v35(
+        shunt,
+        PSY.get_number_of_steps(shunt),
+        PSY.get_Y_increase(shunt),
+        100.0,
+    )
+    @test S[1:3] == [1, 1, 0]
+    @test N[1:3] == [3, 2, 4]
+end
+
 @testset "PSSE Exporter: phase-shift control_limits round-trip degrees/radians (v33)" begin
     # PSS/E RMA/RMI are degrees for phase-shift CODs (ACTIVE_POWER_FLOW here); PSY stores
     # `control_limits` in radians for those objectives. The exporter must write degrees, and

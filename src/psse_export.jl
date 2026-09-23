@@ -2909,7 +2909,9 @@ function _build_switched_shunt_steps_v35(
     N_vals = []
     B_vals = []
     for (N, B) in zip(steps, increases)
-        push!(S_vals, get(engaged, length(S_vals) + 1, 1))
+        # Si is a whole-block status (0/1), not a step count; a partly engaged block can
+        # only be expressed through BINIT.
+        push!(S_vals, get(engaged, length(S_vals) + 1, 1) != 0 ? 1 : 0)
         push!(N_vals, N)
         push!(B_vals, imag(B) * base_power)
     end
