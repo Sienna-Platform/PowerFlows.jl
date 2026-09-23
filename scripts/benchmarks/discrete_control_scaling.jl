@@ -49,22 +49,27 @@ function _add_feeder!(sys::PSY.System, ref::PSY.ACBus, k::Int)
     PSY.add_component!(sys,
         PSY.PowerLoad(; name = "load_$k", available = true, bus = b_load,
             active_power = 0.5, reactive_power = 0.25, base_power = 100.0,
-            max_active_power = 100.0, max_reactive_power = 100.0))
+            max_active_power = 100.0, max_reactive_power = 100.0,
+            input_basis = PSY.CU))
     PSY.add_component!(sys,
         PSY.PowerLoad(; name = "shload_$k", available = true, bus = b_sh,
             active_power = 0.05, reactive_power = 0.025, base_power = 100.0,
-            max_active_power = 100.0, max_reactive_power = 100.0))
+            max_active_power = 100.0, max_reactive_power = 100.0,
+            input_basis = PSY.CU))
     PSY.add_component!(sys,
         PSY.Line(; name = "line_$k", available = true, active_power_flow = 0.0,
             reactive_power_flow = 0.0, arc = PSY.Arc(; from = ref, to = b_sh),
             r = 1e-2, x = 1e-2, b = (from = 0.0, to = 0.0),
-            rating = 10.0, angle_limits = (min = -pi / 2, max = pi / 2)))
+            rating = 10.0, angle_limits = (min = -pi / 2, max = pi / 2),
+            input_basis = PSY.CU))
     PSY.add_component!(sys,
         PSY.TwoWindingTransformer(; name = "tap_$k",
             circuit = PSY.TransformerCircuit(; available = true,
                 arc = PSY.Arc(; from = ref, to = b_load),
                 r = 0.01, x = 0.10, tap = 1.0, rating = 1.0, base_power = 100.0,
-                control_objective = PSY.TransformerControlObjective.VOLTAGE)))
+                control_objective = PSY.TransformerControlObjective.VOLTAGE,
+                input_basis = PSY.CU),
+            input_basis = PSY.CU))
     PSY.add_component!(sys,
         PSY.SwitchedAdmittance(; name = "shunt_$k", available = true, bus = b_sh,
             number_engaged = [0], number_of_steps = [4],
@@ -80,7 +85,8 @@ function build_controlled_system(K::Int)
     PSY.add_component!(sys, ref)
     PSY.add_component!(sys,
         PSY.Source(; name = "source", available = true, bus = ref,
-            active_power = 0.0, reactive_power = 0.0, R_th = 0.0, X_th = 1e-5))
+            active_power = 0.0, reactive_power = 0.0, R_th = 0.0, X_th = 1e-5,
+            input_basis = PSY.CU))
     for k in 1:K
         _add_feeder!(sys, ref, k)
     end

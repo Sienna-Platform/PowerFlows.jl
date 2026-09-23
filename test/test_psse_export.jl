@@ -580,7 +580,7 @@ end
             dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
             dc_setpoint_from = 1.0,
             dc_control_to = PSY.VSCDCControlModes.DC_POWER,
-            dc_setpoint_to = 0.2,
+            dc_setpoint_to = 0.2, input_basis = PSY.CU,
         ),
     )
     export_location = joinpath(test_psse_export_dir, "v33", "case16_vsc_no_ext")
@@ -609,7 +609,7 @@ end
         voltage_setpoint = 1.0,
         regulated_bus_number = 7,
         reactive_power_required = 42.0,  # solved output; must NOT be written as RMPCT
-        ext = Dict{String, Any}("RMPCT" => 55.0),  # stale ext; the exporter must ignore it
+        ext = Dict{String, Any}("RMPCT" => 55.0), input_basis = PSY.CU,  # stale ext; the exporter must ignore it
     )
     # `max_shunt_current` is stored in device base; the constructor kwarg takes a raw CU
     # value, so set it through the units-aware setter to honor the MVA input.
@@ -713,7 +713,8 @@ end
             base_power = 100.0,
             control_objective = PSY.TransformerControlObjective.ACTIVE_POWER_FLOW,
             control_limits = (min = deg2rad(-30), max = deg2rad(30)),
-        ),
+            input_basis = PSY.CU,
+        ), input_basis = PSY.CU,
     )
     PSY.add_component!(sys, tx)
 
@@ -841,7 +842,7 @@ end
     line = Line(; name = "L", available = true, active_power_flow = 0.0,
         reactive_power_flow = 0.0, arc = Arc(; from = b1, to = b2), r = 0.01, x = 0.1,
         b = (from = 0.0, to = 0.0), rating = 1.0,
-        angle_limits = (min = -pi / 2, max = pi / 2))
+        angle_limits = (min = -pi / 2, max = pi / 2), input_basis = PSY.CU)
     add_component!(sys, line)
 
     export_location = joinpath(test_psse_export_dir, "v35", "issue361_missing_rate_keys")
@@ -1161,7 +1162,7 @@ end
         active_power_limits_to = (min = -100.0, max = 100.0),
         reactive_power_limits_from = (min = 0.0, max = 0.0),
         reactive_power_limits_to = (min = 0.0, max = 0.0),
-        base_power = 100.0,
+        base_power = 100.0, input_basis = PSY.CU,
     )
     add_component!(sys, hvdc)
 
@@ -1238,7 +1239,7 @@ end
         x = 0.01,
         rating = 12.06,  # 1206 MVA on a 100 MVA system base
         discrete_branch_type = DiscreteControlledBranchType.BREAKER,
-        branch_status = DiscreteControlledBranchStatus.CLOSED,
+        branch_status = DiscreteControlledBranchStatus.CLOSED, input_basis = PSY.CU,
     )
     add_component!(sys, sw)
     @test PSY.get_rating(sw, PSY.NU) ≈ 1206.0

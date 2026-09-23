@@ -10,7 +10,6 @@ built once at construction time, so the hot-path cost is `O(N + n_LCC)` rather
 than `O((N + n_LCC) · log(nnz_per_col))` of `Jv[r, c] = v` setindex.
 
 # Fields
-- `data::ACPowerFlowData`
 - `Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE}` — Jacobian values
 - `Y_bus_eff::SparseMatrixCSC{ComplexF64, Int}` — Y_bus with ZIP-Z folded in
 - `Y_diag::Vector{ComplexF64}` — cached Y_bus_eff diagonal
@@ -20,8 +19,7 @@ than `O((N + n_LCC) · log(nnz_per_col))` of `Jv[r, c] = v` setindex.
   `slack_bus_k` / `slack_c_k` for the corresponding per-iteration data
 - LCC tail nzval cache `lcc_nz` (24×n_lccs; the last 2 identity diagonals stay 1.0)
 """
-struct ACRectangularCIJacobian{D <: ACPowerFlowData}
-    data::D
+struct ACRectangularCIJacobian
     Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE}
     Y_bus_eff::SparseMatrixCSC{ComplexF64, Int}
     Y_diag::Vector{ComplexF64}     # cached Y_bus_eff diagonal; avoids O(log nnz) sparse access per iteration
@@ -50,11 +48,12 @@ struct ACRectangularCIJacobian{D <: ACPowerFlowData}
 end
 
 function ACRectangularCIJacobian(
+    data::ACPowerFlowData,
     residual::ACRectangularCIResidual,
     time_step::Int64,
 )
     Jv0 = _create_rect_ci_jacobian_structure(
-        residual.data,
+        data,
         residual.Y_bus_eff,
         residual.bus_slack_participation_factors,
         residual.subnetworks,
@@ -68,16 +67,16 @@ function ACRectangularCIJacobian(
         Jv0,
         residual.Y_bus_eff,
         residual.bus_state_offset,
-        view(residual.data.bus_type, :, time_step),
+        view(data.bus_type, :, time_step),
     )
-    n_buses = first(size(residual.data.bus_type))
+    n_buses = first(size(data.bus_type))
     Y_diag = Vector{ComplexF64}(undef, n_buses)
     @inbounds for i in 1:n_buses
         Y_diag[i] = residual.Y_bus_eff[i, i]
     end
     diag_base_nz, pv_extra_nz = _build_diag_nz_cache(
         Jv0, residual.bus_state_offset,
-        view(residual.data.bus_type, :, time_step),
+        view(data.bus_type, :, time_step),
     )
     # REF status is fixed for the life of a solve; reuse the residual's
     # already-computed set instead of reallocating it here.
@@ -86,17 +85,16 @@ function ACRectangularCIJacobian(
             Jv0, residual.bus_state_offset, residual.subnetworks,
             residual.bus_slack_participation_factors, residual.independent_ref,
         )
-    n_lccs = size(residual.data.lcc.p_set, 1)
+    n_lccs = size(data.lcc.p_set, 1)
     lcc_nz = _build_lcc_nz_cache(
-        Jv0, residual.data, residual.bus_state_offset,
+        Jv0, data, residual.bus_state_offset,
         residual.total_bus_state, n_lccs,
     )
     vsc_nz = _build_vsc_nz_cache(
-        Jv0, get_dc_network(residual.data), residual.bus_state_offset,
+        Jv0, get_dc_network(data), residual.bus_state_offset,
         residual.total_bus_state, n_lccs,
     )
     J = ACRectangularCIJacobian(
-        residual.data,
         Jv0,
         residual.Y_bus_eff,
         Y_diag,
@@ -122,12 +120,12 @@ function ACRectangularCIJacobian(
         lcc_nz,
         vsc_nz,
     )
-    J(time_step)  # populate state-dependent entries (diagonals, slack, LCC tail)
+    J(data, time_step)  # populate state-dependent entries (diagonals, slack, LCC tail)
     return J
 end
 
-function (J::ACRectangularCIJacobian)(time_step::Int64)
-    _update_rect_ci_jacobian_values!(J.Jv, J.data, J.Y_diag,
+function (J::ACRectangularCIJacobian)(data::ACPowerFlowData, time_step::Int64)
+    _update_rect_ci_jacobian_values!(J.Jv, data, J.Y_diag,
         J.e_state, J.f_state, J.Q_state, J.P_eff_cache, J.Q_eff_cache,
         J.const_I_P, J.const_I_Q,
         J.bus_slack_participation_factors, J.independent_ref,
@@ -139,10 +137,11 @@ function (J::ACRectangularCIJacobian)(time_step::Int64)
 end
 
 function (J::ACRectangularCIJacobian)(
+    data::ACPowerFlowData,
     Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
     time_step::Int64,
 )
-    _update_rect_ci_jacobian_values!(J.Jv, J.data, J.Y_diag,
+    _update_rect_ci_jacobian_values!(J.Jv, data, J.Y_diag,
         J.e_state, J.f_state, J.Q_state, J.P_eff_cache, J.Q_eff_cache,
         J.const_I_P, J.const_I_Q,
         J.bus_slack_participation_factors, J.independent_ref,

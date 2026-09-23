@@ -261,12 +261,12 @@ function _verify_area_jacobian(sys::PSY.System, label::String)
     @test PF.n_controlled_areas(data) >= 1
     time_step = 1
     residual = PF.ACPowerFlowResidual(data, time_step)
-    J = PF.ACPowerFlowJacobian(residual, time_step)
+    J = PF.ACPowerFlowJacobian(data, residual, time_step)
     x0 = PF.calculate_x0(data, time_step)
     Random.seed!(42)
     x0 .+= 0.02 .* randn(length(x0))
-    residual(x0, time_step)
-    J(time_step)
+    residual(data, x0, time_step)
+    J(data, time_step)
 
     dcn = PF.get_dc_network(data)
     area_off = PF.area_tail_offset(data, dcn)
@@ -277,7 +277,7 @@ function _verify_area_jacobian(sys::PSY.System, label::String)
         @test Jv[2 * area.slack_bus_ix - 1, area_off + area.tail_ix] == -1.0
     end
 
-    verify_jacobian_asymptotic(residual, deepcopy(Jv), x0, time_step; label = label)
+    verify_jacobian_asymptotic(residual, data, deepcopy(Jv), x0, time_step; label = label)
     return
 end
 

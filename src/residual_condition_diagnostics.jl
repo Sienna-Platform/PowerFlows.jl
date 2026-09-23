@@ -385,9 +385,10 @@ the scratch only when a diagnostic or the bail-out is on so the default solve pa
 allocates nothing. `diag_state` is `nothing` when neither is requested."""
 function setup_solver_diagnostics(
     J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
+    data::ACPowerFlowData,
     bail::Bool,
 )
-    monitor = get_log_solver_diagnostics(J.data)
+    monitor = get_log_solver_diagnostics(data)
     diag_state = (monitor || bail) ? SolverDiagnosticsState(size(J.Jv, 1)) : nothing
     return monitor, diag_state
 end
@@ -404,6 +405,7 @@ function run_solver_diagnostics!(
     label::AbstractString,
     residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
     J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
+    data::ACPowerFlowData,
     time_step::Int,
     cache::PFLinearSolverCache,
     monitor::Bool,
@@ -419,7 +421,6 @@ function run_solver_diagnostics!(
         singular = true
     end
 
-    data = J.data
     if singular
         if bail
             @warn "$label: the Jacobian is singular; this is a fold / " *

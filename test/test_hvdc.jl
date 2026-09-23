@@ -168,7 +168,7 @@ function add_component_with_power!(sys::PSY.System, bus::PSY.ACBus, P::Float64)
             fuel = ThermalFuels.OTHER,
             services = Device[],
             dynamic_injector = nothing,
-            ext = Dict{String, Any}(),
+            ext = Dict{String, Any}(), input_basis = PSY.CU,
         )
         add_component!(sys, gen)
         @assert get_active_power(gen, PSY.SU) == P
@@ -181,7 +181,7 @@ function add_component_with_power!(sys::PSY.System, bus::PSY.ACBus, P::Float64)
             reactive_power = 0.0, # Per-unitized by device base_power
             base_power = 100.0, # MVA
             max_active_power = -P,
-            max_reactive_power = 0.0,
+            max_reactive_power = 0.0, input_basis = PSY.CU,
         )
         add_component!(sys, load)
         @assert get_active_power(load, PSY.SU) == -P
