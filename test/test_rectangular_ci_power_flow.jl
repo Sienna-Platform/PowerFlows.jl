@@ -336,8 +336,8 @@ end
     x[off] = 0.0
     x[off + 1] = 0.0
 
-    residual(x, 1)
-    J(1)
+    residual(data, x, 1)
+    J(data, 1)
     @test all(isfinite, residual.Rv)
     @test all(isfinite, J.Jv.nzval)
 end

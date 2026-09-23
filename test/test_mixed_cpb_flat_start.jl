@@ -60,7 +60,7 @@ end
     PF.mixed_initial_state!(
         x0, data, residual.bus_state_offset, residual.bus_block_size, 1,
     )
-    residual(x0, 1)
+    residual(data, x0, 1)
     # The hard fixture must actually trip the LARGE_RESIDUAL gate so the
     # enhanced flat start path is the one under test.
     @test norm(residual.Rv, 1) > PF.LARGE_RESIDUAL * length(residual.Rv)
@@ -152,14 +152,14 @@ end
     PF.mixed_initial_state!(
         cold, data, residual.bus_state_offset, residual.bus_block_size, 2,
     )
-    residual(cold, 2)
+    residual(data, cold, 2)
     cold_norm = norm(residual.Rv, 1)
 
     # Warm start: step-1 converged mixed state via the type/value split
     # (_mixed_fill_state! with type_ts=2, value_ts=1).
     warm = copy(cold)
     PF._mixed_fill_state!(warm, data, residual.bus_state_offset, 2, 1)
-    residual(warm, 2)
+    residual(data, warm, 2)
     warm_norm = norm(residual.Rv, 1)
 
     @test warm_norm < 0.1 * cold_norm
@@ -185,10 +185,10 @@ end
     x0[off] = 0.0
     x0[off + 1] = 0.0
 
-    residual(x0, 1)
+    residual(data, x0, 1)
     @test all(isfinite, residual.Rv)
 
-    J = PF.ACMixedCPBJacobian(residual, 1)
-    J(1)
+    J = PF.ACMixedCPBJacobian(data, residual, 1)
+    J(data, 1)
     @test all(isfinite, SparseArrays.nonzeros(J.Jv))
 end

@@ -8,7 +8,7 @@
     t_k = 1.0
 
     residual = PF.ACPowerFlowResidual(data, time_step)
-    J = PF.ACPowerFlowJacobian(residual, time_step)
+    J = PF.ACPowerFlowJacobian(data, residual, time_step)
 
     # when t_k is 1, homotopy hessian H(x) is Jacobian matrix of G(x) := J(x)^T*F(x)
     # check that as Δx -> 0, [G(x) - G(x+Δx)] - H(x)*Δx -> 0 at O(norm(Δx)^2)
@@ -16,7 +16,7 @@
     n = size(x0, 1)
     u = rand(Float64, n) .- 0.5
     u /= LinearAlgebra.norm(u)
-    hess(x0, t_k, time_step)
+    hess(data, x0, t_k, time_step)
     errors = []
     Δx_mags = collect(10.0^k for k in -3:-1:-6)
     for Δx_mag in Δx_mags
@@ -25,8 +25,8 @@
         inputValues = [x0, x1]
         outputValues = Vector{Vector{Float64}}()
         for inputVal in inputValues
-            residual(inputVal, time_step)
-            J(time_step)
+            residual(data, inputVal, time_step)
+            J(data, time_step)
             push!(outputValues, J.Jv' * residual.Rv)
         end
         ΔFtJ = outputValues[2] - outputValues[1]
@@ -46,14 +46,19 @@ column-by-column diagnostics for free."""
 mutable struct _GradAsResidual
     pfResidual::PF.ACPowerFlowResidual
     J::PF.ACPowerFlowJacobian
+    data::PF.ACPowerFlowData
     Rv::Vector{Float64}
 end
 function (gr::_GradAsResidual)(x::Vector{Float64}, time_step::Int)
-    gr.pfResidual(x, time_step)
-    gr.J(time_step)
+    gr.pfResidual(gr.data, x, time_step)
+    gr.J(gr.data, time_step)
     gr.Rv .= gr.J.Jv' * gr.pfResidual.Rv
     return
 end
+# `verify_jacobian_asymptotic` calls its residual argument as `residual(data, x, time_step)`;
+# `_GradAsResidual` already carries its own `data`, so the one passed in here is ignored.
+(gr::_GradAsResidual)(::PF.ACPowerFlowData, x::Vector{Float64}, time_step::Int64) =
+    gr(x, time_step)
 
 @testset "RH method: hessian on simple LCC system (asymptotic check)" begin
     time_step = 1
@@ -70,7 +75,7 @@ end
     solve_power_flow!(data; pf = pf)
 
     residual = PF.ACPowerFlowResidual(data, time_step)
-    J = PF.ACPowerFlowJacobian(residual, time_step)
+    J = PF.ACPowerFlowJacobian(data, residual, time_step)
 
     # Perturb every coordinate well off the NR-converged state so every
     # residual entry is O(1) — the four LCC ∇²F blocks are each weighted
@@ -86,17 +91,18 @@ end
     x0[end - 1] += 0.6   # α_r
     x0[end] += 0.6       # α_i
 
-    residual(x0, time_step)
+    residual(data, x0, time_step)
     @test minimum(abs, residual.Rv) > 0.05
     @test sin(data.lcc.rectifier.phi[1, time_step]) > 0.1
     @test sin(data.lcc.inverter.phi[1, time_step]) > 0.1
 
     hess = PF.HomotopyHessian(data, time_step)
-    hess(x0, 1.0, time_step)   # populates hess.Hv
+    hess(data, x0, 1.0, time_step)   # populates hess.Hv
 
-    grad_residual = _GradAsResidual(residual, J, similar(x0))
+    grad_residual = _GradAsResidual(residual, J, data, similar(x0))
     verify_jacobian_asymptotic(
         grad_residual,
+        data,
         Matrix(hess.Hv),   # dense for arbitrary J·e_j slicing
         x0,
         time_step;
@@ -121,7 +127,7 @@ end
     @test all(.!data.lcc.setpoint_at_rectifier)
 
     residual = PF.ACPowerFlowResidual(data, time_step)
-    J = PF.ACPowerFlowJacobian(residual, time_step)
+    J = PF.ACPowerFlowJacobian(data, residual, time_step)
 
     x0 = copy(PF.calculate_x0(data, time_step))
     Random.seed!(2)
@@ -129,17 +135,18 @@ end
     x0[end - 1] += 0.6   # α_r
     x0[end] += 0.6       # α_i
 
-    residual(x0, time_step)
+    residual(data, x0, time_step)
     @test minimum(abs, residual.Rv) > 0.05
     @test sin(data.lcc.rectifier.phi[1, time_step]) > 0.1
     @test sin(data.lcc.inverter.phi[1, time_step]) > 0.1
 
     hess = PF.HomotopyHessian(data, time_step)
-    hess(x0, 1.0, time_step)
+    hess(data, x0, 1.0, time_step)
 
-    grad_residual = _GradAsResidual(residual, J, similar(x0))
+    grad_residual = _GradAsResidual(residual, J, data, similar(x0))
     verify_jacobian_asymptotic(
         grad_residual,
+        data,
         Matrix(hess.Hv),
         x0,
         time_step;
@@ -163,7 +170,7 @@ end
     n = size(x0, 1)
     u = rand(Float64, n) .- 0.5
     u /= LinearAlgebra.norm(u)
-    hess(x0, t_k, time_step)
+    hess(data, x0, t_k, time_step)
     Hv = copy(hess.Hv)
     errors = Float64[]
     Δx_mags = collect(10.0^k for k in -3:-1:-6)
@@ -171,8 +178,8 @@ end
         x1 = x0 .+ Δx_mag .* u
         g0 = similar(x0)
         g1 = similar(x0)
-        PF.gradient_value!(g0, hess, t_k, x0, time_step)
-        PF.gradient_value!(g1, hess, t_k, x1, time_step)
+        PF.gradient_value!(g0, hess, data, t_k, x0, time_step)
+        PF.gradient_value!(g1, hess, data, t_k, x1, time_step)
         push!(errors, norm((g1 - g0) - Hv * (x1 - x0)) / Δx_mag)
     end
     ratios = [err / Δx_mag for (err, Δx_mag) in zip(errors, Δx_mags)]
@@ -188,16 +195,16 @@ end
     hess = PF.HomotopyHessian(data, time_step)
     t_k = 0.0
     x0 = PF.homotopy_x0(data, time_step)
-    hess(x0, t_k, time_step)
+    hess(data, x0, t_k, time_step)
 
     rowval, colptr = copy(hess.Hv.rowval), copy(hess.Hv.colptr)
 
     t_k = 0.5
-    hess(x0, t_k, time_step)
+    hess(data, x0, t_k, time_step)
     @test hess.Hv.rowval == rowval && hess.Hv.colptr == colptr
 
     t_k = 1.0
-    hess(x0, t_k, time_step)
+    hess(data, x0, t_k, time_step)
     @test hess.Hv.rowval == rowval && hess.Hv.colptr == colptr
 end
 
@@ -262,7 +269,7 @@ end
     t_k = 0.0
     x0 = PF.homotopy_x0(data, time_step)
     g0 = similar(x0)
-    PF.gradient_value!(g0, hess, t_k, x0, time_step)
+    PF.gradient_value!(g0, hess, data, t_k, x0, time_step)
     for (ind, bt) in enumerate(PF.get_bus_type(data)[:, time_step])
         @test g0[2 * ind - 1] == (bt == PSY.ACBusTypes.PQ ? x0[2 * ind - 1] - 1 : 0.0)
         @test g0[2 * ind] == 0.0
@@ -270,7 +277,7 @@ end
 
     t_k = 0.5
     g1 = similar(x0)
-    PF.gradient_value!(g1, hess, t_k, x0, time_step)
+    PF.gradient_value!(g1, hess, data, t_k, x0, time_step)
 
     n = size(x0, 1)
     u = rand(Float64, n) .- 0.5
@@ -283,7 +290,7 @@ end
         inputValues = [x0, x1]
         outputValues = Vector{Float64}()
         for inputVal in inputValues
-            push!(outputValues, PF.F_value(hess, t_k, inputVal, time_step))
+            push!(outputValues, PF.F_value(hess, data, t_k, inputVal, time_step))
         end
         ΔF = outputValues[2] - outputValues[1]
         push!(errors, norm(ΔF - dot(g1, x1 - x0)) / Δx_mag)

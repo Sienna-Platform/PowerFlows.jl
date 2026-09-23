@@ -23,10 +23,10 @@ end
                                                                        _ZERO_SP_FORMULATIONS
     data = PowerFlowData(PFType(), _zero_setpoint_lcc_system())
     residual = PF.ACPowerFlowResidual(data, 1)
-    jac = PF.ACPowerFlowJacobian(residual, 1)
+    jac = PF.ACPowerFlowJacobian(data, residual, 1)
     x0 = PF.calculate_x0(data, 1)
-    residual(x0, 1)
-    jac(1)
+    residual(data, x0, 1)
+    jac(data, 1)
 
     # i_dc of the degenerate converter is exactly 0.
     @test iszero(data.lcc.i_dc[1, 1])
@@ -43,19 +43,19 @@ end
 ) in _ZERO_SP_FORMULATIONS
     data = PowerFlowData(PFType(), _zero_setpoint_lcc_system())
     residual = PF.ACPowerFlowResidual(data, 1)
-    jac = PF.ACPowerFlowJacobian(residual, 1)
+    jac = PF.ACPowerFlowJacobian(data, residual, 1)
     x0 = PF.calculate_x0(data, 1)
     Random.seed!(1)
     x = x0 .+ 0.01 .* randn(length(x0))
-    residual(x, 1)
-    jac(1)
+    residual(data, x, 1)
+    jac(data, 1)
     J = copy(Matrix(jac.Jv))
 
     v = randn(length(x))
     ε = 1e-6
-    residual(x .+ ε .* v, 1)
+    residual(data, x .+ ε .* v, 1)
     Fp = copy(residual.Rv)
-    residual(x .- ε .* v, 1)
+    residual(data, x .- ε .* v, 1)
     Fm = copy(residual.Rv)
     fd = (Fp .- Fm) ./ (2ε)
     # The pinned tap rows (∂/∂tap = 1) must agree with FD just like every other row.
@@ -67,14 +67,14 @@ end
     sys = _zero_setpoint_lcc_system()
     data = PowerFlowData(ACPowerFlow{NewtonRaphsonACPowerFlow}(; time_steps = 3), sys)
     residual = PF.ACPowerFlowResidual(data, 1)
-    jac = PF.ACPowerFlowJacobian(residual, 1)
-    residual(PF.calculate_x0(data, 1), 1)
-    jac(1)
+    jac = PF.ACPowerFlowJacobian(data, residual, 1)
+    residual(data, PF.calculate_x0(data, 1), 1)
+    jac(data, 1)
     sz = size(jac.Jv)
     nnz1 = SparseArrays.nnz(jac.Jv)
     for t in 2:3
-        residual(PF.calculate_x0(data, t), t)
-        jac(t)
+        residual(data, PF.calculate_x0(data, t), t)
+        jac(data, t)
         @test size(jac.Jv) == sz
         @test SparseArrays.nnz(jac.Jv) == nnz1
     end

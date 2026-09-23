@@ -139,18 +139,18 @@ end
     col = 2 * ix - 1
 
     residual = PowerFlows.ACPowerFlowResidual(data, 1)
-    jac = PowerFlows.ACPowerFlowJacobian(residual, 1)
+    jac = PowerFlows.ACPowerFlowJacobian(data, residual, 1)
     x = PowerFlows.calculate_x0(data, 1)
-    residual(x, 1)
-    jac(1)
+    residual(data, x, 1)
+    jac(data, 1)
     @test jac.Jv[vk, col] == 0.0   # fresh PV build: structural zero
 
     data.bus_type[ix, 1] = PSY.ACBusTypes.PQ
-    jac(1)
+    jac(data, 1)
     @test jac.Jv[vk, col] != 0.0   # PQ: the loss-coupling derivative now enters
 
     data.bus_type[ix, 1] = PSY.ACBusTypes.PV
-    jac(1)   # refilled IN PLACE, same Jacobian object, as a reused cache would do
+    jac(data, 1)   # refilled IN PLACE, same Jacobian object, as a reused cache would do
     @test jac.Jv[vk, col] == 0.0   # must match a fresh PV build, not the stale PQ value
 end
 
@@ -161,10 +161,10 @@ end
     pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(; correct_bustypes = true)
     data = PowerFlowData(pf, sys)
     residual = PowerFlows.ACPowerFlowResidual(data, 1)
-    jac = PowerFlows.ACPowerFlowJacobian(residual, 1)
+    jac = PowerFlows.ACPowerFlowJacobian(data, residual, 1)
     x = PowerFlows.calculate_x0(data, 1)
-    residual(x, 1)
-    jac(1)
+    residual(data, x, 1)
+    jac(data, 1)
 
     M = PowerFlows._build_singular_J_fallback(jac.Jv, x)
     F = jac.Jv' * jac.Jv
@@ -223,17 +223,19 @@ end
     end
 end
 
-@testset "Polar residual and Jacobian hold a concretely typed data field" begin
+@testset "solver objects do not store data" begin
+    for T in (PF.ACPowerFlowResidual, PF.ACPowerFlowJacobian, PF.ACRectangularCIResidual,
+        PF.ACRectangularCIJacobian, PF.ACMixedCPBResidual, PF.ACMixedCPBJacobian,
+        PF.HomotopyHessian)
+        @test !hasfield(T, :data)
+    end
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14")
-    pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(; correct_bustypes = true)
-    data = PowerFlowData(pf, sys)
+    data = PowerFlowData(ACPowerFlow{NewtonRaphsonACPowerFlow}(), sys)
     residual = PowerFlows.ACPowerFlowResidual(data, 1)
-    J = PowerFlows.ACPowerFlowJacobian(residual, 1)
-    @test isconcretetype(fieldtype(typeof(residual), :data))
-    @test isconcretetype(fieldtype(typeof(J), :data))
+    J = PowerFlows.ACPowerFlowJacobian(data, residual, 1)
     x0 = PowerFlows.calculate_x0(data, 1)
-    residual(x0, 1)
-    J(1)
-    @test (@allocated residual(x0, 1)) == 0
-    @test (@allocated J(1)) == 0
+    residual(data, x0, 1)
+    J(data, 1)
+    @test (@allocated residual(data, x0, 1)) == 0
+    @test (@allocated J(data, 1)) == 0
 end

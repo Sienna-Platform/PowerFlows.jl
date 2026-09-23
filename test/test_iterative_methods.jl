@@ -332,11 +332,11 @@ end
     data3 = PowerFlowData(no_dc_pf, sys3)
     x0 = PF.calculate_x0(data3, 1)
     residual = PF.ACPowerFlowResidual(data3, 1)
-    residual(x0, 1)
+    residual(data3, x0, 1)
     residualSize = norm(residual.Rv, 1)
     newx0 = deepcopy(x0)
     PF.dc_power_flow_start!(newx0, data, 1, residual)
-    residual(newx0, 1)
+    residual(data3, newx0, 1)
     newResidualSize = norm(residual.Rv, 1)
     @test x0 !== newx0
     @test newResidualSize < residualSize

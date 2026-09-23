@@ -7,8 +7,8 @@
             x = Vector{Float64}(undef, length(R.Rv))
             PF.mixed_initial_state!(x, data, R.bus_state_offset,
                 R.bus_block_size, 1)
-            R(x, 1)
-            J = PF.ACMixedCPBJacobian(R, 1)
+            R(data, x, 1)
+            J = PF.ACMixedCPBJacobian(data, R, 1)
 
             n_buses = first(size(data.bus_type))
             n_lcc = size(data.lcc.p_set, 1)
@@ -34,8 +34,8 @@
             # finite-difference testset below.
             Random.seed!(123)
             x .+= 0.01 .* randn(length(x))
-            R(x, 1)
-            J(1)
+            R(data, x, 1)
+            J(data, 1)
             J_second = copy(J.Jv)
 
             # Sparsity structure is fixed across iterations.
@@ -73,10 +73,10 @@ end
     # Verify the analytic Jacobian by its asymptotic agreement with the
     # residual (O(Δx²) Taylor remainder), not a single fixed-tolerance
     # finite-difference snapshot. Mirrors test_rectangular_ci_jacobian.jl.
-    function _verify_mixed_jacobian(R, x, label)
-        R(x, 1)
-        J = PF.ACMixedCPBJacobian(R, 1)
-        verify_jacobian_asymptotic(R, copy(J.Jv), x, 1; label = label)
+    function _verify_mixed_jacobian(R, data, x, label)
+        R(data, x, 1)
+        J = PF.ACMixedCPBJacobian(data, R, 1)
+        verify_jacobian_asymptotic(R, data, copy(J.Jv), x, 1; label = label)
     end
 
     function _build_mixed_x(sys)
@@ -87,23 +87,23 @@ end
         R = PF.ACMixedCPBResidual(data, 1)
         x = Vector{Float64}(undef, length(R.Rv))
         PF.mixed_initial_state!(x, data, R.bus_state_offset, R.bus_block_size, 1)
-        return R, x
+        return R, data, x
     end
 
     @testset "c_sys5" begin
         sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
-        R, x = _build_mixed_x(sys)
+        R, data, x = _build_mixed_x(sys)
         Random.seed!(2024)
         x .+= 1e-3 .* randn(length(x))
-        _verify_mixed_jacobian(R, x, "mixed CPB c_sys5")
+        _verify_mixed_jacobian(R, data, x, "mixed CPB c_sys5")
     end
 
     @testset "c_sys14" begin
         sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
-        R, x = _build_mixed_x(sys)
+        R, data, x = _build_mixed_x(sys)
         Random.seed!(2024)
         x .+= 1e-3 .* randn(length(x))
-        _verify_mixed_jacobian(R, x, "mixed CPB c_sys14")
+        _verify_mixed_jacobian(R, data, x, "mixed CPB c_sys14")
     end
 
     @testset "ZIP load (P+I+Z combination)" begin
@@ -122,7 +122,7 @@ end
         PF.mixed_initial_state!(x, data, R.bus_state_offset, R.bus_block_size, 1)
         Random.seed!(2024)
         x .+= 1e-3 .* randn(length(x))
-        _verify_mixed_jacobian(R, x, "mixed CPB ZIP")
+        _verify_mixed_jacobian(R, data, x, "mixed CPB ZIP")
     end
 
     function _build_mixed_lcc_x(sys; correct_bustypes = false)
@@ -136,15 +136,15 @@ end
         R = PF.ACMixedCPBResidual(data, 1)
         x = Vector{Float64}(undef, length(R.Rv))
         PF.mixed_initial_state!(x, data, R.bus_state_offset, R.bus_block_size, 1)
-        return R, x
+        return R, data, x
     end
 
     @testset "LCC PQ terminals (simple_lcc_system)" begin
         sys, _ = simple_lcc_system()
-        R, x = _build_mixed_lcc_x(sys)
+        R, data, x = _build_mixed_lcc_x(sys)
         Random.seed!(2024)
         x .+= 1e-3 .* randn(length(x))
-        _verify_mixed_jacobian(R, x, "mixed CPB LCC PQ")
+        _verify_mixed_jacobian(R, data, x, "mixed CPB LCC PQ")
     end
 
     @testset "LCC PV terminal" begin
@@ -153,10 +153,10 @@ end
         PSY.set_bustype!(b2, ACBusTypes.PV)
         PSY.set_magnitude!(b2, 1.05)
         _add_simple_thermal_standard!(sys, b2, 0.3, 0.0)
-        R, x = _build_mixed_lcc_x(sys)
+        R, data, x = _build_mixed_lcc_x(sys)
         Random.seed!(2024)
         x .+= 1e-3 .* randn(length(x))
-        _verify_mixed_jacobian(R, x, "mixed CPB LCC PV")
+        _verify_mixed_jacobian(R, data, x, "mixed CPB LCC PV")
     end
 
     @testset "LCC inverter-side setpoint" begin
@@ -165,10 +165,10 @@ end
         sys, lcc = simple_lcc_system()
         PSY.set_inverter_extinction_angle!(lcc, 1.0)   # interior, off ϕ clamp
         PSY.set_transfer_setpoint!(lcc, -0.5)          # setpoint at inverter
-        R, x = _build_mixed_lcc_x(sys)
+        R, data, x = _build_mixed_lcc_x(sys)
         Random.seed!(2024)
         x .+= 1e-3 .* randn(length(x))
-        _verify_mixed_jacobian(R, x, "mixed CPB LCC inverter-side setpoint")
+        _verify_mixed_jacobian(R, data, x, "mixed CPB LCC inverter-side setpoint")
     end
 end
 
@@ -183,9 +183,9 @@ end
     PF.mixed_initial_state!(x, data, R.bus_state_offset, R.bus_block_size, 1)
     Random.seed!(2024)
     x .+= 1e-3 .* randn(length(x))
-    R(x, 1)
-    J = PF.ACMixedCPBJacobian(R, 1)
-    verify_jacobian_asymptotic(R, copy(J.Jv), x, 1; label = "mixed CPB two-swing")
+    R(data, x, 1)
+    J = PF.ACMixedCPBJacobian(data, R, 1)
+    verify_jacobian_asymptotic(R, data, copy(J.Jv), x, 1; label = "mixed CPB two-swing")
 end
 
 @testset "Mixed CPB Jacobian: zero allocation per Newton iteration" begin
@@ -197,8 +197,8 @@ end
         x = Vector{Float64}(undef, length(R.Rv))
         PF.mixed_initial_state!(x, data, R.bus_state_offset,
             R.bus_block_size, 1)
-        R(x, 1)
-        return PF.ACMixedCPBJacobian(R, 1)
+        R(data, x, 1)
+        return PF.ACMixedCPBJacobian(data, R, 1), data
     end
     function _build_rect_J(sys)
         pf_rect = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}()
@@ -207,18 +207,18 @@ end
         x = Vector{Float64}(undef, length(R.Rv))
         PF.rect_initial_state!(x, data, R.bus_state_offset,
             R.bus_block_size, 1)
-        R(x, 1)
-        return PF.ACRectangularCIJacobian(R, 1)
+        R(data, x, 1)
+        return PF.ACRectangularCIJacobian(data, R, 1), data
     end
 
     function _check_zero_alloc(sys, label)
         @testset "$label" begin
-            J = _build_mixed_J(sys)
-            J(1)                       # warm-up (JIT)
-            a_mixed = @allocated J(1)
-            Jr = _build_rect_J(sys)
-            Jr(1)                      # warm-up (JIT)
-            a_rect = @allocated Jr(1)
+            J, data = _build_mixed_J(sys)
+            J(data, 1)                       # warm-up (JIT)
+            a_mixed = @allocated J(data, 1)
+            Jr, data_r = _build_rect_J(sys)
+            Jr(data_r, 1)                      # warm-up (JIT)
+            a_rect = @allocated Jr(data_r, 1)
             # Measured (c_sys5 & c_sys14, neither has an LCC):
             #   mixed @allocated J(1) == 80, rect @allocated J(1) == 80.
             # The inner `_update_mixed_cpb_jacobian_values!` is verified
@@ -252,5 +252,5 @@ end
     linSolveCache = PF.make_linear_solver_cache(PF.PNM.KLUSolver(), J.Jv)
     PF.symbolic_factor!(linSolveCache, J.Jv)
     stateVector = PF.StateVectorCache(x0, R.Rv)
-    @test_nowarn PF._simple_step(1, stateVector, linSolveCache, R, J)
+    @test_nowarn PF._simple_step(1, stateVector, linSolveCache, R, J, data)
 end

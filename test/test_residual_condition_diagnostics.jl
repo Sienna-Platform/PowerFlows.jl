@@ -11,10 +11,10 @@ const _KLU_SETTINGS = SolutionParameters(; linear_solver = "KLU")
 function _schur_eig_and_truth(pf, sys; time_step = 1, backend = PNM.KLUSolver())
     data = PowerFlowData(pf, sys)
     residual = PF.ACPowerFlowResidual(data, time_step)
-    jac = PF.ACPowerFlowJacobian(residual, time_step)
+    jac = PF.ACPowerFlowJacobian(data, residual, time_step)
     x0 = PF.calculate_x0(data, time_step)
-    residual(x0, time_step)
-    jac(time_step)
+    residual(data, x0, time_step)
+    jac(data, time_step)
 
     cache = PF.make_linear_solver_cache(backend, jac.Jv)
     PF.symbolic_factor!(cache, jac.Jv)
@@ -188,10 +188,10 @@ function _singular_matrix_family(; backend = PNM.KLUSolver())
     pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(; correct_bustypes = true)
     data = PF.PowerFlowData(pf, sys)
     residual = PF.ACPowerFlowResidual(data, 1)
-    jac = PF.ACPowerFlowJacobian(residual, 1)
+    jac = PF.ACPowerFlowJacobian(data, residual, 1)
     x0 = PF.calculate_x0(data, 1)
-    residual(x0, 1)
-    jac(1)
+    residual(data, x0, 1)
+    jac(data, 1)
 
     n = size(jac.Jv, 1)
     # An odd shift keeps every diagonal entry structurally stored (a cancelling
@@ -465,7 +465,7 @@ end
 
     # Both trigger conditions must hold, or this test would pass for the wrong reason.
     x0 = PF.calculate_x0(data, 1)
-    residual(x0, 1)
+    residual(data, x0, 1)
     @test sum(abs, residual.Rv) > PF.LARGE_RESIDUAL * length(residual.Rv)
     @test argmax(abs.(residual.Rv)) > n_bus_eqs
 

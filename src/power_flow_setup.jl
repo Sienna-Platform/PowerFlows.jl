@@ -9,16 +9,16 @@ function improve_x0(pf::ACPolarPowerFlow,
     time_step::Int64,
 )
     x0 = calculate_x0(data, time_step)
-    residual(x0, time_step)
+    residual(data, x0, time_step)
     prev = findlast(@view(data.converged[1:(time_step - 1)]))
     if !isnothing(prev)
         newx0 = _previous_solution_start(x0, data, prev)
-        _pick_better_x0(x0, newx0, time_step, residual, "previous converged solution")
+        _pick_better_x0(x0, newx0, time_step, residual, data, "previous converged solution")
     end
     if norm(residual.Rv, 1) > LARGE_RESIDUAL * length(residual.Rv) &&
        get_enhanced_flat_start(pf)
         newx0 = _enhanced_flat_start(x0, data, time_step)
-        _pick_better_x0(x0, newx0, time_step, residual, "enhanced flat start")
+        _pick_better_x0(x0, newx0, time_step, residual, data, "enhanced flat start")
     else
         @debug "skipping enhanced flat start"
     end
@@ -28,7 +28,7 @@ function improve_x0(pf::ACPolarPowerFlow,
     else
         @debug "skipping running DC power flow fallback"
     end
-    residual(x0, time_step)  # re-calculate residual for new x0: might have changed.
+    residual(data, x0, time_step)  # re-calculate residual for new x0: might have changed.
 
     if sum(abs, residual.Rv) > LARGE_RESIDUAL * length(residual.Rv)
         # Tail rows (LCC/VSC/area) are not bus quantities: let the resolver label the index.
@@ -55,21 +55,21 @@ function improve_x0(pf::ACRectangularPowerFlow,
     rect_initial_state!(
         x0, data, residual.bus_state_offset, residual.bus_block_size, time_step,
     )
-    residual(x0, time_step)
+    residual(data, x0, time_step)
     prev = findlast(@view(data.converged[1:(time_step - 1)]))
     if !isnothing(prev)
         newx0 = copy(x0)
         _rect_fill_state!(newx0, data, residual.bus_state_offset, time_step, prev)
-        _pick_better_x0(x0, newx0, time_step, residual, "previous converged solution")
+        _pick_better_x0(x0, newx0, time_step, residual, data, "previous converged solution")
     end
     if norm(residual.Rv, 1) > LARGE_RESIDUAL * length(residual.Rv) &&
        get_enhanced_flat_start(pf)
         newx0 = _enhanced_flat_start(x0, data, residual, time_step)
-        _pick_better_x0(x0, newx0, time_step, residual, "enhanced flat start")
+        _pick_better_x0(x0, newx0, time_step, residual, data, "enhanced flat start")
     else
         @debug "skipping enhanced flat start"
     end
-    residual(x0, time_step)  # re-calculate residual for chosen x0
+    residual(data, x0, time_step)  # re-calculate residual for chosen x0
     if sum(abs, residual.Rv) > LARGE_RESIDUAL * length(residual.Rv)
         lg_res, ix = findmax(abs.(residual.Rv))
         lg_res_rounded = round(lg_res; sigdigits = 3)
@@ -97,21 +97,21 @@ function improve_x0(pf::ACMixedPowerFlow,
     mixed_initial_state!(
         x0, data, residual.bus_state_offset, residual.bus_block_size, time_step,
     )
-    residual(x0, time_step)
+    residual(data, x0, time_step)
     prev = findlast(@view(data.converged[1:(time_step - 1)]))
     if !isnothing(prev)
         newx0 = copy(x0)
         _mixed_fill_state!(newx0, data, residual.bus_state_offset, time_step, prev)
-        _pick_better_x0(x0, newx0, time_step, residual, "previous converged solution")
+        _pick_better_x0(x0, newx0, time_step, residual, data, "previous converged solution")
     end
     if norm(residual.Rv, 1) > LARGE_RESIDUAL * length(residual.Rv) &&
        get_enhanced_flat_start(pf)
         newx0 = _enhanced_flat_start(x0, data, residual, time_step)
-        _pick_better_x0(x0, newx0, time_step, residual, "enhanced flat start")
+        _pick_better_x0(x0, newx0, time_step, residual, data, "enhanced flat start")
     else
         @debug "skipping enhanced flat start"
     end
-    residual(x0, time_step)  # re-calculate residual for chosen x0
+    residual(data, x0, time_step)  # re-calculate residual for chosen x0
     if sum(abs, residual.Rv) > LARGE_RESIDUAL * length(residual.Rv)
         lg_res, ix = findmax(abs.(residual.Rv))
         lg_res_rounded = round(lg_res; sigdigits = 3)
@@ -125,10 +125,11 @@ function _smaller_residual(x0::Vector{Float64},
     newx0::Vector{Float64},
     time_step::Int64,
     residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
+    data::ACPowerFlowData,
 )
-    residual(x0, time_step)
+    residual(data, x0, time_step)
     residualSize = norm(residual.Rv, 1)
-    residual(newx0, time_step)
+    residual(data, newx0, time_step)
     newResidualSize = norm(residual.Rv, 1)
     return newResidualSize < residualSize
 end
@@ -137,12 +138,13 @@ function _pick_better_x0(x0::Vector{Float64},
     newx0::Vector{Float64},
     time_step::Int64,
     residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
+    data::ACPowerFlowData,
     improvement_method::String,
 )
-    if _smaller_residual(x0, newx0, time_step, residual)
+    if _smaller_residual(x0, newx0, time_step, residual, data)
         @info "success: $improvement_method yields smaller residual"
         copyto!(x0, newx0)
-        residual(x0, time_step) # re-calculate for new x0.
+        residual(data, x0, time_step) # re-calculate for new x0.
     else
         @debug "no improvement from $improvement_method"
     end
@@ -159,7 +161,7 @@ function dc_power_flow_start!(x0::Vector{Float64},
 )
     _dc_power_flow_fallback!(data, time_step)
     newx0 = calculate_x0(data, time_step)
-    _pick_better_x0(x0, newx0, time_step, residual, "DC power flow fallback")
+    _pick_better_x0(x0, newx0, time_step, residual, data, "DC power flow fallback")
     return
 end
 
@@ -310,7 +312,7 @@ function _initialize_residual_x0(pf::ACPolarPowerFlow,
     else
         x0_computed = copy(x0)
         @warn "Using caller-provided x0; skipping improve_x0."
-        residual(x0_computed, time_step)
+        residual(data, x0_computed, time_step)
     end
     _log_initial_residual(residual)
 
@@ -335,8 +337,8 @@ function initialize_power_flow_variables(pf::ACPolarPowerFlow{T},
         pf, data, time_step; x0, validate_voltage_magnitudes, vm_validation_range,
     )
 
-    J = ACPowerFlowJacobian(residual, time_step)
-    J(time_step)
+    J = ACPowerFlowJacobian(data, residual, time_step)
+    J(data, time_step)
 
     return residual, J, x0_computed
 end
@@ -355,10 +357,10 @@ function initialize_power_flow_variables(pf::ACRectangularPowerFlow{T},
     else
         x0_computed = copy(x0)
         @warn "Using caller-provided x0; skipping improve_x0."
-        residual(x0_computed, time_step)
+        residual(data, x0_computed, time_step)
     end
     _log_initial_residual(residual)
-    J = ACRectangularCIJacobian(residual, time_step)
+    J = ACRectangularCIJacobian(data, residual, time_step)
     return residual, J, x0_computed
 end
 
@@ -376,9 +378,9 @@ function initialize_power_flow_variables(pf::ACMixedPowerFlow{T},
     else
         x0_computed = copy(x0)
         @warn "Using caller-provided x0; skipping improve_x0."
-        residual(x0_computed, time_step)
+        residual(data, x0_computed, time_step)
     end
     _log_initial_residual(residual)
-    J = ACMixedCPBJacobian(residual, time_step)
+    J = ACMixedCPBJacobian(data, residual, time_step)
     return residual, J, x0_computed
 end

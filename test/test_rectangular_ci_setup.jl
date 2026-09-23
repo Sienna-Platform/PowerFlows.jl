@@ -112,12 +112,12 @@ end
     PF.rect_initial_state!(
         x0, data, residual.bus_state_offset, residual.bus_block_size, 1,
     )
-    residual(x0, 1)
+    residual(data, x0, 1)
     base_norm = norm(residual.Rv, 1)
     # A deliberately worse candidate must be rejected (x0 unchanged).
     worse = x0 .+ 5.0
-    PF._pick_better_x0(x0, worse, 1, residual, "unit test worse candidate")
-    residual(x0, 1)
+    PF._pick_better_x0(x0, worse, 1, residual, data, "unit test worse candidate")
+    residual(data, x0, 1)
     @test norm(residual.Rv, 1) ≤ base_norm
     @test x0 != worse
 end

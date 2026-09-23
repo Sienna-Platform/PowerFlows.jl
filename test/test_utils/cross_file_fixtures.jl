@@ -124,7 +124,7 @@ function verify_jacobian(
     data = PF.PowerFlowData(pf, sys)
     time_step = 1
     residual = PF.ACPowerFlowResidual(data, time_step)
-    J = PF.ACPowerFlowJacobian(residual, time_step)
+    J = PF.ACPowerFlowJacobian(data, residual, time_step)
     x0 = PF.calculate_x0(data, time_step)
     # Verify away from the flat-start state. At flat start θ=0 for every bus,
     # which silently zeroes all `sin(Δθ)` cross-terms — a sign flip in the
@@ -134,10 +134,10 @@ function verify_jacobian(
         Random.seed!(seed)
         x0 .+= perturbation .* randn(length(x0))
     end
-    residual(x0, time_step)
-    J(time_step)
+    residual(data, x0, time_step)
+    J(data, time_step)
     verify_jacobian_asymptotic(
-        residual, deepcopy(J.Jv), x0, time_step; label = label,
+        residual, data, deepcopy(J.Jv), x0, time_step; label = label,
     )
 end
 
