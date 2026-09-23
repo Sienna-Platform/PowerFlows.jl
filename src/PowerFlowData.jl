@@ -192,8 +192,7 @@ struct PowerFlowData{
     # state-vector buffers so the Q-limit retry loop and the multi-period time-step loop skip
     # reconstructing these structure-invariant objects on every `_newton_power_flow` call. Its own
     # slot so it never contends with a DC/FD `solver_cache`. Typed as the `AbstractNRCache` forward
-    # supertype because the concrete `PolarNRCache` cannot be referenced here (construction cycle
-    # through `ACPowerFlowResidual`).
+    # supertype because `PolarNRCache` is defined later, in `power_flow_method.jl`.
     polar_nr_cache::Base.RefValue{Union{Nothing, AbstractNRCache}}
 end
 

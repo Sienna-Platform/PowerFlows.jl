@@ -364,9 +364,9 @@ end
     # way `_calculate_voltage_stability_factors` does internally.
     residual = PF.ACPowerFlowResidual(data_newton, time_step)
     x_solved = PF.calculate_x0(data_newton, time_step)
-    residual(x_solved, time_step)
-    J = PF.ACPowerFlowJacobian(residual, time_step)
-    J(time_step)
+    residual(data_newton, x_solved, time_step)
+    J = PF.ACPowerFlowJacobian(data_newton, residual, time_step)
+    J(data_newton, time_step)
     rows, cols = PowerFlows._block_J_indices(pvpq, pq)
     J_block = J.Jv[rows, cols]
 
@@ -626,8 +626,8 @@ end
             rating = 1.0,
             base_power = 100.0,
             base_voltage_primary = 230,
-            base_voltage_secondary = 110,
-        ),
+            base_voltage_secondary = 110, input_basis = PSY.CU,
+        ), input_basis = PSY.CU,
     )
     add_component!(sys, t)
 

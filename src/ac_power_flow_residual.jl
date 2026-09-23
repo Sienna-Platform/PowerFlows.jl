@@ -4,7 +4,6 @@
 A struct to keep track of the residuals in the Newton-Raphson AC power flow calculation.
 
 # Fields
-- `data::ACPowerFlowData`: The grid model data.
 - `Rv::Vector{Float64}`: A vector of the values of the residuals.
 - `P_net::Vector{Float64}`: A vector of net active power injections.
 - `Q_net::Vector{Float64}`: A vector of net reactive power injections.
@@ -14,8 +13,7 @@ A struct to keep track of the residuals in the Newton-Raphson AC power flow calc
 - `P_slack_buf::Vector{Float64}`: Scratch buffer of length `n_buses` used by `_update_residual_values!` to write the per-subnetwork slack distribution in place, avoiding a per-iteration allocation when indexing `bus_slack_participation_factors` by `subnetwork_buses`.
 - `validate_indices::Vector{Int}`: precomputed `x`-indices of PQ-bus |V| entries for the per-iteration voltage-magnitude diagnostic.
 """
-struct ACPowerFlowResidual{D <: ACPowerFlowData}
-    data::D
+struct ACPowerFlowResidual
     Rv::Vector{Float64}
     P_net::Vector{Float64}
     Q_net::Vector{Float64}
@@ -55,7 +53,6 @@ function ACPowerFlowResidual(data::ACPowerFlowData, time_step::Int64)
         _build_bus_slack_participation_factors(data, bus_type, subnetworks, time_step)
 
     residual = ACPowerFlowResidual(
-        data,
         Vector{Float64}(undef,
             2 * n_buses + state_tail_length(data, get_dc_network(data))),
         Vector{Float64}(undef, n_buses),
@@ -105,7 +102,7 @@ function _refresh_residual_setpoints!(
 end
 
 """
-    (Residual::ACPowerFlowResidual)(Rv::Vector{Float64}, x::Vector{Float64}, time_step::Int64)
+    (Residual::ACPowerFlowResidual)(data::ACPowerFlowData, Rv::Vector{Float64}, x::Vector{Float64}, time_step::Int64)
 
 Evaluate the AC power flow residuals and store the result in `Rv` using the provided
 state vector `x` and the current time step `time_step`.
@@ -115,11 +112,13 @@ This makes the struct callable.
 Calling the `ACPowerFlowResidual` will also update the values of P, Q, V, Θ in the `data` struct.
 
 # Arguments
+- `data::ACPowerFlowData`: The grid model data.
 - `Rv::Vector{Float64}`: The vector to store the calculated residuals.
 - `x::Vector{Float64}`: The state vector.
 - `time_step::Int64`: The current time step.
 """
 function (Residual::ACPowerFlowResidual)(
+    data::ACPowerFlowData,
     Rv::Vector{Float64},
     x::Vector{Float64},
     time_step::Int64,
@@ -136,7 +135,7 @@ function (Residual::ACPowerFlowResidual)(
         Residual.bus_reactive_constant_I,
         Residual.bus_active_constant_Z,
         Residual.bus_reactive_constant_Z,
-        Residual.data,
+        data,
         time_step,
         Residual.P_slack_buf,
     )
@@ -145,7 +144,7 @@ function (Residual::ACPowerFlowResidual)(
 end
 
 """
-    (Residual::ACPowerFlowResidual)(x::Vector{Float64}, time_step::Int64)
+    (Residual::ACPowerFlowResidual)(data::ACPowerFlowData, x::Vector{Float64}, time_step::Int64)
 
 Update the AC power flow residuals inplace and store the result in the attribute `Rv` of the struct.
 The inputs are the values of state vector `x` and the current time step `time_step`.
@@ -154,10 +153,13 @@ This makes the struct callable.
 Calling the `ACPowerFlowResidual` will also update the values of P, Q, V, Θ in the `data` struct.
 
 # Arguments
+- `data::ACPowerFlowData`: The grid model data.
 - `x::Vector{Float64}`: The state vector values.
 - `time_step::Int64`: The current time step.
 """
-function (Residual::ACPowerFlowResidual)(x::Vector{Float64}, time_step::Int64)
+function (Residual::ACPowerFlowResidual)(
+    data::ACPowerFlowData, x::Vector{Float64}, time_step::Int64,
+)
     _update_residual_values!(
         Residual.Rv,
         x,
@@ -170,7 +172,7 @@ function (Residual::ACPowerFlowResidual)(x::Vector{Float64}, time_step::Int64)
         Residual.bus_reactive_constant_I,
         Residual.bus_active_constant_Z,
         Residual.bus_reactive_constant_Z,
-        Residual.data,
+        data,
         time_step,
         Residual.P_slack_buf,
     )

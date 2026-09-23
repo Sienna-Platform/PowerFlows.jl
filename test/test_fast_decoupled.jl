@@ -279,10 +279,11 @@ function _tapped_magnetizing_shunt_system()
             tap = 1.05,
             α = 0.0,
             rating = 2.0,
-            base_power = 100.0,
+            base_power = 100.0, input_basis = PSY.CU,
         ),
         magnetizing_shunt = 0.0 + 0.04im,
         shunt_location = PSY.TwoWindingTransformerShuntLocation.PRIMARY,
+        input_basis = PSY.CU,
     )
     add_component!(sys, tx)
     # A FixedAdmittance at b3 so a true bus shunt is distinguished from a mis-split branch shunt.
@@ -354,8 +355,8 @@ function _zero_impedance_transformer_system()
             tap = 1.0,
             α = 0.0,
             rating = 2.0,
-            base_power = 100.0,
-        ),
+            base_power = 100.0, input_basis = PSY.CU,
+        ), input_basis = PSY.CU,
     )
     add_component!(sys, tx)
     return sys
@@ -421,8 +422,8 @@ function _pst_line_parallel_degree_two_system()
             α = 0.15,
             rating = 2.0,
             base_power = 100.0,
-            control_limits = (min = -0.7, max = 0.7),
-        ),
+            control_limits = (min = -0.7, max = 0.7), input_basis = PSY.CU,
+        ), input_basis = PSY.CU,
     )
     add_component!(sys, pst12)
     _add_simple_line!(sys, b2, b3, 0.01, 0.10, 0.0)
@@ -579,7 +580,7 @@ end
         # Flat-start residual (fresh residual on freshly-initialized data).
         residual_flat = PF.ACPowerFlowResidual(data, 1)
         x0_flat = _calc_x(data, 1)
-        residual_flat(x0_flat, 1)
+        residual_flat(data, x0_flat, 1)
         flat_ss = sum(abs2, residual_flat.Rv)
 
         converged = _drive_fd_directly(pf, data;
@@ -595,7 +596,7 @@ end
         # diverged state in `data`).
         residual_final = PF.ACPowerFlowResidual(data, 1)
         x_final = _calc_x(data, 1)
-        residual_final(x_final, 1)
+        residual_final(data, x_final, 1)
         final_ss = sum(abs2, residual_final.Rv)
         @test isfinite(final_ss)
         @test final_ss <= flat_ss + 1e-8
@@ -700,8 +701,8 @@ function _phase_shifter_system()
             rating = 2.0,
             base_power = 100.0,
             # Phase-angle bounds (rad) live in the circuit's control band.
-            control_limits = (min = -0.7, max = 0.7),
-        ),
+            control_limits = (min = -0.7, max = 0.7), input_basis = PSY.CU,
+        ), input_basis = PSY.CU,
     )
     add_component!(sys, pst)
     # A fixed-admittance shunt at b3 so the per-bus shunt-residual path is exercised too.
@@ -810,7 +811,7 @@ _fd_decoupled_pf(; scheme::PF.FDScheme = PF.FDSchemeXB(), kwargs...) =
             lc_nr = PF.make_linear_solver_cache(backend, J_nr.Jv)
             PF.symbolic_factor!(lc_nr, J_nr.Jv)
             conv_nr, it_nr = PF._run_power_flow_method(
-                1, sv_nr, lc_nr, r_nr, J_nr, NewtonRaphsonACPowerFlow;
+                1, sv_nr, lc_nr, r_nr, J_nr, data_nr2, NewtonRaphsonACPowerFlow;
                 tol = 1e-9, maxIterations = 50)
             @test conv_nr
 
@@ -1559,7 +1560,7 @@ end
     Vm = view(data.bus_magnitude, :, 1)
     residual = PF.ACPowerFlowResidual(data, 1)
     x0 = PF.calculate_x0(data, 1)
-    residual(x0, 1)   # warm residual + sync data
+    residual(data, x0, 1)   # warm residual + sync data
 
     rp = cache.rp
     rq = pqdata.rq
@@ -1612,7 +1613,7 @@ end
     a_lazy = @allocated PF._initialize_residual_x0(pf, data, 1; kw...)
     a_full = @allocated PF.initialize_power_flow_variables(pf, data, 1; kw...)
     jac_bytes = Base.summarysize(
-        PF.ACPowerFlowJacobian(PF.ACPowerFlowResidual(data, 1), 1).Jv)
+        PF.ACPowerFlowJacobian(data, PF.ACPowerFlowResidual(data, 1), 1).Jv)
     @test a_lazy < a_full
     @test (a_full - a_lazy) > jac_bytes ÷ 2
 
@@ -1631,8 +1632,8 @@ end
     @test cache.bp_factor_count == 1        # lazy-J change did not disturb factor-once
 
     jac_alloc = @allocated (
-        let J = PF.ACPowerFlowJacobian(PF.ACPowerFlowResidual(data_mp, 1), 1)
-            J(1)
+        let J = PF.ACPowerFlowJacobian(data_mp, PF.ACPowerFlowResidual(data_mp, 1), 1)
+            J(data_mp, 1)
         end
     )
     a_solve = @allocated solve_power_flow!(data_mp)
@@ -1702,7 +1703,7 @@ end
         @test all(isfinite, data.bus_magnitude[:, 1])
         @test all(data.bus_magnitude[:, 1] .> 0.0)
         residual_final = PF.ACPowerFlowResidual(data, 1)
-        residual_final(_calc_x(data, 1), 1)
+        residual_final(data, _calc_x(data, 1), 1)
         @test isfinite(sum(abs2, residual_final.Rv))
     end
 

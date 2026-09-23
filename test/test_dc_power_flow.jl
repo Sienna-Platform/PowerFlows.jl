@@ -185,6 +185,7 @@ end
         max_impedance_reactive_power = PSY.get_max_reactive_power(load, PSY.NU),
         max_current_active_power = PSY.get_max_active_power(load, PSY.NU),
         max_current_reactive_power = PSY.get_max_reactive_power(load, PSY.NU),
+        input_basis = PSY.CU,
     )
     add_component!(sys, new_load)
     set_zip_load_in_mva!(sys, (0.0, P, 0.0))

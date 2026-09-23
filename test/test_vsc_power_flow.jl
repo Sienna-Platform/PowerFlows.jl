@@ -66,7 +66,7 @@ end
         dc_setpoint_from = 1.0,
         dc_control_to = PSY.VSCDCControlModes.DC_VOLTAGE_DROOP,
         dc_voltage_droop_to = 0.05,
-        dc_setpoint_to = 1.0,
+        dc_setpoint_to = 1.0, input_basis = PSY.CU,
     )
     PSY.add_component!(sys, vsc)
     data = PowerFlowData(
@@ -108,7 +108,7 @@ end
     # full residual (incl. DC-KCL) is ~0 at the solution
     residual = PF.ACPowerFlowResidual(data, 1)
     x = PF.calculate_x0(data, 1)
-    residual(x, 1)
+    residual(data, x, 1)
     @test maximum(abs, residual.Rv) < 1e-7
 end
 
@@ -123,11 +123,11 @@ end
     @test solve_power_flow!(data)
     # rebuild residual/Jacobian at the converged state and check the analytic J vs FD
     residual = PF.ACPowerFlowResidual(data, 1)
-    jac = PF.ACPowerFlowJacobian(residual, 1)
+    jac = PF.ACPowerFlowJacobian(data, residual, 1)
     x = PF.calculate_x0(data, 1)
-    residual(x, 1)
-    jac(1)
-    verify_jacobian_asymptotic(residual, jac.Jv, x, 1; label = "VSC polar I1")
+    residual(data, x, 1)
+    jac(data, 1)
+    verify_jacobian_asymptotic(residual, data, jac.Jv, x, 1; label = "VSC polar I1")
 end
 
 # Flexible builder: one VSC line between the first two PQ buses of c_sys14, control fields passed
@@ -154,7 +154,7 @@ function _vsc_system(; g = 50.0, vsc_kwargs...)
         active_power_limits_from = (min = -2.0, max = 2.0),
         active_power_limits_to = (min = -2.0, max = 2.0),
         g = g,
-        vsc_kwargs...,
+        vsc_kwargs..., input_basis = PSY.CU,
     )
     PSY.add_component!(sys, vsc)
     return (sys, PSY.get_number(pq[1]), PSY.get_number(pq[2]))
@@ -249,11 +249,11 @@ end
     )
     @test solve_power_flow!(data)
     residual = PF.ACPowerFlowResidual(data, 1)
-    jac = PF.ACPowerFlowJacobian(residual, 1)
+    jac = PF.ACPowerFlowJacobian(data, residual, 1)
     x = PF.calculate_x0(data, 1)
-    residual(x, 1)
-    jac(1)
-    verify_jacobian_asymptotic(residual, jac.Jv, x, 1; label = "VSC polar lossy")
+    residual(data, x, 1)
+    jac(data, 1)
+    verify_jacobian_asymptotic(residual, data, jac.Jv, x, 1; label = "VSC polar lossy")
 end
 @testset "VSC: analytic polar Jacobian matches FD for a lossy converter on a PV bus" begin
     sys = _vsc_system_pv_terminal(; g = 45.0)
@@ -265,11 +265,18 @@ end
     )
     # check at the flat start to isolate the Jacobian structure from solver convergence
     residual = PF.ACPowerFlowResidual(data, 1)
-    jac = PF.ACPowerFlowJacobian(residual, 1)
+    jac = PF.ACPowerFlowJacobian(data, residual, 1)
     x = PF.calculate_x0(data, 1)
-    residual(x, 1)
-    jac(1)
-    verify_jacobian_asymptotic(residual, jac.Jv, x, 1; label = "VSC polar lossy-on-PV")
+    residual(data, x, 1)
+    jac(data, 1)
+    verify_jacobian_asymptotic(
+        residual,
+        data,
+        jac.Jv,
+        x,
+        1;
+        label = "VSC polar lossy-on-PV",
+    )
 end
 
 # A point-to-point VSC with g = 0 is an open DC link: `_build_G_dc` yields an all-zero DC
@@ -368,9 +375,9 @@ end
     data = PowerFlowData(pf, sys)
     @test solve_power_flow!(data)
     residual, jac, x = PF.initialize_power_flow_variables(pf, data, 1)
-    residual(x, 1)
-    jac(1)
-    verify_jacobian_asymptotic(residual, jac.Jv, x, 1; label = "VSC mixed")
+    residual(data, x, 1)
+    jac(data, 1)
+    verify_jacobian_asymptotic(residual, data, jac.Jv, x, 1; label = "VSC mixed")
 end
 
 @testset "VSC I3: rectangular Jacobian matches finite differences (incl. loss)" begin
@@ -395,9 +402,9 @@ end
     data = PowerFlowData(pf, sys)
     @test solve_power_flow!(data)
     residual, jac, x = PF.initialize_power_flow_variables(pf, data, 1)
-    residual(x, 1)
-    jac(1)
-    verify_jacobian_asymptotic(residual, jac.Jv, x, 1; label = "VSC rect")
+    residual(data, x, 1)
+    jac(data, 1)
+    verify_jacobian_asymptotic(residual, data, jac.Jv, x, 1; label = "VSC rect")
 end
 
 # ── Coverage: control modes whose analytic Jacobian / cross-formulation parity were previously
@@ -453,9 +460,9 @@ end
     data = PowerFlowData(pf, _vsc_droop_system())
     @test solve_power_flow!(data)
     residual, jac, x = PF.initialize_power_flow_variables(pf, data, 1)
-    residual(x, 1)
-    jac(1)
-    verify_jacobian_asymptotic(residual, jac.Jv, x, 1; label = "VSC droop $name")
+    residual(data, x, 1)
+    jac(data, 1)
+    verify_jacobian_asymptotic(residual, data, jac.Jv, x, 1; label = "VSC droop $name")
 end
 
 @testset "VSC: DC-voltage droop — polar, rectangular, and mixed all agree" begin
@@ -490,9 +497,9 @@ end
     data = PowerFlowData(pf, _vsc_ac_voltage_system())
     @test solve_power_flow!(data)
     residual, jac, x = PF.initialize_power_flow_variables(pf, data, 1)
-    residual(x, 1)
-    jac(1)
-    verify_jacobian_asymptotic(residual, jac.Jv, x, 1; label = "VSC ac-voltage $name")
+    residual(data, x, 1)
+    jac(data, 1)
+    verify_jacobian_asymptotic(residual, data, jac.Jv, x, 1; label = "VSC ac-voltage $name")
 end
 
 @testset "VSC: AC-voltage control — polar, rectangular, and mixed all agree" begin
@@ -772,7 +779,7 @@ function _build_parallel_ic_system(; shared_ac::Bool = true)
             loss_function = PSY.LossCurve(
                 PSY.QuadraticCurve(0.005, 0.01, 0.002),
                 PSY.NaturalUnit(),
-            ),
+            ), input_basis = PSY.CU,
         )
         PSY.add_component!(sys, ic)
     end
@@ -788,7 +795,7 @@ function _build_parallel_ic_system(; shared_ac::Bool = true)
         l = 0.0,
         c = 0.0,
         active_power_limits_from = (min = -5.0, max = 5.0),
-        active_power_limits_to = (min = -5.0, max = 5.0),
+        active_power_limits_to = (min = -5.0, max = 5.0), input_basis = PSY.CU,
     )
     PSY.add_component!(sys, dcl)
     return sys
@@ -845,7 +852,7 @@ function _vsc_system_ref_terminal(; g = 45.0)
         converter_loss_to = PSY.LossCurve(
             PSY.QuadraticCurve(0.01, 0.02, 0.005),
             PSY.NaturalUnit(),
-        ),
+        ), input_basis = PSY.CU,
     )
     PSY.add_component!(sys, vsc)
     return sys
@@ -863,10 +870,10 @@ end
         data = PowerFlowData(pf, sys)
         @test solve_power_flow!(data)
         residual, jac, x = PF.initialize_power_flow_variables(pf, data, 1)
-        residual(x, 1)
-        jac(1)
+        residual(data, x, 1)
+        jac(data, 1)
         verify_jacobian_asymptotic(
-            residual, jac.Jv, x, 1;
+            residual, data, jac.Jv, x, 1;
             label = "VSC REF terminal $(label)",
         )
         dcn = PF.get_dc_network(data)
@@ -897,10 +904,10 @@ end
         data = PowerFlowData(pf, sys)
         @test solve_power_flow!(data)
         residual, jac, x = PF.initialize_power_flow_variables(pf, data, 1)
-        residual(x, 1)
-        jac(1)
+        residual(data, x, 1)
+        jac(data, 1)
         verify_jacobian_asymptotic(
-            residual, jac.Jv, x, 1;
+            residual, data, jac.Jv, x, 1;
             label = "VSC PV terminal $(label)",
         )
         dcn = PF.get_dc_network(data)
@@ -948,7 +955,7 @@ end
         dc_control_to = PSY.VSCDCControlModes.DC_POWER,
         ac_control_to = PSY.VSCACControlModes.AC_VOLTAGE,
         dc_setpoint_to = 0.3,
-        ac_setpoint_to = 1.0,
+        ac_setpoint_to = 1.0, input_basis = PSY.CU,
     )
     PSY.add_component!(sys_pv, vsc)
     @test_throws ErrorException PowerFlowData(
@@ -988,7 +995,7 @@ end
             ac_setpoint_from = 1.0,
             dc_control_to = PSY.VSCDCControlModes.DC_POWER,
             ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
-            dc_setpoint_to = 0.2,
+            dc_setpoint_to = 0.2, input_basis = PSY.CU,
         )
         PSY.add_component!(sys_dup, vsc_k)
     end

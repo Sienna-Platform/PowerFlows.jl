@@ -55,8 +55,8 @@ import Pardiso
             pf = ACPowerFlow{NewtonRaphsonACPowerFlow}()
             data = PF.PowerFlowData(pf, sys)
             residual = PF.ACPowerFlowResidual(data, 1)
-            J = PF.ACPowerFlowJacobian(residual, 1)
-            J(1)
+            J = PF.ACPowerFlowJacobian(data, residual, 1)
+            J(data, 1)
             cache = PF.make_linear_solver_cache(PF.PNM.MKLPardisoSolver(), J.Jv)
             PF.full_factor!(cache, J.Jv)
             b = randn(size(J.Jv, 1))
@@ -77,8 +77,8 @@ import Pardiso
         pf = ACPowerFlow{NewtonRaphsonACPowerFlow}()
         data = PF.PowerFlowData(pf, sys)
         residual = PF.ACPowerFlowResidual(data, 1)
-        J = PF.ACPowerFlowJacobian(residual, 1)
-        J(1)
+        J = PF.ACPowerFlowJacobian(data, residual, 1)
+        J(data, 1)
         # Constructing the cache must fail with a clear error (never a crash/segfault)
         # when MKL is unusable — the functional guard runs before any MKL ccall.
         @test_throws ErrorException PF.make_linear_solver_cache(

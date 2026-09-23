@@ -187,6 +187,7 @@ function _newton_power_flow(
             x0,
             residual,
             J,
+            data,
             ws;
             tol, maxIterations, λ_0, stop_at_fold,
         )
@@ -204,6 +205,7 @@ function _run_power_flow_method(
     residual::Union{ACPowerFlowResidual, ACRectangularCIResidual,
         ACMixedCPBResidual},
     J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
+    data::ACPowerFlowData,
     ws::LMWorkspace;
     maxIterations::Int = DEFAULT_NR_MAX_ITER,
     tol::Float64 = DEFAULT_NR_TOL,
@@ -214,11 +216,11 @@ function _run_power_flow_method(
     μ::Float64 = λ_0
     λ::Float64 = 0.0
     i, converged = 0, false
-    residual(x, time_step)
+    residual(data, x, time_step)
     resSize = dot(residual.Rv, residual.Rv)
     linf = norm(residual.Rv, Inf)
     @debug "initially: sum of squares $(siground(resSize)), L ∞ norm $(siground(linf)), λ = $λ"
-    monitor, diag_state = setup_solver_diagnostics(J, stop_at_fold)
+    monitor, diag_state = setup_solver_diagnostics(J, data, stop_at_fold)
     # LM factorizes JᵀJ + λ·D² (or, on the rare QR fallback, the augmented
     # [J; √λ·D]), not J itself, so the diagnostic keeps its own KLU factor of J
     # (symbolic once here, refreshed each iteration by the hook).
@@ -231,13 +233,13 @@ function _run_power_flow_method(
     step_accepted = false
     while i < maxIterations && !converged && isfinite(λ) && μ < DEFAULT_μ_MAX
         λ, μ, step_accepted =
-            update_damping_factor!(x, residual, J, μ, time_step, ws, step_accepted)
+            update_damping_factor!(x, residual, J, data, μ, time_step, ws, step_accepted)
         if !isnothing(diag_state)
             # One-iterate lag: update_damping_factor! evaluated J at the pre-step
             # iterate but residual.Rv is already post-step, so κ̂/λ_min describe the
             # linearization J while the reported ‖F‖∞ is after the step. Not realigned.
             run_solver_diagnostics!(
-                diag_state, "LM iter $i", residual, J, time_step,
+                diag_state, "LM iter $i", residual, J, data, time_step,
                 diag_cache, monitor, stop_at_fold) &&
                 return false, i
         end
@@ -268,6 +270,7 @@ function compute_error(
     residual::Union{ACPowerFlowResidual, ACRectangularCIResidual,
         ACMixedCPBResidual},
     J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
+    data::ACPowerFlowData,
     λ::Float64,
     time_step::Int,
     residualSize::Float64,
@@ -281,7 +284,7 @@ function compute_error(
     ws.temp_x .+= residual.Rv
 
     ws.x_trial .= x .+ Δx
-    residual(ws.x_trial, time_step) # M(x_c + Δx)
+    residual(data, ws.x_trial, time_step) # M(x_c + Δx)
     newResidualSize = dot(residual.Rv, residual.Rv)
 
     predicted_reduction = residualSize - dot(ws.temp_x, ws.temp_x)
@@ -289,7 +292,7 @@ function compute_error(
 
     # Guard against zero/negative predicted reduction.
     if predicted_reduction <= 0.0 || !isfinite(predicted_reduction)
-        residual(x, time_step)
+        residual(data, x, time_step)
         return (0.0, false)
     end
 
@@ -300,7 +303,7 @@ function compute_error(
         return (ρ, true)
     else
         # Bad step: restore data state to match x (not x_trial).
-        residual(x, time_step)
+        residual(data, x, time_step)
         return (ρ, false)
     end
 end
@@ -310,6 +313,7 @@ function update_damping_factor!(
     residual::Union{ACPowerFlowResidual, ACRectangularCIResidual,
         ACMixedCPBResidual},
     J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
+    data::ACPowerFlowData,
     μ::Float64,
     time_step::Int,
     ws::LMWorkspace,
@@ -319,10 +323,10 @@ function update_damping_factor!(
     # pre-loop init) leaves it evaluated at the held x.
     residualSize = dot(residual.Rv, residual.Rv)
     # J is current unless the previous step moved x; refresh only then.
-    previous_step_accepted && J(time_step)
+    previous_step_accepted && J(data, time_step)
 
     λ = μ * sqrt(residualSize)
-    ρ, accepted = compute_error(x, residual, J, λ, time_step, residualSize, ws)
+    ρ, accepted = compute_error(x, residual, J, data, λ, time_step, residualSize, ws)
     coef = 4.0
     if ρ > 0.75
         μ = max(μ / coef, 1e-8)

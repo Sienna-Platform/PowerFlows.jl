@@ -38,7 +38,7 @@ end
     residual = PF.ACPowerFlowResidual(data, 1)
     x = zeros(Float64, length(residual.Rv))
     PF.update_state!(x, data, 1)
-    residual(x, 1)
+    residual(data, x, 1)
     @test maximum(abs, residual.Rv) < ZIP_ROUNDTRIP_ATOL
 
     # `update_data!` inverts `update_state!`, but only for actual state variables:
@@ -79,7 +79,7 @@ end
         residual = residual_type(data, 1)
         x = Vector{Float64}(undef, length(residual.Rv))
         fill_state!(x, data, residual.bus_state_offset, residual.bus_block_size, 1)
-        residual(x, 1)
+        residual(data, x, 1)
         @test maximum(abs, residual.Rv) < ZIP_ROUNDTRIP_ATOL
     end
 end

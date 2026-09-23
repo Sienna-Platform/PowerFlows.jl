@@ -293,7 +293,7 @@ _fd_finalize_jv(::Nothing) = nothing
 _fd_finalize_jv(J) = J.Jv
 
 """
-    _fd_maybe_handoff!(handoff_solver, pf, sv, residual, J, time_step, tol, linear_solver,
+    _fd_maybe_handoff!(handoff_solver, pf, sv, residual, J, data, time_step, tol, linear_solver,
                        solver_name, fd_iters) -> (converged::Bool, handoff_iters::Int)
 
 Run the opt-in handoff solver (`NewtonRaphsonACPowerFlow` / `TrustRegionACPowerFlow` /
@@ -314,6 +314,7 @@ function _fd_maybe_handoff!(
     sv::StateVectorCache,
     residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
     J::Union{Nothing, ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
+    ::ACPowerFlowData,
     time_step::Int64,
     tol::Float64,
     linear_solver::Union{Nothing, AbstractString},
@@ -329,6 +330,7 @@ function _fd_maybe_handoff!(
     sv::StateVectorCache,
     residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
     J::Union{Nothing, ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
+    data::ACPowerFlowData,
     time_step::Int64,
     tol::Float64,
     linear_solver::Union{Nothing, AbstractString},
@@ -337,13 +339,13 @@ function _fd_maybe_handoff!(
 )
     fd_met_tol = norm(residual.Rv, Inf) < tol
     fd_met_tol && return (fd_met_tol, 0)
-    J(time_step)                                  # refresh Jacobian VALUES at current FD state
+    J(data, time_step)           # refresh Jacobian VALUES at current FD state
     if handoff_solver === LevenbergMarquardtACPowerFlow
         # LM's inner method takes the raw state vector + an LMWorkspace (a different signature
         # from NR/TR) and mutates x0 in place; see src/levenberg-marquardt.jl.
         ws = LMWorkspace(J.Jv; marquardt_scaling = _default_marquardt_scaling(typeof(pf)))
         converged, i2 = _run_power_flow_method(
-            time_step, sv.x, residual, J, ws;
+            time_step, sv.x, residual, J, data, ws;
             tol, maxIterations = DEFAULT_NR_MAX_ITER, λ_0 = DEFAULT_λ_0,
         )
     else
@@ -351,7 +353,7 @@ function _fd_maybe_handoff!(
         hcache = make_linear_solver_cache(backend, J.Jv)
         symbolic_factor!(hcache, J.Jv)
         converged, i2 = _run_power_flow_method(
-            time_step, sv, hcache, residual, J, handoff_solver;
+            time_step, sv, hcache, residual, J, data, handoff_solver;
             tol, maxIterations = DEFAULT_NR_MAX_ITER,
         )
     end
@@ -489,7 +491,7 @@ function _fd_fixed_jacobian_power_flow(
     if !converged
         # Ensure J holds VALUES at x0. Polar's setup already calls `J(time_step)`; rect/mixed
         # constructors do not, so call it here unconditionally (cheap, once).
-        J(time_step)
+        J(data, time_step)
         backend = resolve_linear_solver_backend(linear_solver)
         # Reuse the frozen Jacobian's symbolic factorization when its pattern is unchanged; see
         # `FDFixedJacobianCache`.
@@ -502,7 +504,7 @@ function _fd_fixed_jacobian_power_flow(
         v_state_idx = _fd_v_state_indices(residual)
         vm_view = view(data.bus_magnitude, :, time_step)
 
-        residual(sv.x, time_step)
+        residual(data, sv.x, time_step)
         ss = dot(residual.Rv, residual.Rv)
         sg = FDSafeguardState(sv.x, ss)
         converged = norm(residual.Rv, Inf) < stage_tol
@@ -531,7 +533,7 @@ function _fd_fixed_jacobian_power_flow(
 
             # apply step, evaluate exact residual (syncs data: V/θ/P/Q)
             sv.x .+= sv.Δx_nr
-            residual(sv.x, time_step)
+            residual(data, sv.x, time_step)
             ss = dot(residual.Rv, residual.Rv)
 
             # V≈0 abort.
@@ -541,7 +543,7 @@ function _fd_fixed_jacobian_power_flow(
                     "$(fd_vm_abort); aborting FD stage."
                 )
                 # restore best state before bailing out
-                _fd_restore_best!(sv, residual, sg, time_step)
+                _fd_restore_best!(sv, residual, sg, data, time_step)
                 ss = sg.best_ss
                 break
             end
@@ -556,7 +558,7 @@ function _fd_fixed_jacobian_power_flow(
                     factor *= 0.5
                     copyto!(sv.x, sg.cycle_x)
                     @inbounds @. sv.x += factor * sv.Δx_nr
-                    residual(sv.x, time_step)
+                    residual(data, sv.x, time_step)
                     ss = dot(residual.Rv, residual.Rv)
                     _fd_update_best!(sg, sv.x, ss)
                     if ss < fd_ndvfct * sg.prev_ss &&
@@ -571,8 +573,8 @@ function _fd_fixed_jacobian_power_flow(
                     if refreeze_on_stall && !refrozen
                         refrozen = true
                         # refresh J at the best state, refactor in place, continue
-                        _fd_restore_best!(sv, residual, sg, time_step)
-                        J(time_step)
+                        _fd_restore_best!(sv, residual, sg, data, time_step)
+                        J(data, time_step)
                         numeric_refactor!(cache, J.Jv)
                         ss = sg.best_ss
                         _fd_reset_safeguard!(sg, sv.x, ss)
@@ -580,7 +582,7 @@ function _fd_fixed_jacobian_power_flow(
                         i += 1
                         continue
                     else
-                        _fd_restore_best!(sv, residual, sg, time_step)
+                        _fd_restore_best!(sv, residual, sg, data, time_step)
                         ss = sg.best_ss
                         @warn(
                             "$solver_name: non-divergent backtracking exhausted; " *
@@ -605,7 +607,7 @@ function _fd_fixed_jacobian_power_flow(
                 if !fd_non_divergent && refreeze_on_stall && !refrozen &&
                    ss >= fd_ndvfct * sg.prev_ss
                     refrozen = true
-                    J(time_step)
+                    J(data, time_step)
                     numeric_refactor!(cache, J.Jv)
                     _fd_reset_safeguard!(sg, sv.x, ss)
                 end
@@ -615,7 +617,7 @@ function _fd_fixed_jacobian_power_flow(
         # handoff is disabled or the FD state already met `tol`. Threads handoff iters into
         # the reported count so finalize happens ONCE, on the refined state.
         converged, i2 = _fd_maybe_handoff!(
-            handoff_solver, pf, sv, residual, J, time_step, tol, linear_solver,
+            handoff_solver, pf, sv, residual, J, data, time_step, tol, linear_solver,
             solver_name,
             i,
         )
@@ -627,7 +629,7 @@ function _fd_fixed_jacobian_power_flow(
     # Refresh J at the SOLUTION only when loss/voltage-stability factors are requested (they read
     # J.Jv in _finalize_power_flow); the FD loop never otherwise touches J, so skip the eval.
     if get_calculate_loss_factors(data) || get_calculate_voltage_stability_factors(data)
-        J(time_step)
+        J(data, time_step)
     end
     _finalize_formulation!(pf, data, x_final, residual, time_step)
     result = _finalize_power_flow(
@@ -643,10 +645,11 @@ function _fd_restore_best!(
     sv::StateVectorCache,
     residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
     sg::FDSafeguardState,
+    data::ACPowerFlowData,
     time_step::Int64,
 )
     copyto!(sv.x, sg.best_x)
-    residual(sv.x, time_step)
+    residual(data, sv.x, time_step)
     return
 end
 
@@ -907,7 +910,7 @@ function _get_pq_data!(
 end
 
 """
-    _sync_explicit_state!(sv, residual, time_step)
+    _sync_explicit_state!(sv, residual, data, time_step)
 
 Set the REF/PV "explicit" state entries (subnetwork slack P, REF Q, PV Q) to the values that
 zero their own residual rows given the current (V, θ). Per subnetwork (`residual.subnetworks`
@@ -921,14 +924,15 @@ this to refresh `data`/`Rv`.
 function _sync_explicit_state!(
     sv::StateVectorCache,
     residual::ACPowerFlowResidual,
+    data::ACPowerFlowData,
     time_step::Int64,
 )
     x = sv.x
     Rv = residual.Rv
-    bus_types = view(residual.data.bus_type, :, time_step)
+    bus_types = view(data.bus_type, :, time_step)
     sign = FD_EXPLICIT_SYNC_SIGN
     independent_ref =
-        _multi_swing_ref_indices(residual.data.bus_type, residual.subnetworks, time_step)
+        _multi_swing_ref_indices(data.bus_type, residual.subnetworks, time_step)
     for (ref_bus, subnet) in residual.subnetworks
         if ref_bus in independent_ref
             # Multi-swing island: each swing carries its own slack, so it closes its OWN P and Q
@@ -978,8 +982,8 @@ function _fd_lcc_substep!(
 )
     _fd_converter_substep!(data, time_step)
     _write_lcc_state_to_x!(sv.x, data, time_step)
-    _sync_explicit_state!(sv, residual, time_step)
-    residual(sv.x, time_step)
+    _sync_explicit_state!(sv, residual, data, time_step)
+    residual(data, sv.x, time_step)
     return
 end
 
@@ -1005,8 +1009,8 @@ function _fd_vsc_substep!(
     # `_read_vsc_state!` reads from) — front-anchored so a trailing area tail can't shift it.
     vsc_off = 2 * size(data.bus_type, 1) + 4 * size(data.lcc.p_set, 1)
     _write_vsc_state_to_x!(sv.x, dcn, vsc_off, time_step)
-    _sync_explicit_state!(sv, residual, time_step)
-    residual(sv.x, time_step)
+    _sync_explicit_state!(sv, residual, data, time_step)
+    residual(data, sv.x, time_step)
     return
 end
 
@@ -1152,8 +1156,8 @@ function _fd_area_substep!(
         sv.x[area_off + area.tail_ix] -= dp[area.tail_ix]
     end
 
-    _sync_explicit_state!(sv, residual, time_step)
-    residual(sv.x, time_step)
+    _sync_explicit_state!(sv, residual, data, time_step)
+    residual(data, sv.x, time_step)
     return
 end
 
@@ -1299,8 +1303,8 @@ function _fd_decoupled_power_flow(
     has_area = !iszero(n_controlled_areas(data))
 
     # Sync explicit rows, then evaluate the residual so Rv / data reflect (V, θ, explicit P/Q).
-    _sync_explicit_state!(sv, residual, time_step)
-    residual(sv.x, time_step)
+    _sync_explicit_state!(sv, residual, data, time_step)
+    residual(data, sv.x, time_step)
     # Make the converter state consistent with the start voltages so the LCC/VSC tail residuals
     # enter the loop already small (they are refreshed each cycle after the Q half-step).
     n_lcc > 0 && _fd_lcc_substep!(sv, residual, data, time_step)
@@ -1338,8 +1342,8 @@ function _fd_decoupled_power_flow(
             end
         end
         if !diverged
-            _sync_explicit_state!(sv, residual, time_step)
-            residual(sv.x, time_step)
+            _sync_explicit_state!(sv, residual, data, time_step)
+            residual(data, sv.x, time_step)
         end
 
         # --- Q half-step (i.5): rq = Rv_Q / Vm over pq; solve B″·ΔV = rq; DVLIM; V -= ΔV.
@@ -1368,8 +1372,8 @@ function _fd_decoupled_power_flow(
                 @inbounds for k in eachindex(v_x_idx)
                     sv.x[v_x_idx[k]] += rq[k]
                 end
-                _sync_explicit_state!(sv, residual, time_step)
-                residual(sv.x, time_step)
+                _sync_explicit_state!(sv, residual, data, time_step)
+                residual(data, sv.x, time_step)
             end
         end
 
@@ -1394,13 +1398,13 @@ function _fd_decoupled_power_flow(
                 "$solver_name: a bus voltage magnitude was driven below $(fd_vm_abort); " *
                 "aborting FD stage."
             )
-            _fd_restore_best!(sv, residual, sg, time_step)
+            _fd_restore_best!(sv, residual, sg, data, time_step)
             ss = sg.best_ss
             break
         end
 
         if diverged   # only reachable with fd_non_divergent = false
-            _fd_restore_best!(sv, residual, sg, time_step)
+            _fd_restore_best!(sv, residual, sg, data, time_step)
             ss = sg.best_ss
             break
         end
@@ -1418,8 +1422,8 @@ function _fd_decoupled_power_flow(
             for _ in 1:fd_max_step_halvings
                 factor *= 0.5
                 @inbounds @. sv.x = sg.cycle_x + factor * Δcycle
-                _sync_explicit_state!(sv, residual, time_step)
-                residual(sv.x, time_step)
+                _sync_explicit_state!(sv, residual, data, time_step)
+                residual(data, sv.x, time_step)
                 # Re-solve the LCC/VSC converters at the rescaled voltages so the tail rows stay
                 # zeroed during backtracking — otherwise the halved step un-solves the converter
                 # state and the tail mismatch dominates `ss`, defeating the line search.
@@ -1440,7 +1444,7 @@ function _fd_decoupled_power_flow(
                 end
             end
             if !accepted
-                _fd_restore_best!(sv, residual, sg, time_step)
+                _fd_restore_best!(sv, residual, sg, data, time_step)
                 ss = sg.best_ss
                 @warn(
                     "$solver_name: non-divergent backtracking exhausted; restoring best " *
@@ -1464,7 +1468,8 @@ function _fd_decoupled_power_flow(
     # is disabled or the FD state already met `tol`. Threads handoff iters into the reported
     # count so finalize happens ONCE, on the refined state.
     converged, handoff_iters = _fd_maybe_handoff!(
-        handoff_solver, pf, sv, residual, J, time_step, tol, linear_solver, solver_name,
+        handoff_solver, pf, sv, residual, J, data, time_step, tol, linear_solver,
+        solver_name,
         i,
     )
     i += handoff_iters
@@ -1472,7 +1477,7 @@ function _fd_decoupled_power_flow(
     # Refresh J at the SOLUTION only when loss/voltage-stability factors are requested (they read
     # J.Jv in _finalize_power_flow); the FD loop never otherwise touches J, so skip the eval.
     if get_calculate_loss_factors(data) || get_calculate_voltage_stability_factors(data)
-        J(time_step)
+        J(data, time_step)
     end
     _finalize_formulation!(pf, data, sv.x, residual, time_step)
     result = _finalize_power_flow(

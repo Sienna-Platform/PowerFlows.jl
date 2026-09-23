@@ -14,7 +14,7 @@
         x = Vector{Float64}(undef, length(R.Rv))
         PF.mixed_initial_state!(x, data, R.bus_state_offset, R.bus_block_size, 1)
         Rv = similar(x)
-        R(Rv, x, 1)
+        R(data, Rv, x, 1)
         @test LinearAlgebra.norm(Rv, Inf) < 1e-6
     end
 
@@ -28,7 +28,7 @@
         x = Vector{Float64}(undef, length(R.Rv))
         PF.mixed_initial_state!(x, data, R.bus_state_offset, R.bus_block_size, 1)
         Rv = similar(x)
-        R(Rv, x, 1)
+        R(data, Rv, x, 1)
         @test LinearAlgebra.norm(Rv, Inf) < 1e-6
     end
 
@@ -51,7 +51,7 @@
         x = Vector{Float64}(undef, length(R.Rv))
         PF.mixed_initial_state!(x, data, R.bus_state_offset, R.bus_block_size, 1)
         Rv = similar(x)
-        R(Rv, x, 1)
+        R(data, Rv, x, 1)
         @test LinearAlgebra.norm(Rv, Inf) < 1e-6
     end
 end

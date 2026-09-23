@@ -1,6 +1,4 @@
 struct HomotopyHessian
-    # PERF: data is stored in triplicate: here, inside pfResidual, and inside J.
-    data::ACPowerFlowData
     pfResidual::ACPowerFlowResidual
     J::ACPowerFlowJacobian
     PQ_V_mags::BitVector # true iff that coordinate in the state vector is V_mag at a PQ bus
@@ -91,13 +89,15 @@ function _build_jtj_nz_cache(
 end
 
 """Compute value of gradient and Hessian at x."""
-function (hess::HomotopyHessian)(x::Vector{Float64}, t_k::Float64, time_step::Int)
-    hess.pfResidual(x, time_step)
+function (hess::HomotopyHessian)(
+    data::ACPowerFlowData, x::Vector{Float64}, t_k::Float64, time_step::Int,
+)
+    hess.pfResidual(data, x, time_step)
     Rv = hess.pfResidual.Rv
-    hess.J(time_step)
+    hess.J(data, time_step)
     Jv = hess.J.Jv
     _update_hessian_matrix_values!(
-        hess.Hv, Rv, hess.data, time_step,
+        hess.Hv, Rv, data, time_step,
         hess.edge_i, hess.edge_k, hess.edge_nz, hess.diag_nz, hess.diag_accum)
     _refresh_JtJ!(hess.Hv, Jv, hess.jtj_p1, hess.jtj_p2, hess.jtj_offsets)
     Hvnz = SparseArrays.nonzeros(hess.Hv)
@@ -128,8 +128,11 @@ function _homotopy_gradient!(
     return grad
 end
 
-function F_value(hess::HomotopyHessian, t_k::Float64, x::Vector{Float64}, time_step::Int)
-    hess.pfResidual(x, time_step)
+function F_value(
+    hess::HomotopyHessian, data::ACPowerFlowData, t_k::Float64, x::Vector{Float64},
+    time_step::Int,
+)
+    hess.pfResidual(data, x, time_step)
     Rv = hess.pfResidual.Rv
     # Σ (x−1)² over PQ |V| coordinates.
     φ_sq = 0.0
@@ -146,12 +149,13 @@ end
 # slightly confusing that I have the field grad, and the argument grad.
 function gradient_value!(grad::Vector{Float64},
     hess::HomotopyHessian,
+    data::ACPowerFlowData,
     t_k::Float64,
     x::Vector{Float64},
     time_step::Int,
 )
-    hess.pfResidual(x, time_step)
-    hess.J(time_step) # PERF bottleneck. Look into a different line search strategy?
+    hess.pfResidual(data, x, time_step)
+    hess.J(data, time_step) # PERF bottleneck. Look into a different line search strategy?
     # or otherwise reduce the number of gradient computations?
     # for a 10k bus system, computing J takes over 10x longer than computing F.
     _homotopy_gradient!(grad, hess, t_k, x, hess.J.Jv, hess.pfResidual.Rv)
@@ -247,7 +251,7 @@ function HomotopyHessian(data::ACPowerFlowData, time_step::Int)
         end
     end
     pfResidual = ACPowerFlowResidual(data, time_step)
-    J = ACPowerFlowJacobian(pfResidual, time_step)
+    J = ACPowerFlowJacobian(data, pfResidual, time_step)
     # Allocate Hv with the maximal sparsity pattern of J' * J. Sparse `*`
     # currently preserves structural zeros, but that isn't a documented
     # SparseArrays contract, so we defensively fill nzval with ones to force
@@ -281,7 +285,7 @@ function HomotopyHessian(data::ACPowerFlowData, time_step::Int)
         _build_hessian_edge_nz_cache(Hv, data, time_step)
     jtj_p1, jtj_p2, jtj_offsets = _build_jtj_nz_cache(J.Jv, Hv)
     return HomotopyHessian(
-        data, pfResidual, J, PQ_V_mags, zeros(n_state), Hv,
+        pfResidual, J, PQ_V_mags, zeros(n_state), Hv,
         zeros(n_state), pq_diag_nz,
         edge_i, edge_k, edge_nz, diag_nz, zeros(4, nbuses),
         jtj_p1, jtj_p2, jtj_offsets)

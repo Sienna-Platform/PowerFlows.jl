@@ -188,7 +188,7 @@ end
 
     residual = PF.ACPowerFlowResidual(data, 1)
     x0 = PF.calculate_x0(data, 1)
-    residual(x0, 1)
+    residual(data, x0, 1)
     F = residual.Rv
     dcn = PF.get_dc_network(data)
     area_off = PF.area_tail_offset(data, dcn)
@@ -227,7 +227,7 @@ end
     # tie contributes +P_m to one tracked area and -P_m to the other), so it must hold at
     # ANY state, not only at a converged solution.
     x1 = x0 .+ 0.05 .* sin.(1:length(x0))
-    residual(x1, 1)
+    residual(data, x1, 1)
     F = residual.Rv
     area_off = PF.area_tail_offset(data, PF.get_dc_network(data))
 
@@ -244,13 +244,13 @@ end
     area = first(data.area_interchange.areas)
     slack_ix = area.slack_bus_ix
 
-    residual(x0, 1)
+    residual(data, x0, 1)
     F_base = copy(residual.Rv)
 
     ΔP = 0.037
     x1 = copy(x0)
     x1[area_off + area.tail_ix] = ΔP
-    residual(x1, 1)
+    residual(data, x1, 1)
     F_pert = residual.Rv
 
     # ΔP_a is added to P_net[slack_bus_ix] at the same seam as the distributed-slack
@@ -271,7 +271,7 @@ end
     data = _two_controlled_area_data()
     residual = PF.ACPowerFlowResidual(data, 1)
     x0 = PF.calculate_x0(data, 1)
-    residual(x0, 1)   # warm: populate data.bus_magnitude/bus_angles, JIT compile
+    residual(data, x0, 1)   # warm: populate data.bus_magnitude/bus_angles, JIT compile
     dcn = PF.get_dc_network(data)
     area_off = PF.area_tail_offset(data, dcn)
     F = copy(residual.Rv)
@@ -310,18 +310,18 @@ end
 @testset "area interchange Jacobian structure cache reuse" begin
     data1 = _two_controlled_area_data()
     residual1a = PF.ACPowerFlowResidual(data1, 1)
-    PF.ACPowerFlowJacobian(residual1a, 1)
+    PF.ACPowerFlowJacobian(data1, residual1a, 1)
     cache1 = data1.ac_jacobian_structure_cache[]
     @test !isnothing(cache1)
     @test cache1.area_data === data1.area_interchange
 
     residual1b = PF.ACPowerFlowResidual(data1, 1)
-    PF.ACPowerFlowJacobian(residual1b, 1)
+    PF.ACPowerFlowJacobian(data1, residual1b, 1)
     @test data1.ac_jacobian_structure_cache[] === cache1
 
     data2 = _two_controlled_area_data()
     residual2 = PF.ACPowerFlowResidual(data2, 1)
-    PF.ACPowerFlowJacobian(residual2, 1)
+    PF.ACPowerFlowJacobian(data2, residual2, 1)
     cache2 = data2.ac_jacobian_structure_cache[]
     @test cache2.area_data === data2.area_interchange
     @test cache2.area_data !== cache1.area_data
@@ -343,7 +343,7 @@ end
     x0 = PF.calculate_x0(data, 1)
     Random.seed!(7)
     x0 .+= 0.02 .* randn(length(x0))
-    residual(x0, 1)   # updates data.bus_magnitude/bus_angles in place
+    residual(data, x0, 1)   # updates data.bus_magnitude/bus_angles in place
 
     expected = _oracle_tie_metered_power(sys, data, tie, 1)
     actual = PF._tie_metered_active_power(
@@ -803,9 +803,9 @@ end
 function _weak_tie_three_area_fixture(; x_weak::Float64 = 2.0, pdes2::Float64 = 0.1,
     pdes3::Float64 = 2.0)
     sys = System(100.0)
-    area1 = PSY.Area(; name = "Area1")
-    area2 = PSY.Area(; name = "Area2")
-    area3 = PSY.Area(; name = "Area3")
+    area1 = PSY.Area(; name = "Area1", input_basis = PSY.CU)
+    area2 = PSY.Area(; name = "Area2", input_basis = PSY.CU)
+    area3 = PSY.Area(; name = "Area3", input_basis = PSY.CU)
     PSY.add_component!(sys, area1)
     PSY.add_component!(sys, area2)
     PSY.add_component!(sys, area3)
@@ -1033,10 +1033,10 @@ end
     )
     data = PowerFlowData(pf, sys)
     residual = PF.ACPowerFlowResidual(data, 1)
-    jac = PF.ACPowerFlowJacobian(residual, 1)
+    jac = PF.ACPowerFlowJacobian(data, residual, 1)
     x0 = PF.calculate_x0(data, 1)
-    residual(x0, 1)
-    jac(1)
+    residual(data, x0, 1)
+    jac(data, 1)
 
     n_state = size(jac.Jv, 1)
     dcn = PF.get_dc_network(data)
@@ -1849,7 +1849,7 @@ end
 
         residual = PF.ACPowerFlowResidual(data, 1)
         x0 = PF.calculate_x0(data, 1)
-        residual(x0, 1)
+        residual(data, x0, 1)
         F = residual.Rv
         dcn = PF.get_dc_network(data)
         area_off = PF.area_tail_offset(data, dcn)
@@ -1907,15 +1907,15 @@ end
             ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; area_interchange_control = true),
             sys)
         residual = PF.ACPowerFlowResidual(data, 1)
-        jac = PF.ACPowerFlowJacobian(residual, 1)
+        jac = PF.ACPowerFlowJacobian(data, residual, 1)
         x0 = PF.calculate_x0(data, 1)
         # Perturbed, non-solution state so bus Vm/θ AND the DC-tail columns (LCC tap/α, VSC
         # P_c) all carry nonzero sensitivity through the area-interchange NI rows.
         x = x0 .+ 0.02 .* sin.(1:length(x0))
-        residual(x, 1)
-        jac(1)
+        residual(data, x, 1)
+        jac(data, 1)
         verify_jacobian_asymptotic(
-            residual, jac.Jv, x, 1;
+            residual, data, jac.Jv, x, 1;
             label = "area interchange DC ($lcc_metered_end-metered)")
     end
 end
@@ -2186,8 +2186,8 @@ genuinely merges them (`fix == tix`) -- the self-tie merge guard case, distinct 
 "interior DC link" test (same-tail on two DIFFERENT buses, not a merge)."""
 function _lcc_self_merge_fixture()
     sys = System(100.0)
-    area_a = PSY.Area(; name = "AreaA")
-    area_b = PSY.Area(; name = "AreaB")
+    area_a = PSY.Area(; name = "AreaA", input_basis = PSY.CU)
+    area_b = PSY.Area(; name = "AreaB", input_basis = PSY.CU)
     PSY.add_component!(sys, area_a)
     PSY.add_component!(sys, area_b)
 

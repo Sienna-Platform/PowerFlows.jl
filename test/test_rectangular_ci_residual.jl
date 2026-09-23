@@ -8,7 +8,7 @@
         R = PF.ACRectangularCIResidual(data, 1)
         x = Vector{Float64}(undef, length(R.Rv))
         PF.rect_initial_state!(x, data, R.bus_state_offset, R.bus_block_size, 1)
-        R(x, 1)
+        R(data, x, 1)
         @test LinearAlgebra.norm(R.Rv, Inf) < 1e-7
     end
 
@@ -21,7 +21,7 @@
         R = PF.ACRectangularCIResidual(data, 1)
         x = Vector{Float64}(undef, length(R.Rv))
         PF.rect_initial_state!(x, data, R.bus_state_offset, R.bus_block_size, 1)
-        R(x, 1)
+        R(data, x, 1)
         @test LinearAlgebra.norm(R.Rv, Inf) < 1e-7
     end
 end
@@ -36,7 +36,7 @@ end
     R = PF.ACRectangularCIResidual(data, 1)
     x = Vector{Float64}(undef, length(R.Rv))
     PF.rect_initial_state!(x, data, R.bus_state_offset, R.bus_block_size, 1)
-    R(x, 1)
+    R(data, x, 1)
     # Something to converge from
     @test LinearAlgebra.norm(R.Rv, Inf) > 1e-3
 end

@@ -131,7 +131,7 @@ end
                 fuel = ThermalFuels.OTHER,
                 services = Device[],
                 dynamic_injector = nothing,
-                ext = Dict{String, Any}(),
+                ext = Dict{String, Any}(), input_basis = PSY.CU,
             )
             add_component!(sys, g2)
 
@@ -372,7 +372,7 @@ end
                 fuel = ThermalFuels.OTHER,
                 services = Device[],
                 dynamic_injector = nothing,
-                ext = Dict{String, Any}(),
+                ext = Dict{String, Any}(), input_basis = PSY.CU,
             )
             add_component!(sys, g2)
 

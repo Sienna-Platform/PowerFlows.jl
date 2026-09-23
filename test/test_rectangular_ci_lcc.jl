@@ -13,7 +13,7 @@ end
     R = PF.ACRectangularCIResidual(data, 1)
     x = Vector{Float64}(undef, length(R.Rv))
     PF.rect_initial_state!(x, data, R.bus_state_offset, R.bus_block_size, 1)
-    R(x, 1)
+    R(data, x, 1)
     @test LinearAlgebra.norm(R.Rv, Inf) < 1e-7
 end
 
@@ -22,16 +22,16 @@ function _rect_lcc_verify(sys::System; label::String, perturbation::Float64 = 0.
         correct_bustypes = true, solution_parameters = _rect_lcc_settings())
     data = PF.PowerFlowData(pf_r, sys)
     R = PF.ACRectangularCIResidual(data, 1)
-    J = PF.ACRectangularCIJacobian(R, 1)
+    J = PF.ACRectangularCIJacobian(data, R, 1)
     x = Vector{Float64}(undef, length(R.Rv))
     PF.rect_initial_state!(x, data, R.bus_state_offset, R.bus_block_size, 1)
     if perturbation > 0
         Random.seed!(42)
         x .+= perturbation .* randn(length(x))
     end
-    R(x, 1)
-    J(1)
-    verify_jacobian_asymptotic(R, copy(J.Jv), x, 1; label = label)
+    R(data, x, 1)
+    J(data, 1)
+    verify_jacobian_asymptotic(R, data, copy(J.Jv), x, 1; label = label)
 end
 
 @testset "Rectangular CI LCC: asymptotic verification, nonzero xc (interior)" begin
@@ -101,7 +101,7 @@ end
         solution_parameters = _rect_lcc_settings())
     data = PF.PowerFlowData(pf_r, sys)
     R = PF.ACRectangularCIResidual(data, 1)
-    J = PF.ACRectangularCIJacobian(R, 1)
+    J = PF.ACRectangularCIJacobian(data, R, 1)
     x = Vector{Float64}(undef, length(R.Rv))
     PF.rect_initial_state!(x, data, R.bus_state_offset, R.bus_block_size, 1)
     # Verify away from the converged state. NB: case5_2_lcc has x_t = 0 for
@@ -111,9 +111,9 @@ end
     # exercise the α-vs-true-ϕ divergence properly.
     Random.seed!(42)
     x .+= 0.02 .* randn(length(x))
-    R(x, 1)
-    J(1)
-    verify_jacobian_asymptotic(R, copy(J.Jv), x, 1; label = "rect CI LCC case5_2")
+    R(data, x, 1)
+    J(data, 1)
+    verify_jacobian_asymptotic(R, data, copy(J.Jv), x, 1; label = "rect CI LCC case5_2")
 end
 
 @testset "Rectangular CI LCC: solve parity with polar" begin
