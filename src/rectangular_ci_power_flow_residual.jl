@@ -26,8 +26,8 @@ PV blocks are 3 entries `(e, f, Q)`.
 - `validate_offsets::Vector{Int}` — precomputed `x`-offsets of PQ/PV buses for
   the per-iteration voltage-magnitude diagnostic
 """
-struct ACRectangularCIResidual
-    data::ACPowerFlowData
+struct ACRectangularCIResidual{D <: ACPowerFlowData}
+    data::D
     Rv::Vector{Float64}
     Y_bus_eff::SparseMatrixCSC{ComplexF64, Int}
     P_net_const::Vector{Float64}

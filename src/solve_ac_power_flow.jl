@@ -74,17 +74,27 @@ function solve_and_store_power_flow!(
     return converged
 end
 
-# Re-resolve a tap's circuit in `system` by name, rather than holding a reference, so the
-# write lands in the caller's system even when it is not the one enrollment read. The tap may
-# sit on either arity, and `PSY.get_circuits` covers both (a 2W returns a 1-tuple).
-function _resolve_tap_circuit(system::PSY.System, d::ControlledTap)
-    tx = PSY.get_component(PSY.ACTransmission, system, d.device_name)
-    isnothing(tx) && return nothing
-    circuits = PSY.get_circuits(tx)
-    if d.circuit_index > length(circuits)
-        return nothing
-    end
-    return circuits[d.circuit_index]
+# Re-resolve a tap's owning transformer in `system` by name, rather than holding a reference,
+# so the write lands in the caller's system even when it is not the one enrollment read.
+# Looked up under the concrete arity types, never abstract `PSY.ACTransmission`: a `Line`
+# sharing the transformer's name would otherwise make the lookup ambiguous.
+function _lookup_tap_transformer(system::PSY.System, name::String)
+    tx = PSY.get_component(PSY.TwoWindingTransformer, system, name)
+    isnothing(tx) || return tx
+    return PSY.get_component(PSY.ThreeWindingTransformer, system, name)
+end
+
+# The tap may sit on either arity, and `PSY.get_circuits` covers both (a 2W returns a
+# 1-tuple). Bool predicate + accessor, not a `nothing`-returning resolver.
+function _has_tap_circuit(system::PSY.System, d::ControlledTap)
+    tx = _lookup_tap_transformer(system, d.device_name)
+    isnothing(tx) && return false
+    return d.circuit_index <= length(PSY.get_circuits(tx))
+end
+
+function _tap_circuit(system::PSY.System, d::ControlledTap)
+    tx = _lookup_tap_transformer(system, d.device_name)
+    return PSY.get_circuits(tx)[d.circuit_index]
 end
 
 """
@@ -110,14 +120,13 @@ function write_device_settings!(system::PSY.System, data)
         return
     end
     for d in set.taps
-        circuit = _resolve_tap_circuit(system, d)
-        if isnothing(circuit)
+        if !_has_tap_circuit(system, d)
             @warn "write_device_settings!: transformer \"$(d.device_name)\" not found in \
                 the system; the solved tap ratio $(d.current) for \"$(d.name)\" was NOT \
                 written back."
             continue
         end
-        PSY.set_tap!(circuit, d.current)
+        PSY.set_tap!(_tap_circuit(system, d), d.current)
     end
     for d in set.shunts
         sa = PSY.get_component(PSY.SwitchedAdmittance, system, d.name)
@@ -259,6 +268,11 @@ function solve_power_flow!(
     tb_ix = [bus_lookup[bus_no] for bus_no in last.(arcs)]   # to bus indices
     @assert length(fb_ix) == length(arcs)
 
+    # Per-step branch-flow buffers, allocated once and reused across time steps.
+    step_V = Vector{ComplexF64}(undef, length(data.bus_angles[:, 1]))
+    Sft = Vector{ComplexF64}(undef, length(arcs))
+    Stf = Vector{ComplexF64}(undef, length(arcs))
+
     cd = get_controlled_devices(data)
     validate_device_store_width(cd, get_time_steps(data))
     for (ts_pos, time_step) in enumerate(sorted_time_steps)
@@ -303,14 +317,17 @@ function solve_power_flow!(
         end
 
         # Per-step branch flows (not batched after the loop) so a future per-step Yft/Ytf
-        # (e.g. varying tap positions) is used correctly.
+        # (e.g. varying tap positions) is used correctly. Buffers are preallocated above and
+        # reused in place across time steps.
         # NOTE PNM's structs use ComplexF32, while the system objects store Float64's.
         #      so if you set the system bus angles/voltages to match these fields, then repeat
         #      this math using the system voltages, you'll see differences in the flows, ~1e-4.
-        step_V =
+        @views step_V .=
             data.bus_magnitude[:, time_step] .* exp.(1im .* data.bus_angles[:, time_step])
-        Sft = step_V[fb_ix] .* conj.(Yft.data * step_V)
-        Stf = step_V[tb_ix] .* conj.(Ytf.data * step_V)
+        mul!(Sft, Yft.data, step_V)
+        mul!(Stf, Ytf.data, step_V)
+        Sft .= view(step_V, fb_ix) .* conj.(Sft)
+        Stf .= view(step_V, tb_ix) .* conj.(Stf)
         data.arc_active_power_flow_from_to[:, time_step] .= real.(Sft)
         data.arc_reactive_power_flow_from_to[:, time_step] .= imag.(Sft)
         data.arc_active_power_flow_to_from[:, time_step] .= real.(Stf)
@@ -335,7 +352,8 @@ function _solve_with_q_limits!(
     time_step::Int64;
     kwargs...,
 )
-    check_reactive_power_limits = get_check_reactive_power_limits(pf)
+    check_reactive_power_limits = get(
+        kwargs, :check_reactive_power_limits, get_check_reactive_power_limits(pf))
     converged = false
 
     for _ in 1:MAX_REACTIVE_POWER_ITERATIONS
@@ -359,16 +377,39 @@ function _solve_with_q_limits!(
     return _newton_power_flow(pf, data, time_step; kwargs...)
 end
 
+"""Dispatches on `data.controlled_devices`'s concrete type rather than branching on
+`isnothing`/`isempty` in one method body, so the discrete-control continuation
+(`_control_continuation!` and everything it pulls in) is only ever type-inferred and compiled
+for a call that actually carries a `ControlledDeviceSet` — never for the plain (no discrete
+control) solve, which is the common case and was paying 36-55% of first-solve compile time
+for a code path it never takes."""
 function _ac_power_flow(
     data::ACPowerFlowData,
     pf::AbstractACPowerFlow{<:ACPowerFlowSolverType},
     time_step::Int64;
     kwargs...,
 )
-    cd = data.controlled_devices
-    if isnothing(cd) || isempty(cd)
-        return _solve_with_q_limits!(pf, data, time_step; kwargs...)
-    end
+    return _ac_power_flow(data.controlled_devices, data, pf, time_step; kwargs...)
+end
+
+function _ac_power_flow(
+    ::Nothing,
+    data::ACPowerFlowData,
+    pf::AbstractACPowerFlow{<:ACPowerFlowSolverType},
+    time_step::Int64;
+    kwargs...,
+)
+    return _solve_with_q_limits!(pf, data, time_step; kwargs...)
+end
+
+function _ac_power_flow(
+    cd::ControlledDeviceSet,
+    data::ACPowerFlowData,
+    pf::AbstractACPowerFlow{<:ACPowerFlowSolverType},
+    time_step::Int64;
+    kwargs...,
+)
+    isempty(cd) && return _solve_with_q_limits!(pf, data, time_step; kwargs...)
     return _control_continuation!(pf, data, time_step; kwargs...)
 end
 

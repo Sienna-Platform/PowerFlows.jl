@@ -184,7 +184,6 @@ function compare_systems_loosely(sys1::PSY.System, sys2::PSY.System;
             :active_power_limits_to,
             :reactive_power_limits_from,
             :reactive_power_limits_to,
-            :transfer_setpoint,
         ]),
         # PowerFlowFileParser does not preserve the v33 FACTS SHMX/TRMX fields during
         # re-import; both PSY fields are reconstructed from the parser's 9999.0 default.
@@ -420,17 +419,32 @@ function test_psse_export_strict_equality(
     exclude_metadata_keys = ["case_name"],
     exclude_export_settings_keys = ["original_name"],
 )
+    parsed1 = JSON3.read(metadata1, Dict)
+    parsed2 = JSON3.read(metadata2, Dict)
+    case_name1 = parsed1["case_name"]
+    case_name2 = parsed2["case_name"]
+
     open(raw1, "r") do handle1
         open(raw2, "r") do handle2
-            @test countlines(handle1) == countlines(handle2)
-            for (line1, line2) in zip(readlines(handle1), readlines(handle2))
+            # `countlines` reads a handle to EOF; comparing lengths from the same
+            # `readlines` vectors (rather than `countlines` first) is what makes the
+            # per-line comparison below see anything at all. The case-identification
+            # record carries the export's own name and a `write_comments` header carries
+            # a wall-clock timestamp; both legitimately differ between calls, mirroring
+            # `exclude_metadata_keys` on the JSON side below.
+            lines1 = readlines(handle1)
+            lines2 = readlines(handle2)
+            @test length(lines1) == length(lines2)
+            timestamp_re = r"RAW via PowerFlows\.jl, \d{4}-\d{2}-\d{2}T"
+            for (line1, line2) in zip(lines1, lines2)
+                (line1 == case_name1 && line2 == case_name2) && continue
+                (occursin(timestamp_re, line1) && occursin(timestamp_re, line2)) &&
+                    continue
                 @test line1 == line2
             end
         end
     end
 
-    parsed1 = JSON3.read(metadata1, Dict)
-    parsed2 = JSON3.read(metadata2, Dict)
     for key in exclude_metadata_keys
         parsed1[key] = nothing
         parsed2[key] = nothing
@@ -478,24 +492,6 @@ function test_psse_exporter_version(sys_name::String, version::Symbol, folder_na
         get_psse_export_paths(joinpath(export_location, "basic"))...,
         get_psse_export_paths(joinpath(export_location, "basic2"))...)
 end
-
-# Test configurations: (test_name, sys_name, version, folder_name)
-# ReTest chokes on @testset over a loop.
-#=
-test_configs = [
-    (
-        "PSSE Exporter with case16_sys.raw, v33",
-        "pti_case16_complete_sys",
-        :v33,
-        "case16_sys.raw",
-    ),
-    (
-        "PSSE Exporter with modified_case25_sys.raw, v35",
-        "pti_modified_case25_v35_sys",
-        :v35,
-        "modified_case25_sys.raw",
-    ),
-]=#
 
 @testset "PSSE Exporter with case16_sys.raw, v33" begin
     test_psse_exporter_version("pti_case16_complete_sys", :v33, "case16_sys.raw")
@@ -944,6 +940,7 @@ function test_psse_exporter_inner(
     @test_logs((:error, r"values do not match"),
         match_mode = :any, min_level = Logging.Error,
         compare_systems_loosely(sys, reread_sys2))
+    @test compare_systems_loosely(sys2, reread_sys2)
     test_power_flow(pf, sys2, reread_sys2; exclude_reactive_flow = true)
 end
 
@@ -1107,4 +1104,149 @@ end
     text = read(raw, String)
     @test occursin("ITMXN=17", text)
     @test occursin("TOLN=0.001", text)
+end
+
+@testset "PSSE Exporter: LCC SETVL is written in stored MW, not scaled by SBASE" begin
+    sys = System(100.0)
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230.0)
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.PQ, 230.0)
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    _add_simple_load!(sys, b2, 0.1, 0.05)
+    lcc = _add_simple_lcc!(sys, b1, b2, 0.01, 0.01, 0.01)  # transfer_setpoint = 50 (MW)
+
+    export_location = joinpath(test_psse_export_dir, "v35", "lcc_setvl")
+    exporter = PSSEExporter(sys, :v35, export_location; overwrite = true)
+    write_export(exporter, "lcc_setvl"; overwrite = true)
+    raw_path, _ = get_psse_export_paths(joinpath(export_location, "lcc_setvl"))
+    lcc_line = only(filter(l -> occursin("LCC", l), readlines(raw_path)))
+    fields = PF._split_record(lcc_line)
+    @test parse(Float64, strip(fields[4])) ≈ 50.0  # SETVL, not 50 * SBASE = 5000
+
+    sys2 = read_system_with_metadata(joinpath(export_location, "lcc_setvl"))
+    lcc2 = only(PSY.get_components(PSY.TwoTerminalLCCLine, sys2))
+    @test PSY.get_transfer_setpoint(lcc2) ≈ PSY.get_transfer_setpoint(lcc)
+end
+
+@testset "PSSE Exporter: 3W transformer built from star circuits writes no `nothing` field" begin
+    sys = System(100.0)
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230.0)
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.PQ, 230.0)
+    b3 = _add_simple_bus!(sys, 3, ACBusTypes.PQ, 138.0)
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    _add_simple_load!(sys, b2, 0.1, 0.05)
+    _add_simple_load!(sys, b3, 0.05, 0.02)
+    xfmr = _add_simple_transformer_3w!(sys, b1, b2, b3, 90)
+    # The pairwise fields are `nothing` when a 3W is built directly from star-leg circuits.
+    @test isnothing(PSY.get_r_12(xfmr, PSY.SU))
+
+    export_location = joinpath(test_psse_export_dir, "v35", "xfmr3w_no_pairwise")
+    exporter = PSSEExporter(sys, :v35, export_location; overwrite = true)
+    write_export(exporter, "xfmr3w"; overwrite = true)
+    raw_path, _ = get_psse_export_paths(joinpath(export_location, "xfmr3w"))
+    @test !occursin("nothing", read(raw_path, String))
+end
+
+@testset "PSSE Exporter: generic HVDC synthetic generators follow PF's own injection sign" begin
+    sys = System(100.0)
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230.0)
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.PQ, 230.0)
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    _add_simple_load!(sys, b2, 0.0, 0.0)
+    hvdc = TwoTerminalGenericHVDCLine(;
+        name = "hvdc_1_2",
+        available = true,
+        active_power_flow = 30.0,
+        arc = Arc(b1, b2),
+        active_power_limits_from = (min = -100.0, max = 100.0),
+        active_power_limits_to = (min = -100.0, max = 100.0),
+        reactive_power_limits_from = (min = 0.0, max = 0.0),
+        reactive_power_limits_to = (min = 0.0, max = 0.0),
+        base_power = 100.0,
+    )
+    add_component!(sys, hvdc)
+
+    # PF's own convention: FROM withdraws from the AC network, TO supplies it.
+    (P_from, P_to) = PF.get_hvdc_injections(hvdc, sys)
+    @test P_from < 0.0 && P_to > 0.0
+
+    export_location = joinpath(test_psse_export_dir, "v35", "generic_hvdc_sign")
+    exporter = PSSEExporter(sys, :v35, export_location; overwrite = true)
+    write_export(exporter, "generic_hvdc_sign"; overwrite = true)
+    sys2 = read_system_with_metadata(joinpath(export_location, "generic_hvdc_sign"))
+
+    gen_from =
+        only(
+            PSY.get_components(
+                g -> endswith(PSY.get_name(g), "_FR"),
+                ThermalStandard,
+                sys2,
+            ),
+        )
+    gen_to =
+        only(
+            PSY.get_components(
+                g -> endswith(PSY.get_name(g), "_TO"),
+                ThermalStandard,
+                sys2,
+            ),
+        )
+    @test PSY.get_active_power(gen_from, PSY.SU) ≈ P_from
+    @test PSY.get_active_power(gen_to, PSY.SU) ≈ P_to
+end
+
+@testset "PSSE Exporter: droop VSC DCSET follows the AC-supply sign convention" begin
+    sys = System(100.0)
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230.0)
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.PQ, 230.0)
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    _add_simple_load!(sys, b2, 0.0, 0.0)
+    vsc = _add_simple_vsc!(sys, b1, b2; active_power_flow = 0.2)
+    # One converter must keep a real DC-voltage reference or the record has no TYPE-1
+    # terminal and re-parsing rejects it; only the `to` side is droop, the case under test.
+    PSY.set_dc_control_from!(vsc, PSY.VSCDCControlModes.DC_VOLTAGE)
+    PSY.set_dc_control_to!(vsc, PSY.VSCDCControlModes.DC_VOLTAGE_DROOP)
+
+    export_location = joinpath(test_psse_export_dir, "v35", "vsc_droop_dcset")
+    exporter = PSSEExporter(sys, :v35, export_location; overwrite = true)
+    write_export(exporter, "vsc_droop"; overwrite = true)
+    sys2 = read_system_with_metadata(joinpath(export_location, "vsc_droop"))
+    vsc2 = only(PSY.get_components(PSY.TwoTerminalVSCLine, sys2))
+    # The format has no droop mode, so the `to` side reimports as DC_POWER, whose own
+    # convention is positive == supplies the AC network at that bus. Flow is FROM -> TO
+    # (positive), so `to` supplies its AC network: the setpoint must be positive.
+    @test PSY.get_dc_control_to(vsc2) == PSY.VSCDCControlModes.DC_POWER
+    @test PSY.get_dc_setpoint_to(vsc2) > 0.0
+end
+
+@testset "PSSE Exporter: switching-device RATE1 round-trips through SBASE" begin
+    # PFFP's switch/breaker importer stores RATE1 unscaled, so a 12.06 CU rating must
+    # export as 12.06, not 1206.0, to round-trip.
+    sys = System(100.0)
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230.0)
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.PQ, 230.0)
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    _add_simple_load!(sys, b2, 0.1, 0.05)
+    arc = Arc(; from = b1, to = b2)
+    add_component!(sys, arc)
+    sw = DiscreteControlledACBranch(;
+        name = "brk_1_2",
+        available = true,
+        active_power_flow = 0.0,
+        reactive_power_flow = 0.0,
+        arc = arc,
+        r = 0.001,
+        x = 0.01,
+        rating = 12.06,  # 1206 MVA on a 100 MVA system base
+        discrete_branch_type = DiscreteControlledBranchType.BREAKER,
+        branch_status = DiscreteControlledBranchStatus.CLOSED,
+    )
+    add_component!(sys, sw)
+    @test PSY.get_rating(sw, PSY.NU) ≈ 1206.0
+
+    export_location = joinpath(test_psse_export_dir, "v35", "breaker_rate1")
+    exporter = PSSEExporter(sys, :v35, export_location; overwrite = true)
+    write_export(exporter, "breaker_rate1"; overwrite = true)
+    sys2 = read_system_with_metadata(joinpath(export_location, "breaker_rate1"))
+    sw2 = only(PSY.get_components(PSY.DiscreteControlledACBranch, sys2))
+    @test PSY.get_rating(sw2, PSY.NU) ≈ PSY.get_rating(sw, PSY.NU)
 end

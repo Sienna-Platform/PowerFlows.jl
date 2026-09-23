@@ -84,11 +84,21 @@ end
 # `solved_admittance` replaces the engaged blocks; it is a pure susceptance.
 _switched_admittance(solved::Float64, ::Vector{Int}, ::Vector{Complex{Float64}}) =
     im * solved
-_switched_admittance(
+# PSY defaults `number_engaged` to `Int[]` regardless of block count; that alone is legal (0 engaged).
+function _switched_admittance(
     ::Nothing,
     engaged::Vector{Int},
     y_increase::Vector{Complex{Float64}},
-) = sum(engaged .* y_increase; init = 0.0 + 0.0im)
+)
+    isempty(engaged) && return 0.0 + 0.0im
+    length(engaged) == length(y_increase) || throw(
+        DimensionMismatch(
+            "SwitchedAdmittance has $(length(y_increase)) blocks but " *
+            "number_engaged has $(length(engaged)) entries.",
+        ),
+    )
+    return sum(engaged .* y_increase; init = 0.0 + 0.0im)
+end
 
 function _get_withdrawals!(
     pf::PowerFlowEvaluationModel,
@@ -482,6 +492,16 @@ function my_mul_mt(
     return Y
 end
 
+# PTDF row for `arc`, read from the cache to avoid the copy `A[arc, :]` makes; the first
+# read of a row computes and caches it.
+function _ptdf_cached_row(A::PNM.VirtualPTDF, cache, arc_lookup, arc)
+    row_ix = arc_lookup[arc]
+    if haskey(cache, row_ix)
+        return cache[row_ix]
+    end
+    return A[arc, :]
+end
+
 # TODO: Consider Moving method to PNM to avoid type piracy. This is a performance optimization to avoid allocating a new matrix for each call to my_mul_mt.
 """In-place A*X → Y where X is a matrix. Pre-allocated Y avoids per-call allocation."""
 function my_mul_mt!(
@@ -489,17 +509,10 @@ function my_mul_mt!(
     A::PNM.VirtualPTDF,
     X::Matrix{Float64},
 )
-    # Access cache directly to avoid allocation from A[arc, :] indexing
     cache = PNM.get_ptdf_data(A)
-    arc_lookup = PNM.get_arc_lookup(A)  # maps arc tuple → row index
+    arc_lookup = PNM.get_arc_lookup(A)
     for (i, arc) in enumerate(A.axes[1])
-        row_ix = arc_lookup[arc]
-        # On first solve, cache may be empty - use getindex to trigger computation
-        if haskey(cache, row_ix)
-            row_i = cache[row_ix]
-        else
-            row_i = A[arc, :]
-        end
+        row_i = _ptdf_cached_row(A, cache, arc_lookup, arc)
         mul!(view(Y, i, :), X', row_i)
     end
     return
@@ -783,3 +796,10 @@ siground(x::Float64) = round(x; sigdigits = 3)
 signorm(x::Vector{Float64}; p::Real = 2) = siground(LinearAlgebra.norm(x, p))
 print_signorms(x::Vector{Float64}; intro::String = "", ps::Vector{Float64} = [2]) =
     @info "$intro norm: " * join(["$(signorm(x; p = p)) [L$p]" for p in ps], ", ")
+
+# Whether `Jv` has the sparsity pattern a factorization cache (fields `m`, `n`, `colptr`,
+# `rowval`) was built for, so its symbolic factorization can be reused.
+function _same_sparsity(cache, Jv::SparseMatrixCSC)
+    return size(Jv, 1) == cache.m && size(Jv, 2) == cache.n &&
+           Jv.colptr == cache.colptr && Jv.rowval == cache.rowval
+end

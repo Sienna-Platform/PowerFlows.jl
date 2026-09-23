@@ -142,7 +142,6 @@ function solution_record_values(
     base_power::Float64,
 )
     solver = _solver_type(pf)
-    fd = _is_fast_decoupled(solver)
     step_control = _solution_record_step_control(solver, params)
 
     # A discrete-control solve moves both tap changers and switched shunts; PowerFlows has
@@ -169,11 +168,9 @@ function solution_record_values(
         varlim = -1
     end
 
-    if fd
-        iterations = something(params.maxIterations, DEFAULT_FD_MAX_ITER)
-    else
-        iterations = something(params.maxIterations, DEFAULT_NR_MAX_ITER)
-    end
+    # `params.maxIterations` is already resolved to the solver's default by the model
+    # constructor (see `_default_max_iterations`), so no branch is needed here.
+    iterations = params.maxIterations
 
     if params.enhanced_flat_start
         flatst = 1
@@ -319,14 +316,30 @@ function _ends_solution_block(line::AbstractString)
     return !isnothing(tryparse(Int, token))
 end
 
-# Records, in order, with the `@!` column-header comments and blank lines dropped. A v35
-# export leads with a `@!IC,SBASE,REV,...` header, so the case identification record is not
-# necessarily the first line of the file.
+# Records, with the `@!` column-header comments and blank lines dropped. A v35 export leads
+# with a `@!IC,SBASE,REV,...` header, so the case identification record is not necessarily
+# the first line of the file. Used only for the solution-record block itself: the two title
+# records ahead of it are skipped by fixed position (see `_case_header_and_block`), not by
+# this filter, because PSS/E writes them even when blank, and a non-blank second title line
+# must not be mistaken for the block's first record.
 function _significant_records(lines)
     return [
         line for line in map(strip, lines)
         if !isempty(line) && !startswith(line, "@!")
     ]
+end
+
+# The case identification record and the significant records of the block that follows the
+# two title records, or `nothing` when the file has no case identification record at all.
+function _case_header_and_block(lines::Vector{<:AbstractString})
+    header_ix = findfirst(
+        line -> !isempty(strip(line)) && !startswith(strip(line), "@!"),
+        lines,
+    )
+    isnothing(header_ix) && return nothing
+    block_start = header_ix + 3
+    block_start <= length(lines) + 1 || return nothing
+    return (strip(lines[header_ix]), _significant_records(lines[block_start:end]))
 end
 
 """
@@ -340,24 +353,23 @@ Unrecognized records and unrecognized field names are ignored, so a case written
 newer PSS/E than this mapping knows about still reads.
 """
 function read_solution_records(path::AbstractString)
-    return _read_solution_records(_significant_records(readlines(path)))
+    header_and_block = _case_header_and_block(readlines(path))
+    isnothing(header_and_block) && return nothing
+    return _read_solution_records(header_and_block...)
 end
 
-# Core of `read_solution_records`, taking the already-split significant records so a
-# caller that also needs another field of the file (e.g. the base power) can read it once.
-function _read_solution_records(records::Vector{<:AbstractString})
-    length(records) >= 3 || return nothing
-
-    # Case identification record 1, field 3, is the format revision.
-    header = _split_record(records[1])
-    length(header) >= 3 || return nothing
-    revision = tryparse(Int, strip(first(split(strip(header[3]), '/'))))
+# Core of `read_solution_records`, taking the header record and the already-split
+# significant block records so a caller that also needs another field of the file (e.g. the
+# base power) can read it once.
+function _read_solution_records(header::AbstractString, block::Vector{<:AbstractString})
+    fields = _split_record(header)
+    length(fields) >= 3 || return nothing
+    revision = tryparse(Int, strip(first(split(strip(fields[3]), '/'))))
     (isnothing(revision) || revision < 35) && return nothing
 
     values = SolutionRecordValues()
     found = false
-    # Record 2 is the case name; the block starts after it.
-    for stripped in records[3:end]
+    for stripped in block
         _ends_solution_block(stripped) && break
 
         fields = _split_record(stripped)
@@ -416,8 +428,7 @@ function _read_solution_records(records::Vector{<:AbstractString})
 end
 
 # Copy-with-overrides, so each record's parse only has to name the fields it sets.
-SolutionRecordValues(base::SolutionRecordValues; kwargs...) =
-    _override(base, Dict{Symbol, Any}(kwargs))
+SolutionRecordValues(base::SolutionRecordValues; kwargs...) = _override(base; kwargs...)
 
 """
     solution_parameters(values::SolutionRecordValues, base_power) -> SolutionParameters
@@ -426,7 +437,11 @@ Map solution records back onto PowerFlows parameters. `base_power` is the system
 MVA and converts the record's MW/MVAr mismatch back to a per-unit tolerance.
 
 Record fields with no PowerFlows counterpart are dropped; PowerFlows parameters the format
-cannot express keep their defaults.
+cannot express keep their defaults. This includes `enhanced_flat_start`: PSS/E's FLATST
+means "always flat start," while PowerFlows' flag is a fallback used only when the starting
+residual is large (default `true`), so the two are not the same setting — `values.flatst`
+is parsed but never applied, and `enhanced_flat_start` keeps `SolutionParameters`' own
+default.
 """
 function solution_parameters(values::SolutionRecordValues, base_power::Float64)
     fd = uppercase(values.solver) == SOLUTION_RECORD_SOLVER_DECOUPLED
@@ -442,7 +457,7 @@ function solution_parameters(values::SolutionRecordValues, base_power::Float64)
     if values.itmxn > 0
         maxIterations = values.itmxn
     else
-        maxIterations = nothing
+        maxIterations = UNSET_MAX_ITERATIONS
     end
 
     # Tie-line-and-load interchange is not implemented and the model constructor rejects
@@ -472,12 +487,26 @@ function solution_parameters(values::SolutionRecordValues, base_power::Float64)
         )
     end
 
+    control_discrete_devices = values.actaps != 0 || values.swshnt != 0
+    # Discrete control is a Newton/trust-region continuation; the model constructor
+    # rejects it under fast-decoupled solving, so a case that requests both is read with
+    # the control flag dropped rather than producing a `SolutionParameters` that fails to
+    # build a model.
+    if fd && control_discrete_devices
+        @warn(
+            "The solution records request discrete-device control (ACTAPS/SWSHNT) under " *
+            "fast-decoupled solving (FDNS); PowerFlows does not support discrete control " *
+            "as a fast-decoupled continuation, so it is being dropped.",
+            maxlog = 1,
+        )
+        control_discrete_devices = false
+    end
+
     return SolutionParameters(;
         tol = tol,
         maxIterations = maxIterations,
         check_reactive_power_limits = values.varlim >= 0,
-        enhanced_flat_start = values.flatst == 1,
-        control_discrete_devices = values.actaps != 0 || values.swshnt != 0,
+        control_discrete_devices = control_discrete_devices,
         area_interchange_control = values.areain != 0,
         tie_definition = tie_definition,
         fd_step_control...,
@@ -509,21 +538,29 @@ function read_solution_parameters(
     path::AbstractString;
     base_power::Union{Nothing, Real} = nothing,
 )
-    records = _significant_records(readlines(path))
-    values = _read_solution_records(records)
+    header_and_block = _case_header_and_block(readlines(path))
+    isnothing(header_and_block) && return nothing
+    header, block = header_and_block
+    values = _read_solution_records(header, block)
     isnothing(values) && return nothing
     if isnothing(base_power)
-        sbase = _case_base_power(records)
+        sbase = _case_base_power(header)
     else
         sbase = Float64(base_power)
     end
     return solution_parameters(values, sbase)
 end
 
-# Field 2 of the case identification record is the system base in MVA.
-function _case_base_power(records::Vector{<:AbstractString})
-    isempty(records) && return 100.0
-    fields = _split_record(records[1])
-    length(fields) >= 2 || return 100.0
-    return something(tryparse(Float64, strip(fields[2])), 100.0)
+# Field 2 of the case identification record is the system base in MVA. Reached only once a
+# solution-record block has been found, so the header is a case identification record by
+# construction; a missing or unparseable SBASE field means the file is malformed, not that
+# 100 MVA is a safe guess.
+function _case_base_power(header::AbstractString)
+    fields = _split_record(header)
+    length(fields) >= 2 ||
+        error("Case identification record has no SBASE field: \"$header\"")
+    sbase = tryparse(Float64, strip(fields[2]))
+    isnothing(sbase) &&
+        error("Case identification record SBASE field is not a number: \"$header\"")
+    return sbase
 end

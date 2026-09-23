@@ -187,7 +187,7 @@ has no such section, so a v33 export warns and drops them.
   - `write_comments::Bool = false`: whether to add the customary-but-not-in-spec-annotations
     after a slash on the first line and at group boundaries
   - `name::AbstractString = "export"`: the base name of the export
-  - `step::Any = nothing`: optional step data to append to the base export name. User is
+  - `step = nothing`: optional step data to append to the base export name. User is
     responsible for updating the step data. If the step data is `nothing`, it is not used;
     if it is a tuple or vector, it is joined with \\_ and concatted; else it is concatted
     after \\_.
@@ -205,6 +205,9 @@ mutable struct PSSEExporter <: SystemPowerFlowContainer
     name::String
     write_comments::Bool
     overwrite::Bool
+    # A label folded into the export directory name by `_step_to_string`: `nothing`, an
+    # iterable such as `(year, period)`, or a bare scalar. Untyped on purpose: POM dispatches
+    # on the invariant `PowerFlowEvaluationData{PSSEExporter}`, so the type takes no parameter.
     step::Any
     raw_buffer::IOBuffer  # Persist an IOBuffer to reduce allocations on repeated exports
     md_dict::OrderedDict{String, Any}  # Persist metadata to avoid unnecessary recomputation
@@ -223,7 +226,7 @@ mutable struct PSSEExporter <: SystemPowerFlowContainer
         name::AbstractString = PSSE_DEFAULT_EXPORT_NAME,
         write_comments::Bool = false,
         overwrite::Bool = false,
-        step::Any = nothing,
+        step = nothing,
     )
         (psse_version in PSSE_EXPORT_SUPPORTED_VERSIONS) ||
             throw(
@@ -345,8 +348,7 @@ function _attach_source_model!(
         )
     end
     params = get_solution_parameters(pf)
-    isempty(solver_kwargs) ||
-        (params = _override(params, Dict{Symbol, Any}(pairs(solver_kwargs))))
+    isempty(solver_kwargs) || (params = _override(params; solver_kwargs...))
     exporter.source_model = pf
     exporter.source_parameters = params
     return
@@ -381,45 +383,10 @@ function update_exporter!(exporter::PSSEExporter, data::PSY.System)
     return
 end
 
-get_data_array(buf::Base.GenericIOBuffer{<:Array{UInt8}}) =  # < Julia 1.11
-    buf.data
-
-(@isdefined GenericMemory) && (  # >= Julia 1.11
-    get_data_array(buf::Base.GenericIOBuffer{<:GenericMemory{:not_atomic, UInt8}}) =
-        Base.wrap(Array, buf.data)
-)
-
-const _FloatToBufSupportedTypes = if (@isdefined GenericMemory)
-    Union{
-        Base.GenericIOBuffer{<:Array{UInt8}},
-        Base.GenericIOBuffer{<:GenericMemory{:not_atomic, UInt8}},
-    }
-else
-    Base.GenericIOBuffer{<:Array{UInt8}}
-end
-
-(IOBuffer <: _FloatToBufSupportedTypes) ||
-    @warn "Fast Float64 to IOBuffer implementation is out of date, will not be used"
-
-"Temporary, very specialized proof of concept patch for https://github.com/JuliaLang/julia/issues/55835"
-function better_float_to_buf(buf::_FloatToBufSupportedTypes, n::Float64)
-    Base.ensureroom(buf, Base.Ryu.neededdigits(Float64))
-    # get_data_array incurs an allocation on Julia >= 1.11. I think writeshortest could work
-    # with the underlying Memory with minimal modification, which would be nice because
-    # other than this, better_float_to_buf is completely allocation free.
-    data_array = get_data_array(buf)
-    # RAW numerics are read into Fortran single precision, so write the shortest string
-    # that round-trips as Float32 (typed=false avoids the "f0" suffix Ryu appends for Float32).
-    new_pos =
-        Base.Ryu.writeshortest(data_array, buf.ptr, Float32(n), false, false, true, -1,
-            UInt8('e'), false, UInt8('.'), false, false)
-    buf.ptr = new_pos
-    buf.size = new_pos - 1
-    return
-end
-
 fastprint(io::IO, val) = print(io, val)
-fastprint(io::_FloatToBufSupportedTypes, val::Float64) = better_float_to_buf(io, val)
+# RAW numerics are read into Fortran single precision, so print the shortest string that
+# round-trips as Float32 rather than the full Float64 precision.
+fastprint(io::IO, val::Float64) = print(io, Float32(val))
 
 function fastprintdelim(io, val, delim = ", ")
     fastprint(io, val)
@@ -505,7 +472,7 @@ Base.return_types(Base.Fix1(convert_empty, Vector{String}))  # -> [Vector{String
 ```
 """
 convert_empty(::Type{T}, val) where {T} = isempty(val) ? T() : val::T
-convert_empty_stringvec = Base.Fix1(convert_empty, Vector{String})
+const convert_empty_stringvec = Base.Fix1(convert_empty, Vector{String})
 
 # PERF could be improved by appending to the buffer rather than doing string interpolation, seems unnecessary
 _psse_quote_string(s::String) = "'$s'"
@@ -1042,15 +1009,17 @@ function _write_3w_transformer_record2!(
     io::IO,
     transformer::PSY.ThreeWindingTransformer,
 )
-    R1_2 = PSY.get_r_12(transformer, PSY.SU)
-    X1_2 = PSY.get_x_12(transformer, PSY.SU)
-    SBASE1_2 = PSY.get_base_power_12(transformer)
-    R2_3 = PSY.get_r_23(transformer, PSY.SU)
-    X2_3 = PSY.get_x_23(transformer, PSY.SU)
-    SBAS2_3 = PSY.get_base_power_23(transformer)
-    R3_1 = PSY.get_r_31(transformer, PSY.SU)
-    X3_1 = PSY.get_x_31(transformer, PSY.SU)
-    SBAS3_1 = PSY.get_base_power_31(transformer)
+    # The pairwise fields are `nothing` for a transformer built from star-leg circuits; a
+    # blank field lets PSS/E apply its own default instead of printing `nothing`.
+    R1_2 = _value_or_default(PSY.get_r_12(transformer, PSY.SU), PSSE_DEFAULT)
+    X1_2 = _value_or_default(PSY.get_x_12(transformer, PSY.SU), PSSE_DEFAULT)
+    SBASE1_2 = _value_or_default(PSY.get_base_power_12(transformer), PSSE_DEFAULT)
+    R2_3 = _value_or_default(PSY.get_r_23(transformer, PSY.SU), PSSE_DEFAULT)
+    X2_3 = _value_or_default(PSY.get_x_23(transformer, PSY.SU), PSSE_DEFAULT)
+    SBAS2_3 = _value_or_default(PSY.get_base_power_23(transformer), PSSE_DEFAULT)
+    R3_1 = _value_or_default(PSY.get_r_31(transformer, PSY.SU), PSSE_DEFAULT)
+    X3_1 = _value_or_default(PSY.get_x_31(transformer, PSY.SU), PSSE_DEFAULT)
+    SBAS3_1 = _value_or_default(PSY.get_base_power_31(transformer), PSSE_DEFAULT)
     star_bus = PSY.get_star_bus(transformer)
     VMSTAR = PSY.get_magnitude(star_bus)
     ANSTAR = rad2deg(PSY.get_angle(star_bus))
@@ -1308,7 +1277,10 @@ function _compute_generator_powers(
     base_power::Float64,
 )
     pg, qg = get_active_and_reactive_power_from_generator(generator, PSY.NU)
-    if hvdc_end == "TO"
+    # PF's own HVDC injection convention is negative at the FROM end (it withdraws from
+    # the AC network) and positive at TO; the synthetic generator's stored power is the
+    # same raw flow at both ends, so only FROM needs the flip.
+    if hvdc_end == "FR"
         pg = -pg
     end
     return pg, qg
@@ -1332,7 +1304,8 @@ function _compute_active_power_limits(
     base_power::Float64,
 )
     limits = get_active_power_limits_for_power_flow(generator, PSY.NU)
-    if hvdc_end == "TO"
+    # Mirrors the FROM-end sign flip in `_compute_generator_powers`.
+    if hvdc_end == "FR"
         return (min = -limits.max, max = -limits.min)
     end
     return limits
@@ -1833,9 +1806,13 @@ function _write_discrete_branch_record!(
     RATEA = _value_or_default(PSY.get_rating(branch, PSY.NU), PSSE_DEFAULT)
     RATEB = 0.0
     RATEC = 0.0
-    RATEA =
-        RATEA >= INFINITE_BOUND ? 0.0 :
-        RATEA / PSY.get_base_power(exporter.system, PSY.NU)
+    # PFFP's switch/breaker importer stores RATE unscaled, so export divides by SBASE to
+    # round-trip.
+    if RATEA >= INFINITE_BOUND
+        RATEA = 0.0
+    else
+        RATEA = RATEA / PSY.get_base_power(exporter.system, PSY.NU)
+    end
 
     @fastprintdelim_unroll(io, false, I, J, CKT, R, X, B,
         RATEA, RATEB, RATEC, GI, BI,
@@ -1969,12 +1946,12 @@ function write_to_buffers!(
 
         X = PSY.get_x(branch, PSY.SU)
         RATE1 = _value_or_default(PSY.get_rating(branch, PSY.NU), PSSE_DEFAULT)
-        RATE1 =
-            if RATE1 >= INFINITE_BOUND
-                0.0
-            else
-                RATE1 / PSY.get_base_power(exporter.system, PSY.NU)
-            end
+        # See `_write_discrete_branch_record!`.
+        if RATE1 >= INFINITE_BOUND
+            RATE1 = 0.0
+        else
+            RATE1 = RATE1 / PSY.get_base_power(exporter.system, PSY.NU)
+        end
 
         rates = [RATE1]
         # Using 0.0 as default for rating exporter, since PSSEv35 does not allow blank values
@@ -2284,9 +2261,9 @@ function _compute_dcline_common_fields(
     NAME = _is_valid_psse_name(dcline_name) ? dcline_name : last(dcline_name, 12)
     NAME = _psse_quote_string(NAME)
     MDC = Int(PSY.get_power_mode(dcline))
-    # PSS/E stores SETVL in MW, while the PSY value is in system-base per unit.
-    SETVL =
-        PSY.get_transfer_setpoint(dcline) * PSY.get_base_power(exporter.system, PSY.NU)
+    # PSY stores transfer_setpoint in the same units as SETVL (MW or A per power_mode;
+    # never per-unit), so it is written through unchanged.
+    SETVL = PSY.get_transfer_setpoint(dcline)
     VSCHD = PSY.get_scheduled_dc_voltage(dcline)
     # RDC is a DC-circuit resistance: PSY per-unitizes it against the DC base (VSCHD^2 /
     # baseMVA), not the rectifier AC commutating base, so the inverse conversion must use
@@ -2473,11 +2450,12 @@ function _has_dc_voltage_reference(dc_control)
 end
 
 # DCSET for one converter. A droop terminal is exported as MW control, so its setpoint is the
-# scheduled active-power demand (NOT the droop reference voltage, which the record cannot hold);
-# the from terminal injects +P_flow into the DC line, the to terminal receives -P_flow. Setpoints
-# are stored in system-base p.u.; scale back to PSS/E units — a DC-voltage setpoint by
-# `rated_dc_voltage` (kV), a DC-power setpoint by `base_power` (MW). `rated_dc_voltage == 0`
-# (unspecified) writes the DC-voltage setpoint through unchanged.
+# scheduled active-power demand (NOT the droop reference voltage, which the record cannot hold).
+# `dc_setpoint`'s convention is positive == supplies the AC network at that bus: from
+# withdraws (negative), to supplies (positive). Setpoints are stored in system-base p.u.;
+# scale back to PSS/E units — a DC-voltage setpoint by `rated_dc_voltage` (kV), a DC-power
+# setpoint by `base_power` (MW). `rated_dc_voltage == 0` (unspecified) writes the DC-voltage
+# setpoint through unchanged.
 function _vsc_export_dcset(
     vscline::PSY.TwoTerminalVSCLine,
     side::Symbol,
@@ -2486,11 +2464,11 @@ function _vsc_export_dcset(
     if side == :from
         dc_control = PSY.get_dc_control_from(vscline)
         dc_setpoint = PSY.get_dc_setpoint_from(vscline)
-        flow_sign = 1.0
+        flow_sign = -1.0
     else
         dc_control = PSY.get_dc_control_to(vscline)
         dc_setpoint = PSY.get_dc_setpoint_to(vscline)
-        flow_sign = -1.0
+        flow_sign = 1.0
     end
     if dc_control == PSY.VSCDCControlModes.DC_VOLTAGE_DROOP
         return flow_sign * PSY.get_active_power_flow(vscline, PSY.SU) * base_power
@@ -2889,13 +2867,8 @@ end
 
 # Total switched-shunt susceptance for BINIT: `solved_admittance` when the case was read in
 # as solved, else the currently engaged blocks.
-_switched_shunt_binit(solved::Float64, ::Vector{Int}, ::Vector{Complex{Float64}}) = solved
-_switched_shunt_binit(
-    ::Nothing,
-    engaged::Vector{Int},
-    y_increase::Vector{Complex{Float64}},
-) =
-    imag(sum(engaged .* y_increase; init = 0.0 + 0.0im))
+_switched_shunt_binit(solved, engaged::Vector{Int}, y_increase::Vector{Complex{Float64}}) =
+    imag(_switched_admittance(solved, engaged, y_increase))
 
 """Build v35 switched shunt step data (S, N, B triplets padded to 8)."""
 function _build_switched_shunt_steps_v35(

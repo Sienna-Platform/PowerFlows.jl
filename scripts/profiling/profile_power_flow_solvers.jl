@@ -138,15 +138,17 @@ println("  branches = ", length(PSY.get_components(PSY.ACBranch, SYS)))
 println("  backends = ", join(available_backends(), ", "))
 println()
 
-# (label, solver type, extra solver_settings merged into the pf). The FD entries exercise both
-# the polar :decoupled B′/B″ loop and the formulation-agnostic :fixed_jacobian (frozen J) loop.
+# (label, solver type, extra SolutionParameters settings merged into the pf). The FD entries
+# exercise both the polar :decoupled B′/B″ loop and the formulation-agnostic :fixed_jacobian
+# (frozen J) loop — selected via the FastDecoupledACPowerFlow variant TYPE PARAMETER, not a
+# settings key.
 const AC_SOLVERS = [
     ("AC-NewtonRaphson", PF.NewtonRaphsonACPowerFlow, Dict{Symbol, Any}()),
     ("AC-TrustRegion", PF.TrustRegionACPowerFlow, Dict{Symbol, Any}()),
-    ("AC-FastDecoupled-decoupled", PF.FastDecoupledACPowerFlow,
-        Dict{Symbol, Any}(:fd_variant => :decoupled)),
-    ("AC-FastDecoupled-fixedjac", PF.FastDecoupledACPowerFlow,
-        Dict{Symbol, Any}(:fd_variant => :fixed_jacobian)),
+    ("AC-FastDecoupled-decoupled", PF.FastDecoupledACPowerFlow{PF.FDDecoupled},
+        Dict{Symbol, Any}()),
+    ("AC-FastDecoupled-fixedjac", PF.FastDecoupledACPowerFlow{PF.FDFixedJacobian},
+        Dict{Symbol, Any}()),
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -174,7 +176,7 @@ function profile_ac(label, solver, backend, extra_settings = Dict{Symbol, Any}()
     settings = merge(Dict{Symbol, Any}(:linear_solver => backend), extra_settings)
     pf = ACPowerFlow{solver}(;
         correct_bustypes = true,
-        solver_settings = settings,
+        solution_parameters = PF.SolutionParameters(; settings...),
     )
 
     # Build data ONCE and reuse it across (re-flat-started) solves, so the full-solve

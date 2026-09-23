@@ -327,46 +327,6 @@ end
     @test cache2.area_data !== cache1.area_data
 end
 
-# A boundary-crossing 3W transformer winding whose star bus's Y-bus diagonal is polluted by
-# BOTH a sibling winding of the same transformer and an unrelated extra line -- neither is a
-# member of the boundary-crossing winding's own corridor. Tertiary winding disabled: not
-# needed here.
-function _make_3w_boundary_fixture()
-    sys = System(100.0)
-    area_a = PSY.Area(; name = "AreaA")
-    area_b = PSY.Area(; name = "AreaB")
-    PSY.add_component!(sys, area_a)
-    PSY.add_component!(sys, area_b)
-
-    bus1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230)
-    bus2 = _add_simple_bus!(sys, 2, ACBusTypes.PV, 230)
-    bus3 = _add_simple_bus!(sys, 3, ACBusTypes.PQ, 230)
-    bus4 = _add_simple_bus!(sys, 4, ACBusTypes.PQ, 230)
-    bus5 = _add_simple_bus!(sys, 5, ACBusTypes.PQ, 230)
-    PSY.set_area!(bus1, area_a)
-    PSY.set_area!(bus2, area_b)
-    PSY.set_area!(bus3, area_a)
-    PSY.set_area!(bus4, area_b)
-    PSY.set_area!(bus5, area_a)
-
-    _add_simple_source!(sys, bus1, 0.0, 0.0)
-    _add_simple_thermal_standard!(sys, bus2, 0.1, 0.0)
-    _add_simple_load!(sys, bus3, 5.0, 2.0)
-    _add_simple_load!(sys, bus4, 5.0, 2.0)
-    _add_simple_load!(sys, bus5, 2.0, 1.0)
-
-    _add_simple_line!(sys, bus1, bus3)
-    _add_simple_line!(sys, bus2, bus4)
-
-    xfmr = _add_simple_transformer_3w!(sys, bus3, bus4, bus3, 99)
-    star_bus = PSY.get_star_bus(xfmr)
-    PSY.set_area!(star_bus, area_a)
-    _add_simple_line!(sys, star_bus, bus5)
-
-    PSY.set_bustype!(bus2, ACBusTypes.SLACK)
-    return sys
-end
-
 @testset "area interchange 3W winding NI matches independent oracle (polluted star-bus diagonal)" begin
     sys = _make_3w_boundary_fixture()
     pf = PF.ACPowerFlow{NewtonRaphsonACPowerFlow}(;
@@ -671,8 +631,9 @@ end
     delta_p_first = copy(data.area_interchange.delta_p)
 
     @test_logs(
-        (:info, r"converged after [01] iterations"),
+        (:debug, r"converged after [01] iterations"),
         match_mode = :any,
+        min_level = Logging.Debug,
         solve_power_flow!(data)
     )
 
@@ -1065,10 +1026,10 @@ end
     # (n_lcc == 0) is exactly the shape the OLD formula (`n_state - 4*n_lcc`) mispartitioned,
     # folding the whole VSC tail into the "bus" block.
     sys = _build_vsc_system(; g = 50.0)
-    settings = merge(VSC_SETTINGS, Dict{Symbol, Any}(:linear_solver => "KLU"))
+    params = PF._override(VSC_SOLUTION_PARAMETERS; linear_solver = "KLU")
     pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
         log_solver_diagnostics = true,
-        solver_settings = settings,
+        solution_parameters = params,
     )
     data = PowerFlowData(pf, sys)
     residual = PF.ACPowerFlowResidual(data, 1)

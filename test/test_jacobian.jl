@@ -1,32 +1,3 @@
-function verify_jacobian(
-    sys::PSY.System;
-    pf::PF.ACPowerFlow = PF.ACPowerFlow{NewtonRaphsonACPowerFlow}(;
-        correct_bustypes = true,
-    ),
-    label::String = "",
-    perturbation::Float64 = 0.02,
-    seed::Int = 42,
-)
-    data = PF.PowerFlowData(pf, sys)
-    time_step = 1
-    residual = PF.ACPowerFlowResidual(data, time_step)
-    J = PF.ACPowerFlowJacobian(residual, time_step)
-    x0 = PF.calculate_x0(data, time_step)
-    # Verify away from the flat-start state. At flat start θ=0 for every bus,
-    # which silently zeroes all `sin(Δθ)` cross-terms — a sign flip in the
-    # symbolic Jacobian for those entries would not be detected. A small
-    # deterministic perturbation breaks the symmetry.
-    if perturbation > 0
-        Random.seed!(seed)
-        x0 .+= perturbation .* randn(length(x0))
-    end
-    residual(x0, time_step)
-    J(time_step)
-    verify_jacobian_asymptotic(
-        residual, deepcopy(J.Jv), x0, time_step; label = label,
-    )
-end
-
 @testset "Jacobian verification" begin
     sys = PSB.build_system(PSITestSystems, "c_sys14")
     verify_jacobian(sys; label = "polar c_sys14")
@@ -212,21 +183,6 @@ end
         generator_slack_participation_factors = gspf,
     )
     verify_jacobian(sys; pf = pf, label = "polar c_sys14 distributed-slack")
-end
-
-# Two-swing island: buses 1 and 2 are both REF in one island, bus 3 is a PQ load. The
-# second swing has a nonzero fixed angle so the check exercises real off-diagonal ∂P/∂θ terms.
-function _two_swing_system()
-    sys = System(100.0)
-    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.06, 0.0)
-    b2 = _add_simple_bus!(sys, 2, ACBusTypes.REF, 230, 1.05, 0.05)
-    b3 = _add_simple_bus!(sys, 3, ACBusTypes.PQ, 230, 1.0, 0.0)
-    _add_simple_source!(sys, b1, 0.0, 0.0)
-    _add_simple_source!(sys, b2, 0.0, 0.0)
-    _add_simple_load!(sys, b3, 40, 15)
-    _add_simple_line!(sys, b1, b3, 5e-3, 5e-3, 1e-3)
-    _add_simple_line!(sys, b2, b3, 5e-3, 5e-3, 1e-3)
-    return sys
 end
 
 @testset "Multi-swing: two swings in one island each self-balance (solve)" begin

@@ -799,9 +799,9 @@ function initialize_LCCParameters!(
     # for DC power flow calculations, LCC arc flows are known from quantities from setup.
     for (i, lcc_branch) in enumerate(lccs)
         # it's an LCC, so flow can't be reversed; rhs will error if it is.
-        (P_from_to, P_to_from, _) = get_hvdc_power_loss(lcc_branch, sys)
-        data.lcc.arc_active_power_flow_from_to[i, :] .= P_from_to
-        data.lcc.arc_active_power_flow_to_from[i, :] .= P_to_from
+        (P_dc, P_loss, _) = get_hvdc_power_loss(lcc_branch, sys)
+        data.lcc.arc_active_power_flow_from_to[i, :] .= P_dc
+        data.lcc.arc_active_power_flow_to_from[i, :] .= -(P_dc - P_loss)
     end
     return
 end

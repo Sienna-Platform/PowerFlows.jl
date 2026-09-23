@@ -3,7 +3,7 @@
 # assert a numeric κ̂ pin `linear_solver = "KLU"` for determinism across platforms
 # (on Apple the default is AppleAccelerate); the AppleAccelerate path is covered
 # explicitly below.
-const _KLU_SETTINGS = Dict{Symbol, Any}(:linear_solver => "KLU")
+const _KLU_SETTINGS = SolutionParameters(; linear_solver = "KLU")
 
 # Build a Schur operator at the flat start of `sys` under `backend` and return its
 # smallest eigenvalue alongside the dense ground truth (smallest-magnitude
@@ -88,7 +88,7 @@ end
 @testset "log_solver_diagnostics is off by default" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14")
     pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(; correct_bustypes = true,
-        solver_settings = _KLU_SETTINGS)
+        solution_parameters = _KLU_SETTINGS)
     @test isempty(_solver_diagnostic_lines(pf, sys))
 end
 
@@ -97,7 +97,7 @@ end
     for solver in (NewtonRaphsonACPowerFlow, TrustRegionACPowerFlow,
         LevenbergMarquardtACPowerFlow)
         pf = ACPowerFlow{solver}(; correct_bustypes = true,
-            log_solver_diagnostics = true, solver_settings = _KLU_SETTINGS)
+            log_solver_diagnostics = true, solution_parameters = _KLU_SETTINGS)
         lines = _solver_diagnostic_lines(pf, sys)
         @test length(lines) >= 2
         for line in lines
@@ -119,7 +119,7 @@ end
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14")
     for PFType in (PF.ACRectangularPowerFlow, PF.ACMixedPowerFlow)
         pf = PFType{NewtonRaphsonACPowerFlow}(; correct_bustypes = true,
-            log_solver_diagnostics = true, solver_settings = _KLU_SETTINGS)
+            log_solver_diagnostics = true, solution_parameters = _KLU_SETTINGS)
         lines = _solver_diagnostic_lines(pf, sys)
         @test length(lines) >= 2
         for line in lines
@@ -135,7 +135,7 @@ end
         runchecks = false,
     )
     pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(; log_solver_diagnostics = true,
-        solver_settings = _KLU_SETTINGS)
+        solution_parameters = _KLU_SETTINGS)
     lines = _solver_diagnostic_lines(pf, sys)
     @test length(lines) >= 2
     for line in lines
@@ -151,7 +151,8 @@ end
         sys = PSB.build_system(PSB.PSITestSystems, "c_sys14")
         pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(; correct_bustypes = true,
             log_solver_diagnostics = true,
-            solver_settings = Dict{Symbol, Any}(:linear_solver => "AppleAccelerateLU"))
+            solution_parameters = SolutionParameters(;
+                linear_solver = "AppleAccelerateLU"))
         lines = _solver_diagnostic_lines(pf, sys)
         @test length(lines) >= 2
         for line in lines
@@ -167,8 +168,8 @@ end
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14")
     for solver in (NewtonRaphsonACPowerFlow, TrustRegionACPowerFlow)
         pf = ACPowerFlow{solver}(; correct_bustypes = true,
-            solver_settings = Dict{Symbol, Any}(
-                :linear_solver => "KLU", :stop_at_fold => true))
+            solution_parameters = SolutionParameters(;
+                linear_solver = "KLU", stop_at_fold = true))
         data = PowerFlowData(pf, sys)
         @test solve_power_flow!(data)
     end
@@ -342,7 +343,7 @@ end
 @testset "the monitor line reports sign(det J)" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14")
     pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(; correct_bustypes = true,
-        log_solver_diagnostics = true, solver_settings = _KLU_SETTINGS)
+        log_solver_diagnostics = true, solution_parameters = _KLU_SETTINGS)
     lines = _solver_diagnostic_lines(pf, sys)
     @test length(lines) >= 2
     for line in lines
@@ -355,8 +356,8 @@ end
     # convergence, and must say WHY in terms of sign(det J).
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14")
     pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(; correct_bustypes = true,
-        solver_settings = Dict{Symbol, Any}(
-            :linear_solver => "KLU", :stop_at_fold => true))
+        solution_parameters = SolutionParameters(;
+            linear_solver = "KLU", stop_at_fold = true))
     data = PF.PowerFlowData(pf, sys)
     data.bus_active_power_withdrawals .*= 6.0
     data.bus_reactive_power_withdrawals .*= 6.0
@@ -376,8 +377,8 @@ end
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14")
     function final_state(; stop_at_fold, scale, maxiter)
         pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(; correct_bustypes = true,
-            solver_settings = Dict{Symbol, Any}(:linear_solver => "KLU",
-                :stop_at_fold => stop_at_fold, :maxIterations => maxiter))
+            solution_parameters = SolutionParameters(; linear_solver = "KLU",
+                stop_at_fold = stop_at_fold, maxIterations = maxiter))
         data = PF.PowerFlowData(pf, sys)
         data.bus_active_power_withdrawals .*= scale
         data.bus_reactive_power_withdrawals .*= scale

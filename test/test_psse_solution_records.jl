@@ -185,3 +185,72 @@ end
     @test v.itmxn == 42
     @test v.toln == 0.5
 end
+
+@testset "A non-blank second title line does not hide the solution-record block" begin
+    dir = mktempdir()
+    path = joinpath(dir, "case.raw")
+    open(path, "w") do io
+        println(io, "0, 100.0, 35, 0, 1, 60.0")
+        println(io, "a case")
+        println(io, "2024, SUMMER PEAK")  # a bare leading integer, unlike a blank title line
+        print(io, SOLUTION_RECORDS_GOLDEN_DEFAULT)
+        println(io, "0 / END OF SYSTEM-WIDE DATA, BEGIN BUS DATA")
+    end
+    v = PF.read_solution_records(path)
+    @test !isnothing(v)
+    @test v.itmxn == 20
+end
+
+@testset "FLATST is parsed but not applied; PowerFlows' own default stands" begin
+    dir = mktempdir()
+    path = joinpath(dir, "case.raw")
+    open(path, "w") do io
+        println(io, "0, 100.0, 35, 0, 1, 60.0")
+        println(io, "a case")
+        println(io)
+        println(
+            io,
+            "SOLVER, FNSL, ACTAPS=0, AREAIN=0, PHSHFT=0, DCTAPS=0, SWSHNT=0, " *
+            "FLATST=0, VARLIM=0, NONDIV=0",
+        )
+        println(io, "0 / END")
+    end
+    v = PF.read_solution_records(path)
+    @test v.flatst == 0  # the raw record field is still parsed
+    params = read_solution_parameters(path)
+    @test params.enhanced_flat_start == SolutionParameters().enhanced_flat_start
+end
+
+@testset "Discrete control under fast-decoupled solving is dropped, not passed through" begin
+    dir = mktempdir()
+    path = joinpath(dir, "case.raw")
+    open(path, "w") do io
+        println(io, "0, 100.0, 35, 0, 1, 60.0")
+        println(io, "a case")
+        println(io)
+        println(
+            io,
+            "SOLVER, FDNS, ACTAPS=1, AREAIN=0, PHSHFT=0, DCTAPS=0, SWSHNT=1, " *
+            "FLATST=0, VARLIM=0, NONDIV=0",
+        )
+        println(io, "0 / END")
+    end
+    params =
+        @test_logs (:warn, r"fast-decoupled") match_mode = :any read_solution_parameters(
+            path,
+        )
+    @test !params.control_discrete_devices
+end
+
+@testset "An unparseable case SBASE errors instead of defaulting to 100 MVA" begin
+    dir = mktempdir()
+    path = joinpath(dir, "case.raw")
+    open(path, "w") do io
+        println(io, "0, notanumber, 35, 0, 1, 60.0")
+        println(io, "a case")
+        println(io)
+        print(io, SOLUTION_RECORDS_GOLDEN_DEFAULT)
+        println(io, "0 / END")
+    end
+    @test_throws ErrorException read_solution_parameters(path)
+end

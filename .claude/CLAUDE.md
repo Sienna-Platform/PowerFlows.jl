@@ -65,9 +65,9 @@ Exported solver-model types and functions (see `src/PowerFlows.jl`):
 
 **MCPB (mixed current-power-balance).** PQ buses use divided current balance (imag-first row order); PV buses use real-power balance + `|V|²` constraint with **only 2 vars/bus** (no Q state — the key difference from rectangular's 3). REF = (P_gen, Q_gen). System size is exactly 2n. Status: opt-in, NOT default; do not deprecate rectangular. Validated to polar parity. Performance: for NR/TR ≈ rectangular (no net win); for **LM, Mixed decisively beats Rectangular** (rectangular-LM fails to converge at ~10k buses; Mixed-LM converges like Polar-LM with the smallest 2n state). Jacobian kernels are called as concrete top-level functions, never stored as abstract `::Function` fields (that forces dynamic dispatch on the hot path).
 
-**`validate_voltage_magnitudes`** exists for polar, rectangular, and mixed. For rect/mixed it checks squared bounds (`e²+f² ∈ [min²,max²]`) for PQ and PV (PV `(e,f)` are real state vars and `|V|²` can drift mid-iteration before the constraint row pins it); REF skipped. Toggle via `solver_settings[:validate_voltage_magnitudes]`.
+**`validate_voltage_magnitudes`** exists for polar, rectangular, and mixed. For rect/mixed it checks squared bounds (`e²+f² ∈ [min²,max²]`) for PQ and PV (PV `(e,f)` are real state vars and `|V|²` can drift mid-iteration before the constraint row pins it); REF skipped. Toggle via the `validate_voltage_magnitudes` keyword of the formulation constructor (a `SolutionParameters` field; the old `solver_settings` Dict is gone).
 
-**Linear-solver backends (PNM-owned).** PowerFlows no longer hand-rolls a KLU cache — KLU is **not** a direct dependency. Backends come from PNM (`PNM.KLULinSolveCache{Tv,Ti}`, `PNM.AAFactorCache` for AppleAccelerate) plus a PowerFlows-defined `PardisoLinSolveCache` in `ext/PowerFlowsPardisoExt.jl`. Selection = PNM preference default + per-solve kwarg (AC: `solver_settings[:linear_solver]`; DC: kwarg).
+**Linear-solver backends (PNM-owned).** PowerFlows no longer hand-rolls a KLU cache — KLU is **not** a direct dependency. Backends come from PNM (`PNM.KLULinSolveCache{Tv,Ti}`, `PNM.AAFactorCache` for AppleAccelerate) plus a PowerFlows-defined `PardisoLinSolveCache` in `ext/PowerFlowsPardisoExt.jl`. Selection = PNM preference default + the `linear_solver` keyword (AC: a `SolutionParameters` field, resolved to a `String` at construction; DC: per-solve kwarg). `"Dense"` is rejected at resolution time.
 - Index width gates the AppleAccelerate path: `INDEX_TYPE = @static Sys.isapple() ? Int64 : Int32` (drives `J_INDEX_TYPE`/`REC_INDEX_TYPE`). AA's Apple `libSparse` ABI needs Int64 `columnStarts`; KLU uses Int32 elsewhere. Any cache-type `Union` must list BOTH `KLULinSolveCache{Float64,Int32}` and `{…,Int64}` (PNM's DC ABA factorization is always Int64 — omitting it MethodErrors on Linux).
 - The KLU and AA backends do NOT share generic functions: `PNM.solve!/full_factor!/symbolic_factor!/numeric_refactor!/tsolve!` are KLU-only (`.KLUWrapper`); AA's live in `PNM.AccelerateWrapper.*`. PowerFlows defines local dispatch over both cache types. `AAFactorCache` is Int-only with NO transpose solve, so voltage-stability factors (need Aᵀ\b) stay KLU-only.
 - MKLPardiso is x86_64-only; `resolve_linear_solver_backend` rejects it when `Sys.ARCH !== :x86_64`; Pardiso tests gate on `Pardiso.mkl_is_available()`.
@@ -88,7 +88,7 @@ Exported solver-model types and functions (see `src/PowerFlows.jl`):
 
 ## Commands (verified against this clone)
 
-This package uses **ReTest** and a `test/Project.toml` env (deps incl. PowerSystemCaseBuilder, ReTest, Pardiso, Aqua). Read the `sienna-test-environment` skill for the shared rules; PowerFlows specifics:
+This package uses **ParallelTestRunner** and a `test/Project.toml` env (deps incl. PowerSystemCaseBuilder, ParallelTestRunner, Pardiso, Aqua) — one worker process per `test_*.jl` file, sharing nothing but `test/includes.jl`'s preamble. Read the `sienna-test-environment` skill for the shared rules; PowerFlows specifics:
 
 ```sh
 # Compile-check between edits (package env, fast):
@@ -96,7 +96,7 @@ julia --project -e 'using PowerFlows'
 
 # One-time per clone: make --project=test resolve PowerFlows to the WORKING TREE
 # (else it can resolve the registered copy in ~/.julia/packages and run stale source,
-#  and new test/test_*.jl files are invisible to the glob in test/PowerFlowsTests.jl):
+#  and new test/test_*.jl files are invisible to the glob in test/runtests.jl):
 julia --project=test -e 'using Pkg; Pkg.develop(PackageSpec(path=pwd()))'
 # Verify (must print the working-tree path, not ~/.julia/packages/...):
 julia --project=test -e 'import Pkg; println(Base.find_package("PowerFlows"))'
@@ -104,8 +104,10 @@ julia --project=test -e 'import Pkg; println(Base.find_package("PowerFlows"))'
 # Run full suite:
 julia --project=test test/runtests.jl
 
-# Run a filtered subset via ReTest:
-julia --project=test -e 'using PowerFlows; include("test/PowerFlowsTests.jl"); using .PowerFlowsTests, ReTest; retest(PowerFlowsTests, r"<regex>")'
+# Run a subset filtered by FILE name (startswith), cap parallelism, or list discoverable tests:
+julia --project=test test/runtests.jl test_dc_power_flow
+julia --project=test test/runtests.jl --jobs=4
+julia --project=test test/runtests.jl --list
 
 # Docs:
 julia --project=docs docs/make.jl
@@ -114,7 +116,7 @@ julia --project=docs docs/make.jl
 julia --project=scripts/formatter -e 'include("scripts/formatter/formatter_code.jl")'
 ```
 
-ReTest runs the whole suite and reports failures at the end (does not abort on first failure). Note `runtests.jl` aborts the whole run at the first exception outside a `@test`; "suite green" means the run REACHED the final `Main.PowerFlowsTests | <N>` summary with no Error column. Under recent PSY/IS, `PSY.System("file.raw")` may not parse PSS/E raw — use the PowerSystemCaseBuilder `PowerFlowFileParser` path for raw inputs in tests.
+Each test file runs as its own testset in its own worker process; the runner reports pass/fail per file and does not abort the whole run on one file's failure. Under recent PSY/IS, `PSY.System("file.raw")` may not parse PSS/E raw — use the PowerSystemCaseBuilder `PowerFlowFileParser` path for raw inputs in tests.
 
 ## Auto-generated files / do-not-edit
 
