@@ -726,7 +726,7 @@ end
 
     # repeat with a different setpoint
     sys, lcc = simple_lcc_system()
-    PSY.set_transfer_setpoint!(lcc, -25.0)
+    PSY.set_transfer_setpoint!(lcc, -0.25)
     lcc_results = solve_power_flow(pf, sys)["lcc_results"]
     solve_and_store_power_flow!(pf, sys)
     check_lcc_consistency(lcc, lcc_results)
@@ -809,7 +809,7 @@ function test_lcc_ac_solver(ACSolver)
     # bugs in the LCC Hessian assembly.
     ACSolver === RobustHomotopyPowerFlow && return
 
-    PSY.set_transfer_setpoint!(lcc, -25.0)
+    PSY.set_transfer_setpoint!(lcc, -0.25)
     data = PowerFlowData(pf, sys)
     solve_power_flow!(data)
 

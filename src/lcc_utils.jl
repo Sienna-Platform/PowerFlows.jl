@@ -858,7 +858,7 @@ function initialize_LCCParameters!(
     # lcc_p_set = I_dc_A * V_dc_V / system_base_MVA
 
     lcc_setpoint_at_rectifier .= (PSY.get_transfer_setpoint.(lccs) .>= 0.0)
-    lcc_p_set .= abs.(PSY.get_transfer_setpoint.(lccs) ./ base_power) # only one direction is supported, no reverse flow possible
+    lcc_p_set .= abs.(_lcc_transfer_setpoint.(lccs, PSY.NU) ./ base_power) # only one direction is supported, no reverse flow possible
     lcc_rectifier_tap .= PSY.get_rectifier_tap_setting.(lccs)
     lcc_inverter_tap .= PSY.get_inverter_tap_setting.(lccs)
     # Fixed tap targets used to pin the tap state for 0-current (0-MW) converters.

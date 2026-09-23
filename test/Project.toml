@@ -37,7 +37,9 @@ TimeSeries = "9e3dc215-6440-5c97-bce1-76c03772f85e"
 PowerFlows = {path = ".."}
 InfrastructureSystems = {rev = "IS4", url = "https://github.com/Sienna-Platform/InfrastructureSystems.jl.git"}
 # PSCB/parser branches carry the PSS/E import-contract fixes the round-trip tests need
-PowerSystemCaseBuilder = {url = "https://github.com/Sienna-Platform/PowerSystemCaseBuilder.jl.git", rev = "lk/switched-shunt-solved-case"}
+# jd/pf_units_fix (PowerSystemCaseBuilder.jl#229) stores LCC transfer_setpoint per-unit on the
+# legacy parser path; revert the pin to psy6 once #229 merges.
+PowerSystemCaseBuilder = {url = "https://github.com/Sienna-Platform/PowerSystemCaseBuilder.jl.git", rev = "jd/pf_units_fix"}
 PowerSystems = {url = "https://github.com/Sienna-Platform/PowerSystems.jl.git", rev = "psy6"}
 PowerFlowFileParser = {url = "https://github.com/Sienna-Platform/PowerFlowFileParser.jl.git", rev = "psy6"}
 # Pinned to the branch rather than the registry: registry PNM v0.24 requires PowerSystems

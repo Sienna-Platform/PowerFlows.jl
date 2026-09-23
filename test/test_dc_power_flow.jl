@@ -117,7 +117,7 @@ end
 
     # In the normalized initialization equation R * I_dc^2 + I_dc - P_set = 0,
     # zero resistance reduces to I_dc = P_set.
-    PSY.set_transfer_setpoint!(lcc, 25.0)
+    PSY.set_transfer_setpoint!(lcc, 0.25)
     for T in (DCPowerFlow, PTDFDCPowerFlow, vPTDFDCPowerFlow)
         data = PowerFlowData(T(; correct_bustypes = true), sys)
         @test !isnan(data.lcc.i_dc[1, 1])

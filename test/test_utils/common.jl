@@ -486,7 +486,7 @@ function _add_simple_lcc!(
         arc = Arc(bus1, bus2),
         active_power_flow = 0.0,
         r = r,
-        transfer_setpoint = 50,
+        transfer_setpoint = 0.5,  # 50 MW
         scheduled_dc_voltage = 800.0,
         rectifier_bridges = 1,
         rectifier_delay_angle_limits = (min = 0.0, max = π / 2),

@@ -1106,13 +1106,13 @@ end
     @test occursin("TOLN=0.001", text)
 end
 
-@testset "PSSE Exporter: LCC SETVL is written in stored MW, not scaled by SBASE" begin
+@testset "PSSE Exporter: LCC SETVL is written in MW from the per-unit setpoint" begin
     sys = System(100.0)
     b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230.0)
     b2 = _add_simple_bus!(sys, 2, ACBusTypes.PQ, 230.0)
     _add_simple_source!(sys, b1, 0.0, 0.0)
     _add_simple_load!(sys, b2, 0.1, 0.05)
-    lcc = _add_simple_lcc!(sys, b1, b2, 0.01, 0.01, 0.01)  # transfer_setpoint = 50 (MW)
+    lcc = _add_simple_lcc!(sys, b1, b2, 0.01, 0.01, 0.01)  # transfer_setpoint = 0.5 pu
 
     export_location = joinpath(test_psse_export_dir, "v35", "lcc_setvl")
     exporter = PSSEExporter(sys, :v35, export_location; overwrite = true)
@@ -1120,7 +1120,7 @@ end
     raw_path, _ = get_psse_export_paths(joinpath(export_location, "lcc_setvl"))
     lcc_line = only(filter(l -> occursin("LCC", l), readlines(raw_path)))
     fields = PF._split_record(lcc_line)
-    @test parse(Float64, strip(fields[4])) ≈ 50.0  # SETVL, not 50 * SBASE = 5000
+    @test parse(Float64, strip(fields[4])) ≈ 50.0  # SETVL in MW
 
     sys2 = read_system_with_metadata(joinpath(export_location, "lcc_setvl"))
     lcc2 = only(PSY.get_components(PSY.TwoTerminalLCCLine, sys2))

@@ -68,7 +68,7 @@ end
     _add_simple_source!(sys, b1, 0.0, 0.0)
     lcc = _add_simple_lcc!(sys, b2, b3, 0.05, 0.05, 0.08)
     PSY.set_inverter_extinction_angle!(lcc, 1.0)   # interior, off the ϕ clamp
-    PSY.set_transfer_setpoint!(lcc, -50.0)          # setpoint at inverter
+    PSY.set_transfer_setpoint!(lcc, -0.5)          # setpoint at inverter
     _rect_lcc_verify(sys; label = "rect CI LCC inverter-side setpoint")
 end
 

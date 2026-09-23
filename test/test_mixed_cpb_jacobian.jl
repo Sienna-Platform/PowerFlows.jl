@@ -164,7 +164,7 @@ end
         # state; exercises the widened lcc_nz cache (rows 21–24) in MCPB.
         sys, lcc = simple_lcc_system()
         PSY.set_inverter_extinction_angle!(lcc, 1.0)   # interior, off ϕ clamp
-        PSY.set_transfer_setpoint!(lcc, -50.0)          # setpoint at inverter
+        PSY.set_transfer_setpoint!(lcc, -0.5)          # setpoint at inverter
         R, x = _build_mixed_lcc_x(sys)
         Random.seed!(2024)
         x .+= 1e-3 .* randn(length(x))

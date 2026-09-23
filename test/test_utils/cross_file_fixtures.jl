@@ -195,9 +195,10 @@ function build_lcc_control_system(; p_set_mw::Union{Nothing, Float64} = nothing)
         ),
     )
     if p_set_mw !== nothing
-        # `initialize_LCCParameters!` seeds `p_set` from this setter's value in MW.
+        # `transfer_setpoint` is stored per-unit on the system base.
+        base = get_base_power(sys, PSY.NU)
         for l in get_components(TwoTerminalLCCLine, sys)
-            set_transfer_setpoint!(l, p_set_mw)
+            set_transfer_setpoint!(l, p_set_mw / base)
         end
     end
     return sys
