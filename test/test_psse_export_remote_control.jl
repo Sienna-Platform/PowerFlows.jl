@@ -20,7 +20,8 @@ function _add_control_transformer!(
     control_objective = PSY.TransformerControlObjective.VOLTAGE,
     regulated_bus = nothing,
     regulated_bus_side = nothing,
-    load_drop_compensation = 0.0 + 0.0im,
+    load_drop_compensation_r = 0.0,
+    load_drop_compensation_x = 0.0,
 )
     tx = TwoWindingTransformer(;
         name = name,
@@ -35,7 +36,8 @@ function _add_control_transformer!(
             control_objective = control_objective,
             regulated_bus = regulated_bus,
             regulated_bus_side = regulated_bus_side,
-            load_drop_compensation = load_drop_compensation,
+            load_drop_compensation_r = load_drop_compensation_r,
+            load_drop_compensation_x = load_drop_compensation_x,
             control_limits = (min = 0.9, max = 1.1),
             controlled_quantity_limits = (min = 0.95, max = 1.05),
             input_basis = CU,
@@ -75,7 +77,7 @@ function _remote_control_system()
 
     _add_control_transformer!(
         sys, "xfmr_3_6", b3, b6; regulated_bus = b3,
-        load_drop_compensation = 0.01 + 0.02im,
+        load_drop_compensation_r = 0.01, load_drop_compensation_x = 0.02,
     )
     _add_control_transformer!(
         sys, "xfmr_5_6", b5, b6; regulated_bus = b7,
@@ -177,7 +179,8 @@ _circuit_named(sys, name) = get_circuit(get_component(TwoWindingTransformer, sys
         @test _number_of(get_regulated_bus(local_circuit)) == 3
         @test get_regulated_bus_side(local_circuit) ==
               PSY.TransformerRegulatedBusSide.CONTROLLING_WINDING
-        @test get_load_drop_compensation(local_circuit, PSY.SU) ≈ 0.01 + 0.02im
+        @test get_load_drop_compensation_r(local_circuit, PSY.SU) ≈ 0.01
+        @test get_load_drop_compensation_x(local_circuit, PSY.SU) ≈ 0.02
         remote_circuit = _circuit_named(sys2, "xfmr_5_6")
         @test _number_of(get_regulated_bus(remote_circuit)) == 7
         @test get_regulated_bus_side(remote_circuit) ==

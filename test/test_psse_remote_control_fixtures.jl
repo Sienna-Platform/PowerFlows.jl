@@ -78,13 +78,15 @@ function _check_remote_control_fixture(sys::System)
     @test get_number(get_regulated_bus(local_circuit)) == 3
     @test get_regulated_bus_side(local_circuit) ==
           PSY.TransformerRegulatedBusSide.CONTROLLING_WINDING
-    @test get_load_drop_compensation(local_circuit, PSY.SU) ≈ 0.01 + 0.02im
+    @test get_load_drop_compensation_r(local_circuit, PSY.SU) ≈ 0.01
+    @test get_load_drop_compensation_x(local_circuit, PSY.SU) ≈ 0.02
     remote_circuit =
         _circuit_between(sys, 5, 6, PSY.TransformerControlObjective.VOLTAGE)
     @test get_number(get_regulated_bus(remote_circuit)) == 7
     @test get_regulated_bus_side(remote_circuit) ==
           PSY.TransformerRegulatedBusSide.OPPOSITE_WINDING
-    @test iszero(get_load_drop_compensation(remote_circuit, PSY.SU))
+    @test iszero(get_load_drop_compensation_r(remote_circuit, PSY.SU))
+    @test iszero(get_load_drop_compensation_x(remote_circuit, PSY.SU))
     disabled_circuit =
         _circuit_between(sys, 6, 7, PSY.TransformerControlObjective.VOLTAGE_DISABLED)
     @test get_number(get_regulated_bus(disabled_circuit)) == 4

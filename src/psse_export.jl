@@ -1013,7 +1013,8 @@ function _write_2w_transformer_record3_winding1!(
 
     supp_attr = PSY.get_supplemental_attributes(PSY.ImpedanceCorrectionData, transformer)
     TAB1 = !isempty(supp_attr) ? PSY.get_table_number(supp_attr[1]) : 0
-    CR1, CX1 = reim(PSY.get_load_drop_compensation(circuit, PSY.SU))
+    CR1 = PSY.get_load_drop_compensation_r(circuit, PSY.SU)
+    CX1 = PSY.get_load_drop_compensation_x(circuit, PSY.SU)
     CNXA1 = PSSE_DEFAULT
 
     if exporter.psse_version == :v35
@@ -1159,7 +1160,8 @@ function _collect_3w_winding_data(
                 TAB = PSY.get_table_number(icd_tr)
             end
         end
-        CR, CX = reim(PSY.get_load_drop_compensation(circuit, PSY.SU))
+        CR = PSY.get_load_drop_compensation_r(circuit, PSY.SU)
+        CX = PSY.get_load_drop_compensation_x(circuit, PSY.SU)
         CNXA = PSSE_DEFAULT
 
         if exporter.psse_version == :v35
