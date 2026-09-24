@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>Power Flow · PowerFlows.jl</title><script data-outdated-warner src="../../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.045/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.13.24/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL="../.."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../../assets/documenter.js"></script><script src="../../siteinfo.js"></script><script src="../../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../../assets/themeswap.js"></script></head><body><div id="documenter"><nav class="docs-sidebar"><a class="docs-logo" href="../../"><img src="../../assets/logo.png" alt="PowerFlows.jl logo"/></a><div class="docs-package-name"><span class="docs-autofit"><a href="../../">PowerFlows.jl</a></span></div><form class="docs-search" action="../../search/"><input class="docs-search-query" id="documenter-search-query" name="q" type="text" placeholder="Search docs"/></form><ul class="docs-menu"><li><a class="tocitem" href="../../">Welcome Page</a></li><li><span class="tocitem">Modeler Guide</span><ul><li class="is-active"><a class="tocitem" href>Power Flow</a></li></ul></li><li><span class="tocitem">Code Base Developer Guide</span><ul><li><a class="tocitem" href="../../code_base_developer_guide/developer/">Developer Guide</a></li></ul></li><li><a class="tocitem" href="../../api/public/">Public API Reference</a></li><li><a class="tocitem" href="../../api/internal/">Internal API Reference</a></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><nav class="breadcrumb"><ul class="is-hidden-mobile"><li><a class="is-disabled">Modeler Guide</a></li><li class="is-active"><a href>Power Flow</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>Power Flow</a></li></ul></nav><div class="docs-right"><a class="docs-edit-link" href="https://github.com/NREL-Sienna/PowerFlows.jl/blob/main/docs/src/modeler_guide/power_flow.md" title="Edit on GitHub"><span class="docs-icon fab"></span><span class="docs-label is-hidden-touch">Edit on GitHub</span></a><a class="docs-settings-button fas fa-cog" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-sidebar-button fa fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a></div></header><article class="content" id="documenter-page"><h1 id="Power-Flow"><a class="docs-heading-anchor" href="#Power-Flow">Power Flow</a><a id="Power-Flow-1"></a><a class="docs-heading-anchor-permalink" href="#Power-Flow" title="Permalink"></a></h1><p><code>PowerFlows.jl</code> provides the capability to run a power flow using NLSolve, in the current stage of development it can&#39;t force reactive power constraints. This power flow routine does not check for reactive power limits or other limiting mechanisms in the grid, and can therefore be used to check for solver convergence - making no guarantees of the solution feasibility.</p><p>The power flow solver uses <a href="https://github.com/JuliaNLSolvers/NLsolve.jl">NLsolve.jl</a> under the hood and takes any keyword argument accepted by NLsolve. The solver uses the current operating point in the buses to provide the initial guess.</p><p><strong>Limitations</strong>: The PowerFlow solver doesn&#39;t support systems with HVDC lines or Phase Shifting transformers yet. The power flow solver can&#39;t handle systems with islands.</p><pre><code class="language-julia hljs">using PowerFlows
+using PowerSystems
+using PowerSystemCaseBuilder
+
+system_data = build_system(PSITestSystems, &quot;c_sys14&quot;)</code></pre><table>
+  <caption style = "text-align: left;">System</caption>
+  <thead>
+    <tr class = "header headerLastRow">
+      <th style = "text-align: left;">Property</th>
+      <th style = "text-align: left;">Value</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td style = "text-align: left;">Name</td>
+      <td style = "text-align: left;"></td>
+    </tr>
+    <tr>
+      <td style = "text-align: left;">Description</td>
+      <td style = "text-align: left;"></td>
+    </tr>
+    <tr>
+      <td style = "text-align: left;">System Units Base</td>
+      <td style = "text-align: left;">SYSTEM_BASE</td>
+    </tr>
+    <tr>
+      <td style = "text-align: left;">Base Power</td>
+      <td style = "text-align: left;">100.0</td>
+    </tr>
+    <tr>
+      <td style = "text-align: left;">Base Frequency</td>
+      <td style = "text-align: left;">60.0</td>
+    </tr>
+    <tr>
+      <td style = "text-align: left;">Num Components</td>
+      <td style = "text-align: left;">70</td>
+    </tr>
+  </tbody>
+</table>
+
+<table>
+  <caption style = "text-align: left;">Static Components</caption>
+  <thead>
+    <tr class = "header headerLastRow">
+      <th style = "text-align: left;">Type</th>
+      <th style = "text-align: left;">Count</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td style = "text-align: left;">ACBus</td>
+      <td style = "text-align: left;">14</td>
+    </tr>
+    <tr>
+      <td style = "text-align: left;">Arc</td>
+      <td style = "text-align: left;">20</td>
+    </tr>
+    <tr>
+      <td style = "text-align: left;">Line</td>
+      <td style = "text-align: left;">16</td>
+    </tr>
+    <tr>
+      <td style = "text-align: left;">PowerLoad</td>
+      <td style = "text-align: left;">11</td>
+    </tr>
+    <tr>
+      <td style = "text-align: left;">TapTransformer</td>
+      <td style = "text-align: left;">3</td>
+    </tr>
+    <tr>
+      <td style = "text-align: left;">ThermalStandard</td>
+      <td style = "text-align: left;">5</td>
+    </tr>
+    <tr>
+      <td style = "text-align: left;">Transformer2W</td>
+      <td style = "text-align: left;">1</td>
+    </tr>
+  </tbody>
+</table>
+
+<table>
+  <caption style = "text-align: left;">Time Series Summary</caption>
+  <thead>
+    <tr class = "header">
+      <th style = "text-align: left;">owner_type</th>
+      <th style = "text-align: left;">owner_category</th>
+      <th style = "text-align: left;">time_series_type</th>
+      <th style = "text-align: left;">time_series_category</th>
+      <th style = "text-align: left;">initial_timestamp</th>
+      <th style = "text-align: left;">resolution_ms</th>
+      <th style = "text-align: left;">count</th>
+    </tr>
+    <tr class = "subheader headerLastRow">
+      <th style = "text-align: left;">String</th>
+      <th style = "text-align: left;">String</th>
+      <th style = "text-align: left;">String</th>
+      <th style = "text-align: left;">String</th>
+      <th style = "text-align: left;">String</th>
+      <th style = "text-align: left;">Int64</th>
+      <th style = "text-align: left;">Int64</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td style = "text-align: left;">PowerLoad</td>
+      <td style = "text-align: left;">Component</td>
+      <td style = "text-align: left;">Deterministic</td>
+      <td style = "text-align: left;">Forecast</td>
+      <td style = "text-align: left;">2024-01-01T00:00:00</td>
+      <td style = "text-align: left;">3600000</td>
+      <td style = "text-align: left;">11</td>
+    </tr>
+  </tbody>
+</table>
+<p><code>PowerFlows.jl</code> has two modes of using the power flow solver.</p><ol><li><p>Solving the power flow for the current operating point in the system. Takes the data in the buses, the <code>active_power</code> and <code>reactive_power</code> fields in the static injection devices. Returns a dictionary with results in a DataFrame that can be exported or manipulated as needed.</p></li><li><p>Solves the power flow and updated the devices in the system to the operating condition. This model will update the values of magnitudes and angles in the system&#39;s buses. It also updates the active and reactive power flows in the branches and devices connected to PV buses. It also updates the active and reactive power of the injection devices connected to the Slack bus, and updates only the reactive power of the injection devices connected to PV buses. If multiple devices are connected to the same bus, the power is divided proportional to the base power. This utility is useful to initialize systems before serializing or checking the addition of new devices is still AC feasible.</p></li></ol><p>Solving the power flow with mode 1:</p><pre><code class="language- hljs">results = run_powerflow(system_data)
+results[&quot;bus_results&quot;]</code></pre><p>Solving the power flow with mode 2:</p><p>Before running the power flow command these are the values of the voltages:</p><pre><code class="language-julia hljs">for b in get_components(Bus, system_data)
+    println(&quot;$(get_name(b)) - Magnitude $(get_magnitude(b)) - Angle (rad) $(get_angle(b))&quot;)
+end</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">Bus 6 - Magnitude 1.07 - Angle (rad) -0.24818581963359368
+Bus 9 - Magnitude 1.056 - Angle (rad) -0.2607521902479528
+Bus 12 - Magnitude 1.055 - Angle (rad) -0.2630211182755455
+Bus 11 - Magnitude 1.057 - Angle (rad) -0.2581341963699613
+Bus 7 - Magnitude 1.062 - Angle (rad) -0.23335052099164186
+Bus 4 - Magnitude 1.019 - Angle (rad) -0.18029251173101424
+Bus 13 - Magnitude 1.05 - Angle (rad) -0.2645919146023404
+Bus 2 - Magnitude 1.045 - Angle (rad) -0.08691739674931762
+Bus 14 - Magnitude 1.036 - Angle (rad) -0.27995081201989047
+Bus 8 - Magnitude 1.09 - Angle (rad) -0.2331759880664424
+Bus 10 - Magnitude 1.051 - Angle (rad) -0.26354471705114374
+Bus 3 - Magnitude 1.01 - Angle (rad) -0.22200588085367873
+Bus 1 - Magnitude 1.06 - Angle (rad) 0.0
+Bus 5 - Magnitude 1.02 - Angle (rad) -0.15323990832510212</code></pre><p><a href="modeler_guide/@ref"><code>run_powerflow!</code></a> return true or false to signal the successful result of the power flow. This enables the integration of a power flow into functions and use the return as check. For instance, initializing dynamic simulations. Also, because <a href="modeler_guide/@ref"><code>run_powerflow!</code></a> uses <a href="https://github.com/JuliaNLSolvers/NLsolve.jl">NLsolve.jl</a> all the parameters used for NLsolve are also available for <a href="modeler_guide/@ref"><code>run_powerflow!</code></a></p><pre><code class="language- hljs">run_powerflow!(system_data; method = :newton)</code></pre><p>After running the power flow command this are the values of the voltages:</p><pre><code class="language-julia hljs">for b in get_components(Bus, system_data)
+    println(&quot;$(get_name(b)) - Magnitude $(get_magnitude(b)) - Angle (rad) $(get_angle(b))&quot;)
+end</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">Bus 6 - Magnitude 1.07 - Angle (rad) -0.24818581963359368
+Bus 9 - Magnitude 1.056 - Angle (rad) -0.2607521902479528
+Bus 12 - Magnitude 1.055 - Angle (rad) -0.2630211182755455
+Bus 11 - Magnitude 1.057 - Angle (rad) -0.2581341963699613
+Bus 7 - Magnitude 1.062 - Angle (rad) -0.23335052099164186
+Bus 4 - Magnitude 1.019 - Angle (rad) -0.18029251173101424
+Bus 13 - Magnitude 1.05 - Angle (rad) -0.2645919146023404
+Bus 2 - Magnitude 1.045 - Angle (rad) -0.08691739674931762
+Bus 14 - Magnitude 1.036 - Angle (rad) -0.27995081201989047
+Bus 8 - Magnitude 1.09 - Angle (rad) -0.2331759880664424
+Bus 10 - Magnitude 1.051 - Angle (rad) -0.26354471705114374
+Bus 3 - Magnitude 1.01 - Angle (rad) -0.22200588085367873
+Bus 1 - Magnitude 1.06 - Angle (rad) 0.0
+Bus 5 - Magnitude 1.02 - Angle (rad) -0.15323990832510212</code></pre></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../../">« Welcome Page</a><a class="docs-footer-nextpage" href="../../code_base_developer_guide/developer/">Developer Guide »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 0.27.25 on <span class="colophon-date" title="Wednesday 5 February 2025 18:31">Wednesday 5 February 2025</span>. Using Julia version 1.11.3.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
