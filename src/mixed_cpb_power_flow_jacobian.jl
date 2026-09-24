@@ -10,8 +10,8 @@ MCPB and rewritten each iteration. PQ off-diagonals are constant `±Y`
 `nonzeros(Jv)` through nzval-index caches built once at construction, so the
 hot path is `O(N + n_LCC)`. Field roles are in the inline comments below.
 """
-struct ACMixedCPBJacobian
-    data::ACPowerFlowData
+struct ACMixedCPBJacobian{D <: ACPowerFlowData}
+    data::D
     Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE}
     Y_bus_eff::SparseMatrixCSC{ComplexF64, Int}
     Y_diag::Vector{ComplexF64}     # cached Y_bus_eff diagonal; avoids O(log nnz) sparse access per iteration

@@ -17,15 +17,22 @@ pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
 )
 ```
 
-Every field name matches the keyword the corresponding solver already accepts, so a
-parameter may also be overridden per call — `solve_power_flow!(data; tol = 1e-8)` wins
-over the stored value for that solve only.
+Every solver-facing field name matches the keyword the corresponding solver already
+accepts, so a parameter may also be overridden per call — `solve_power_flow!(data; tol =
+1e-8)` wins over the stored value for that solve only. The network-control fields
+(`check_reactive_power_limits`, `enhanced_flat_start`, `control_discrete_devices`,
+`area_interchange_control`, `interchange_tolerance`, `tie_definition`,
+`model_dc_network`) are read from the stored parameters, not from a per-call keyword,
+because most of them shape `PowerFlowData` at construction time — a keyword passed to
+`solve_power_flow!` after that has nothing left to change. `check_reactive_power_limits`
+is the one exception: it is re-read on every Q-limit retry, so a per-call override does
+take effect.
 
 # Convergence
 - `tol::Float64`: convergence threshold on the ∞-norm of the per-unit mismatch.
-- `maxIterations::Union{Nothing, Int}`: iteration cap. `nothing` (the default) leaves each
-  solver on its own default — `DEFAULT_NR_MAX_ITER` for Newton-type solvers,
-  `DEFAULT_FD_MAX_ITER` for fast decoupled.
+- `maxIterations::Int`: iteration cap. Left unset, a formulation constructor (e.g.
+  [`ACPolarPowerFlow`](@ref)) resolves it to the solver's own default —
+  `DEFAULT_NR_MAX_ITER` for Newton-type solvers, `DEFAULT_FD_MAX_ITER` for fast decoupled.
 
 # Network controls
 - `check_reactive_power_limits::Bool`: enforce generator reactive limits by switching PV
@@ -47,10 +54,13 @@ over the stored value for that solve only.
 # Newton / trust region / Levenberg-Marquardt
 - `refinement_threshold`, `refinement_eps`, `iwamoto`, `stop_at_fold`.
 - `factor`, `eta`, `autoscale`, `iwamoto_fallback`.
-- `λ_0`, `marquardt_scaling` (`nothing` selects the per-formulation default).
+- `λ_0`, `marquardt_scaling::Bool`: Marquardt diagonal column scaling. The formulation
+  constructor (e.g. [`ACRectangularPowerFlow`](@ref)) resolves its own default
+  (`true` for rectangular + LM, `false` elsewhere) unless a `marquardt_scaling`
+  keyword is given explicitly there.
 
 # Fast decoupled
-- `handoff_solver` (`nothing` for pure FD), `handoff_tol`, `refreeze_on_stall`,
+- `handoff_solver` (`NoHandoff` for pure FD), `handoff_tol`, `refreeze_on_stall`,
   `fd_non_divergent`, `fd_blowup`, `fd_dvlim`, `fd_vm_abort`, `fd_ndvfct`,
   `fd_max_step_halvings`.
 
@@ -61,16 +71,25 @@ over the stored value for that solve only.
 - `learning_rate`, `beta1`, `beta2`, `epsilon`.
 
 # Backend
-- `linear_solver`: name of the sparse linear-solver backend, or `nothing` to take the
-  `PowerNetworkMatrices` preference default.
+- `linear_solver::String`: name of the sparse linear-solver backend. Defaults to the
+  `PowerNetworkMatrices` preference default, resolved once at construction.
 
 Per-call data (`x0`) is not a parameter and is not carried here — pass it at the call site.
 """
+
+"""Sentinel [`ACPowerFlowSolverType`](@ref)-shaped marker for "no fast-decoupled handoff
+solver configured" — the [`SolutionParameters`](@ref) `handoff_solver` default. A concrete
+singleton type (not `nothing`) keeps the field concretely typed; FD dispatches on the value
+(`_fd_maybe_handoff!(::Type{NoHandoff}, …)` vs. the solver-type method) instead of an
+`isnothing` check."""
+struct NoHandoff end
+
 Base.@kwdef struct SolutionParameters
-    # `maxIterations === nothing` keeps each solver's own default: 50 for Newton-type
-    # solvers, 150 for fast decoupled.
     tol::Float64 = DEFAULT_NR_TOL
-    maxIterations::Union{Nothing, Int} = nothing
+    # `UNSET_MAX_ITERATIONS` keeps each solver's own default: 50 for Newton-type solvers,
+    # 150 for fast decoupled. A formulation constructor resolves it via
+    # `_default_max_iterations`; a concrete `Int` (not `nothing`) keeps the field stable.
+    maxIterations::Int = UNSET_MAX_ITERATIONS
 
     # Read through the `get_*` accessors — never splatted into a solver call.
     check_reactive_power_limits::Bool = false
@@ -94,15 +113,14 @@ Base.@kwdef struct SolutionParameters
     autoscale::Bool = DEFAULT_AUTOSCALE
     iwamoto_fallback::Bool = DEFAULT_IWAMOTO_FALLBACK
 
-    # `marquardt_scaling === nothing` selects the per-formulation default (off for polar,
-    # on for rectangular).
     λ_0::Float64 = DEFAULT_λ_0
-    marquardt_scaling::Union{Bool, Nothing} = nothing
+    marquardt_scaling::Bool = false
 
     # `handoff_solver` is typed as `DataType`, not `ACPowerFlowSolverType`, because that
     # type is defined after this file in the include order; `_validate_fd_handoff_solver`
-    # checks the value anyway.
-    handoff_solver::Union{Nothing, DataType} = nothing
+    # checks the value anyway. Defaults to the `NoHandoff` sentinel (not `nothing`) so the
+    # field stays concrete.
+    handoff_solver::DataType = NoHandoff
     handoff_tol::Float64 = DEFAULT_FD_HANDOFF_TOL
     refreeze_on_stall::Bool = DEFAULT_FD_REFREEZE_ON_STALL
     fd_non_divergent::Bool = DEFAULT_FD_NON_DIVERGENT
@@ -120,7 +138,7 @@ Base.@kwdef struct SolutionParameters
     beta2::Float64 = 0.999
     epsilon::Float64 = 1e-8
 
-    linear_solver::Union{Nothing, AbstractString} = nothing
+    linear_solver::String = PNM._default_linear_solver()
 end
 
 # Excluded from `get_solver_kwargs` so the kwargs surface a solver sees matches what it saw
@@ -135,43 +153,52 @@ const _SOLUTION_PARAMETER_CONTROL_FIELDS = (
     :model_dc_network,
 )
 
-const _SOLUTION_PARAMETER_SOLVER_FIELDS = Tuple(
-    name for name in fieldnames(SolutionParameters)
-    if !(name in _SOLUTION_PARAMETER_CONTROL_FIELDS)
-)
-
-# `maxIterations` is the sentinel field: emitting `nothing` would override the solver's own
-# default, so it's dropped when unset. Both field lists are precomputed to avoid rebuilding
-# a tuple on every solve.
-const _SOLUTION_PARAMETER_SOLVER_FIELDS_NO_ITER = Tuple(
-    name for name in _SOLUTION_PARAMETER_SOLVER_FIELDS if name !== :maxIterations
-)
-
 """
     solver_kwargs(params::SolutionParameters) -> NamedTuple
 
 The solver-facing parameters as a `NamedTuple`, ready to splat into a solver call.
-Network-control fields are excluded — those are read through their accessors — and
-`maxIterations` is omitted when unset so each solver keeps its own default.
+Network-control fields are excluded — those are read through their accessors.
+
+Field access is written out literally (not `map(getfield, names)`) so the return type
+infers as a concrete `NamedTuple` rather than `Any`.
 """
 function solver_kwargs(params::SolutionParameters)
-    names = if isnothing(params.maxIterations)
-        _SOLUTION_PARAMETER_SOLVER_FIELDS_NO_ITER
-    else
-        _SOLUTION_PARAMETER_SOLVER_FIELDS
-    end
-    return NamedTuple{names}(map(n -> getfield(params, n), names))
+    return (;
+        tol = params.tol,
+        maxIterations = params.maxIterations,
+        validate_voltage_magnitudes = params.validate_voltage_magnitudes,
+        vm_validation_range = params.vm_validation_range,
+        refinement_threshold = params.refinement_threshold,
+        refinement_eps = params.refinement_eps,
+        iwamoto = params.iwamoto,
+        stop_at_fold = params.stop_at_fold,
+        factor = params.factor,
+        eta = params.eta,
+        autoscale = params.autoscale,
+        iwamoto_fallback = params.iwamoto_fallback,
+        λ_0 = params.λ_0,
+        marquardt_scaling = params.marquardt_scaling,
+        handoff_solver = params.handoff_solver,
+        handoff_tol = params.handoff_tol,
+        refreeze_on_stall = params.refreeze_on_stall,
+        fd_non_divergent = params.fd_non_divergent,
+        fd_blowup = params.fd_blowup,
+        fd_dvlim = params.fd_dvlim,
+        fd_vm_abort = params.fd_vm_abort,
+        fd_ndvfct = params.fd_ndvfct,
+        fd_max_step_halvings = params.fd_max_step_halvings,
+        Δt_k = params.Δt_k,
+        learning_rate = params.learning_rate,
+        beta1 = params.beta1,
+        beta2 = params.beta2,
+        epsilon = params.epsilon,
+        linear_solver = params.linear_solver,
+    )
 end
 
-"""
-    SolutionParameters(settings::AbstractDict) -> SolutionParameters
-
-Build a `SolutionParameters` from a legacy `solver_settings` dictionary. Keys that name a
-field are applied to the defaults; any other key is dropped with a warning, since it would
-previously have been splatted into a solver and silently ignored there.
-"""
-SolutionParameters(settings::AbstractDict) =
-    _override(SolutionParameters(), _settings_overrides(settings))
+# Guards against a new SolutionParameters field silently missing from the literal list above.
+@assert Set(keys(solver_kwargs(SolutionParameters()))) ==
+        Set(setdiff(fieldnames(SolutionParameters), _SOLUTION_PARAMETER_CONTROL_FIELDS))
 
 """
     _override(x, overrides::AbstractDict) -> typeof(x)
@@ -196,38 +223,15 @@ end
 
 _override(x; kwargs...) = _override(x, Dict{Symbol, Any}(kwargs))
 
-function _settings_overrides(settings)
-    overrides = Dict{Symbol, Any}()
-    isnothing(settings) && return overrides
-    for (key, value) in settings
-        sym = Symbol(key)
-        if sym in fieldnames(SolutionParameters)
-            overrides[sym] = value
-        else
-            @warn(
-                "solver_settings key :$sym does not name a SolutionParameters field and " *
-                "was dropped. Pass it as a keyword to the solve call instead.",
-                maxlog = 1,
-            )
-        end
-    end
-    return overrides
-end
-
 """
-    _fold_legacy_parameters(params, solver_settings; legacy_kwargs...) -> SolutionParameters
+    _apply_legacy_kwargs(params; legacy_kwargs...) -> SolutionParameters
 
-Merge the deprecated ways of specifying solve parameters into `params`, in increasing
-order of precedence: `params` itself, then the `solver_settings` dictionary, then any
-explicitly-passed legacy keyword (a `nothing` value means "not passed").
-
-The named keywords (`check_reactive_power_limits`, `control_discrete_devices`, ...) remain
-supported spellings and are not deprecated; only the untyped `solver_settings` dictionary
-is, so only it raises a `depwarn`.
+Fold the per-constructor control keywords (`check_reactive_power_limits`,
+`control_discrete_devices`, ...) into `params`. These remain supported spellings —
+a `nothing` value means "not passed", so the stored parameter is kept.
 """
-function _fold_legacy_parameters(
-    params::SolutionParameters,
-    solver_settings;
+function _apply_legacy_kwargs(
+    params::SolutionParameters;
     check_reactive_power_limits::Union{Nothing, Bool} = nothing,
     enhanced_flat_start::Union{Nothing, Bool} = nothing,
     control_discrete_devices::Union{Nothing, Bool} = nothing,
@@ -235,14 +239,6 @@ function _fold_legacy_parameters(
     interchange_tolerance::Union{Nothing, Float64} = nothing,
     tie_definition::Union{Nothing, Symbol} = nothing,
 )
-    if !isnothing(solver_settings)
-        Base.depwarn(
-            "`solver_settings` is deprecated; pass " *
-            "`solution_parameters = SolutionParameters(...)` instead.",
-            :solver_settings,
-        )
-    end
-    overrides = _settings_overrides(solver_settings)
     legacy = (;
         check_reactive_power_limits,
         enhanced_flat_start,
@@ -251,6 +247,7 @@ function _fold_legacy_parameters(
         interchange_tolerance,
         tie_definition,
     )
+    overrides = Dict{Symbol, Any}()
     for (name, value) in pairs(legacy)
         isnothing(value) || (overrides[name] = value)
     end

@@ -631,8 +631,9 @@ end
     delta_p_first = copy(data.area_interchange.delta_p)
 
     @test_logs(
-        (:info, r"converged after [01] iterations"),
+        (:debug, r"converged after [01] iterations"),
         match_mode = :any,
+        min_level = Logging.Debug,
         solve_power_flow!(data)
     )
 

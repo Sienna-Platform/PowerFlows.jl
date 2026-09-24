@@ -54,79 +54,69 @@ The residual, Jacobian sparsity/symbolic factorization, and state-vector buffers
 structure-invariant for the polar formulation across both loops (the J pattern is built
 bus-type-agnostically — see `_create_jacobian_matrix_structure` — and the fill rewrites every
 structural nonzero each call), so they are built once and reused; only value paths re-run. `backend`
-is the linear-solver backend tag (its `typeof` keys reuse). See `_newton_workspace!`."""
-struct PolarNRCache <: AbstractNRCache
-    residual::ACPowerFlowResidual
-    J::ACPowerFlowJacobian
-    linSolveCache::PFLinearSolverCache
+is the linear-solver backend tag (its `typeof` keys reuse). `linSolveCache` is typed on `C` so the
+concrete backend cache narrows without a runtime dispatch (see `_newton_workspace!`).
+`bus_type_snapshot` is the bus-type column the last structural rebuild (subnetworks, slack
+participation, PQ index list) was keyed on, so `_refresh_polar_residual!` can skip that rebuild
+when bus types have not moved since."""
+struct PolarNRCache{C <: PFLinearSolverCache, D <: ACPowerFlowData} <: AbstractNRCache
+    residual::ACPowerFlowResidual{D}
+    J::ACPowerFlowJacobian{D}
+    linSolveCache::C
     stateVector::StateVectorCache
     backend::PNM.LinearSolverType
+    bus_type_snapshot::Vector{PSY.ACBusTypes.Value}
 end
 
-"""Recompute, in place, every per-time-step and bus-type-derived quantity of `residual` that the
-constructor sets but the value path (`_update_residual_values!`) does not refresh — so a reused
+"""Recompute, in place, every per-time-step and bus-type-derived quantity of `entry.residual` that
+the constructor sets but the value path (`_update_residual_values!`) does not refresh — so a reused
 residual matches a fresh `ACPowerFlowResidual(data, time_step)` exactly.
 
-Returns `false` (caller must rebuild from scratch) when a *structural* quantity would change versus
-the cached residual: the subnetwork partition, the set of slack-participating buses (either changes
-the Jacobian sparsity pattern), or the REF-bus set. Returns `true` when only values changed (the
-common case: per-step injection changes; PV→PQ Q-limit flips under single-REF slack, where flipped
-PV buses carry zero participation and so never alter the pattern)."""
-function _refresh_polar_residual!(residual::ACPowerFlowResidual, time_step::Int64)
+The subnetwork partition, slack-participation pattern, and PQ index list are pure functions of the
+bus-type column (network topology is fixed for `data`'s lifetime), so the subnetwork partition and
+the PQ index list are only recomputed when `bus_type` has moved since `entry.bus_type_snapshot` was
+captured. The slack-participation weights are NOT bus-type-only: `data.bus_slack_participation_factors`
+can carry a different profile per time step even under a fixed bus-type column (a per-step
+distributed-slack schedule), so that piece is always recomputed and compared. LCC value state (taps,
+thyristor angles) is rebuilt from `x` on every residual/Jacobian evaluation regardless
+(`_update_residual_values!`, `_set_entries_for_lcc`), so an LCC system reuses exactly like one without.
+
+Returns `false` (caller must rebuild from scratch) when a *structural* quantity actually differs
+from the cached residual: the subnetwork partition, the set of slack-participating buses (either
+changes the Jacobian sparsity pattern), or the REF-bus set. Returns `true` when only values changed
+(the common case: per-step injection changes; PV→PQ Q-limit flips under single-REF slack, where
+flipped PV buses carry zero participation and so never alter the pattern)."""
+function _refresh_polar_residual!(entry::PolarNRCache, time_step::Int64)
+    residual = entry.residual
     data = residual.data
-    n_buses = first(size(data.bus_type))
     bus_type = view(data.bus_type, :, time_step)
 
-    # LCC self-admittances and tail residuals are rebuilt from x each value call, but the LCC
-    # branch-admittance/bus-index structure is captured at construction; reuse across a config
-    # where LCCs are present is out of scope — rebuild.
-    size(data.lcc.p_set, 1) > 0 && return false
-
-    subnetworks =
-        _find_subnetworks_for_reference_buses(data.power_network_matrix.data, bus_type)
-    # Structural guard: the J sparsity pattern is keyed on the subnetwork partition and the
-    # participating-bus set. Reuse only when both match the cached residual.
-    keys(subnetworks) == keys(residual.subnetworks) || return false
-    for (ref, members) in subnetworks
-        members == residual.subnetworks[ref] || return false
+    if bus_type == entry.bus_type_snapshot
+        subnetworks = residual.subnetworks
+    else
+        subnetworks =
+            _find_subnetworks_for_reference_buses(data.power_network_matrix.data, bus_type)
+        # Structural guard: the J sparsity pattern is keyed on the subnetwork partition and the
+        # participating-bus set. Reuse only when both match the cached residual.
+        keys(subnetworks) == keys(residual.subnetworks) || return false
+        for (ref, members) in subnetworks
+            members == residual.subnetworks[ref] || return false
+        end
+        new_vi = _pq_validate_indices(bus_type)
+        resize!(residual.validate_indices, length(new_vi))
+        copyto!(residual.validate_indices, new_vi)
+        copyto!(entry.bus_type_snapshot, bus_type)
     end
-    new_spf =
-        _build_bus_slack_participation_factors(data, bus_type, subnetworks, time_step)
+
+    new_spf = _build_bus_slack_participation_factors(data, bus_type, subnetworks, time_step)
     SparseArrays.nonzeroinds(new_spf) ==
     SparseArrays.nonzeroinds(residual.bus_slack_participation_factors) || return false
-
-    # Refresh slack factors in place (nzind matches per the guard) to preserve the aliasing the
-    # Jacobian holds into this SparseVector.
+    # Refresh slack factors in place (nzind matches per the guard) to preserve the aliasing
+    # the Jacobian holds into this SparseVector.
     SparseArrays.nonzeros(residual.bus_slack_participation_factors) .=
         SparseArrays.nonzeros(new_spf)
 
-    # Refresh the per-step setpoints exactly as the constructor computes them. P_net is reset to
-    # P_net_set because the PQ ZIP path accumulates onto P_net (telescoping from this baseline).
-    @inbounds for ix in 1:n_buses
-        p =
-            data.bus_active_power_injections[ix, time_step] -
-            get_bus_active_power_total_withdrawals(data, ix, time_step) +
-            data.bus_hvdc_net_power[ix, time_step]
-        q =
-            data.bus_reactive_power_injections[ix, time_step] -
-            get_bus_reactive_power_total_withdrawals(data, ix, time_step)
-        residual.P_net[ix] = p
-        residual.P_net_set[ix] = p
-        residual.Q_net[ix] = q
-    end
-
-    residual.bus_active_constant_I .=
-        view(data.bus_active_power_constant_current_withdrawals, :, time_step)
-    residual.bus_reactive_constant_I .=
-        view(data.bus_reactive_power_constant_current_withdrawals, :, time_step)
-    residual.bus_active_constant_Z .=
-        view(data.bus_active_power_constant_impedance_withdrawals, :, time_step)
-    residual.bus_reactive_constant_Z .=
-        view(data.bus_reactive_power_constant_impedance_withdrawals, :, time_step)
-
-    new_vi = _pq_validate_indices(bus_type)
-    resize!(residual.validate_indices, length(new_vi))
-    copyto!(residual.validate_indices, new_vi)
+    _refresh_residual_setpoints!(residual, data, time_step)
     return true
 end
 
@@ -236,22 +226,13 @@ function _set_Δx_nr!(stateVector::StateVectorCache,
     return
 end
 
-"""Returns a freshly-allocated stand-in matrix `-(JᵀJ + λI)` for a singular `J`. The result
-defines the sparsity pattern that [`_refresh_singular_J_fallback!`](@ref) reuses in place."""
-function _build_singular_J_fallback(Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
+"""Fill `M` in place with `-(fjac2 + λI)`, `M` and `fjac2` sharing one pattern. A manual loop
+over `M`'s stored pattern (not the broadcast `-(fjac2 + λ*I)`) so a structurally-present entry
+that evaluates to exactly zero stays in the pattern instead of being pruned by sparse broadcast —
+the pruning that made a freshly-built `M` fail to match a same-`Jv` recompute of `fjac2`."""
+function _fill_singular_J_fallback!(M::SparseMatrixCSC{Float64, J_INDEX_TYPE},
+    fjac2::SparseMatrixCSC{Float64, J_INDEX_TYPE},
     x::Vector{Float64})
-    fjac2 = Jv' * Jv
-    lambda = NR_SINGULAR_SCALING * sqrt(length(x) * eps()) * norm(fjac2, 1)
-    return -(fjac2 + lambda * LinearAlgebra.I)
-end
-
-"""Refresh `M = -(JᵀJ + λI)` in place (λ as in [`_build_singular_J_fallback`](@ref)). Returns
-`false` without touching `M` when the `JᵀJ` pattern no longer matches `M`'s, so the caller rebuilds."""
-function _refresh_singular_J_fallback!(M::SparseMatrixCSC{Float64, J_INDEX_TYPE},
-    Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
-    x::Vector{Float64})
-    fjac2 = Jv' * Jv
-    (fjac2.colptr == M.colptr && fjac2.rowval == M.rowval) || return false
     lambda = NR_SINGULAR_SCALING * sqrt(length(x) * eps()) * norm(fjac2, 1)
     Mnz = M.nzval
     Fnz = fjac2.nzval
@@ -264,6 +245,29 @@ function _refresh_singular_J_fallback!(M::SparseMatrixCSC{Float64, J_INDEX_TYPE}
             end
         end
     end
+    return
+end
+
+"""Returns a freshly-allocated stand-in matrix `-(JᵀJ + λI)` for a singular `J`, on `JᵀJ`'s own
+(full) pattern. The result defines the sparsity pattern that
+[`_refresh_singular_J_fallback!`](@ref) reuses in place."""
+function _build_singular_J_fallback(Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
+    x::Vector{Float64})
+    fjac2 = Jv' * Jv
+    M = copy(fjac2)
+    _fill_singular_J_fallback!(M, fjac2, x)
+    return M
+end
+
+"""Refresh `M = -(JᵀJ + λI)` in place (λ as in [`_build_singular_J_fallback`](@ref)). Returns
+`false` without touching `M` when the `JᵀJ` pattern no longer matches `M`'s (i.e. `Jv`'s own
+structural pattern changed), so the caller rebuilds."""
+function _refresh_singular_J_fallback!(M::SparseMatrixCSC{Float64, J_INDEX_TYPE},
+    Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
+    x::Vector{Float64})
+    fjac2 = Jv' * Jv
+    (fjac2.colptr == M.colptr && fjac2.rowval == M.rowval) || return false
+    _fill_singular_J_fallback!(M, fjac2, x)
     return true
 end
 
@@ -976,9 +980,9 @@ function _report_power_flow_convergence(
     solver_name::String,
     residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
 )
-    @info("Final residual size: $(norm(residual.Rv, 2)) L2, $(norm(residual.Rv, Inf)) L∞.")
+    @debug("Final residual size: $(norm(residual.Rv, 2)) L2, $(norm(residual.Rv, Inf)) L∞.")
     if converged
-        @info("The $solver_name solver converged after $i iterations.")
+        @debug("The $solver_name solver converged after $i iterations.")
         return true
     end
     @debug("The $solver_name solver failed to converge after $i iterations.")
@@ -1063,6 +1067,9 @@ end
 # Build + symbolically factor a fresh linear-solver cache. Polar workspace reuse lives in
 # `PolarNRCache`/`_newton_workspace!` and does not route through here, so this never writes the
 # shared `data.polar_nr_cache` slot; the continuation path calls it for a one-off cache.
+# The caller (`_sensitivity_context`) counts this factorization itself — it is the ONE symbolic
+# build of the continuation's probe phase, reused by every batched-pass refresh — so this does not
+# also count it (that double-counted the same factorization).
 function _nr_linear_solver_cache!(
     data::ACPowerFlowData,
     J,
@@ -1071,7 +1078,6 @@ function _nr_linear_solver_cache!(
 )
     linSolveCache = make_linear_solver_cache(backend, J.Jv)
     symbolic_factor!(linSolveCache, J.Jv)
-    _count_symbolic_factor!(data)
     return linSolveCache
 end
 
@@ -1143,15 +1149,12 @@ function _nr_build_jacobian(
 end
 _nr_build_jacobian(::AbstractACPowerFlow, residual, J, time_step::Int64) = J
 
-"""Build (or, for the polar formulation, reuse) the Newton workspace for one `_newton_power_flow`
-call. Returns `(residual, J, x0_init, linSolveCache, stateVector, converged)`; the solver cache and
-state-vector buffers are only constructed when the initial point has not already converged (matching
-the historical lazy build), so they are `nothing` in the already-converged case (never consumed,
-since the caller skips `_run_power_flow_method` then).
-
-Non-polar formulations (rectangular CI, mixed CPB) always build fresh: their state dimension depends
-on the bus-type partition, which changes across Q-limit retries and time steps."""
-function _newton_workspace!(
+"""Shared fresh-build body for `_newton_workspace!`: initialize the residual (deferring the
+Jacobian per `_nr_initialize_with_jacobian_deferred`), return early on a 0-iteration warm start,
+otherwise build `J`, a symbolically-factored linear-solver cache, and a fresh `StateVectorCache`.
+Returns `(residual, J_or_nothing, x0_init, linSolveCache_or_nothing, stateVector_or_nothing,
+converged)`. Counts the symbolic factorization it performs (a no-op outside discrete control)."""
+function _fresh_newton_workspace(
     pf::AbstractACPowerFlow,
     data::ACPowerFlowData,
     time_step::Int64,
@@ -1162,16 +1165,124 @@ function _newton_workspace!(
     residual, J_deferred, x0_init =
         _nr_initialize_with_jacobian_deferred(pf, data, time_step; init_kwargs...)
     converged = norm(residual.Rv, Inf) < tol
-    if converged
-        return residual, J_deferred, x0_init, nothing, nothing, true
-    end
+    converged && return residual, J_deferred, x0_init, nothing, nothing, true
     J = _nr_build_jacobian(pf, residual, J_deferred, time_step)
     linSolveCache = make_linear_solver_cache(backend, J.Jv)
     symbolic_factor!(linSolveCache, J.Jv)
+    _count_symbolic_factor!(data)
     stateVector = StateVectorCache(x0_init, residual.Rv)
     return residual, J, x0_init, linSolveCache, stateVector, false
 end
 
+"""Persistent reuse cache for the rectangular-CI/mixed-CPB Newton workspace, stored in the shared
+`data.solver_cache` slot (polar has its own dedicated `data.polar_nr_cache`; rect/mixed share the
+generic slot with the DC and fast-decoupled caches — see the slot's docstring in
+`PowerFlowData.jl`). Unlike `PolarNRCache`, the residual and Jacobian are NOT reused: their state
+dimension is bus-type-derived (PQ/REF 2 vars, PV 3), so a bus-type flip changes the block layout,
+not just participation weights, and rebuilding them is what `_nr_initialize_with_jacobian_deferred`
+already does cheaply. What this cache avoids re-paying is the linear-solver symbolic factorization:
+`colptr`/`rowval`/size are the rebuilt `J.Jv`'s structural fingerprint (`_same_sparsity`); a match skips
+`symbolic_factor!` and reuses `linSolveCache` and the `StateVectorCache` buffers as-is."""
+mutable struct RectMixedNRCache{C <: PFLinearSolverCache} <: SolverCache
+    colptr::Vector{J_INDEX_TYPE}
+    rowval::Vector{J_INDEX_TYPE}
+    m::Int
+    n::Int
+    backend::PNM.LinearSolverType
+    linSolveCache::C
+    stateVector::StateVectorCache
+end
+
+function _build_rect_mixed_cache!(
+    data::ACPowerFlowData,
+    backend,
+    Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
+    x0::Vector{Float64},
+    r0::Vector{Float64},
+)
+    linSolveCache = make_linear_solver_cache(backend, Jv)
+    symbolic_factor!(linSolveCache, Jv)
+    _count_symbolic_factor!(data)
+    stateVector = StateVectorCache(x0, r0)
+    data.solver_cache[] = RectMixedNRCache(
+        copy(Jv.colptr), copy(Jv.rowval), size(Jv, 1), size(Jv, 2), backend,
+        linSolveCache, stateVector,
+    )
+    return linSolveCache, stateVector
+end
+
+# No cache yet.
+_get_or_build_rect_mixed_cache!(::Nothing, data, backend, Jv, x0, r0) =
+    _build_rect_mixed_cache!(data, backend, Jv, x0, r0)
+
+# The slot holds some OTHER SolverCache subtype (e.g. a FastDecoupled driver ran on this `data`
+# first). Rect/mixed formulations legitimately share the slot with FD across an ordinary solver
+# switch on the same `data` (unlike a DC/AC type mismatch, which is a program bug elsewhere), so
+# this treats it the same as no cache rather than following `FDFixedJacobianCache`'s two-arm
+# dispatch (::Nothing / concrete type only) into a MethodError.
+_get_or_build_rect_mixed_cache!(::SolverCache, data, backend, Jv, x0, r0) =
+    _build_rect_mixed_cache!(data, backend, Jv, x0, r0)
+
+function _get_or_build_rect_mixed_cache!(
+    cache::RectMixedNRCache,
+    data::ACPowerFlowData,
+    backend,
+    Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
+    x0::Vector{Float64},
+    r0::Vector{Float64},
+)
+    if typeof(cache.backend) === typeof(backend) && _same_sparsity(cache, Jv)
+        stateVector = cache.stateVector
+        copyto!(stateVector.x, x0)
+        copyto!(stateVector.r, r0)
+        fill!(stateVector.d, 1.0)
+        stateVector.fallback_cache[] = nothing
+        stateVector.fallback_matrix[] = nothing
+        return cache.linSolveCache, stateVector
+    end
+    return _build_rect_mixed_cache!(data, backend, Jv, x0, r0)
+end
+
+"""Build (or, for the polar formulation, reuse) the Newton workspace for one `_newton_power_flow`
+call. Returns `(residual, J, x0_init, linSolveCache, stateVector, converged)`; the solver cache and
+state-vector buffers are only constructed when the initial point has not already converged (matching
+the historical lazy build), so they are `nothing` in the already-converged case (never consumed,
+since the caller skips `_run_power_flow_method` then).
+
+Non-polar formulations (rectangular CI, mixed CPB) always build a fresh residual and Jacobian: their
+state dimension depends on the bus-type partition, which changes across Q-limit retries and time
+steps. The linear-solver factorization and state-vector buffers, held in `RectMixedNRCache`, are
+reused when the rebuilt Jacobian's sparsity pattern matches (see `_get_or_build_rect_mixed_cache!`)."""
+function _newton_workspace!(
+    pf::AbstractACPowerFlow,
+    data::ACPowerFlowData,
+    time_step::Int64,
+    backend,
+    tol::Float64,
+    init_kwargs::NamedTuple,
+)
+    return _fresh_newton_workspace(pf, data, time_step, backend, tol, init_kwargs)
+end
+
+function _newton_workspace!(
+    pf::Union{ACRectangularPowerFlow, ACMixedPowerFlow},
+    data::ACPowerFlowData,
+    time_step::Int64,
+    backend,
+    tol::Float64,
+    init_kwargs::NamedTuple,
+)
+    residual, J_deferred, x0_init =
+        _nr_initialize_with_jacobian_deferred(pf, data, time_step; init_kwargs...)
+    converged = norm(residual.Rv, Inf) < tol
+    converged && return residual, J_deferred, x0_init, nothing, nothing, true
+    J = _nr_build_jacobian(pf, residual, J_deferred, time_step)
+    linSolveCache, stateVector = _get_or_build_rect_mixed_cache!(
+        data.solver_cache[], data, backend, J.Jv, x0_init, residual.Rv)
+    return residual, J, x0_init, linSolveCache, stateVector, false
+end
+
+# Dispatch on the slot content keeps the reuse path concretely inferred.
 function _newton_workspace!(
     pf::ACPolarPowerFlow,
     data::ACPowerFlowData,
@@ -1180,63 +1291,92 @@ function _newton_workspace!(
     tol::Float64,
     init_kwargs::NamedTuple,
 )
-    entry = data.polar_nr_cache[]
-    # A caller-provided x0 takes a different init path (skips improve_x0, warns) — do not reuse.
+    return _polar_newton_workspace!(
+        data.polar_nr_cache[], pf, data, time_step, backend, tol, init_kwargs)
+end
+
+# No cache yet (or the previous entry was invalidated on the last call): build fresh and, unless
+# the initial point already converged (matching the historical lazy build), store it for reuse.
+function _polar_newton_workspace!(
+    ::Nothing,
+    pf::ACPolarPowerFlow,
+    data::ACPowerFlowData,
+    time_step::Int64,
+    backend,
+    tol::Float64,
+    init_kwargs::NamedTuple,
+)
+    residual, J, x0_init, linSolveCache, stateVector, converged =
+        _fresh_newton_workspace(pf, data, time_step, backend, tol, init_kwargs)
+    data.polar_nr_cache[] = if converged
+        nothing
+    else
+        PolarNRCache(
+            residual, J, linSolveCache, stateVector, backend,
+            copy(view(data.bus_type, :, time_step)))
+    end
+    return residual, J, x0_init, linSolveCache, stateVector, converged
+end
+
+# A cache entry is present: try to reuse it, falling back to a fresh build (dispatching back to
+# the `::Nothing` method) on any invalidation — caller-provided x0, a different backend, or a
+# structural change `_refresh_polar_residual!` can't absorb in place.
+function _polar_newton_workspace!(
+    entry::PolarNRCache,
+    pf::ACPolarPowerFlow,
+    data::ACPowerFlowData,
+    time_step::Int64,
+    backend,
+    tol::Float64,
+    init_kwargs::NamedTuple,
+)
     can_reuse =
-        entry isa PolarNRCache &&
         typeof(entry.backend) === typeof(backend) &&
         !haskey(init_kwargs, :x0) &&
-        _refresh_polar_residual!(entry.residual, time_step)
-    if can_reuse
-        residual = entry.residual
-        J = entry.J
-        # Re-run the value paths exactly as a fresh init would: improve_x0 (which re-evaluates the
-        # residual at x0 with identical logging) then the full Jacobian fill. The caller-provided-x0
-        # path is excluded by `can_reuse`, so this always takes the improve_x0 branch.
-        x0_init = improve_x0(pf, data, residual, time_step)
-        _log_initial_residual(residual)
-        if get(init_kwargs, :validate_voltage_magnitudes, DEFAULT_VALIDATE_VOLTAGES)
-            validate_voltage_magnitudes(
-                x0_init,
-                residual.validate_indices,
-                get(init_kwargs, :vm_validation_range, DEFAULT_VALIDATION_RANGE),
-                0,
-            )
-        end
-        converged = norm(residual.Rv, Inf) < tol
-        # Defer the Jacobian fill past the convergence check: a 0-iteration warm start must not
-        # pay for it. `nothing` lets the caller rebuild only if it actually needs J.
-        converged && return residual, nothing, x0_init, nothing, nothing, true
-        J(time_step)
-        # Reuse the linear-solver cache (symbolic factorization holds: pattern is bus-type-agnostic)
-        # and the state-vector buffers; refresh only the per-solve values.
-        linSolveCache = entry.linSolveCache
-        stateVector = entry.stateVector
-        copyto!(stateVector.x, x0_init)
-        copyto!(stateVector.r, residual.Rv)
-        # Reset buffers a fresh StateVectorCache would start at, so the reused solve is bit-identical:
-        # `d` (TR autoscale recomputes it, but NR leaves it untouched) and the singular-Jacobian
-        # fallback (rebuilt on demand otherwise, but starts empty on a fresh cache).
-        fill!(stateVector.d, 1.0)
-        stateVector.fallback_cache[] = nothing
-        stateVector.fallback_matrix[] = nothing
-        return residual, J, x0_init, linSolveCache, stateVector, false
-    end
+        _refresh_polar_residual!(entry, time_step)
+    can_reuse ||
+        return _polar_newton_workspace!(
+            nothing,
+            pf,
+            data,
+            time_step,
+            backend,
+            tol,
+            init_kwargs,
+        )
 
-    residual, J_deferred, x0_init =
-        _nr_initialize_with_jacobian_deferred(pf, data, time_step; init_kwargs...)
-    converged = norm(residual.Rv, Inf) < tol
-    if converged
-        # Already converged at the initial point: no solver cache is built (matching the lazy
-        # path), so clear any stale entry rather than caching an unused workspace.
-        data.polar_nr_cache[] = nothing
-        return residual, J_deferred, x0_init, nothing, nothing, true
+    residual = entry.residual
+    J = entry.J
+    # Re-run the value paths exactly as a fresh init would: improve_x0 (which re-evaluates the
+    # residual at x0 with identical logging) then the full Jacobian fill. The caller-provided-x0
+    # path is excluded by `can_reuse`, so this always takes the improve_x0 branch.
+    x0_init = improve_x0(pf, data, residual, time_step)
+    _log_initial_residual(residual)
+    if get(init_kwargs, :validate_voltage_magnitudes, DEFAULT_VALIDATE_VOLTAGES)
+        validate_voltage_magnitudes(
+            x0_init,
+            residual.validate_indices,
+            get(init_kwargs, :vm_validation_range, DEFAULT_VALIDATION_RANGE),
+            0,
+        )
     end
-    J = _nr_build_jacobian(pf, residual, J_deferred, time_step)
-    linSolveCache = make_linear_solver_cache(backend, J.Jv)
-    symbolic_factor!(linSolveCache, J.Jv)
-    stateVector = StateVectorCache(x0_init, residual.Rv)
-    data.polar_nr_cache[] = PolarNRCache(residual, J, linSolveCache, stateVector, backend)
+    converged = norm(residual.Rv, Inf) < tol
+    # Defer the Jacobian fill past the convergence check: a 0-iteration warm start must not
+    # pay for it. `nothing` lets the caller rebuild only if it actually needs J.
+    converged && return residual, nothing, x0_init, nothing, nothing, true
+    J(time_step)
+    # Reuse the linear-solver cache (symbolic factorization holds: pattern is bus-type-agnostic)
+    # and the state-vector buffers; refresh only the per-solve values.
+    linSolveCache = entry.linSolveCache
+    stateVector = entry.stateVector
+    copyto!(stateVector.x, x0_init)
+    copyto!(stateVector.r, residual.Rv)
+    # Reset buffers a fresh StateVectorCache would start at, so the reused solve is bit-identical:
+    # `d` (TR autoscale recomputes it, but NR leaves it untouched) and the singular-Jacobian
+    # fallback (rebuilt on demand otherwise, but starts empty on a fresh cache).
+    fill!(stateVector.d, 1.0)
+    stateVector.fallback_cache[] = nothing
+    stateVector.fallback_matrix[] = nothing
     return residual, J, x0_init, linSolveCache, stateVector, false
 end
 

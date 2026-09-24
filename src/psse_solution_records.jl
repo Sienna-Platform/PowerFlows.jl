@@ -142,7 +142,6 @@ function solution_record_values(
     base_power::Float64,
 )
     solver = _solver_type(pf)
-    fd = _is_fast_decoupled(solver)
     step_control = _solution_record_step_control(solver, params)
 
     # A discrete-control solve moves both tap changers and switched shunts; PowerFlows has
@@ -169,11 +168,9 @@ function solution_record_values(
         varlim = -1
     end
 
-    if fd
-        iterations = something(params.maxIterations, DEFAULT_FD_MAX_ITER)
-    else
-        iterations = something(params.maxIterations, DEFAULT_NR_MAX_ITER)
-    end
+    # `params.maxIterations` is already resolved to the solver's default by the model
+    # constructor (see `_default_max_iterations`), so no branch is needed here.
+    iterations = params.maxIterations
 
     if params.enhanced_flat_start
         flatst = 1
@@ -460,7 +457,7 @@ function solution_parameters(values::SolutionRecordValues, base_power::Float64)
     if values.itmxn > 0
         maxIterations = values.itmxn
     else
-        maxIterations = nothing
+        maxIterations = UNSET_MAX_ITERATIONS
     end
 
     # Tie-line-and-load interchange is not implemented and the model constructor rejects
