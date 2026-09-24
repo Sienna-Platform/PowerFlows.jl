@@ -1,46 +1,15 @@
 # VSC HVDC power-flow tests. I0: lowering of a point-to-point TwoTerminalVSCLine into the internal
 # DCNetwork (isolated 2-node). Later increments add the residual/Jacobian/solver tests.
 
-# DC-network modeling is on by default; `VSC_SETTINGS` (test_utils/common.jl) passes it
-# explicitly for clarity.
-
-# Build c_sys5 and add one point-to-point VSC line: the `from` converter controls DC voltage
-# (DC slack), the `to` converter controls (P, Q). This is the physically well-posed config: one
-# terminal fixes V_dc, the other sets power.
-function _build_vsc_system(; g = 50.0)
-    sys = deepcopy(PSB.build_system(PSB.PSITestSystems, "c_sys5"; add_forecasts = false))
-    buses = sort!(collect(PSY.get_components(PSY.ACBus, sys)); by = PSY.get_number)
-    from_bus = buses[1]
-    to_bus = buses[4]
-    arc = _get_or_make_arc(sys, from_bus, to_bus)
-    vsc = PSY.TwoTerminalVSCLine(;
-        name = "vsc_test",
-        available = true,
-        arc = arc,
-        active_power_flow = 0.5,
-        rating = 1.0,
-        active_power_limits_from = (min = -1.0, max = 1.0),
-        active_power_limits_to = (min = -1.0, max = 1.0),
-        g = g,
-        # from converter: DC-voltage control (DC slack), no AC-voltage control
-        dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
-        ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
-        dc_setpoint_from = 1.0,
-        ac_setpoint_from = 1.0,
-        # to converter: power control (P, Q)
-        dc_control_to = PSY.VSCDCControlModes.DC_POWER,
-        ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
-        dc_setpoint_to = 0.5,
-        ac_setpoint_to = 1.0,
-    )
-    PSY.add_component!(sys, vsc)
-    return sys
-end
+# DC-network modeling is on by default; `VSC_SOLUTION_PARAMETERS` (test_utils/common.jl) passes
+# it explicitly for clarity.
 
 @testset "VSC I0: TwoTerminalVSCLine lowers to an isolated 2-node DCNetwork" begin
     sys = _build_vsc_system(; g = 50.0)
     data = PowerFlowData(
-        ACPowerFlow{NewtonRaphsonACPowerFlow}(; solver_settings = VSC_SETTINGS),
+        ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+            solution_parameters = VSC_SOLUTION_PARAMETERS,
+        ),
         sys,
     )
     dcn = PF.get_dc_network(data)
@@ -68,7 +37,9 @@ end
 @testset "VSC I0: pure-AC system has an empty DCNetwork (regression-safe)" begin
     sys = deepcopy(PSB.build_system(PSB.PSITestSystems, "c_sys5"; add_forecasts = false))
     data = PowerFlowData(
-        ACPowerFlow{NewtonRaphsonACPowerFlow}(; solver_settings = VSC_SETTINGS),
+        ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+            solution_parameters = VSC_SOLUTION_PARAMETERS,
+        ),
         sys,
     )
     dcn = PF.get_dc_network(data)
@@ -99,7 +70,9 @@ end
     )
     PSY.add_component!(sys, vsc)
     data = PowerFlowData(
-        ACPowerFlow{NewtonRaphsonACPowerFlow}(; solver_settings = VSC_SETTINGS),
+        ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+            solution_parameters = VSC_SOLUTION_PARAMETERS,
+        ),
         sys,
     )
     dcn = PF.get_dc_network(data)
@@ -116,7 +89,9 @@ end
 @testset "VSC I1: polar NR solves a point-to-point VSC and meets setpoints" begin
     sys = _build_vsc_pq_system(; g = 50.0, p_set = 0.4, q_set = 0.1, vdc = 1.05)
     data = PowerFlowData(
-        ACPowerFlow{NewtonRaphsonACPowerFlow}(; solver_settings = VSC_SETTINGS),
+        ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+            solution_parameters = VSC_SOLUTION_PARAMETERS,
+        ),
         sys,
     )
     @test solve_power_flow!(data)
@@ -140,7 +115,9 @@ end
 @testset "VSC I1: analytic polar Jacobian matches finite differences" begin
     sys = _build_vsc_pq_system(; g = 40.0, p_set = 0.3, q_set = -0.05, vdc = 1.02)
     data = PowerFlowData(
-        ACPowerFlow{NewtonRaphsonACPowerFlow}(; solver_settings = VSC_SETTINGS),
+        ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+            solution_parameters = VSC_SOLUTION_PARAMETERS,
+        ),
         sys,
     )
     @test solve_power_flow!(data)
@@ -196,7 +173,9 @@ end
         reactive_power_to = 0.0,
     )
     data = PowerFlowData(
-        ACPowerFlow{NewtonRaphsonACPowerFlow}(; solver_settings = VSC_SETTINGS),
+        ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+            solution_parameters = VSC_SOLUTION_PARAMETERS,
+        ),
         sys,
     )
     @test solve_power_flow!(data)
@@ -230,7 +209,9 @@ end
         ac_setpoint_to = 1.0,
     )
     data = PowerFlowData(
-        ACPowerFlow{NewtonRaphsonACPowerFlow}(; solver_settings = VSC_SETTINGS),
+        ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+            solution_parameters = VSC_SOLUTION_PARAMETERS,
+        ),
         sys,
     )
     @test solve_power_flow!(data)
@@ -261,7 +242,9 @@ end
         ),
     )
     data = PowerFlowData(
-        ACPowerFlow{NewtonRaphsonACPowerFlow}(; solver_settings = VSC_SETTINGS),
+        ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+            solution_parameters = VSC_SOLUTION_PARAMETERS,
+        ),
         sys,
     )
     @test solve_power_flow!(data)
@@ -272,53 +255,12 @@ end
     jac(1)
     verify_jacobian_asymptotic(residual, jac.Jv, x, 1; label = "VSC polar lossy")
 end
-
-# Regression: the polar VSC Jacobian must be bus-type aware. Column `2ix-1` is the |V_ac| state
-# only for PQ buses; for PV it is Q_gen and for REF it is P_gen (see state_indexing_helpers.jl).
-# A lossy converter whose AC terminal is a PV (or REF) bus has a nonzero ∂KCL/∂|V_ac| loss term —
-# writing it into column `2ix-1` (which is not |V_ac| there) corrupts the Jacobian. |V_ac| is fixed
-# at PV/REF buses, so that derivative must not enter the Jacobian at all.
-function _vsc_system_pv_terminal(; g = 45.0)
-    sys = deepcopy(PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false))
-    pick(t) = first(
-        sort!(
-            collect(PSY.get_components(b -> PSY.get_bustype(b) == t, PSY.ACBus, sys));
-            by = PSY.get_number,
-        ),
-    )
-    from_bus = pick(PSY.ACBusTypes.PQ)        # DC-voltage slack converter on a PQ bus
-    to_bus = pick(PSY.ACBusTypes.PV)          # lossy power-control converter on a PV bus
-    arc = _get_or_make_arc(sys, from_bus, to_bus)
-    vsc = PSY.TwoTerminalVSCLine(;
-        name = "vsc_pv",
-        available = true,
-        arc = arc,
-        active_power_flow = 0.3,
-        rating = 2.0,
-        active_power_limits_from = (min = -2.0, max = 2.0),
-        active_power_limits_to = (min = -2.0, max = 2.0),
-        g = g,
-        dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
-        ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
-        dc_setpoint_from = 1.03,
-        reactive_power_from = 0.0,
-        dc_control_to = PSY.VSCDCControlModes.DC_POWER,
-        ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
-        dc_setpoint_to = 0.35,
-        reactive_power_to = 0.05,
-        converter_loss_to = PSY.LossCurve(
-            PSY.QuadraticCurve(0.01, 0.02, 0.005),
-            PSY.NaturalUnit(),
-        ),
-    )
-    PSY.add_component!(sys, vsc)
-    return sys
-end
-
 @testset "VSC: analytic polar Jacobian matches FD for a lossy converter on a PV bus" begin
     sys = _vsc_system_pv_terminal(; g = 45.0)
     data = PowerFlowData(
-        ACPowerFlow{NewtonRaphsonACPowerFlow}(; solver_settings = VSC_SETTINGS),
+        ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+            solution_parameters = VSC_SOLUTION_PARAMETERS,
+        ),
         sys,
     )
     # check at the flat start to isolate the Jacobian structure from solver convergence
@@ -345,7 +287,9 @@ end
         dc_setpoint_to = 0.3,
     )
     data = PowerFlowData(
-        ACPowerFlow{NewtonRaphsonACPowerFlow}(; solver_settings = VSC_SETTINGS),
+        ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+            solution_parameters = VSC_SOLUTION_PARAMETERS,
+        ),
         sys,
     )
     dcn = PF.get_dc_network(data)
@@ -362,7 +306,10 @@ end
     refs = Vector{Tuple{Float64, Float64, Float64}}()
     for S in solvers
         sys = _build_vsc_pq_system(; g = 50.0, p_set = 0.4, q_set = 0.1, vdc = 1.05)
-        data = PowerFlowData(PF.ACPolarPowerFlow{S}(; solver_settings = VSC_SETTINGS), sys)
+        data = PowerFlowData(
+            PF.ACPolarPowerFlow{S}(; solution_parameters = VSC_SOLUTION_PARAMETERS),
+            sys,
+        )
         @test solve_power_flow!(data)
         dcn = PF.get_dc_network(data)
         push!(refs, (dcn.p_c[2, 1], dcn.q_c[2, 1], dcn.node_vdc[2, 1]))
@@ -381,7 +328,7 @@ end
         ("mixed", PF.ACMixedPowerFlow{NewtonRaphsonACPowerFlow}),
     )
         sys = _build_vsc_pq_system(; g = 50.0, p_set = 0.4, q_set = 0.1, vdc = 1.05)
-        data = PowerFlowData(PF_T(; solver_settings = VSC_SETTINGS), sys)
+        data = PowerFlowData(PF_T(; solution_parameters = VSC_SOLUTION_PARAMETERS), sys)
         @test solve_power_flow!(data)
         dcn = PF.get_dc_network(data)
         sol[name] = (
@@ -415,7 +362,9 @@ end
             PSY.NaturalUnit(),
         ),
     )
-    pf = PF.ACMixedPowerFlow{NewtonRaphsonACPowerFlow}(; solver_settings = VSC_SETTINGS)
+    pf = PF.ACMixedPowerFlow{NewtonRaphsonACPowerFlow}(;
+        solution_parameters = VSC_SOLUTION_PARAMETERS,
+    )
     data = PowerFlowData(pf, sys)
     @test solve_power_flow!(data)
     residual, jac, x = PF.initialize_power_flow_variables(pf, data, 1)
@@ -441,7 +390,7 @@ end
         ),
     )
     pf = PF.ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
-        solver_settings = VSC_SETTINGS,
+        solution_parameters = VSC_SOLUTION_PARAMETERS,
     )
     data = PowerFlowData(pf, sys)
     @test solve_power_flow!(data)
@@ -500,7 +449,7 @@ end
 
 @testset "VSC: DC-voltage droop — analytic Jacobian matches FD ($name)" for (name, PF_T) in
                                                                             _ALL_AC_FORMULATIONS
-    pf = PF_T(; solver_settings = VSC_SETTINGS)
+    pf = PF_T(; solution_parameters = VSC_SOLUTION_PARAMETERS)
     data = PowerFlowData(pf, _vsc_droop_system())
     @test solve_power_flow!(data)
     residual, jac, x = PF.initialize_power_flow_variables(pf, data, 1)
@@ -512,7 +461,10 @@ end
 @testset "VSC: DC-voltage droop — polar, rectangular, and mixed all agree" begin
     sol = Dict{String, Any}()
     for (name, PF_T) in _ALL_AC_FORMULATIONS
-        data = PowerFlowData(PF_T(; solver_settings = VSC_SETTINGS), _vsc_droop_system())
+        data = PowerFlowData(
+            PF_T(; solution_parameters = VSC_SOLUTION_PARAMETERS),
+            _vsc_droop_system(),
+        )
         @test solve_power_flow!(data)
         dcn = PF.get_dc_network(data)
         sol[name] = (
@@ -534,7 +486,7 @@ end
     PF_T,
 ) in
                                                                               _ALL_AC_FORMULATIONS
-    pf = PF_T(; solver_settings = VSC_SETTINGS)
+    pf = PF_T(; solution_parameters = VSC_SOLUTION_PARAMETERS)
     data = PowerFlowData(pf, _vsc_ac_voltage_system())
     @test solve_power_flow!(data)
     residual, jac, x = PF.initialize_power_flow_variables(pf, data, 1)
@@ -547,7 +499,10 @@ end
     sol = Dict{String, Any}()
     for (name, PF_T) in _ALL_AC_FORMULATIONS
         data =
-            PowerFlowData(PF_T(; solver_settings = VSC_SETTINGS), _vsc_ac_voltage_system())
+            PowerFlowData(
+                PF_T(; solution_parameters = VSC_SOLUTION_PARAMETERS),
+                _vsc_ac_voltage_system(),
+            )
         @test solve_power_flow!(data)
         dcn = PF.get_dc_network(data)
         sol[name] = (
@@ -584,7 +539,7 @@ end
         dc_setpoint_to = 0.3,
         reactive_power_to = 0.05,
     )
-    pf = PF_T(; time_steps = time_steps, solver_settings = VSC_SETTINGS)
+    pf = PF_T(; time_steps = time_steps, solution_parameters = VSC_SOLUTION_PARAMETERS)
     data = PowerFlowData(pf, sys)
     prepare_ts_data!(data, time_steps)
     @test solve_power_flow!(data)
@@ -607,7 +562,9 @@ end
 @testset "VSC I5: 3-terminal MTDC lowers and solves across all formulations" begin
     sys = _build_mtdc_system()
     data0 = PowerFlowData(
-        ACPowerFlow{NewtonRaphsonACPowerFlow}(; solver_settings = VSC_SETTINGS),
+        ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+            solution_parameters = VSC_SOLUTION_PARAMETERS,
+        ),
         sys,
     )
     dcn0 = PF.get_dc_network(data0)
@@ -623,7 +580,7 @@ end
         ("mixed", PF.ACMixedPowerFlow{NewtonRaphsonACPowerFlow}),
     )
         sys_k = _build_mtdc_system()
-        data = PowerFlowData(PF_T(; solver_settings = VSC_SETTINGS), sys_k)
+        data = PowerFlowData(PF_T(; solution_parameters = VSC_SOLUTION_PARAMETERS), sys_k)
         @test solve_power_flow!(data)
         dcn = PF.get_dc_network(data)
         # Converter order follows component iteration (hash order), so assert order-independently:
@@ -651,7 +608,9 @@ end
 # `mtdc_line_results` (TModelHVDCLine). A non-applicable table comes back empty (uniform schema).
 @testset "VSC results: MTDC populates converter and DC-line tables" begin
     sys = _build_mtdc_system()
-    pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(; solver_settings = VSC_SETTINGS)
+    pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+        solution_parameters = VSC_SOLUTION_PARAMETERS,
+    )
     results = solve_power_flow(pf, sys)
     @test DataFrames.nrow(results["vsc_results"]) == 0   # no point-to-point VSC lines
 
@@ -676,7 +635,9 @@ end
         dc_control_to = PSY.VSCDCControlModes.DC_POWER,
         dc_setpoint_to = 0.3,
     )
-    pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(; solver_settings = VSC_SETTINGS)
+    pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+        solution_parameters = VSC_SOLUTION_PARAMETERS,
+    )
     results = solve_power_flow(pf, sys)
     @test DataFrames.nrow(results["mtdc_results"]) == 0
     @test DataFrames.nrow(results["mtdc_line_results"]) == 0
@@ -746,10 +707,10 @@ end
     base = PSY.get_base_power(sys)
     # strict DC_VOLTAGE terminal keeps its voltage setpoint as DCSET
     @test PF._vsc_export_dcset(vsc, :from, base) == PSY.get_dc_setpoint_from(vsc)
-    # droop terminal's DCSET is the scheduled active-power demand (MW, to side receives -P_flow)
+    # droop terminal's DCSET is its MW feed into the AC network: +P_flow on the `to` side
     @test isapprox(
         PF._vsc_export_dcset(vsc, :to, base),
-        -PSY.get_active_power_flow(vsc, PSY.SU) * base;
+        PSY.get_active_power_flow(vsc, PSY.SU) * base;
         atol = 1.0,
     )
 end
@@ -836,13 +797,17 @@ end
 @testset "VSC: two InterconnectingConverters on one AC bus are rejected" begin
     bad = _build_parallel_ic_system(; shared_ac = true)
     @test_throws ErrorException PowerFlowData(
-        ACPowerFlow{NewtonRaphsonACPowerFlow}(; solver_settings = VSC_SETTINGS),
+        ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+            solution_parameters = VSC_SOLUTION_PARAMETERS,
+        ),
         bad,
     )
     # sharing only the DC node (distinct AC buses) is a valid MTDC topology and still solves
     ok = _build_parallel_ic_system(; shared_ac = false)
     data = PowerFlowData(
-        ACPowerFlow{NewtonRaphsonACPowerFlow}(; solver_settings = VSC_SETTINGS),
+        ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+            solution_parameters = VSC_SOLUTION_PARAMETERS,
+        ),
         ok,
     )
     @test solve_power_flow!(data)
@@ -894,7 +859,7 @@ end
         ("mixed", PF.ACMixedPowerFlow{NewtonRaphsonACPowerFlow}),
     )
         sys = _vsc_system_ref_terminal(; g = 45.0)
-        pf = PF_T(; solver_settings = VSC_SETTINGS)
+        pf = PF_T(; solution_parameters = VSC_SOLUTION_PARAMETERS)
         data = PowerFlowData(pf, sys)
         @test solve_power_flow!(data)
         residual, jac, x = PF.initialize_power_flow_variables(pf, data, 1)
@@ -928,7 +893,7 @@ end
         ("mixed", PF.ACMixedPowerFlow{NewtonRaphsonACPowerFlow}),
     )
         sys = _vsc_system_pv_terminal(; g = 45.0)
-        pf = PF_T(; solver_settings = VSC_SETTINGS)
+        pf = PF_T(; solution_parameters = VSC_SOLUTION_PARAMETERS)
         data = PowerFlowData(pf, sys)
         @test solve_power_flow!(data)
         residual, jac, x = PF.initialize_power_flow_variables(pf, data, 1)
@@ -987,7 +952,9 @@ end
     )
     PSY.add_component!(sys_pv, vsc)
     @test_throws ErrorException PowerFlowData(
-        ACPowerFlow{NewtonRaphsonACPowerFlow}(; solver_settings = VSC_SETTINGS),
+        ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+            solution_parameters = VSC_SOLUTION_PARAMETERS,
+        ),
         sys_pv,
     )
 
@@ -1026,7 +993,9 @@ end
         PSY.add_component!(sys_dup, vsc_k)
     end
     @test_throws ErrorException PowerFlowData(
-        ACPowerFlow{NewtonRaphsonACPowerFlow}(; solver_settings = VSC_SETTINGS),
+        ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+            solution_parameters = VSC_SOLUTION_PARAMETERS,
+        ),
         sys_dup,
     )
 end
@@ -1037,7 +1006,9 @@ end
 @testset "VSC: RobustHomotopy rejects DC networks; FDDecoupled rejects AC-voltage control" begin
     sys = _build_vsc_pq_system(; g = 50.0, p_set = 0.4, q_set = 0.1, vdc = 1.05)
     data = PowerFlowData(
-        ACPowerFlow{PF.RobustHomotopyPowerFlow}(; solver_settings = VSC_SETTINGS),
+        ACPowerFlow{PF.RobustHomotopyPowerFlow}(;
+            solution_parameters = VSC_SOLUTION_PARAMETERS,
+        ),
         sys,
     )
     @test_throws ArgumentError solve_power_flow!(data)
@@ -1053,7 +1024,9 @@ end
         dc_setpoint_to = 0.25,
     )
     data_vac = PowerFlowData(
-        ACPowerFlow{PF.FastDecoupledACPowerFlow}(; solver_settings = VSC_SETTINGS),
+        ACPowerFlow{PF.FastDecoupledACPowerFlow}(;
+            solution_parameters = VSC_SOLUTION_PARAMETERS,
+        ),
         sys_vac,
     )
     @test_throws ArgumentError solve_power_flow!(data_vac)
@@ -1082,7 +1055,10 @@ end
     for (label, S) in
         (("nr", NewtonRaphsonACPowerFlow), ("fd", PF.FastDecoupledACPowerFlow))
         sys, _, _ = _vsc_system(; lossy_kwargs...)
-        data = PowerFlowData(ACPowerFlow{S}(; solver_settings = VSC_SETTINGS), sys)
+        data = PowerFlowData(
+            ACPowerFlow{S}(; solution_parameters = VSC_SOLUTION_PARAMETERS),
+            sys,
+        )
         @test solve_power_flow!(data)
         dcn = PF.get_dc_network(data)
         sol[label] = (
@@ -1111,7 +1087,7 @@ end
         reactive_power_to = 0.05,
     )
     pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
-        time_steps = time_steps, solver_settings = VSC_SETTINGS)
+        time_steps = time_steps, solution_parameters = VSC_SOLUTION_PARAMETERS)
     data = PowerFlowData(pf, sys)
     prepare_ts_data!(data, time_steps)
     @test solve_power_flow!(data)
@@ -1137,7 +1113,9 @@ end
 
 @testset "get_hvdc_results: MTDC converter and DC-line tables" begin
     sys = _build_mtdc_system()
-    pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(; solver_settings = VSC_SETTINGS)
+    pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+        solution_parameters = VSC_SOLUTION_PARAMETERS,
+    )
     data = PowerFlowData(pf, sys)
     @test solve_power_flow!(data)
     res = get_hvdc_results(sys, data)

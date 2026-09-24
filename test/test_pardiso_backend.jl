@@ -27,14 +27,14 @@ import Pardiso
             sys = build_system(PSITestSystems, "c_sys14")
             res_klu = solve_power_flow(
                 ACPowerFlow{NewtonRaphsonACPowerFlow}(;
-                    solver_settings = Dict{Symbol, Any}(:linear_solver => "KLU")),
+                    solution_parameters = SolutionParameters(; linear_solver = "KLU")),
                 sys,
             )
             for solver in (NewtonRaphsonACPowerFlow, TrustRegionACPowerFlow)
                 res_par = solve_power_flow(
                     ACPowerFlow{solver}(;
-                        solver_settings = Dict{Symbol, Any}(
-                            :linear_solver => "MKLPardiso")),
+                        solution_parameters = SolutionParameters(;
+                            linear_solver = "MKLPardiso")),
                     sys,
                 )
                 @test isapprox(

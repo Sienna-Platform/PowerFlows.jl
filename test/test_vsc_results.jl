@@ -8,7 +8,9 @@ _conv_ix_by_bus_number(dcn, number::Int) =
     only(findall(==(number), dcn.converter_ac_bus_number))
 
 @testset "VSC results: point-to-point line write-back via solve_and_store_power_flow!" begin
-    pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(; solver_settings = VSC_SETTINGS)
+    pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+        solution_parameters = VSC_SOLUTION_PARAMETERS,
+    )
     build() = _build_vsc_pq_system(;
         name = "vsc_results",
         active_power_flow = 0.0,
@@ -54,7 +56,9 @@ _conv_ix_by_bus_number(dcn, number::Int) =
 end
 
 @testset "VSC results: MTDC InterconnectingConverter write-back" begin
-    pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(; solver_settings = VSC_SETTINGS)
+    pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+        solution_parameters = VSC_SOLUTION_PARAMETERS,
+    )
 
     data = PowerFlowData(pf, _build_mtdc_system())
     @test solve_power_flow!(data)

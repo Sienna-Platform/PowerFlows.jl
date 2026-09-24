@@ -126,12 +126,12 @@ end
     end
 
     function _build_mixed_lcc_x(sys; correct_bustypes = false)
-        settings = Dict{Symbol, Any}(:validate_voltage_magnitudes => false)
+        settings = SolutionParameters(; validate_voltage_magnitudes = false)
         pf_polar = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
-            correct_bustypes = correct_bustypes, solver_settings = settings)
+            correct_bustypes = correct_bustypes, solution_parameters = settings)
         @test PF.solve_and_store_power_flow!(pf_polar, sys)
         pf_mixed = ACMixedPowerFlow{NewtonRaphsonACPowerFlow}(;
-            correct_bustypes = correct_bustypes, solver_settings = settings)
+            correct_bustypes = correct_bustypes, solution_parameters = settings)
         data = PF.PowerFlowData(pf_mixed, sys)
         R = PF.ACMixedCPBResidual(data, 1)
         x = Vector{Float64}(undef, length(R.Rv))
@@ -164,7 +164,7 @@ end
         # state; exercises the widened lcc_nz cache (rows 21–24) in MCPB.
         sys, lcc = simple_lcc_system()
         PSY.set_inverter_extinction_angle!(lcc, 1.0)   # interior, off ϕ clamp
-        PSY.set_transfer_setpoint!(lcc, -50.0)          # setpoint at inverter
+        PSY.set_transfer_setpoint!(lcc, -0.5)          # setpoint at inverter
         R, x = _build_mixed_lcc_x(sys)
         Random.seed!(2024)
         x .+= 1e-3 .* randn(length(x))

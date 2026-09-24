@@ -1,8 +1,26 @@
+_counts_as_source(::PSY.StaticInjection) = true
+_counts_as_source(::PSY.ElectricLoad) = false
+# temporary workaround for FACTSControlDevice
+_counts_as_source(::PSY.FACTSControlDevice) = false
+
 function _is_available_source(x, bus::PSY.ACBus)
-    # temporary workaround for FACTSControlDevice
-    return PSY.get_available(x) && x.bus == bus && !isa(x, PSY.ElectricLoad) &&
-           !isa(x, PSY.FACTSControlDevice)
+    return PSY.get_available(x) && PSY.get_bus(x) == bus && _counts_as_source(x)
 end
+
+"""Available non-load, non-FACTS injectors bucketed by bus number, built once so REF/PV
+redistribution does not rescan every `StaticInjection` in `sys` per bus."""
+function _build_bus_injector_map(sys::PSY.System)
+    bus_injectors = Dict{Int, Vector{PSY.StaticInjection}}()
+    for x in PSY.get_available_components(PSY.StaticInjection, sys)
+        _counts_as_source(x) || continue
+        bus_no = PSY.get_number(PSY.get_bus(x))
+        push!(get!(() -> PSY.StaticInjection[], bus_injectors, bus_no), x)
+    end
+    return bus_injectors
+end
+
+_bus_sources(bus::PSY.ACBus, bus_injectors::Dict{Int, Vector{PSY.StaticInjection}}) =
+    get(bus_injectors, PSY.get_number(bus), PSY.StaticInjection[])
 
 """Returns a dictionary of bus index to power contribution at that bus from FixedAdmittance
 components, as a tuple of (active power, reactive power)."""
@@ -39,14 +57,14 @@ function _power_redistribution_ref(
     Q_gen::Float64,
     bus::PSY.ACBus,
     max_iterations::Int,
+    bus_injectors::Dict{Int, Vector{PSY.StaticInjection}},
     generator_slack_participation_factors::Union{
         Nothing,
         Dict{Tuple{DataType, String}, Float64},
     } = nothing;
     skip_reactive::Bool = false,
 )
-    devices_ =
-        PSY.get_components(x -> _is_available_source(x, bus), PSY.StaticInjection, sys)
+    devices_ = _bus_sources(bus, bus_injectors)
     all_devices = devices_
 
     sources = filter(x -> x isa PSY.Source, collect(devices_))
@@ -70,7 +88,14 @@ function _power_redistribution_ref(
     if length(devices_) == 1
         device = first(devices_)
         PSY.set_active_power!(device, P_gen * PSY.SU)
-        skip_reactive || _reactive_power_redistribution_pv(sys, Q_gen, bus, max_iterations)
+        skip_reactive ||
+            _reactive_power_redistribution_pv(
+                sys,
+                Q_gen,
+                bus,
+                max_iterations,
+                bus_injectors,
+            )
         return
     elseif length(devices_) > 1
         devices =
@@ -91,6 +116,14 @@ function _power_redistribution_ref(
         else
             to_redistribute = P_gen - sum(PSY.get_active_power.(all_devices, (PSY.SU,)))
             sum_bus_gspf = sum(values(devices_gspf))
+            if iszero(sum_bus_gspf)
+                error(
+                    "Generator slack participation factors at REF bus $(PSY.get_name(bus)) " *
+                    "sum to zero across $(length(devices_gspf)) device(s) " *
+                    "($(join(PSY.get_name.(keys(devices_gspf)), ", "))); cannot absorb " *
+                    "$(to_redistribute) MW of slack with zero total participation.",
+                )
+            end
 
             for (device, factor) in devices_gspf
                 PSY.set_active_power!(
@@ -102,7 +135,9 @@ function _power_redistribution_ref(
                 )
             end
             skip_reactive ||
-                _reactive_power_redistribution_pv(sys, Q_gen, bus, max_iterations)
+                _reactive_power_redistribution_pv(
+                    sys, Q_gen, bus, max_iterations, bus_injectors,
+                )
             return
         end
     end
@@ -175,7 +210,8 @@ function _power_redistribution_ref(
             end
         end
     end
-    skip_reactive || _reactive_power_redistribution_pv(sys, Q_gen, bus, max_iterations)
+    skip_reactive ||
+        _reactive_power_redistribution_pv(sys, Q_gen, bus, max_iterations, bus_injectors)
     return
 end
 
@@ -185,10 +221,10 @@ function _reactive_power_redistribution_pv(
     Q_gen::Float64,
     bus::PSY.ACBus,
     max_iterations::Int,
+    bus_injectors::Dict{Int, Vector{PSY.StaticInjection}},
 )
     @debug "Reactive Power Distribution $(PSY.get_name(bus))"
-    devices_ =
-        PSY.get_components(x -> _is_available_source(x, bus), PSY.StaticInjection, sys)
+    devices_ = _bus_sources(bus, bus_injectors)
     sources = filter(x -> typeof(x) == PSY.Source, collect(devices_))
     non_source_devices = filter(x -> typeof(x) !== PSY.Source, collect(devices_))
     if length(sources) > 0 && length(non_source_devices) > 0
@@ -593,6 +629,51 @@ _set_group_interior_voltages!(
 ) = nothing
 
 """
+    _append_segment_entries!(entries, member, V_from, V_to, from_bus, nrd)
+
+Append `member`'s `BranchFlowEntry`(s) to `entries`, given the voltages at `member`'s own
+bus pair in `from_bus`-first orientation. Dispatches on `member`'s kind: a plain branch
+resolves directly; a nested parallel group recurses through [`_segment_group_flow_entries`](@ref).
+"""
+function _append_segment_entries!(
+    entries::Vector{BranchFlowEntry},
+    member::PSY.ACTransmission,
+    V_from::ComplexF64,
+    V_to::ComplexF64,
+    ::Int,
+    nrd::PNM.NetworkReductionData,
+)
+    push!(entries, _segment_flow_entry(member, V_from, V_to, nrd))
+    return entries
+end
+
+function _append_segment_entries!(
+    entries::Vector{BranchFlowEntry},
+    member::PNM.AbstractBranchesParallel,
+    V_from::ComplexF64,
+    V_to::ComplexF64,
+    from_bus::Int,
+    nrd::PNM.NetworkReductionData,
+)
+    append!(entries, _segment_group_flow_entries(member, V_from, V_to, from_bus, nrd))
+    return entries
+end
+
+function _append_segment_entries!(
+    ::Vector{BranchFlowEntry},
+    member::PNM.BranchesSeries,
+    ::ComplexF64,
+    ::ComplexF64,
+    ::Int,
+    ::PNM.NetworkReductionData,
+)
+    error(
+        "Series chain $(PNM.get_name(member)) is nested inside another series chain or " *
+        "group. Per-branch flow reporting cannot resolve its interior buses.",
+    )
+end
+
+"""
     _segment_group_flow_entries(group, V_from, V_to, from_bus, nrd)
 
 Per-branch `BranchFlowEntry`s for an aggregate that spans a single bus pair, given that
@@ -609,25 +690,12 @@ function _segment_group_flow_entries(
     entries = BranchFlowEntry[]
     for member in group
         (member_from, _) = PNM.get_arc_tuple(member, nrd)
-        (V_f, V_t) = member_from == from_bus ? (V_from, V_to) : (V_to, V_from)
-        if member isa PNM.BranchesSeries
-            # A chain has interior buses whose voltages are not on the reduced bus axis, so it
-            # cannot be evaluated from its endpoints alone. Reductions do not currently nest a
-            # chain inside a chain segment; erroring names the structure that changed rather
-            # than silently reporting a two-port flow for a multi-segment path.
-            error(
-                "Series chain $(PNM.get_name(member)) appears as a member of the group on " *
-                "arc $(PNM.get_arc_tuple(group, nrd)), which is nested inside another " *
-                "series chain. Per-branch flow reporting cannot resolve its interior buses.",
-            )
-        elseif member isa PNM.AbstractReductionAggregate
-            append!(
-                entries,
-                _segment_group_flow_entries(member, V_f, V_t, member_from, nrd),
-            )
+        if member_from == from_bus
+            (V_f, V_t) = (V_from, V_to)
         else
-            push!(entries, _segment_flow_entry(member, V_f, V_t, nrd))
+            (V_f, V_t) = (V_to, V_from)
         end
+        _append_segment_entries!(entries, member, V_f, V_t, member_from, nrd)
     end
     return entries
 end
@@ -712,20 +780,25 @@ function _compute_segment_flows(
     for (i, segment) in enumerate(arc_entry)
         (segment_from, segment_to) = PNM.get_arc_tuple(segment)
         reversed = segment_from != prev_bus_no
-        current_bus_no = reversed ? segment_from : segment_to
-        current_V = (i == length(arc_entry)) ? V_endpoints[2] : x[i]
-
-        (V_from, V_to) = reversed ? (current_V, prev_V) : (prev_V, current_V)
-        if segment isa PNM.AbstractReductionAggregate
-            # A chain segment can itself be a group of arcs resolved onto the same bus pair,
-            # whose members need not share the segment's orientation.
-            append!(
-                entries,
-                _segment_group_flow_entries(segment, V_from, V_to, segment_from, nrd),
-            )
+        if reversed
+            current_bus_no = segment_from
         else
-            push!(entries, _segment_flow_entry(segment, V_from, V_to, nrd))
+            current_bus_no = segment_to
         end
+        if i == length(arc_entry)
+            current_V = V_endpoints[2]
+        else
+            current_V = x[i]
+        end
+
+        if reversed
+            (V_from, V_to) = (current_V, prev_V)
+        else
+            (V_from, V_to) = (prev_V, current_V)
+        end
+        # A chain segment can itself be a group of arcs resolved onto the same bus pair,
+        # whose members need not share the segment's orientation.
+        _append_segment_entries!(entries, segment, V_from, V_to, segment_from, nrd)
 
         prev_bus_no = current_bus_no
         if i < length(arc_entry)
@@ -850,6 +923,7 @@ function write_power_flow_solution!(
     else
         get_computed_gspf(data)[time_step]
     end
+    bus_injectors = _build_bus_injector_map(sys)
 
     # once redistribution is working again, could remove skip_redistribution.
     bus_lookup = get_bus_lookup(data)
@@ -874,6 +948,7 @@ function write_power_flow_solution!(
                     Q_gen,
                     bus,
                     max_iterations,
+                    bus_injectors,
                     gspf,
                 )
             elseif bustype == PSY.ACBusTypes.PV
@@ -892,10 +967,13 @@ function write_power_flow_solution!(
                         Q_gen,
                         bus,
                         max_iterations,
+                        bus_injectors,
                         gspf,
                     )
                 elseif !pf.skip_redistribution
-                    _reactive_power_redistribution_pv(sys, Q_gen, bus, max_iterations)
+                    _reactive_power_redistribution_pv(
+                        sys, Q_gen, bus, max_iterations, bus_injectors,
+                    )
                 end
             elseif bustype == PSY.ACBusTypes.PQ
                 Vm = data.bus_magnitude[ix, time_step]
@@ -1016,6 +1094,7 @@ function write_power_flow_solution!(
     else
         gspf = get_computed_gspf(data)[time_step]
     end
+    bus_injectors = _build_bus_injector_map(sys)
     bus_lookup = get_bus_lookup(data)
     for (bus_number, reduced_buses) in PNM.get_bus_reduction_map(nrd)
         if !iszero(length(reduced_buses))
@@ -1047,6 +1126,7 @@ function write_power_flow_solution!(
                 Q_gen,
                 bus,
                 max_iterations,
+                bus_injectors,
                 gspf;
                 skip_reactive = true,
             )
@@ -1788,9 +1868,8 @@ function _distribute_arc_flows(
     ]
 end
 
-# Per-member DC flow = susceptance-ratio split (`m`) + circulating component `c` (zero on
-# non-shifted groups). `c` is per unit at system base, matching `P_from_to`/`P_to_from` at
-# this point in the pipeline (MW scaling happens later in `_allocate_results_data`).
+# Member shares (`m`, `c`) are computed in the group's own arc frame, so a member keyed the
+# other way (`arc_tuple != group_arc`) has its ft/tf shares swapped before being labeled.
 function _distribute_arc_flows(
     arc_entry::PNM.AbstractBranchesParallel,
     nrd::PNM.NetworkReductionData,
@@ -1801,42 +1880,21 @@ function _distribute_arc_flows(
     arc_P_losses::Float64,
 )
     entries = BranchFlowEntry[]
+    group_arc = PNM.get_arc_tuple(arc_entry, nrd)
     for br in arc_entry
         m = PNM.compute_parallel_multiplier(arc_entry, br)
         c = PNM.compute_parallel_circulating_flow(arc_entry, nrd, br)
         P_ft = P_from_to * m + c
         P_tf = P_to_from * m - c
-        if br isa PNM.AbstractReductionAggregate
-            # A member can be a whole series chain, which contributes one entry per segment
-            # once its share of the arc flow is known.
-            append!(
-                entries,
-                _distribute_arc_flows(
-                    br,
-                    nrd,
-                    P_ft,
-                    Q_from_to * m,
-                    P_tf,
-                    Q_to_from * m,
-                    arc_P_losses * m,
-                ),
-            )
-            continue
+        Q_ft = Q_from_to * m
+        Q_tf = Q_to_from * m
+        if PNM.get_arc_tuple(br, nrd) != group_arc
+            (P_ft, P_tf) = (P_tf, P_ft)
+            (Q_ft, Q_tf) = (Q_tf, Q_ft)
         end
-        arc_tuple = PNM.get_arc_tuple(br)
-        push!(
+        append!(
             entries,
-            BranchFlowEntry((
-                PNM.get_name(br),
-                arc_tuple[1],
-                arc_tuple[2],
-                P_ft,
-                P_tf,
-                arc_P_losses * m,
-                Q_from_to * m,
-                Q_to_from * m,
-                0.0,
-            )),
+            _distribute_arc_flows(br, nrd, P_ft, Q_ft, P_tf, Q_tf, arc_P_losses * m),
         )
     end
     return entries
@@ -2049,6 +2107,18 @@ function write_results(
         time_step = time_step,
     )
 
+    # Total withdrawal, not the constant-power bucket alone: switched shunts and
+    # StandardLoad's constant-current/impedance terms live in the ZIP withdrawal buckets and
+    # are otherwise left out of P_load/Q_load, though they are in the solved injections.
+    P_load_total = [
+        get_bus_active_power_total_withdrawals(data, ix, time_step) for
+        ix in eachindex(bus_numbers)
+    ]
+    Q_load_total = [
+        get_bus_reactive_power_total_withdrawals(data, ix, time_step) for
+        ix in eachindex(bus_numbers)
+    ]
+
     results = _allocate_results_data(
         data,
         flow_results,
@@ -2059,8 +2129,8 @@ function write_results(
         data.bus_angles[:, time_step],
         data.bus_active_power_injections[:, time_step],
         data.bus_reactive_power_injections[:, time_step],
-        data.bus_active_power_withdrawals[:, time_step],
-        data.bus_reactive_power_withdrawals[:, time_step],
+        P_load_total,
+        Q_load_total,
         time_step,
     )
     _add_vsc_results!(results, sys, data, PSY.get_base_power(sys), time_step)
@@ -2083,6 +2153,7 @@ function update_system!(sys::PSY.System, data::PowerFlowData; time_step = 1)
     if !isempty(PNM.get_reductions(nrd))
         error("update_system! does not support systems with network reductions.")
     end
+    bus_injectors = _build_bus_injector_map(sys)
     for bus in PSY.get_components(PSY.ACBus, sys)
         bus_index = get_bus_lookup(data)[PSY.get_number(bus)]
         bus_type = data.bus_type[bus_index, time_step]  # use this instead of bus.bustype to account for PV -> PQ
@@ -2096,6 +2167,7 @@ function update_system!(sys::PSY.System, data::PowerFlowData; time_step = 1)
                 Q_gen,
                 bus,
                 DEFAULT_MAX_REDISTRIBUTION_ITERATIONS,
+                bus_injectors,
             )
         elseif bus_type == PSY.ACBusTypes.PV
             # For PV bus, active and voltage are fixed; update reactive and angle
@@ -2105,6 +2177,7 @@ function update_system!(sys::PSY.System, data::PowerFlowData; time_step = 1)
                 Q_gen,
                 bus,
                 DEFAULT_MAX_REDISTRIBUTION_ITERATIONS,
+                bus_injectors,
             )
             PSY.set_angle!(bus, data.bus_angles[bus_index, time_step])
         elseif bus_type == PSY.ACBusTypes.PQ
@@ -2112,11 +2185,14 @@ function update_system!(sys::PSY.System, data::PowerFlowData; time_step = 1)
             Vm = data.bus_magnitude[bus_index, time_step]
             PSY.set_magnitude!(bus, Vm)
             PSY.set_angle!(bus, data.bus_angles[bus_index, time_step])
-            # if it used to be a PV bus, also set the Q value:
-            if bus.bustype == PSY.ACBusTypes.PV
+            # if it used to be a PV bus, also set the Q value -- unless correct_bustypes
+            # demoted it to PQ for having no available source, in which case there is no
+            # device left to redistribute reactive power onto.
+            if bus.bustype == PSY.ACBusTypes.PV &&
+               haskey(bus_injectors, PSY.get_number(bus))
                 Q_gen = data.bus_reactive_power_injections[bus_index, time_step]
                 _reactive_power_redistribution_pv(sys, Q_gen, bus,
-                    DEFAULT_MAX_REDISTRIBUTION_ITERATIONS)
+                    DEFAULT_MAX_REDISTRIBUTION_ITERATIONS, bus_injectors)
                 # now both the Q and the Vm, Va are correct for this kind of buses
             end
         end

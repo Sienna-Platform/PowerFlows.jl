@@ -40,12 +40,14 @@ function modify_rts_system!(sys::System)
     ref_bus = get_bus(sys, 113)  # "Arne"
     @assert get_bustype(ref_bus) == ACBusTypes.REF
     # NOTE: we are not testing the correctness of _power_redistribution_ref here, it is used on both sides of the test
+    bus_injectors = PF._build_bus_injector_map(sys)
     PF._power_redistribution_ref(
         sys,
         2.4375,
         0.1875,
         ref_bus,
         PF.DEFAULT_MAX_REDISTRIBUTION_ITERATIONS,
+        bus_injectors,
     )
 
     # For PV bus, active and voltage are fixed; update reactive and angle
@@ -56,6 +58,7 @@ function modify_rts_system!(sys::System)
         0.37267,
         pv_bus,
         PF.DEFAULT_MAX_REDISTRIBUTION_ITERATIONS,
+        bus_injectors,
     )
     set_angle!(pv_bus, -0.13778)
 
@@ -483,7 +486,7 @@ function _add_simple_lcc!(
         arc = Arc(bus1, bus2),
         active_power_flow = 0.0,
         r = r,
-        transfer_setpoint = 50,
+        transfer_setpoint = 0.5,  # 50 MW
         scheduled_dc_voltage = 800.0,
         rectifier_bridges = 1,
         rectifier_delay_angle_limits = (min = 0.0, max = π / 2),
@@ -1292,7 +1295,7 @@ end
 
 # ── Shared VSC test builders ────────────────────────────────────────────────────────────────────
 
-const VSC_SETTINGS = Dict{Symbol, Any}(:model_dc_network => true)
+const VSC_SOLUTION_PARAMETERS = SolutionParameters(; model_dc_network = true)
 
 # One point-to-point VSC line between the first two PQ buses of c_sys14: from = DC-voltage control
 # (DC slack), to = (P, Q) control. Extra `TwoTerminalVSCLine` fields pass through `vsc_kwargs...`
@@ -1642,10 +1645,7 @@ solve still converged. Returns the captured log records.
 Deliberately does NOT assert WHICH area is de-enrolled first or how many are: the greedy rule
 picks `findmax(abs, gaps)` at a NON-CONVERGED iterate, where gaps measure divergence, not
 infeasibility -- a feasible area can show the larger gap (Area2 at 0.3 pu measured 54.0 vs
-Area3's 49.3). Pinning the order is what made these tests platform-dependent.
-`collect_test_logs` rather than `@test_logs`: ReTest has no
-`record(::ReTestSet, ::Test.LogTestFailure)`, so a `@test_logs` failure surfaces as an opaque
-MethodError instead of naming the unmatched pattern."""
+Area3's 49.3). Pinning the order is what made these tests platform-dependent."""
 function _assert_schedule_relaxed(data, area_name::String; time_step::Int = 1)
     logs, converged = Test.collect_test_logs(; min_level = Logging.Warn) do
         solve_power_flow!(data)

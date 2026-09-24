@@ -84,11 +84,21 @@ end
 # `solved_admittance` replaces the engaged blocks; it is a pure susceptance.
 _switched_admittance(solved::Float64, ::Vector{Int}, ::Vector{Complex{Float64}}) =
     im * solved
-_switched_admittance(
+# PSY defaults `number_engaged` to `Int[]` regardless of block count; that alone is legal (0 engaged).
+function _switched_admittance(
     ::Nothing,
     engaged::Vector{Int},
     y_increase::Vector{Complex{Float64}},
-) = sum(engaged .* y_increase; init = 0.0 + 0.0im)
+)
+    isempty(engaged) && return 0.0 + 0.0im
+    length(engaged) == length(y_increase) || throw(
+        DimensionMismatch(
+            "SwitchedAdmittance has $(length(y_increase)) blocks but " *
+            "number_engaged has $(length(engaged)) entries.",
+        ),
+    )
+    return sum(engaged .* y_increase; init = 0.0 + 0.0im)
+end
 
 function _get_withdrawals!(
     pf::PowerFlowEvaluationModel,

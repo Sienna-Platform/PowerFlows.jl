@@ -20,17 +20,6 @@ function _tie_test_context(sys::PSY.System, area_tail::Dict{String, Int})
     )
 end
 
-function _find_tie(ties::Vector{PF.AreaTie}, fix::Int, tix::Int)
-    return only(
-        filter(
-            tie ->
-                (tie.from_bus_ix == fix && tie.to_bus_ix == tix) ||
-                    (tie.from_bus_ix == tix && tie.to_bus_ix == fix),
-            ties,
-        ),
-    )
-end
-
 @testset "area interchange tie enumeration" begin
     sys = _make_two_area_system()
     ctx = _tie_test_context(sys, Dict("Area1" => 1, "Area2" => 2))
@@ -328,59 +317,6 @@ end
     @test A[f, t] == A.nzval[o[2]]
     @test A[t, f] == A.nzval[o[3]]
     @test A[t, t] == A.nzval[o[4]]
-end
-
-_set_slack!(sys, bus_name) =
-    PSY.set_bustype!(PSY.get_component(PSY.ACBus, sys, bus_name), PSY.ACBusTypes.SLACK)
-
-function _add_area_interchange!(
-    sys,
-    from_name::String,
-    to_name::String,
-    flow::Float64;
-    name::String = "$(from_name)_$(to_name)",
-)
-    PSY.add_component!(
-        sys,
-        PSY.AreaInterchange(;
-            name = name,
-            available = true,
-            active_power_flow = flow,
-            from_area = PSY.get_component(PSY.Area, sys, from_name),
-            to_area = PSY.get_component(PSY.Area, sys, to_name),
-            flow_limits = (from_to = 0.0, to_from = 0.0),
-        ),
-    )
-    return
-end
-
-# Shared by the rule-9 (unenforceable-schedule) and happy-path tests. Area1 owns REF,
-# never SLACK; Area2/Area3 can each
-# optionally hold SLACK (Area3's Bus 9 has a small gen so it's PV-eligible). AreaInterchange:
-# Area2->Area1 0.3, Area3->Area1 0.2 => pdes(Area1)=-0.5, pdes(Area2)=0.3, pdes(Area3)=0.2.
-function _three_area_transfer_fixture(; slack_area3::Bool = true)
-    sys = _make_three_area_system()
-    bus9 = PSY.get_component(PSY.ACBus, sys, "Bus 9")
-    gen9 = PSY.ThermalStandard(;
-        name = "Bus9Gen",
-        available = true,
-        status = PSY.OperationalStates.ONLINE,
-        bus = bus9,
-        active_power = 0.1,
-        reactive_power = 0.0,
-        rating = 1.0,
-        active_power_limits = (min = 0.0, max = 1.0),
-        reactive_power_limits = (min = -1.0, max = 1.0),
-        ramp_limits = nothing,
-        operation_cost = PSY.ThermalGenerationCost(nothing),
-        base_power = 100.0,
-    )
-    PSY.add_component!(sys, gen9)
-    _set_slack!(sys, "Bus 6")
-    slack_area3 && _set_slack!(sys, "Bus 9")
-    _add_area_interchange!(sys, "Area2", "Area1", 0.3; name = "A2_A1")
-    _add_area_interchange!(sys, "Area3", "Area1", 0.2; name = "A3_A1")
-    return sys
 end
 
 @testset "area interchange enrollment rule 1 multiple SLACK buses" begin
