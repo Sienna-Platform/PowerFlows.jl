@@ -2555,8 +2555,14 @@ function _vsc_export_dcset(
     end
     if dc_control == PSY.VSCDCControlModes.DC_VOLTAGE
         vdc_base = PSY.get_rated_dc_voltage(vscline)
-        iszero(vdc_base) && return dc_setpoint
-        return dc_setpoint * vdc_base
+        dcset = iszero(vdc_base) ? dc_setpoint : dc_setpoint * vdc_base
+        if iszero(dcset)
+            @warn "VSC line $(PSY.get_name(vscline)): the $(side) converter controls DC " *
+                  "voltage with no DC voltage reference (rated_dc_voltage and its setpoint " *
+                  "are both 0), so DCSET is written as 0 kV; PSS/E cannot solve the line " *
+                  "and the parser rejects it on import"
+        end
+        return dcset
     end
     return dc_setpoint * base_power
 end

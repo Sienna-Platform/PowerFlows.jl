@@ -1228,6 +1228,34 @@ end
     @test PSY.get_dc_setpoint_to(vsc2) > 0.0
 end
 
+@testset "PSSE Exporter: a VSC line with no DC voltage reference warns" begin
+    # A TYPE 1 converter's DCSET is the DC voltage base of the whole record; writing 0 kV
+    # produces a RAW file PSS/E cannot solve and the parser rejects, so the exporter says so.
+    sys = System(100.0)
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230.0)
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.PQ, 230.0)
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    _add_simple_load!(sys, b2, 0.0, 0.0)
+    vsc = _add_simple_vsc!(sys, b1, b2; active_power_flow = 0.2)
+    PSY.set_dc_control_from!(vsc, PSY.VSCDCControlModes.DC_VOLTAGE)
+    @test iszero(PSY.get_rated_dc_voltage(vsc)) && iszero(PSY.get_dc_setpoint_from(vsc))
+
+    export_location = joinpath(test_psse_export_dir, "v35", "vsc_no_dc_reference")
+    exporter = PSSEExporter(sys, :v35, export_location; overwrite = true)
+    @test_logs (:warn, r"VSC_1_2.*DC voltage") match_mode = :any write_export(
+        exporter, "vsc_no_dc_reference"; overwrite = true,
+    )
+
+    # A real reference exports without that warning.
+    PSY.set_rated_dc_voltage!(vsc, 400.0)
+    PSY.set_dc_setpoint_from!(vsc, 1.0)
+    update_exporter!(exporter, sys)
+    logs, _ = Test.collect_test_logs() do
+        write_export(exporter, "vsc_dc_reference"; overwrite = true)
+    end
+    @test !any(occursin(r"DC voltage", record.message) for record in logs)
+end
+
 @testset "PSSE Exporter: switching-device RATE1 round-trips in MVA" begin
     # RATE1 is in MVA like every other PSS/E rating: the parser copies it verbatim as MVA
     # and PowerSystems divides by the base on import, so a 12.06 CU rating exports as 1206.0.
