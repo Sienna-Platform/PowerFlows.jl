@@ -42,7 +42,7 @@ system rejects them) and the `FDDecoupled`-is-polar-only constraint is enforced 
 """
 function _validate_fd_handoff_solver(handoff_solver)
     if !(
-        handoff_solver === nothing ||
+        handoff_solver === NoHandoff ||
         handoff_solver === NewtonRaphsonACPowerFlow ||
         handoff_solver === TrustRegionACPowerFlow ||
         handoff_solver === LevenbergMarquardtACPowerFlow
@@ -50,7 +50,7 @@ function _validate_fd_handoff_solver(handoff_solver)
         throw(
             ArgumentError(
                 "FastDecoupled: unsupported handoff_solver $(handoff_solver). Must be " *
-                "nothing (pure FD), NewtonRaphsonACPowerFlow, TrustRegionACPowerFlow, or " *
+                "NoHandoff (pure FD), NewtonRaphsonACPowerFlow, TrustRegionACPowerFlow, or " *
                 "LevenbergMarquardtACPowerFlow.",
             ),
         )
@@ -72,7 +72,7 @@ function _newton_power_flow(
     time_step::Int64;
     tol = DEFAULT_NR_TOL,
     maxIterations = DEFAULT_FD_MAX_ITER,
-    handoff_solver = nothing,
+    handoff_solver = NoHandoff,
     handoff_tol = DEFAULT_FD_HANDOFF_TOL,
     refreeze_on_stall = DEFAULT_FD_REFREEZE_ON_STALL,
     fd_non_divergent = DEFAULT_FD_NON_DIVERGENT,
@@ -277,9 +277,15 @@ _fd_v_state_indices(::ACMixedCPBResidual) = Int[]
 # =====================================================================================
 
 """The FD-stage exit tolerance: the loose `handoff_tol` when a handoff will polish the result to
-the real `tol`, else `tol` itself (pure FD)."""
-_fd_stage_tol(handoff_solver, tol, handoff_tol) =
-    handoff_solver === nothing ? tol : handoff_tol
+the real `tol`, else `tol` itself (pure FD). Dispatches on `handoff_solver` (a `Type`) rather
+than branching on an `isnothing`/`===` check."""
+_fd_stage_tol(::Type{NoHandoff}, tol, handoff_tol) = tol
+_fd_stage_tol(::Type{<:ACPowerFlowSolverType}, tol, handoff_tol) = handoff_tol
+
+"""Whether a configured [`FastDecoupledACPowerFlow`](@ref) handoff solver requires the
+formulation Jacobian to be assembled (the :decoupled loop otherwise skips it)."""
+_fd_needs_handoff_jacobian(::Type{NoHandoff}) = false
+_fd_needs_handoff_jacobian(::Type{<:ACPowerFlowSolverType}) = true
 
 # The `Jv` argument for `_finalize_power_flow`: the assembled Jacobian values when the :decoupled
 # driver built `J`, or `nothing` when it skipped it (no handoff, no loss/vstab factors).
@@ -287,14 +293,15 @@ _fd_finalize_jv(::Nothing) = nothing
 _fd_finalize_jv(J) = J.Jv
 
 """
-    _fd_maybe_handoff!(pf, sv, residual, J, time_step, handoff_solver, tol, linear_solver,
+    _fd_maybe_handoff!(handoff_solver, pf, sv, residual, J, time_step, tol, linear_solver,
                        solver_name, fd_iters) -> (converged::Bool, handoff_iters::Int)
 
 Run the opt-in handoff solver (`NewtonRaphsonACPowerFlow` / `TrustRegionACPowerFlow` /
 `LevenbergMarquardtACPowerFlow`) from the current FD state `sv.x` for final refinement to the
-real `tol`. No-op (returns the current convergence status and `0` handoff iterations) when
-`handoff_solver === nothing` or the FD state already meets `tol`. Otherwise refreshes the
-formulation Jacobian VALUES at the current FD state and calls the matching inner method:
+real `tol`. Dispatches on `handoff_solver` (a `Type`): the [`NoHandoff`](@ref) method is a no-op
+(returns the current convergence status and `0` handoff iterations); the general
+`ACPowerFlowSolverType` method also no-ops when the FD state already meets `tol`, else refreshes
+the formulation Jacobian VALUES at the current FD state and calls the matching inner method:
 NR/TR via the shared `_run_power_flow_method(::StateVectorCache, ::PFLinearSolverCache, ...)`;
 LM via its workspace-based `_run_power_flow_method(x0::Vector, ::LMWorkspace, ...)` adapter.
 All paths mutate `sv.x` / `residual` / `J` in place (the SAME objects the FD loop used), so the
@@ -302,28 +309,39 @@ caller's subsequent `J(time_step)` / `_finalize_*` see the refined solution. `fd
 `solver_name` are used only for the `@info` handoff log line.
 """
 function _fd_maybe_handoff!(
+    ::Type{NoHandoff},
     pf::AbstractACPowerFlow{<:FastDecoupledACPowerFlow},
     sv::StateVectorCache,
     residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
     J::Union{Nothing, ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
     time_step::Int64,
-    handoff_solver,
     tol::Float64,
     linear_solver::Union{Nothing, AbstractString},
     solver_name::String,
     fd_iters::Int,
 )
-    # `J === nothing` only when `handoff_solver === nothing` (the :decoupled driver builds `J`
-    # whenever a handoff is configured), so the early return below fires before any `J` deref.
+    return (norm(residual.Rv, Inf) < tol, 0)
+end
+
+function _fd_maybe_handoff!(
+    handoff_solver::Type{<:ACPowerFlowSolverType},
+    pf::AbstractACPowerFlow{<:FastDecoupledACPowerFlow},
+    sv::StateVectorCache,
+    residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
+    J::Union{Nothing, ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
+    time_step::Int64,
+    tol::Float64,
+    linear_solver::Union{Nothing, AbstractString},
+    solver_name::String,
+    fd_iters::Int,
+)
     fd_met_tol = norm(residual.Rv, Inf) < tol
-    if handoff_solver === nothing || fd_met_tol
-        return (fd_met_tol, 0)
-    end
+    fd_met_tol && return (fd_met_tol, 0)
     J(time_step)                                  # refresh Jacobian VALUES at current FD state
     if handoff_solver === LevenbergMarquardtACPowerFlow
         # LM's inner method takes the raw state vector + an LMWorkspace (a different signature
         # from NR/TR) and mutates x0 in place; see src/levenberg-marquardt.jl.
-        ws = LMWorkspace(J.Jv; marquardt_scaling = _default_marquardt_scaling(pf))
+        ws = LMWorkspace(J.Jv; marquardt_scaling = _default_marquardt_scaling(typeof(pf)))
         converged, i2 = _run_power_flow_method(
             time_step, sv.x, residual, J, ws;
             tol, maxIterations = DEFAULT_NR_MAX_ITER, λ_0 = DEFAULT_λ_0,
@@ -340,6 +358,80 @@ function _fd_maybe_handoff!(
     @info "$solver_name: FD stage $fd_iters iters → handoff $(handoff_solver) " *
           "$(converged ? "converged" : "did NOT converge") in $i2 iters."
     return (converged, i2)
+end
+
+# Factor-once caching for the `:fixed_jacobian` loop: reuse the symbolic factorization across
+# solves whose frozen Jacobian has the same sparsity pattern; rebuild on any pattern change
+# (area-interchange relax, LCC state, or a bus-type switch all can move it).
+
+"""
+    FDJCacheKey
+
+Invalidation key for an [`FDFixedJacobianCache`](@ref): network identity and linear-solver
+backend. The Jacobian pattern itself is checked separately, against the cache's stored
+`colptr`/`rowval`.
+"""
+struct FDJCacheKey
+    ybus_id::UInt
+    backend_id::DataType
+end
+
+"""
+    FDFixedJacobianCache <: SolverCache
+
+Holds the last frozen Jacobian's sparsity pattern (`colptr`, `rowval`, size) and its factored
+[`PFLinearSolverCache`](@ref). `factor_count` counts full factorizations, for testability.
+"""
+mutable struct FDFixedJacobianCache <: SolverCache
+    key::FDJCacheKey
+    colptr::Vector{J_INDEX_TYPE}
+    rowval::Vector{J_INDEX_TYPE}
+    m::Int
+    n::Int
+    linear_cache::PFLinearSolverCache
+    factor_count::Int
+end
+
+# Same (key, pattern) ⇒ reuse: refresh the frozen values in place and return the existing cache.
+# Anything else (no cache yet, a different network/backend, or a pattern change) rebuilds.
+function _get_or_build_fdj_cache!(
+    ::Nothing,
+    data::ACPowerFlowData,
+    key::FDJCacheKey,
+    backend,
+    Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
+)
+    return _build_fdj_cache!(data, key, backend, Jv)
+end
+
+function _get_or_build_fdj_cache!(
+    cache::FDFixedJacobianCache,
+    data::ACPowerFlowData,
+    key::FDJCacheKey,
+    backend,
+    Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
+)
+    if cache.key == key && _same_sparsity(cache, Jv)
+        numeric_refactor!(cache.linear_cache, Jv)
+        return cache
+    else
+        return _build_fdj_cache!(data, key, backend, Jv)
+    end
+end
+
+function _build_fdj_cache!(
+    data::ACPowerFlowData,
+    key::FDJCacheKey,
+    backend,
+    Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
+)
+    lcache = make_linear_solver_cache(backend, Jv)
+    full_factor!(lcache, Jv)
+    cache = FDFixedJacobianCache(
+        key, copy(Jv.colptr), copy(Jv.rowval), size(Jv, 1), size(Jv, 2), lcache, 1,
+    )
+    data.solver_cache[] = cache
+    return cache
 end
 
 """
@@ -363,7 +455,7 @@ function _fd_fixed_jacobian_power_flow(
     fd_vm_abort::Float64 = DEFAULT_FD_VM_ABORT,
     fd_ndvfct::Float64 = DEFAULT_FD_NDVFCT,
     fd_max_step_halvings::Int = DEFAULT_FD_MAX_STEP_HALVINGS,
-    handoff_solver = nothing,
+    handoff_solver = NoHandoff,
     handoff_tol::Float64 = DEFAULT_FD_HANDOFF_TOL,
     validate_voltage_magnitudes::Bool = DEFAULT_VALIDATE_VOLTAGES,
     vm_validation_range::MinMax = DEFAULT_VALIDATION_RANGE,
@@ -399,8 +491,12 @@ function _fd_fixed_jacobian_power_flow(
         # constructors do not, so call it here unconditionally (cheap, once).
         J(time_step)
         backend = resolve_linear_solver_backend(linear_solver)
-        cache = make_linear_solver_cache(backend, J.Jv)
-        full_factor!(cache, J.Jv)                       # factor the frozen J ONCE
+        # Reuse the frozen Jacobian's symbolic factorization when its pattern is unchanged; see
+        # `FDFixedJacobianCache`.
+        fdj_key = FDJCacheKey(objectid(data.power_network_matrix), typeof(backend))
+        fdj_cache =
+            _get_or_build_fdj_cache!(data.solver_cache[], data, fdj_key, backend, J.Jv)
+        cache = fdj_cache.linear_cache
 
         sv = StateVectorCache(x0_init, residual.Rv)
         v_state_idx = _fd_v_state_indices(residual)
@@ -519,7 +615,7 @@ function _fd_fixed_jacobian_power_flow(
         # handoff is disabled or the FD state already met `tol`. Threads handoff iters into
         # the reported count so finalize happens ONCE, on the refined state.
         converged, i2 = _fd_maybe_handoff!(
-            pf, sv, residual, J, time_step, handoff_solver, tol, linear_solver,
+            handoff_solver, pf, sv, residual, J, time_step, tol, linear_solver,
             solver_name,
             i,
         )
@@ -1091,7 +1187,7 @@ half-steps with an exact residual re-evaluation after EACH half-step (the mid-cy
 prevents convergence cycling — do NOT skip it). Shared WP2 safeguards
 (non-divergent backtracking with best-state restore, BLOWUP, DVLIM, V≈0 abort) protect the
 documented FD failure modes. The FD stage converges on `‖Rv‖∞ < stage_tol`, where `stage_tol`
-is the real `tol` for pure FD (`handoff_solver === nothing`) or the loose `handoff_tol` when an
+is the real `tol` for pure FD (`handoff_solver === NoHandoff`) or the loose `handoff_tol` when an
 opt-in handoff (WP4) is configured — the handoff then refines to the real `tol`
 (`_fd_maybe_handoff!`).
 
@@ -1115,7 +1211,7 @@ function _fd_decoupled_power_flow(
     fd_vm_abort::Float64 = DEFAULT_FD_VM_ABORT,
     fd_ndvfct::Float64 = DEFAULT_FD_NDVFCT,
     fd_max_step_halvings::Int = DEFAULT_FD_MAX_STEP_HALVINGS,
-    handoff_solver = nothing,
+    handoff_solver = NoHandoff,
     handoff_tol::Float64 = DEFAULT_FD_HANDOFF_TOL,
     validate_voltage_magnitudes::Bool = DEFAULT_VALIDATE_VOLTAGES,
     vm_validation_range::MinMax = DEFAULT_VALIDATION_RANGE,
@@ -1138,7 +1234,7 @@ function _fd_decoupled_power_flow(
     # voltage-stability factors — otherwise skip the full sparse-Jacobian allocation + evaluation
     # entirely (a per-solve, per-time-step saving; see `_initialize_residual_x0`).
     need_jacobian =
-        handoff_solver !== nothing ||
+        _fd_needs_handoff_jacobian(handoff_solver) ||
         get_calculate_loss_factors(data) ||
         get_calculate_voltage_stability_factors(data)
     if need_jacobian
@@ -1368,7 +1464,7 @@ function _fd_decoupled_power_flow(
     # is disabled or the FD state already met `tol`. Threads handoff iters into the reported
     # count so finalize happens ONCE, on the refined state.
     converged, handoff_iters = _fd_maybe_handoff!(
-        pf, sv, residual, J, time_step, handoff_solver, tol, linear_solver, solver_name,
+        handoff_solver, pf, sv, residual, J, time_step, tol, linear_solver, solver_name,
         i,
     )
     i += handoff_iters

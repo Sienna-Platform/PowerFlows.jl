@@ -222,11 +222,14 @@ Works with both the polar ([`ACPolarPowerFlow`](@ref)) and rectangular
 current-injection ([`ACRectangularPowerFlow`](@ref)) formulations.
 
 Marquardt diagonal column scaling (`√λ·D` damping instead of `√λ·I`) can be
-toggled via `SolutionParameters(; marquardt_scaling = true|false)`. When
-unset it defaults **on** for [`ACRectangularPowerFlow`](@ref) — whose state
-columns `(e, f, Q, P_gen)` are differently scaled, so identity damping is
-ill-conditioned — and **off** for [`ACPolarPowerFlow`](@ref), leaving the polar
-solver numerically unchanged.
+toggled via the `marquardt_scaling` keyword on the formulation constructor
+(e.g. `ACRectangularPowerFlow(; marquardt_scaling = true|false)`), which is
+folded into the stored `SolutionParameters`. Left unset, each formulation
+constructor resolves its own default via `_default_marquardt_scaling`: **on**
+for [`ACRectangularPowerFlow`](@ref) — whose state columns `(e, f, Q, P_gen)`
+are differently scaled, so identity damping is ill-conditioned — and **off**
+for [`ACPolarPowerFlow`](@ref)/[`ACMixedPowerFlow`](@ref), leaving those
+solvers numerically unchanged.
 
 See also: [`ACPowerFlow`](@ref).
 """
@@ -308,6 +311,21 @@ See also: [`ACPowerFlow`](@ref), [`NewtonRaphsonACPowerFlow`](@ref).
 """
 struct FastDecoupledACPowerFlow{V <: FDVariant, S <: FDScheme} <: ACPowerFlowSolverType end
 
+"""The `SolutionParameters` `maxIterations` default for `ACSolver`, resolved by the
+formulation constructors when the caller leaves it at [`UNSET_MAX_ITERATIONS`](@ref)."""
+_default_max_iterations(::Type{<:ACPowerFlowSolverType}) = DEFAULT_NR_MAX_ITER
+_default_max_iterations(::Type{<:FastDecoupledACPowerFlow}) = DEFAULT_FD_MAX_ITER
+
+"""`params.maxIterations`, resolving `UNSET_MAX_ITERATIONS` to `ACSolver`'s default. An
+explicit value is kept as-is."""
+function _resolved_max_iterations(
+    params::SolutionParameters,
+    ::Type{ACSolver},
+) where {ACSolver <: ACPowerFlowSolverType}
+    params.maxIterations == UNSET_MAX_ITERATIONS || return params.maxIterations
+    return _default_max_iterations(ACSolver)
+end
+
 """Alias for the classic decoupled fast power flow with the XB scheme,
 [`FastDecoupledACPowerFlow`](@ref)`{`[`FDDecoupled`](@ref)`, `[`FDSchemeXB`](@ref)`}`. Use as a
 solver type parameter, e.g. `ACPowerFlow{FastDecoupledXB}()`."""
@@ -372,8 +390,6 @@ with the specified solver type.
     `check_reactive_power_limits`, `enhanced_flat_start`, `control_discrete_devices`,
     `area_interchange_control`, `interchange_tolerance` and `tie_definition`, which remain
     accepted as keywords here and are folded into the stored parameters.
-- `solver_settings::AbstractDict`: **Deprecated.** The untyped predecessor of
-    `solution_parameters`; entries naming a parameter are still applied.
 """
 struct ACPolarPowerFlow{ACSolver <: ACPowerFlowSolverType} <: AbstractACPowerFlow{ACSolver}
     exporter::Union{Nothing, PowerFlowEvaluationModel}
@@ -451,15 +467,14 @@ function ACPolarPowerFlow{ACSolver}(;
     area_interchange_control::Union{Nothing, Bool} = nothing,
     interchange_tolerance::Union{Nothing, Float64} = nothing,
     tie_definition::Union{Nothing, Symbol} = nothing,
+    marquardt_scaling::Union{Nothing, Bool} = nothing,
     solution_parameters::SolutionParameters = SolutionParameters(),
-    solver_settings::Union{Nothing, AbstractDict} = nothing,
 ) where {ACSolver <: ACPowerFlowSolverType}
     if calculate_loss_factors && ACSolver == LevenbergMarquardtACPowerFlow
         error("Loss factor calculation is not supported by the Levenberg-Marquardt solver.")
     end
-    params = _fold_legacy_parameters(
-        solution_parameters,
-        solver_settings;
+    params = _apply_legacy_kwargs(
+        solution_parameters;
         check_reactive_power_limits,
         enhanced_flat_start,
         control_discrete_devices,
@@ -483,6 +498,10 @@ function ACPolarPowerFlow{ACSolver}(;
             params.interchange_tolerance,
             params.tie_definition,
         ),
+        marquardt_scaling = something(
+            marquardt_scaling, _default_marquardt_scaling(ACPolarPowerFlow),
+        ),
+        maxIterations = _resolved_max_iterations(params, ACSolver),
     )
     return ACPolarPowerFlow{ACSolver}(
         exporter,
@@ -598,7 +617,6 @@ polar state layout and have no current-injection equivalent.
     passing `true` throws `ArgumentError`. Default `false`.
 - `solution_parameters::SolutionParameters`: The solve parameters; see
     [`SolutionParameters`](@ref).
-- `solver_settings::AbstractDict`: **Deprecated**, superseded by `solution_parameters`.
 """
 struct ACRectangularPowerFlow{ACSolver <: ACPowerFlowSolverType} <:
        AbstractACPowerFlow{ACSolver}
@@ -638,8 +656,8 @@ function ACRectangularPowerFlow{ACSolver}(;
     area_interchange_control::Union{Nothing, Bool} = nothing,
     interchange_tolerance::Union{Nothing, Float64} = nothing,
     tie_definition::Union{Nothing, Symbol} = nothing,
+    marquardt_scaling::Union{Nothing, Bool} = nothing,
     solution_parameters::SolutionParameters = SolutionParameters(),
-    solver_settings::Union{Nothing, AbstractDict} = nothing,
 ) where {ACSolver <: ACPowerFlowSolverType}
     if ACSolver <: Union{
         RobustHomotopyPowerFlow,
@@ -656,9 +674,8 @@ function ACRectangularPowerFlow{ACSolver}(;
         )
     end
     _reject_fd_decoupled_on_nonpolar(ACSolver, "ACRectangularPowerFlow")
-    params = _fold_legacy_parameters(
-        solution_parameters,
-        solver_settings;
+    params = _apply_legacy_kwargs(
+        solution_parameters;
         check_reactive_power_limits,
         enhanced_flat_start,
         control_discrete_devices,
@@ -676,6 +693,13 @@ function ACRectangularPowerFlow{ACSolver}(;
         time_steps,
     )
     _validate_discrete_control_settings(params.control_discrete_devices, ACSolver)
+    params = _override(
+        params;
+        marquardt_scaling = something(
+            marquardt_scaling, _default_marquardt_scaling(ACRectangularPowerFlow),
+        ),
+        maxIterations = _resolved_max_iterations(params, ACSolver),
+    )
     return ACRectangularPowerFlow{ACSolver}(
         exporter,
         generator_slack_participation_factors,
@@ -733,7 +757,6 @@ polar state layout and have no mixed current-power equivalent.
     passing `true` throws `ArgumentError`. Default `false`.
 - `solution_parameters::SolutionParameters`: The solve parameters; see
     [`SolutionParameters`](@ref).
-- `solver_settings::AbstractDict`: **Deprecated**, superseded by `solution_parameters`.
 """
 struct ACMixedPowerFlow{ACSolver <: ACPowerFlowSolverType} <:
        AbstractACPowerFlow{ACSolver}
@@ -773,8 +796,8 @@ function ACMixedPowerFlow{ACSolver}(;
     area_interchange_control::Union{Nothing, Bool} = nothing,
     interchange_tolerance::Union{Nothing, Float64} = nothing,
     tie_definition::Union{Nothing, Symbol} = nothing,
+    marquardt_scaling::Union{Nothing, Bool} = nothing,
     solution_parameters::SolutionParameters = SolutionParameters(),
-    solver_settings::Union{Nothing, AbstractDict} = nothing,
 ) where {ACSolver <: ACPowerFlowSolverType}
     if ACSolver <: Union{
         RobustHomotopyPowerFlow,
@@ -792,9 +815,8 @@ function ACMixedPowerFlow{ACSolver}(;
         )
     end
     _reject_fd_decoupled_on_nonpolar(ACSolver, "ACMixedPowerFlow")
-    params = _fold_legacy_parameters(
-        solution_parameters,
-        solver_settings;
+    params = _apply_legacy_kwargs(
+        solution_parameters;
         check_reactive_power_limits,
         enhanced_flat_start,
         control_discrete_devices,
@@ -812,6 +834,13 @@ function ACMixedPowerFlow{ACSolver}(;
         time_steps,
     )
     _validate_discrete_control_settings(params.control_discrete_devices, ACSolver)
+    params = _override(
+        params;
+        marquardt_scaling = something(
+            marquardt_scaling, _default_marquardt_scaling(ACMixedPowerFlow),
+        ),
+        maxIterations = _resolved_max_iterations(params, ACSolver),
+    )
     return ACMixedPowerFlow{ACSolver}(
         exporter,
         generator_slack_participation_factors,

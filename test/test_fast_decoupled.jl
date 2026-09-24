@@ -43,7 +43,7 @@ end
 @testset "FastDecoupled WP0: settings validation" begin
     # The variant/scheme are now FastDecoupledACPowerFlow type parameters, so invalid values are
     # unrepresentable. Only the handoff solver still needs runtime validation.
-    @test PF._validate_fd_handoff_solver(nothing) === nothing
+    @test PF._validate_fd_handoff_solver(PF.NoHandoff) === nothing
     @test PF._validate_fd_handoff_solver(NewtonRaphsonACPowerFlow) === nothing
     @test PF._validate_fd_handoff_solver(TrustRegionACPowerFlow) === nothing
     @test PF._validate_fd_handoff_solver(LevenbergMarquardtACPowerFlow) === nothing
@@ -331,6 +331,126 @@ end
     @test norm(Matrix(PF._restamp_ybus(p)) - Yb) / norm(Yb) <= 1e-4
 end
 
+# An r=x=0 transformer. ZeroImpedanceBranchReduction excludes transformer arcs, so this
+# arc reaches Ybus assembly with a literal 0+0j impedance; PNM substitutes its own configured
+# `minimum_retained_impedance` (never a hard-coded default) before FD ever reads it. Regression
+# for the `1/complex(0,0)` NaN this used to produce.
+function _zero_impedance_transformer_system()
+    sys = PSY.System(100.0)
+    b1 = _add_simple_bus!(sys, 1, PSY.ACBusTypes.REF, 230.0, 1.0, 0.0)
+    b2 = _add_simple_bus!(sys, 2, PSY.ACBusTypes.PV, 230.0, 1.0, 0.0)
+    b3 = _add_simple_bus!(sys, 3, PSY.ACBusTypes.PQ, 230.0, 1.0, 0.0)
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    _add_simple_thermal_standard!(sys, b2, 0.3, 0.0)
+    _add_simple_load!(sys, b3, 15.0, 6.0)
+    _add_simple_line!(sys, b1, b2, 0.01, 0.10, 0.05)
+    tx = PSY.TwoWindingTransformer(;
+        name = "zero_z_2_3",
+        circuit = PSY.TransformerCircuit(;
+            available = true,
+            arc = PSY.Arc(; from = b2, to = b3),
+            r = 0.0,
+            x = 0.0,
+            tap = 1.0,
+            α = 0.0,
+            rating = 2.0,
+            base_power = 100.0,
+        ),
+    )
+    add_component!(sys, tx)
+    return sys
+end
+
+@testset "FastDecoupled WP1: zero-impedance transformer, no NaN" begin
+    # `network_reductions = nothing` (default `minimum_retained_impedance`) and an explicit,
+    # NON-default `ZeroImpedanceBranchReduction(; minimum_retained_impedance = 1e-4)`: the
+    # original defect read a hard-coded default min_x_eps for FD while Ybus assembly used the
+    # reduction's CONFIGURED value, so the two silently disagreed whenever the reduction was
+    # customized (`Yb[i,i] − self_acc[i]` residual then injects a fake shunt of the mismatch's
+    # size, making B″ indefinite). `_arc_params` must read the same value Ybus assembly used.
+    for reductions in (
+        PNM.NetworkReduction[],
+        PNM.NetworkReduction[
+            PNM.ZeroImpedanceBranchReduction(; minimum_retained_impedance = 1e-4),
+        ],
+    )
+        sys = _zero_impedance_transformer_system()
+        pf_kwargs = (;
+            network_reductions = reductions, skip_redistribution = true,
+            correct_bustypes = true,
+        )
+        nr = ACPowerFlow(; pf_kwargs...)
+        data_nr = PowerFlowData(nr, sys)
+        @test solve_power_flow!(data_nr; pf = nr)
+
+        fd = ACPowerFlow{PF.FastDecoupledACPowerFlow}(; pf_kwargs...)
+        data_fd = PowerFlowData(fd, sys)
+        @test solve_power_flow!(data_fd; pf = fd)
+        @test !any(isnan, data_fd.bus_magnitude[:, 1])
+        @test data_fd.bus_magnitude[:, 1] ≈ data_nr.bus_magnitude[:, 1] atol = 1e-6
+
+        # The π param FD reads must match the min_x_eps Ybus assembly actually substituted.
+        nrd = PNM.get_network_reduction_data(PF.get_power_network_matrix(data_fd))
+        eb = only(PNM.arc_equivalent_branches(nrd, (2, 3)))
+        expected_x = isempty(reductions) ? PNM.ZERO_IMPEDANCE_X_EPSILON : 1e-4
+        @test PNM.get_equivalent_x(eb) ≈ expected_x
+    end
+end
+
+# A degree-two-reduced series chain whose parallel-group segment mixes phase-shift and
+# impedance angles has NO single-π equivalent (`PNM.arc_equivalent_branches` throws for it — the
+# asymmetric two-port `|Yft| != |Ytf|` cannot be one π branch). Bus 2 is degree-two: it connects
+# only the (1,2) parallel [Line ∥ lossy PST] group and the (2,3) line, so `DegreeTwoReduction`
+# merges it into a chain over that non-representable group.
+function _pst_line_parallel_degree_two_system()
+    sys = PSY.System(100.0)
+    b1 = _add_simple_bus!(sys, 1, PSY.ACBusTypes.REF, 230.0, 1.0, 0.0)
+    b2 = _add_simple_bus!(sys, 2, PSY.ACBusTypes.PQ, 230.0, 1.0, 0.0)
+    b3 = _add_simple_bus!(sys, 3, PSY.ACBusTypes.PQ, 230.0, 1.0, 0.0)
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    _add_simple_load!(sys, b3, 10.0, 3.0)
+    _add_simple_line!(sys, b1, b2, 0.01, 0.10, 0.0)
+    pst12 = PSY.TwoWindingTransformer(;
+        name = "PST12",
+        circuit = PSY.TransformerCircuit(;
+            available = true,
+            arc = PSY.Arc(; from = b1, to = b2),
+            r = 0.05,
+            x = 0.20,
+            tap = 1.0,
+            α = 0.15,
+            rating = 2.0,
+            base_power = 100.0,
+            control_limits = (min = -0.7, max = 0.7),
+        ),
+    )
+    add_component!(sys, pst12)
+    _add_simple_line!(sys, b2, b3, 0.01, 0.10, 0.0)
+    return sys
+end
+
+@testset "FastDecoupled WP1: degree-two chain over a non-single-π parallel group" begin
+    sys = _pst_line_parallel_degree_two_system()
+    reductions =
+        PNM.NetworkReduction[PNM.DegreeTwoReduction(;
+            reduce_reactive_power_injectors = false,
+        )]
+    pf_kwargs = (;
+        network_reductions = reductions, skip_redistribution = true,
+        correct_bustypes = true,
+    )
+    nr = ACPowerFlow(; pf_kwargs...)
+    data_nr = PowerFlowData(nr, sys)
+    @test solve_power_flow!(data_nr; pf = nr)
+
+    fd = ACPowerFlow{PF.FastDecoupledACPowerFlow}(; pf_kwargs...)
+    data_fd = PowerFlowData(fd, sys)
+    # Regression: used to throw "Series chain ... has no π representation at all."
+    @test solve_power_flow!(data_fd; pf = fd)
+    @test !any(isnan, data_fd.bus_magnitude[:, 1])
+    @test data_fd.bus_magnitude[:, 1] ≈ data_nr.bus_magnitude[:, 1] atol = 1e-6
+end
+
 # =====================================================================================
 # WP2 — Frozen-Jacobian (:fixed_jacobian) loop + shared safeguard helpers.
 # =====================================================================================
@@ -338,13 +458,13 @@ end
 # Per-formulation frozen-Jacobian FD power flow constructor by name.
 _fd_fixed_jacobian_pf(::Type{<:PF.ACPolarPowerFlow}; kwargs...) =
     ACPowerFlow{_fd_solver(:fixed_jacobian)}(;
-        solver_settings = Dict{Symbol, Any}(kwargs...))
+        solution_parameters = SolutionParameters(; kwargs...))
 _fd_fixed_jacobian_pf(::Type{<:PF.ACRectangularPowerFlow}; kwargs...) =
     ACRectangularPowerFlow{_fd_solver(:fixed_jacobian)}(;
-        solver_settings = Dict{Symbol, Any}(kwargs...))
+        solution_parameters = SolutionParameters(; kwargs...))
 _fd_fixed_jacobian_pf(::Type{<:PF.ACMixedPowerFlow}; kwargs...) =
     ACMixedPowerFlow{_fd_solver(:fixed_jacobian)}(;
-        solver_settings = Dict{Symbol, Any}(kwargs...))
+        solution_parameters = SolutionParameters(; kwargs...))
 
 # Plain (non-FD) formulation constructor parametrized by a solver type, for NR-parity refs.
 _plain_pf(::Type{<:PF.ACPolarPowerFlow}, ::Type{S}) where {S} = ACPowerFlow{S}()
@@ -532,9 +652,9 @@ end
 
         sys_fd = PSB.build_system(PSB.PSITestSystems, "c_sys5"; add_forecasts = false)
         pf = ACPowerFlow{_fd_solver(:fixed_jacobian)}(;
-            solver_settings = Dict{Symbol, Any}(
-                :fd_dvlim => 0.005,   # tiny DVLIM forces the clamp to engage repeatedly
-                :maxIterations => 150,
+            solution_parameters = SolutionParameters(;
+                fd_dvlim = 0.005,   # tiny DVLIM forces the clamp to engage repeatedly
+                maxIterations = 150,
             ))
         data_fd = PowerFlowData(pf, sys_fd)
         converged = solve_power_flow!(data_fd)
@@ -637,14 +757,14 @@ end
 # Polar :decoupled FD constructor with arbitrary settings.
 _fd_decoupled_pf(; scheme::PF.FDScheme = PF.FDSchemeXB(), kwargs...) =
     ACPowerFlow{PF.FastDecoupledACPowerFlow{PF.FDDecoupled, typeof(scheme)}}(;
-        solver_settings = Dict{Symbol, Any}(kwargs...))
+        solution_parameters = SolutionParameters(; kwargs...))
 
 # T2 — Polar FDNR solution parity. For each scheme and system, the pure FD :decoupled
 # solve must (1) converge to tol=1e-9 within DEFAULT_FD_MAX_ITER, (2) match an INDEPENDENT
 # NewtonRaphsonACPowerFlow solve to TIGHT_TOLERANCE on bus_magnitude / bus_angles / _calc_x,
 # and (3) take MORE iterations than NR and > 5 — proving it is genuinely fast-decoupled
 # (linear rate), not an accidental exact-Newton.
-@testset "FastDecoupled WP3: :decoupled NR-parity (T2)" begin
+@testset "FastDecoupled WP3: :decoupled NR-parity" begin
     systems = (
         ("c_sys5",
             () -> PSB.build_system(PSB.PSITestSystems, "c_sys5"; add_forecasts = false),
@@ -723,8 +843,8 @@ end
 # Build an ACPowerFlow{FastDecoupled} (polar) with handoff settings for a given variant.
 _fd_handoff_pf(variant, handoff; extra...) =
     ACPowerFlow{_fd_solver(variant)}(;
-        solver_settings = Dict{Symbol, Any}(
-            :handoff_solver => handoff,
+        solution_parameters = SolutionParameters(;
+            handoff_solver = handoff,
             extra...,
         ))
 
@@ -824,8 +944,8 @@ end
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
     # RobustHomotopy is not an accepted handoff target (only nothing / NR / TR / LM are).
     pf = ACPowerFlow{PF.FastDecoupledACPowerFlow}(;
-        solver_settings = Dict{Symbol, Any}(
-            :handoff_solver => RobustHomotopyPowerFlow))
+        solution_parameters = SolutionParameters(;
+            handoff_solver = RobustHomotopyPowerFlow))
     data = PowerFlowData(pf, sys)
     @test_throws ArgumentError solve_power_flow!(data)
 end
@@ -917,7 +1037,7 @@ end
 
     @testset "rectangular" begin
         pf_nr = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
-            solver_settings = Dict{Symbol, Any}(:validate_voltage_magnitudes => false))
+            solution_parameters = SolutionParameters(; validate_voltage_magnitudes = false))
         data_nr = PF.PowerFlowData(
             pf_nr,
             make_system(PFP.PowerModelsData(lcc_raw); runchecks = false),
@@ -925,8 +1045,8 @@ end
         @test solve_power_flow!(data_nr)
 
         pf_fd = ACRectangularPowerFlow{_fd_solver(:fixed_jacobian)}(;
-            solver_settings = Dict{Symbol, Any}(
-                :validate_voltage_magnitudes => false))
+            solution_parameters = SolutionParameters(;
+                validate_voltage_magnitudes = false))
         data_fd = PF.PowerFlowData(
             pf_fd,
             make_system(PFP.PowerModelsData(lcc_raw); runchecks = false),
@@ -941,7 +1061,7 @@ end
 
     @testset "mixed" begin
         pf_nr = ACMixedPowerFlow{NewtonRaphsonACPowerFlow}(;
-            solver_settings = Dict{Symbol, Any}(:validate_voltage_magnitudes => false))
+            solution_parameters = SolutionParameters(; validate_voltage_magnitudes = false))
         data_nr = PF.PowerFlowData(
             pf_nr,
             make_system(PFP.PowerModelsData(lcc_raw); runchecks = false),
@@ -949,8 +1069,8 @@ end
         @test solve_power_flow!(data_nr)
 
         pf_fd = ACMixedPowerFlow{_fd_solver(:fixed_jacobian)}(;
-            solver_settings = Dict{Symbol, Any}(
-                :validate_voltage_magnitudes => false))
+            solution_parameters = SolutionParameters(;
+                validate_voltage_magnitudes = false))
         data_fd = PF.PowerFlowData(
             pf_fd,
             make_system(PFP.PowerModelsData(lcc_raw); runchecks = false),
@@ -1089,8 +1209,8 @@ end
     # documented stiff-system limitation; emits the low-reactance warning). Use the robust path
     # (FD stage → NR handoff) for parity, which converges quickly to the same solution.
     pf_fd = ACPowerFlow{_fd_solver(:decoupled)}(;
-        solver_settings = Dict{Symbol, Any}(
-            :handoff_solver => NewtonRaphsonACPowerFlow,
+        solution_parameters = SolutionParameters(;
+            handoff_solver = NewtonRaphsonACPowerFlow,
         ))
     data_fd = PF.PowerFlowData(
         pf_fd,
@@ -1216,9 +1336,9 @@ end
 
 @testset "FastDecoupled WP5b: multi-period :fixed_jacobian (T7 fixed)" begin
     # Multi-period correctness for the frozen-Jacobian variant (mirrors the :decoupled T7 above).
-    # The fixed-Jacobian path factors the frozen J per driver invocation (it does not populate the
-    # B′/B″ FastDecoupledCache), so this asserts the solve — every step converges and matches NR —
-    # rather than the decoupled cache counters.
+    # `FDFixedJacobianCache` reuses the frozen Jacobian's symbolic factorization while its pattern
+    # is unchanged (`numeric_refactor!` only) — all 24 steps share one signature (no per-step
+    # Q-limit switching), so exactly one symbolic factorization across the whole horizon.
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
     time_steps = 24
 
@@ -1235,6 +1355,48 @@ end
     @test solve_power_flow!(data_nr)
     @test isapprox(data_fd.bus_magnitude, data_nr.bus_magnitude; atol = TIGHT_TOLERANCE)
     @test isapprox(data_fd.bus_angles, data_nr.bus_angles; atol = TIGHT_TOLERANCE)
+
+    fdj_cache = data_fd.solver_cache[]
+    @test fdj_cache isa PF.FDFixedJacobianCache
+    distinct_sigs =
+        length(unique(hash(view(data_fd.bus_type, :, t)) for t in 1:time_steps))
+    @test distinct_sigs == 1
+    @test fdj_cache.factor_count == 1
+end
+
+@testset "FastDecoupled WP5b: :fixed_jacobian factor-once across repeated solves" begin
+    # Regression: every FD{Fix} solve used to build a fresh linear-solver cache and run a
+    # full symbolic+numeric factorization from scratch. Perturb the withdrawal directly on the
+    # SAME `PowerFlowData` between solves (the documented benchmark trap — an unperturbed re-solve
+    # warm-starts to 0 iterations) and assert the unchanged bus-type signature reuses the symbolic
+    # factorization (`factor_count` stays at 1), with a much smaller `@allocated` footprint on the
+    # warm repeat solves than the cold first solve (which pays the one-time `full_factor!`).
+    for (mod, name) in
+        ((PSB.PSITestSystems, "c_sys14"), (PSB.PSISystems, "RTS_GMLC_DA_sys"))
+        sys = if name == "c_sys14"
+            PSB.build_system(mod, name; add_forecasts = false)
+        else
+            PSB.build_system(mod, name)
+        end
+        pf_fd = ACPowerFlow{_fd_solver(:fixed_jacobian)}(; correct_bustypes = true)
+        data = PowerFlowData(pf_fd, sys)
+
+        # Cold: the FIRST solve builds the cache and pays the one-time `full_factor!`.
+        alloc_cold = @allocated (@test solve_power_flow!(data))
+        cache = data.solver_cache[]
+        @test cache isa PF.FDFixedJacobianCache
+        @test cache.factor_count == 1
+
+        alloc_warm = 0
+        for _ in 1:3
+            data.bus_active_power_withdrawals .*= 1.01   # perturb: avoid the 0-iteration trap
+            alloc_warm = @allocated (@test solve_power_flow!(data))
+            @test all(data.converged)
+            @test cache.factor_count == 1   # symbolic factorization reused, not rebuilt
+        end
+        @test cache === data.solver_cache[]   # same cache object across every repeat
+        @test alloc_warm < alloc_cold
+    end
 end
 
 @testset "FastDecoupled WP5b: multi-period BX scheme" begin
@@ -1555,9 +1717,9 @@ end
 
         sys_fd = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
         pf = ACPowerFlow{_fd_solver(variant)}(;
-            solver_settings = Dict{Symbol, Any}(
-                :handoff_solver => TrustRegionACPowerFlow,
-                :maxIterations => 1))   # forces an unconverged FD stage → handoff
+            solution_parameters = SolutionParameters(;
+                handoff_solver = TrustRegionACPowerFlow,
+                maxIterations = 1))   # forces an unconverged FD stage → handoff
         data_fd = PowerFlowData(pf, sys_fd)
         @test solve_power_flow!(data_fd)
         @test isapprox(data_fd.bus_magnitude[:, 1], data_nr.bus_magnitude[:, 1];

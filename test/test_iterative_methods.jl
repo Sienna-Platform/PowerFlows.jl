@@ -38,28 +38,28 @@ end
     # test NR kwargs.
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
     nr_pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
-        solver_settings = Dict{Symbol, Any}(
-            :maxIterations => 50,
-            :tol => 1e-10,
-            :refinement_threshold => 0.01,
-            :refinement_eps => 1e-7,
+        solution_parameters = SolutionParameters(;
+            maxIterations = 50,
+            tol = 1e-10,
+            refinement_threshold = 0.01,
+            refinement_eps = 1e-7,
         ))
-    @test_logs (:info, r".*NewtonRaphsonACPowerFlow solver converged"
-    ) match_mode = :any PF.solve_power_flow(nr_pf, sys)
+    @test_logs (:debug, r".*NewtonRaphsonACPowerFlow solver converged"
+    ) match_mode = :any min_level = Logging.Debug PF.solve_power_flow(nr_pf, sys)
 end
 
 @testset "TrustRegionACPowerFlow kwargs" begin
     # test trust region kwargs.
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
     tr_pf = ACPowerFlow{TrustRegionACPowerFlow}(;
-        solver_settings = Dict{Symbol, Any}(
-            :eta => 1e-5,
-            :tol => 1e-10,
-            :factor => 1.1,
-            :maxIterations => 50,
+        solution_parameters = SolutionParameters(;
+            eta = 1e-5,
+            tol = 1e-10,
+            factor = 1.1,
+            maxIterations = 50,
         ))
-    @test_logs (:info, r".*TrustRegionACPowerFlow solver converged"
-    ) match_mode = :any PF.solve_power_flow(tr_pf, sys)
+    @test_logs (:debug, r".*TrustRegionACPowerFlow solver converged"
+    ) match_mode = :any min_level = Logging.Debug PF.solve_power_flow(tr_pf, sys)
 end
 
 function bad_x0!(sys::PSY.System)
@@ -73,19 +73,19 @@ end
 
     # Small trust region size => Cauchy or dogleg step
     tr_pf_small = ACPowerFlow{TrustRegionACPowerFlow}(;
-        solver_settings = Dict{Symbol, Any}(:factor => 0.01, :maxIterations => 1))
+        solution_parameters = SolutionParameters(; factor = 0.01, maxIterations = 1))
     @test_logs (:debug, r"(Dogleg step selected|Cauchy step selected)") match_mode = :any min_level =
         Logging.Debug PF.solve_power_flow(tr_pf_small, sys)
 
     # Large trust region size => Newton-Raphson step
     tr_pf_large = ACPowerFlow{TrustRegionACPowerFlow}(;
-        solver_settings = Dict{Symbol, Any}(:factor => 10.0, :maxIterations => 1))
+        solution_parameters = SolutionParameters(; factor = 10.0, maxIterations = 1))
     @test_logs (:debug, r"Newton-Raphson step selected.*") match_mode = :any min_level =
         Logging.Debug PF.solve_power_flow(tr_pf_large, sys)
 
     # Large eta => step rejected, Iwamoto fallback attempted (default on)
     tr_pf_large_eta = ACPowerFlow{TrustRegionACPowerFlow}(;
-        solver_settings = Dict{Symbol, Any}(:eta => 2.0, :maxIterations => 1))
+        solution_parameters = SolutionParameters(; eta = 2.0, maxIterations = 1))
     @test_logs (:debug, r"Iwamoto fallback.*") match_mode = :any min_level = Logging.Debug PF.solve_power_flow(
         tr_pf_large_eta,
         sys,
@@ -93,8 +93,8 @@ end
 
     # Large eta with iwamoto_fallback disabled => plain rejection
     tr_pf_no_iwamoto = ACPowerFlow{TrustRegionACPowerFlow}(;
-        solver_settings = Dict{Symbol, Any}(
-            :eta => 2.0, :maxIterations => 1, :iwamoto_fallback => false))
+        solution_parameters = SolutionParameters(;
+            eta = 2.0, maxIterations = 1, iwamoto_fallback = false))
     @test_logs (:debug, r"Step rejected.*") match_mode = :any min_level = Logging.Debug PF.solve_power_flow(
         tr_pf_no_iwamoto,
         sys,
@@ -102,7 +102,7 @@ end
 
     # Small eta => step accepted
     tr_pf_small_eta = ACPowerFlow{TrustRegionACPowerFlow}(;
-        solver_settings = Dict{Symbol, Any}(:eta => 1e-6, :maxIterations => 1))
+        solution_parameters = SolutionParameters(; eta = 1e-6, maxIterations = 1))
     @test_logs (:debug, r"Step accepted.*") match_mode = :any min_level = Logging.Debug PF.solve_power_flow(
         tr_pf_small_eta,
         sys,
@@ -112,28 +112,28 @@ end
 @testset "Iwamoto step control convergence" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
     iwamoto_pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
-        solver_settings = Dict{Symbol, Any}(:iwamoto => true))
-    @test_logs (:info, r".*NewtonRaphsonACPowerFlow solver converged"
-    ) match_mode = :any PF.solve_power_flow(iwamoto_pf, sys)
+        solution_parameters = SolutionParameters(; iwamoto = true))
+    @test_logs (:debug, r".*NewtonRaphsonACPowerFlow solver converged"
+    ) match_mode = :any min_level = Logging.Debug PF.solve_power_flow(iwamoto_pf, sys)
 end
 
 @testset "Iwamoto step control kwargs" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
     iwamoto_pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
-        solver_settings = Dict{Symbol, Any}(
-            :iwamoto => true,
-            :maxIterations => 50,
-            :tol => 1e-10,
+        solution_parameters = SolutionParameters(;
+            iwamoto = true,
+            maxIterations = 50,
+            tol = 1e-10,
         ))
-    @test_logs (:info, r".*NewtonRaphsonACPowerFlow solver converged"
-    ) match_mode = :any PF.solve_power_flow(iwamoto_pf, sys)
+    @test_logs (:debug, r".*NewtonRaphsonACPowerFlow solver converged"
+    ) match_mode = :any min_level = Logging.Debug PF.solve_power_flow(iwamoto_pf, sys)
 end
 
 @testset "Iwamoto result equivalence with plain NR" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
     nr_pf = ACPowerFlow{NewtonRaphsonACPowerFlow}()
     iwamoto_pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
-        solver_settings = Dict{Symbol, Any}(:iwamoto => true))
+        solution_parameters = SolutionParameters(; iwamoto = true))
     nr_result = PF.solve_power_flow(nr_pf, sys)
     sys2 = PSB.build_system(PSB.PSITestSystems, "c_sys5")
     iwamoto_result = PF.solve_power_flow(iwamoto_pf, sys2)
@@ -154,9 +154,9 @@ end
     bad_x0!(sys)
     iwamoto_pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
         enhanced_flat_start = false,
-        solver_settings = Dict{Symbol, Any}(:iwamoto => true))
-    @test_logs (:info, r".*NewtonRaphsonACPowerFlow solver converged"
-    ) match_mode = :any PF.solve_power_flow(iwamoto_pf, sys)
+        solution_parameters = SolutionParameters(; iwamoto = true))
+    @test_logs (:debug, r".*NewtonRaphsonACPowerFlow solver converged"
+    ) match_mode = :any min_level = Logging.Debug PF.solve_power_flow(iwamoto_pf, sys)
 end
 
 @testset "Iwamoto on larger system (RTS_GMLC)" begin
@@ -164,7 +164,7 @@ end
     nr_pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(; correct_bustypes = true)
     iwamoto_pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
         correct_bustypes = true,
-        solver_settings = Dict{Symbol, Any}(:iwamoto => true))
+        solution_parameters = SolutionParameters(; iwamoto = true))
     nr_result = PF.solve_power_flow(nr_pf, sys)
     sys2 = PSB.build_system(PSB.PSISystems, "RTS_GMLC_DA_sys")
     iwamoto_result = PF.solve_power_flow(iwamoto_pf, sys2)
@@ -188,7 +188,7 @@ end
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
     pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
         enhanced_flat_start = false,
-        solver_settings = Dict{Symbol, Any}(:maxIterations => 3),
+        solution_parameters = SolutionParameters(; maxIterations = 3),
     )
     data = PowerFlowData(pf, sys)
     data.bus_magnitude .= 0.0
@@ -205,9 +205,9 @@ end
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
     iwamoto_pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
         enhanced_flat_start = false,
-        solver_settings = Dict{Symbol, Any}(
-            :iwamoto => true,
-            :maxIterations => 20,
+        solution_parameters = SolutionParameters(;
+            iwamoto = true,
+            maxIterations = 20,
         ))
     data = PowerFlowData(iwamoto_pf, sys)
     # Set all voltage magnitudes to zero so the Jacobian is singular
@@ -225,7 +225,7 @@ end
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
     pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
         enhanced_flat_start = false, time_steps = 2,
-        solver_settings = Dict{Symbol, Any}(:maxIterations => 2))
+        solution_parameters = SolutionParameters(; maxIterations = 2))
     data = PowerFlowData(pf, sys)
     data.bus_magnitude .= 0.0
     @test_logs(
@@ -347,7 +347,7 @@ end
     sys4 = deepcopy(sys)
     bad_x0!(sys4)
     improvement_regex = r".*DC power flow fallback yields smaller residual.*"
-    @test_logs (:info, improvement_regex) match_mode = :any PF.solve_power_flow(
+    @test_logs (:info, improvement_regex) match_mode = :any min_level = Logging.Debug PF.solve_power_flow(
         dc_pf,
         sys4,
     )

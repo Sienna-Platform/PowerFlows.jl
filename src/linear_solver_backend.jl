@@ -84,36 +84,54 @@ condest!(c::PNM.KLULinSolveCache) = PNM.condest!(c)
 Returns a PNM backend singleton: `PNM.KLUSolver()`, `PNM.AppleAccelerateLUSolver()`,
 or `PNM.MKLPardisoSolver()`. When `override === nothing`, the platform default from
 PNM's preference logic is used. Throws if AppleAccelerate is requested off an Apple
-platform, or if MKLPardiso is requested on a non-x86_64 architecture or without the
-`PowerFlowsPardisoExt` extension loaded (`import Pardiso`)."""
+platform, if MKLPardiso is requested on a non-x86_64 architecture or without the
+`PowerFlowsPardisoExt` extension loaded (`import Pardiso`), or if `"Dense"` is
+requested (PNM resolves it to a real backend tag, but PowerFlows has no DC linear
+solver cache for it)."""
 function resolve_linear_solver_backend(override::Union{Nothing, AbstractString})
     name = if isnothing(override)
         PNM._default_linear_solver()
     else
         String(override)
     end
-    tag = PNM.resolve_linear_solver(name)
-    if tag isa PNM.AppleAccelerateLUSolver && !Sys.isapple()
+    return _validate_linear_solver_backend(PNM.resolve_linear_solver(name))
+end
+
+_validate_linear_solver_backend(tag::PNM.KLUSolver) = tag
+
+function _validate_linear_solver_backend(tag::PNM.AppleAccelerateLUSolver)
+    Sys.isapple() ||
         error("AppleAccelerate backend requested but not on an Apple platform.")
-    elseif tag isa PNM.MKLPardisoSolver
-        # Intel MKL is x86_64-only. On other architectures (notably Apple Silicon)
-        # it can never load, so give a definitive message rather than suggesting
-        # `import Pardiso`, which would not help. macOS on x86_64 (incl. CI under
-        # Rosetta) reports `:x86_64` and is allowed through.
-        if Sys.ARCH !== :x86_64
-            error(
-                "MKLPardiso backend requires an x86_64 platform with Intel MKL; it is " *
-                "unavailable on $(Sys.ARCH) architectures (e.g. Apple Silicon). " *
-                "Use the \"KLU\" or \"AppleAccelerateLU\" backend instead.",
-            )
-        elseif !PNM._has_mkl_pardiso_ext()
-            error(
-                "MKLPardiso backend requested but Pardiso.jl is not loaded. " *
-                "Run `import Pardiso` to load the PowerFlowsPardisoExt extension.",
-            )
-        end
+    return tag
+end
+
+# Intel MKL is x86_64-only. On other architectures (notably Apple Silicon) it can never
+# load, so give a definitive message rather than suggesting `import Pardiso`, which would
+# not help. macOS on x86_64 (incl. CI under Rosetta) reports `:x86_64` and is allowed through.
+function _validate_linear_solver_backend(tag::PNM.MKLPardisoSolver)
+    if Sys.ARCH !== :x86_64
+        error(
+            "MKLPardiso backend requires an x86_64 platform with Intel MKL; it is " *
+            "unavailable on $(Sys.ARCH) architectures (e.g. Apple Silicon). " *
+            "Use the \"KLU\" or \"AppleAccelerateLU\" backend instead.",
+        )
+    elseif !PNM._has_mkl_pardiso_ext()
+        error(
+            "MKLPardiso backend requested but Pardiso.jl is not loaded. " *
+            "Run `import Pardiso` to load the PowerFlowsPardisoExt extension.",
+        )
     end
     return tag
+end
+
+function _validate_linear_solver_backend(::PNM.DenseSolver)
+    throw(
+        ArgumentError(
+            "linear_solver=\"Dense\" is not supported: PowerFlows has no DC linear " *
+            "solver cache for it. Accepted backends are \"KLU\", \"AppleAccelerateLU\" " *
+            "(macOS only), and \"MKLPardiso\" (x86_64 only, needs `import Pardiso`).",
+        ),
+    )
 end
 
 """Construct (without factorizing) the cache for backend `tag` over matrix `A`."""

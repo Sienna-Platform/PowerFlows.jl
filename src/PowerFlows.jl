@@ -109,13 +109,16 @@ include("power_flow_setup.jl")
 include("power_flow_method.jl")
 include("fast_decoupled_matrices.jl")
 include("fast_decoupled_method.jl")
-include("levenberg-marquardt.jl")
-include("gradient_descent_ac_power_flow.jl")
-include("post_processing.jl")
+# RobustHomotopy's HessianSolver machinery (FixedStructureCHOLMOD, the JᵀJ nzval-pair
+# cache) precedes levenberg-marquardt.jl because LMWorkspace reuses both as a struct
+# field type and via the shared JᵀJ refill helpers.
 include("RobustHomotopy/HessianSolver/hessian_solver.jl")
 include("RobustHomotopy/HessianSolver/KLU_hessian_solver.jl")
 include("RobustHomotopy/HessianSolver/fixed_structure_CHOLMOD.jl")
 include("RobustHomotopy/HessianSolver/cholesky_solver.jl")
 include("RobustHomotopy/homotopy_hessian.jl")
 include("RobustHomotopy/robust_homotopy_method.jl")
+include("levenberg-marquardt.jl")
+include("gradient_descent_ac_power_flow.jl")
+include("post_processing.jl")
 end
