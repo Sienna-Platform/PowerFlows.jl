@@ -5,9 +5,9 @@ function _sensitivity_residual_jacobian(::ACPolarPowerFlow, data, ts::Int)
     residual = ACPowerFlowResidual(data, ts)
     # Not `initialize_power_flow_variables`: `improve_x0` would move x off the converged base.
     x = _sensitivity_x0(residual, data, ts)
-    residual(x, ts)
-    J = ACPowerFlowJacobian(residual, ts)
-    J(ts)
+    residual(data, x, ts)
+    J = ACPowerFlowJacobian(data, residual, ts)
+    J(data, ts)
     return residual, J
 end
 
@@ -70,16 +70,16 @@ _sensitivity_x0(::ACPowerFlowResidual, data, ts::Int) = calculate_x0(data, ts)
 
 # `ACPowerFlowJacobian`'s p-dependent fields are the SAME vectors as the residual's (passed by
 # reference at construction), already current after `_refresh_residual_inputs!`: nothing to do.
-_refresh_jacobian_yb_caches!(J, ::ACPowerFlowResidual, ts::Int) = return
+_refresh_jacobian_yb_caches!(J, data, ::ACPowerFlowResidual, ts::Int) = return
 
 function _refresh_sensitivity_context!(ctx::_SensitivityContext, data, ts::Int)::Bool
     view(data.bus_type, :, ts) == ctx.bus_type || return false
     residual = ctx.residual
     _refresh_residual_inputs!(residual, data, ts) || return false
-    _refresh_jacobian_yb_caches!(ctx.J, residual, ts)
+    _refresh_jacobian_yb_caches!(ctx.J, data, residual, ts)
     x = _sensitivity_x0(residual, data, ts)
-    ctx.residual(x, ts)
-    ctx.J(ts)
+    ctx.residual(data, x, ts)
+    ctx.J(data, ts)
     try
         numeric_refactor!(ctx.lin_cache, ctx.J.Jv)
     catch e
@@ -191,20 +191,20 @@ end
 
 # Unlike `ACPowerFlowJacobian`, these cache `Y_bus_eff`-derived values at construction, so a
 # tap/shunt move leaves them stale — rerun the constructor's population steps against the refresh.
-function _refresh_jacobian_yb_caches!(J, r::ACRectangularCIResidual, ts::Int)
+function _refresh_jacobian_yb_caches!(J, data, r::ACRectangularCIResidual, ts::Int)
     @inbounds for i in eachindex(J.Y_diag)
         J.Y_diag[i] = r.Y_bus_eff[i, i]
     end
     _populate_constant_yb_blocks!(
-        J.Jv, r.Y_bus_eff, r.bus_state_offset, view(r.data.bus_type, :, ts))
+        J.Jv, r.Y_bus_eff, r.bus_state_offset, view(data.bus_type, :, ts))
     return
 end
-function _refresh_jacobian_yb_caches!(J, r::ACMixedCPBResidual, ts::Int)
+function _refresh_jacobian_yb_caches!(J, data, r::ACMixedCPBResidual, ts::Int)
     @inbounds for i in eachindex(J.Y_diag)
         J.Y_diag[i] = r.Y_bus_eff[i, i]
     end
     _populate_mixed_constant_yb_blocks!(
-        J.Jv, r.Y_bus_eff, r.bus_state_offset, view(r.data.bus_type, :, ts))
+        J.Jv, r.Y_bus_eff, r.bus_state_offset, view(data.bus_type, :, ts))
     @inbounds for p in eachindex(J.offdiag_pv_y)
         J.offdiag_pv_y[p] = r.Y_bus_eff[J.offdiag_pv_i[p], J.offdiag_pv_k[p]]
     end
@@ -322,17 +322,17 @@ end
 function _sensitivity_residual_jacobian(::ACRectangularPowerFlow, data, ts::Int)
     residual = ACRectangularCIResidual(data, ts)
     x = _sensitivity_x0(residual, data, ts)
-    residual(x, ts)
-    J = ACRectangularCIJacobian(residual, ts)
-    J(ts)
+    residual(data, x, ts)
+    J = ACRectangularCIJacobian(data, residual, ts)
+    J(data, ts)
     return residual, J
 end
 
 function _sensitivity_residual_jacobian(::ACMixedPowerFlow, data, ts::Int)
     residual = ACMixedCPBResidual(data, ts)
     x = _sensitivity_x0(residual, data, ts)
-    residual(x, ts)
-    J = ACMixedCPBJacobian(residual, ts)
-    J(ts)
+    residual(data, x, ts)
+    J = ACMixedCPBJacobian(data, residual, ts)
+    J(data, ts)
     return residual, J
 end

@@ -7,7 +7,6 @@ state representation: PQ/REF blocks are 2 entries `(e,f)` or `(P_gen, Q_gen)`;
 PV blocks are 3 entries `(e, f, Q)`.
 
 # Fields
-- `data::ACPowerFlowData`
 - `Rv::Vector{Float64}` — current residual values, length `total_bus_state + 4·n_LCC`
 - `Y_bus_eff::SparseMatrixCSC{ComplexF64, Int}` — Y_bus with ZIP constant-Z folded in
 - `P_net_const::Vector{Float64}` — constant-power net injection (no |V| dependence)
@@ -26,8 +25,7 @@ PV blocks are 3 entries `(e, f, Q)`.
 - `validate_offsets::Vector{Int}` — precomputed `x`-offsets of PQ/PV buses for
   the per-iteration voltage-magnitude diagnostic
 """
-struct ACRectangularCIResidual{D <: ACPowerFlowData}
-    data::D
+struct ACRectangularCIResidual
     Rv::Vector{Float64}
     Y_bus_eff::SparseMatrixCSC{ComplexF64, Int}
     P_net_const::Vector{Float64}
@@ -102,7 +100,6 @@ function ACRectangularCIResidual(data::ACPowerFlowData, time_step::Int64)
     fold_zip_constant_z!(Y_bus_eff, data, time_step)
 
     return ACRectangularCIResidual(
-        data,
         Vector{Float64}(undef, total_state),
         Y_bus_eff,
         P_net_const,
@@ -126,6 +123,7 @@ function ACRectangularCIResidual(data::ACPowerFlowData, time_step::Int64)
 end
 
 function (R::ACRectangularCIResidual)(
+    data::ACPowerFlowData,
     Rv::Vector{Float64},
     x::Vector{Float64},
     time_step::Int64,
@@ -135,18 +133,22 @@ function (R::ACRectangularCIResidual)(
         R.bus_slack_participation_factors, R.subnetworks, R.independent_ref,
         R.bus_state_offset, R.bus_block_size, R.total_bus_state,
         R.e_state, R.f_state, R.Q_state, R.P_eff_cache, R.Q_eff_cache,
-        R.data, time_step)
+        data, time_step)
     copyto!(Rv, R.Rv)
     return
 end
 
-function (R::ACRectangularCIResidual)(x::Vector{Float64}, time_step::Int64)
+function (R::ACRectangularCIResidual)(
+    data::ACPowerFlowData,
+    x::Vector{Float64},
+    time_step::Int64,
+)
     _update_rect_ci_residual_values!(R.Rv, x, R.Y_bus_eff, R.P_net_const, R.Q_net_const,
         R.const_I_P, R.const_I_Q, R.P_net_set,
         R.bus_slack_participation_factors, R.subnetworks, R.independent_ref,
         R.bus_state_offset, R.bus_block_size, R.total_bus_state,
         R.e_state, R.f_state, R.Q_state, R.P_eff_cache, R.Q_eff_cache,
-        R.data, time_step)
+        data, time_step)
     return
 end
 

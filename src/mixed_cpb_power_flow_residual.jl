@@ -15,8 +15,7 @@ never allocates a `Set`; `validate_offsets` are the precomputed PQ/PV `x`-
 offsets for the voltage-magnitude diagnostic. Remaining fields are named
 after their roles.
 """
-struct ACMixedCPBResidual{D <: ACPowerFlowData}
-    data::D
+struct ACMixedCPBResidual
     Rv::Vector{Float64}
     Y_bus_eff::SparseMatrixCSC{ComplexF64, Int}
     P_net_const::Vector{Float64}
@@ -94,7 +93,6 @@ function ACMixedCPBResidual(data::ACPowerFlowData, time_step::Int64)
     fold_zip_constant_z!(Y_bus_eff, data, time_step)
 
     return ACMixedCPBResidual(
-        data,
         Vector{Float64}(undef, total_state),
         Y_bus_eff,
         P_net_const,
@@ -119,6 +117,7 @@ function ACMixedCPBResidual(data::ACPowerFlowData, time_step::Int64)
 end
 
 function (R::ACMixedCPBResidual)(
+    data::ACPowerFlowData,
     Rv::Vector{Float64},
     x::Vector{Float64},
     time_step::Int64,
@@ -128,18 +127,22 @@ function (R::ACMixedCPBResidual)(
         R.bus_slack_participation_factors, R.subnetworks, R.independent_ref,
         R.bus_state_offset, R.bus_block_size, R.total_bus_state,
         R.e_state, R.f_state, R.P_eff_cache, R.Q_eff_cache,
-        R.data, time_step, R.Ir_acc, R.Ii_acc)
+        data, time_step, R.Ir_acc, R.Ii_acc)
     copyto!(Rv, R.Rv)
     return
 end
 
-function (R::ACMixedCPBResidual)(x::Vector{Float64}, time_step::Int64)
+function (R::ACMixedCPBResidual)(
+    data::ACPowerFlowData,
+    x::Vector{Float64},
+    time_step::Int64,
+)
     _update_mixed_cpb_residual_values!(R.Rv, x, R.Y_bus_eff, R.P_net_const, R.Q_net_const,
         R.const_I_P, R.const_I_Q, R.P_net_set,
         R.bus_slack_participation_factors, R.subnetworks, R.independent_ref,
         R.bus_state_offset, R.bus_block_size, R.total_bus_state,
         R.e_state, R.f_state, R.P_eff_cache, R.Q_eff_cache,
-        R.data, time_step, R.Ir_acc, R.Ii_acc)
+        data, time_step, R.Ir_acc, R.Ii_acc)
     return
 end
 

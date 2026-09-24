@@ -6,15 +6,17 @@ A struct that represents the Jacobian matrix for AC power flow calculations.
 This struct uses the functor pattern, meaning instances of `ACPowerFlowJacobian` store the data (Jacobian matrix) internally
 and can be called as a function at the same time. Calling the instance as a function updates the stored Jacobian matrix.
 
+Does not store the grid model `data`: it is threaded explicitly through the functor and
+constructor calls instead, to avoid a reference cycle through `data.polar_nr_cache` (see
+`PolarNRCache`).
+
 # Fields
-- `data::ACPowerFlowData`: The grid model data used for power flow calculations.
 - `Jv::SparseArrays.SparseMatrixCSC{Float64, $J_INDEX_TYPE}`: The Jacobian matrix, which is updated by `_update_jacobian_matrix_values!`.
 - `bus_slack_participation_factors::SparseVector{Float64, Int}`: Normalized per-bus slack participation factors for the current time step (from the `ACPowerFlowResidual`). Used for the distributed slack Jacobian entries.
 - `subnetworks::Dict{Int64, Vector{Int64}}`: Subnetwork mapping from REF bus to bus list (from the `ACPowerFlowResidual`). Used for the distributed slack Jacobian entries.
 - `independent_ref::Set{Int}`: Multi-swing REF bus indices, from `_multi_swing_ref_indices`. Computed once at construction because the Q-limit loop only flips PV↔PQ, never REF.
 """
-struct ACPowerFlowJacobian{D <: ACPowerFlowData}
-    data::D
+struct ACPowerFlowJacobian
     Jv::SparseArrays.SparseMatrixCSC{Float64, J_INDEX_TYPE}  # This is the Jacobian matrix, updated in place by `_update_jacobian_matrix_values!`
     bus_slack_participation_factors::SparseVector{Float64, Int}
     subnetworks::Dict{Int64, Vector{Int64}}
@@ -36,24 +38,25 @@ struct ACPowerFlowJacobian{D <: ACPowerFlowData}
 end
 
 """
-    (J::ACPowerFlowJacobian)(time_step::Int64)
+    (J::ACPowerFlowJacobian)(data::ACPowerFlowData, time_step::Int64)
 
 Update the Jacobian matrix `Jv` using `_update_jacobian_matrix_values!` and the provided data and time step.
 
 Defining this method allows an instance of `ACPowerFlowJacobian` to be called as a function, following the functor pattern.
 
 # Arguments
+- `data::ACPowerFlowData`: The grid model data used for power flow calculations.
 - `time_step::Int64`: The time step for the calculations.
 
 # Example
 ```julia
 residual = ACPowerFlowResidual(data, time_step)
-J = ACPowerFlowJacobian(residual, time_step)
-J(time_step)  # Updates the Jacobian matrix Jv
+J = ACPowerFlowJacobian(data, residual, time_step)
+J(data, time_step)  # Updates the Jacobian matrix Jv
 ```
 """
-function (J::ACPowerFlowJacobian)(time_step::Int64)
-    _update_jacobian_matrix_values!(J.Jv, J.data, time_step,
+function (J::ACPowerFlowJacobian)(data::ACPowerFlowData, time_step::Int64)
+    _update_jacobian_matrix_values!(J.Jv, data, time_step,
         J.bus_slack_participation_factors, J.subnetworks, J.independent_ref,
         J.bus_active_constant_I, J.bus_reactive_constant_I,
         J.bus_active_constant_Z, J.bus_reactive_constant_Z,
@@ -63,7 +66,7 @@ function (J::ACPowerFlowJacobian)(time_step::Int64)
 end
 
 """
-    (J::ACPowerFlowJacobian)(J::SparseArrays.SparseMatrixCSC{Float64, $J_INDEX_TYPE}, time_step::Int64)
+    (J::ACPowerFlowJacobian)(data::ACPowerFlowData, J::SparseArrays.SparseMatrixCSC{Float64, $J_INDEX_TYPE}, time_step::Int64)
 
 Use the `ACPowerFlowJacobian` to update the provided Jacobian matrix `J` inplace.
 
@@ -72,22 +75,24 @@ Update the internally stored Jacobian matrix `Jv` using `_update_jacobian_matrix
 This method allows an instance of ACPowerFlowJacobian to be called as a function, following the functor pattern.
 
 # Arguments
-- `J::SparseArrays.SparseMatrixCSC{Float64, $J_INDEX_TYPE}`: A sparse matrix to be updated with new values of the Jacobian matrix.
+- `data::ACPowerFlowData`: The grid model data used for power flow calculations.
+- `Jv::SparseArrays.SparseMatrixCSC{Float64, $J_INDEX_TYPE}`: A sparse matrix to be updated with new values of the Jacobian matrix.
 - `time_step::Int64`: The time step for the calculations.
 
 # Example
 ```julia
 residual = ACPowerFlowResidual(data, time_step)
-J = ACPowerFlowJacobian(residual, time_step)
+J = ACPowerFlowJacobian(data, residual, time_step)
 Jv = SparseArrays.sparse(Float64[], J_INDEX_TYPE[], J_INDEX_TYPE[])
-J(Jv, time_step)  # Updates the Jacobian matrix Jv and writes it to J
+J(data, Jv, time_step)  # Updates the Jacobian matrix Jv and writes it to J
 ```
 """
 function (J::ACPowerFlowJacobian)(
+    data::ACPowerFlowData,
     Jv::SparseArrays.SparseMatrixCSC{Float64, J_INDEX_TYPE},
     time_step::Int64,
 )
-    _update_jacobian_matrix_values!(J.Jv, J.data, time_step,
+    _update_jacobian_matrix_values!(J.Jv, data, time_step,
         J.bus_slack_participation_factors, J.subnetworks, J.independent_ref,
         J.bus_active_constant_I, J.bus_reactive_constant_I,
         J.bus_active_constant_Z, J.bus_reactive_constant_Z,
@@ -98,7 +103,7 @@ function (J::ACPowerFlowJacobian)(
 end
 
 """
-    ACPowerFlowJacobian(residual::ACPowerFlowResidual, time_step::Int64) -> ACPowerFlowJacobian
+    ACPowerFlowJacobian(data::ACPowerFlowData, residual::ACPowerFlowResidual, time_step::Int64) -> ACPowerFlowJacobian
 
 Constructor for `ACPowerFlowJacobian`. The returned instance has its sparsity
 pattern initialized and shares the residual's slack-participation, subnetwork,
@@ -106,7 +111,8 @@ and ZIP-coefficient caches — the residual must be constructed first against th
 same `data` and `time_step`.
 
 # Arguments
-- `residual::ACPowerFlowResidual`: The companion residual; supplies `data`,
+- `data::ACPowerFlowData`: The grid model data used for power flow calculations.
+- `residual::ACPowerFlowResidual`: The companion residual; supplies
   `bus_slack_participation_factors`, `subnetworks`, and the per-bus ZIP load
   coefficient vectors.
 - `time_step::Int64`: The time step for the calculations.
@@ -114,8 +120,8 @@ same `data` and `time_step`.
 # Example
 ```julia
 residual = ACPowerFlowResidual(data, time_step)
-J = ACPowerFlowJacobian(residual, time_step)
-J(time_step)  # Updates the Jacobian matrix stored internally in J.
+J = ACPowerFlowJacobian(data, residual, time_step)
+J(data, time_step)  # Updates the Jacobian matrix stored internally in J.
 J.Jv  # Access the Jacobian matrix stored internally in J.
 ```
 """
@@ -158,23 +164,23 @@ function _get_or_build_jacobian_structure(
 end
 
 function ACPowerFlowJacobian(
+    data::ACPowerFlowData,
     residual::ACPowerFlowResidual,
     time_step::Int64,
 )
     Jv0 = _get_or_build_jacobian_structure(
-        residual.data,
+        data,
         residual.bus_slack_participation_factors,
         residual.subnetworks,
         time_step,
     )
     od_from, od_to, od_ybus_nz, od_jnz, diag_jnz, diag_ybus_nz, diag_accum =
-        _build_polar_nz_caches(residual.data, Jv0)
+        _build_polar_nz_caches(data, Jv0)
     return ACPowerFlowJacobian(
-        residual.data,
         Jv0,
         residual.bus_slack_participation_factors,
         residual.subnetworks,
-        _multi_swing_ref_indices(residual.data.bus_type, residual.subnetworks, time_step),
+        _multi_swing_ref_indices(data.bus_type, residual.subnetworks, time_step),
         residual.bus_active_constant_I,
         residual.bus_reactive_constant_I,
         residual.bus_active_constant_Z,

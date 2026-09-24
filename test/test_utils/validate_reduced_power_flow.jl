@@ -4,7 +4,14 @@ function test_reduced_power_flow(
     nrs::Vector{PNM.NetworkReduction},
 )
     data = PF.PowerFlowData(pf, sys)
-    @test map(typeof, PF.get_network_reductions(pf)) == map(typeof, nrs)
+    nrd = PNM.get_network_reduction_data(data.power_network_matrix)
+    @test issetequal(
+        filter(
+            !=(PNM.ZeroImpedanceBranchReduction),
+            map(typeof, PNM.get_applied_reductions(nrd)),
+        ),
+        map(typeof, nrs),
+    )
     if pf isa PF.ACPowerFlow
         PF.solve_power_flow!(data; pf = pf)
     else
@@ -54,7 +61,14 @@ function validate_reduced_power_flow(
     unreduced_solved_data::PF.PowerFlowData,
 )
     data = PF.PowerFlowData(pf, sys)
-    @test map(typeof, PF.get_network_reductions(pf)) == map(typeof, nrs)
+    nrd = PNM.get_network_reduction_data(data.power_network_matrix)
+    @test issetequal(
+        filter(
+            !=(PNM.ZeroImpedanceBranchReduction),
+            map(typeof, PNM.get_applied_reductions(nrd)),
+        ),
+        map(typeof, nrs),
+    )
     if pf isa PF.ACPowerFlow
         PF.solve_power_flow!(data; pf = pf)
     else
@@ -63,7 +77,6 @@ function validate_reduced_power_flow(
     @test all(data.converged)
     reduced_bus_results = get_bus_voltages(data)
     unreduced_bus_results = get_bus_voltages(unreduced_solved_data)
-    nrd = PNM.get_network_reduction_data(data.power_network_matrix)
     reduced_buses = get_reduced_buses(nrd)
     if all(data.converged)
         buses_match, branches_match = true, true

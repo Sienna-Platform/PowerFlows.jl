@@ -1426,6 +1426,7 @@ function _make_gens_from_hvdc(
             0.0, 0.0, 0.0,
         ),
         base_power = PSY.get_base_power(exporter.system, PSY.NU),
+        input_basis = PSY.CU,
     )
 end
 
