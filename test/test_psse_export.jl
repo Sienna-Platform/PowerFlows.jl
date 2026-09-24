@@ -1212,6 +1212,8 @@ end
     # One converter must keep a real DC-voltage reference or the record has no TYPE-1
     # terminal and re-parsing rejects it; only the `to` side is droop, the case under test.
     PSY.set_dc_control_from!(vsc, PSY.VSCDCControlModes.DC_VOLTAGE)
+    PSY.set_rated_dc_voltage!(vsc, 400.0)
+    PSY.set_dc_setpoint_from!(vsc, 1.0)
     PSY.set_dc_control_to!(vsc, PSY.VSCDCControlModes.DC_VOLTAGE_DROOP)
 
     export_location = joinpath(test_psse_export_dir, "v35", "vsc_droop_dcset")

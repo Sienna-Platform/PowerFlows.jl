@@ -451,7 +451,8 @@ function update_exporter!(exporter::PSSEExporter, data::PSY.System)
             "System passed to update_exporter must be the same system as the one with which the exporter was constructed, just with different values",
         ),
     )
-    exporter.system = PSY.fast_deepcopy_system(data)
+    exporter.system =
+        PSY.fast_deepcopy_system(data; skip_supplemental_attributes = false)
     reset_caches(exporter)
     return
 end

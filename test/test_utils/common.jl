@@ -1131,7 +1131,6 @@ function _make_primary_controlled_tap_system()
             rating = 1.0,
             base_power = 100.0,
             control_objective = PSY.TransformerControlObjective.VOLTAGE,
-            regulated_bus = b3,
             controlled_quantity_limits = (min = 1.0, max = 1.0),
             regulated_bus = b2,  # controlled bus = bus 2 (FROM) → primary
             input_basis = PSY.CU,

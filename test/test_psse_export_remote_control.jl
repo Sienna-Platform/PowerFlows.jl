@@ -257,3 +257,23 @@ end
     tx2 = only(get_components(ThreeWindingTransformer, sys2))
     @test get_regulated_bus(get_primary_circuit(tx2)) === get_star_bus(tx2)
 end
+
+@testset "PSSE Exporter: update_exporter! keeps the sharing groups" begin
+    sys = _remote_control_system()
+    export_location =
+        joinpath(_REMOTE_CONTROL_EXPORT_DIR, "v33", "remote_voltage_control_update")
+    exporter = PSSEExporter(sys, :v33, export_location)
+    write_export(exporter, "basic"; overwrite = true)
+    update_exporter!(exporter, sys)
+    write_export(exporter, "updated"; overwrite = true)
+    sys2 = _reimport_export(get_psse_export_paths(joinpath(export_location, "updated"))...)
+    # Without the groups every RMPCT is written as 100, which re-imports as equal shares.
+    g2 = get_component(ThermalStandard, sys2, "thermal_standard_2")
+    g4 = get_component(ThermalStandard, sys2, "thermal_standard_4")
+    group3 = only(get_supplemental_attributes(ReactivePowerSharing, g2))
+    @test get_weight(group3, g2) ≈ 0.6 / 1.5 atol = 1e-6
+    @test get_weight(group3, g4) ≈ 0.4 / 1.5 atol = 1e-6
+    shunt = only(get_components(SwitchedAdmittance, sys2))
+    group7 = only(get_supplemental_attributes(ReactivePowerSharing, shunt))
+    @test get_weight(group7, shunt) ≈ 2.0 / 3.0 atol = 1e-6
+end
