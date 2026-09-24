@@ -31,7 +31,7 @@ function _get_injections!(
             # yet to implement control mode etc. for FACTS devices.
             if source isa PSY.FACTSControlDevice
                 bus_reactive_power_injections[bus_ix] +=
-                    PSY.get_reactive_power_required(source)
+                    PSY.get_reactive_power_required(source, PSY.SU)
             else
                 bus_reactive_power_injections[bus_ix] +=
                     PSY.get_reactive_power(source, PSY.SU)

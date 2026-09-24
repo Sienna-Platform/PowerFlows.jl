@@ -577,6 +577,7 @@ function _make_tap_shunt_system()
             rating = 1.0,
             base_power = 100.0,
             control_objective = PSY.TransformerControlObjective.VOLTAGE,
+            regulated_bus = b2,
             controlled_quantity_limits = (min = 1.0, max = 1.0), input_basis = PSY.CU,
         ), input_basis = PSY.CU,
     )
@@ -652,6 +653,7 @@ function _make_solvable_tap_shunt_system()
             rating = 1.0,
             base_power = 100.0,
             control_objective = PSY.TransformerControlObjective.VOLTAGE,
+            regulated_bus = b2,
             controlled_quantity_limits = (min = 1.0, max = 1.0), input_basis = PSY.CU,
         ), input_basis = PSY.CU,
     )
@@ -703,7 +705,7 @@ function _make_svc_system(;
         bus = b2,
         control_mode = control_mode,
         voltage_setpoint = 1.0,
-        reactive_power_required = 100.0, input_basis = PSY.CU,
+        input_basis = PSY.CU,
     )
     # `max_shunt_current` is stored in device base; the constructor kwarg takes a raw CU
     # value, so set it through the units-aware setter to honor the caller's MVA input.
@@ -889,7 +891,7 @@ function _make_multiperiod_facts_system()
         control_mode = PSY.FACTSOperationModes.NML,
         voltage_setpoint = 1.0,
         shunt_control_type = PSY.FACTSShuntControlType.SVC,
-        reactive_power_required = 100.0, input_basis = PSY.CU,
+        input_basis = PSY.CU,
     )
     # `max_shunt_current` is stored in device base; the constructor kwarg takes a raw CU
     # value, so set it through the units-aware setter to honor the MVA input.
@@ -906,7 +908,7 @@ end
 the PQ bus, for multiperiod discrete-control tests (reset-to-baseline tap design). Mirrors
 `_make_solvable_tap_shunt_system`'s impedance (r=0.01, x=0.10) and base load (0.5+j0.25) so
 the tap has full authority over bus 2; the explicit control fields (`tap_limits`,
-`number_of_tap_positions`, `regulated_bus_number`, `voltage_setpoint`) pin a fine tap grid
+`number_of_tap_positions`, `regulated_bus`, `voltage_setpoint`) pin a fine tap grid
 (31 positions over [0.85, 1.15]) so `_set_multiperiod_tap_loads!`'s per-step reactive-load
 scaling drives the required tap to a DIFFERENT discrete position at each time step."""
 function _make_multiperiod_tap_system()
@@ -928,7 +930,7 @@ function _make_multiperiod_tap_system()
             base_power = 100.0,
             control_limits = (min = 0.85, max = 1.15),
             number_of_tap_positions = 31,
-            regulated_bus_number = 2,
+            regulated_bus = b2,
             controlled_quantity_limits = (min = 1.0, max = 1.0),
             control_objective = PSY.TransformerControlObjective.VOLTAGE,
             input_basis = PSY.CU,
@@ -992,7 +994,7 @@ function _make_shunt_snap_system()
 end
 
 """Build a 3-bus system with one voltage-controlling `TwoWindingTransformer` whose controllability is set
-through the FIRST-CLASS PSY fields (`tap_limits`, `number_of_tap_positions`, `regulated_bus_number`,
+through the FIRST-CLASS PSY fields (`tap_limits`, `number_of_tap_positions`, `regulated_bus`,
 `voltage_setpoint`) — no `ext` scrape — to exercise the post-#1684 builder path. The tap (b1→b2)
 remotely regulates b3."""
 function _make_field_controlled_tap_system()
@@ -1014,7 +1016,10 @@ function _make_field_controlled_tap_system()
             base_power = 100.0,
             control_limits = (min = 0.85, max = 1.15),
             number_of_tap_positions = 17,
-            regulated_bus_number = 3,
+            # Bus 3 is neither end of the b1 -> b2 arc, so the side names the winding it
+            # lies beyond.
+            regulated_bus = b3,
+            regulated_bus_side = PSY.TransformerRegulatedBusSide.OPPOSITE_WINDING,
             controlled_quantity_limits = (min = 1.02, max = 1.02),
             control_objective = PSY.TransformerControlObjective.VOLTAGE,
             input_basis = PSY.CU,
@@ -1051,7 +1056,7 @@ function _add_facts_shunt!(
         bus = b,
         control_mode = PSY.FACTSOperationModes.NML,
         voltage_setpoint = voltage_setpoint,
-        reactive_power_required = 100.0, input_basis = PSY.CU,
+        input_basis = PSY.CU,
     )
     # `max_shunt_current` is stored in device base; the constructor kwarg takes a raw CU
     # value, so set it through the units-aware setter to honor the caller's MVA input.
@@ -1098,7 +1103,7 @@ exercising the from-side control orientation (the plant-sign probe must measure 
 opposite dV/dp sign to the usual to-side wiring).
 
 Topology: REF(1) ─line─ PQ(2) ─tap─ PQ(3); REF(1) ─line─ PQ(4).
-Bus 2 is both the FROM bus of the tap and the controlled bus (set via `regulated_bus_number`).
+Bus 2 is both the FROM bus of the tap and the controlled bus (set via `regulated_bus`).
 The tap has real authority over bus 2 voltage through the impedance seen by bus 2."""
 function _make_primary_controlled_tap_system()
     sys = System(100.0)
@@ -1126,8 +1131,10 @@ function _make_primary_controlled_tap_system()
             rating = 1.0,
             base_power = 100.0,
             control_objective = PSY.TransformerControlObjective.VOLTAGE,
+            regulated_bus = b3,
             controlled_quantity_limits = (min = 1.0, max = 1.0),
-            regulated_bus_number = 2, input_basis = PSY.CU,  # controlled bus = bus 2 (FROM) → primary
+            regulated_bus = b2,  # controlled bus = bus 2 (FROM) → primary
+            input_basis = PSY.CU,
         ), input_basis = PSY.CU,
     )
     add_component!(sys, tx)
@@ -1288,6 +1295,7 @@ function _add_control_tap!(sys, from_bus, to_bus; name = "tap_ctrl")
             rating = 1.0,
             base_power = 100.0,
             control_objective = PSY.TransformerControlObjective.VOLTAGE,
+            regulated_bus = to_bus,
             controlled_quantity_limits = (min = 1.0, max = 1.0), input_basis = PSY.CU,
         ), input_basis = PSY.CU,
     )

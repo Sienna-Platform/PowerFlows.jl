@@ -151,7 +151,10 @@ end
     raw_path = joinpath(export_dir, "export_1_1.raw")
     @test isfile(raw_path)
 
-    sys = make_system(PFP.PowerModelsData(raw_path); runchecks = false)
+    sys = PowerSystemCaseBuilder.system_from_openapi(
+        PFP.PowerModelsData(raw_path);
+        runchecks = false,
+    )
     data = PowerFlowData(
         DCPowerFlow(; correct_bustypes = true, lossy_flows = true),
         sys,

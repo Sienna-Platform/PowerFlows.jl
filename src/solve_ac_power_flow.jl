@@ -157,7 +157,10 @@ function write_device_settings!(system::PSY.System, data)
         end
         # Delivered reactive power Q = b·|V_local|² (MVA) at the device's own bus.
         PSY.set_reactive_power_required!(
-            fd, delivered_q_mvar(d, data.bus_magnitude[d.bus_ix, 1]))
+            fd,
+            delivered_q_mvar(d, data.bus_magnitude[d.bus_ix, 1]) /
+            PSY.get_base_power(system, PSY.NU) * PSY.SU,
+        )
     end
     return
 end

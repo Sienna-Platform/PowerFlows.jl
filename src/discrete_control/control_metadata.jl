@@ -115,15 +115,11 @@ bound WINDV1 while `PSY.get_tap` stores the ratio WINDV1/WINDV2; `TransformerCir
 WINDV2-equivalent field, so this band is wrong by a factor of WINDV2 whenever WINDV2 != 1 for
 the parsed transformer (the correct band would be `control_limits ./ WINDV2`). Fixing this
 needs a data-model change upstream (PFFP/PSY), not here.
-`get_regulated_bus_number` is 0 for local (to-bus) control."""
+A circuit that names no regulated bus controls its to-bus."""
 function _tap_metadata(circuit::PSY.TransformerCircuit, to_bus::Int)
     lims = PSY.get_control_limits(circuit)
-    reg = PSY.get_regulated_bus_number(circuit)
-    cbus = to_bus
-    if !iszero(reg)
-        # The sign marks the regulation side (PSS/E CONT<0); the bus number itself is |reg|.
-        cbus = abs(reg)
-    end
+    reg = PSY.get_regulated_bus(circuit)
+    cbus = isnothing(reg) ? to_bus : PSY.get_number(reg)
     # The tap is held anywhere inside the VMA/VMI band and regulates toward its midpoint on
     # an excursion — the same posture as a switched shunt's VSWLO/VSWHI.
     vlims = PSY.get_controlled_quantity_limits(circuit)
@@ -280,12 +276,8 @@ function build_controlled_device_set(
                 network; leaving the shunt locked."
             continue
         end
-        # `regulated_bus_number` is 0 for local control (PSS/E SWREM/NREG map to it in the parser).
-        reg = PSY.get_regulated_bus_number(sa)
-        cbus = bus
-        if !iszero(reg)
-            cbus = reg
-        end
+        # The resolved regulated bus: the remote bus when one is named, else the shunt's own.
+        cbus = PSY.get_number(PSY.get_regulated_bus(sa))
         cix = _resolve_bus_ix(bus_lookup, reverse_bus_search_map, cbus)
         if isnothing(cix)
             @warn "ControlledSwitchedShunt \"$name\": controlled bus $cbus is not in \
@@ -333,7 +325,7 @@ end
 
 # Continuous shunt FACTS (SVC/STATCOM) voltage control. `rating` (SHMX) bounds the SVC
 # susceptance-at-unity or the STATCOM current; `q_cap` is an independent MVA ceiling. Both
-# combine into the |V|-dependent limit `_facts_b_limit`. FCREG (`regulated_bus_number`)
+# combine into the |V|-dependent limit `_facts_b_limit`. FCREG (`remote_regulated_bus`)
 # selects local vs. remote-bus regulation.
 function _enroll_facts!(
     facts::Vector{ControlledFACTS},
@@ -358,11 +350,8 @@ function _enroll_facts!(
                 device not enrolled."
             continue
         end
-        reg = PSY.get_regulated_bus_number(fd)
-        cix = bix
-        if !iszero(reg)
-            cix = _resolve_bus_ix(bus_lookup, reverse_bus_search_map, reg)
-        end
+        reg = PSY.get_number(PSY.get_regulated_bus(fd))
+        cix = reg == bus ? bix : _resolve_bus_ix(bus_lookup, reverse_bus_search_map, reg)
         if isnothing(cix)
             @warn "ControlledFACTS \"$name\": regulated bus $reg is not in the \
                 (reduced) network; device not enrolled."

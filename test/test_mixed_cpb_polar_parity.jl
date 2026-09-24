@@ -73,13 +73,19 @@ const MIXED_PARITY_SOLVERS =
 
     @testset "LCC HVDC (case5_2_lcc, PQ terminals)" begin
         raw_path = joinpath(TEST_DATA_DIR, "case5_2_lcc.raw")
-        sys = make_system(PFP.PowerModelsData(raw_path); runchecks = false)
+        sys = PowerSystemCaseBuilder.system_from_openapi(
+            PFP.PowerModelsData(raw_path);
+            runchecks = false,
+        )
         sys_p = deepcopy(sys)
         sys_h = deepcopy(sys)
         sys_r = use_rect ? deepcopy(sys) : nothing
+        # The converter terminals' reactive power comes out of the LCC sub-iteration, whose
+        # stopping tolerance sets a round-off floor near 1e-6 between formulations; 1e-6
+        # still pins parity, as for the multi-swing fixture below.
         _mixed_polar_parity(
             sys_p, sys_h;
-            sys_r = sys_r, solver = solver,
+            sys_r = sys_r, solver = solver, atol = 1e-6,
         )
     end
 

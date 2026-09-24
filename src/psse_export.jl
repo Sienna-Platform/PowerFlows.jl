@@ -260,6 +260,79 @@ supports_multi_period(::PSSEExporter) = false
 
 _value_or_default(val, default) = isnothing(val) ? default : val
 
+"""PSS/E number of `bus` in the export, or `default` when there is no bus."""
+_psse_bus_or_default(md, ::Nothing, default) = default
+_psse_bus_or_default(md, bus::PSY.ACBus, default) =
+    md["bus_number_mapping"][PSY.get_number(bus)]
+
+"""
+PSS/E RMPCT of `device`: its share of its voltage control group's reactive power in
+percent, or `default` when it regulates alone. `terminal` picks the converter of a
+two-terminal VSC line.
+"""
+function _psse_rmpct(device::PSY.Component, default; terminal = nothing)
+    for group in PSY.get_supplemental_attributes(PSY.VoltageControlGroup, device)
+        isnothing(terminal) || PSY.get_terminal(group, device) == terminal || continue
+        return 100.0 * PSY.get_weight(group, device) / sum(values(PSY.get_weights(group)))
+    end
+    return default
+end
+
+"""
+Signed PSS/E CONT of `circuit`: the number of the bus it regulates, negative when that bus
+lies on the controlling winding's side, or 0 when it regulates no bus. A three-winding
+circuit regulating its star bus also writes 0: the star bus has no PSS/E number, and 0 is how
+PSS/E names the winding's own far end.
+"""
+function _psse_transformer_cont(md, circuit::PSY.TransformerCircuit)
+    bus = PSY.get_regulated_bus(circuit)
+    isnothing(bus) && return 0
+    number = get(md["bus_number_mapping"], PSY.get_number(bus), nothing)
+    isnothing(number) && return 0
+    side = PSY.get_regulated_bus_side(circuit)
+    return side == PSY.TransformerRegulatedBusSide.CONTROLLING_WINDING ? -number : number
+end
+
+"""
+PSS/E IF, IT and ID of a converter's tap transformer: its bus numbers and circuit id in the
+export, or blanks when the converter has none.
+"""
+_psse_tap_transformer_fields(::PSSEExporter, ::Nothing) =
+    (PSSE_DEFAULT, PSSE_DEFAULT, PSSE_DEFAULT)
+function _psse_tap_transformer_fields(
+    exporter::PSSEExporter,
+    transformer::PSY.TwoWindingTransformer,
+)
+    md = exporter.md_dict
+    (_, _, transformer_ckt_mapping, _) = _load_transformer_components_and_mappings(exporter)
+    from_n, to_n = branch_to_bus_numbers(transformer)
+    ckt = transformer_ckt_mapping[((from_n, to_n), PSY.get_name(transformer))]
+    if startswith(ckt, "_")
+        ckt = ckt[2:end]
+    end
+    return (
+        md["bus_number_mapping"][from_n],
+        md["bus_number_mapping"][to_n],
+        _psse_quote_string(ckt),
+    )
+end
+
+# VS is the voltage a unit holds at the bus it regulates; a unit type with no setpoint holds
+# its own bus at its current magnitude and names no remote bus.
+const _PSSE_SETPOINT_GENERATORS = Union{
+    PSY.VoltageControlGenerator,
+    PSY.EnergyReservoirStorage,
+    PSY.SynchronousCondenser,
+    PSY.Source,
+}
+_psse_generator_vs(generator::_PSSE_SETPOINT_GENERATORS) =
+    PSY.get_voltage_setpoint(generator)
+_psse_generator_vs(generator::PSY.StaticInjection) =
+    PSY.get_magnitude(PSY.get_bus(generator))
+_psse_remote_regulated_bus(generator::_PSSE_SETPOINT_GENERATORS) =
+    PSY.get_remote_regulated_bus(generator)
+_psse_remote_regulated_bus(::PSY.StaticInjection) = nothing
+
 """
 Write v35 header comments for a given section if applicable.
 """
@@ -935,12 +1008,11 @@ function _write_2w_transformer_record3_winding1!(
     VMI1 = controlled_quantity_limits.min
     NTP1 = PSY.get_number_of_tap_positions(circuit)
     NOD1 = PSSE_DEFAULT
-    CONT1 = PSY.get_regulated_bus_number(circuit)
+    CONT1 = _psse_transformer_cont(exporter.md_dict, circuit)
 
     supp_attr = PSY.get_supplemental_attributes(PSY.ImpedanceCorrectionData, transformer)
     TAB1 = !isempty(supp_attr) ? PSY.get_table_number(supp_attr[1]) : 0
-    CR1 = PSSE_DEFAULT
-    CX1 = PSSE_DEFAULT
+    CR1, CX1 = reim(PSY.get_load_drop_compensation(circuit, PSY.SU))
     CNXA1 = PSSE_DEFAULT
 
     if exporter.psse_version == :v35
@@ -1069,7 +1141,7 @@ function _collect_3w_winding_data(
             PSY.get_control_objective(circuit),
             PSY.TransformerControlObjective.UNDEFINED,
         )
-        CONT = PSY.get_regulated_bus_number(circuit)
+        CONT = _psse_transformer_cont(exporter.md_dict, circuit)
         NOD = PSSE_DEFAULT
         control_limits = _circuit_control_limits_degrees(circuit)
         RMA = control_limits.max
@@ -1086,8 +1158,7 @@ function _collect_3w_winding_data(
                 TAB = PSY.get_table_number(icd_tr)
             end
         end
-        CR = PSSE_DEFAULT
-        CX = PSSE_DEFAULT
+        CR, CX = reim(PSY.get_load_drop_compensation(circuit, PSY.SU))
         CNXA = PSSE_DEFAULT
 
         if exporter.psse_version == :v35
@@ -1641,7 +1712,8 @@ function write_to_buffers!(
         )
 
         # Get common fields
-        VS = PSY.get_magnitude(PSY.get_bus(generator))
+        VS = _psse_generator_vs(generator)
+        remote_bus = _psse_remote_regulated_bus(generator)
         MBASE = PSY.get_base_power(generator, PSY.NU)
         STAT = 0
         if PSY.get_available(generator)
@@ -1651,22 +1723,24 @@ function write_to_buffers!(
         # Generator machine data PSY does not model. v35 forbids blank fields, so it writes
         # the spec defaults the reader would have substituted; v33 leaves them blank.
         if exporter.psse_version == :v35
+            IREG = _psse_bus_or_default(md, remote_bus, PSSE_GEN_DEFAULT_IREG)
+            RMPCT = _psse_rmpct(generator, PSSE_GEN_DEFAULT_RMPCT)
             _write_generator_v35_record!(
                 io, I, ID, PG, QG, QT, QB, VS,
-                PSSE_GEN_DEFAULT_IREG, PSSE_GEN_DEFAULT_NREG, MBASE,
+                IREG, PSSE_GEN_DEFAULT_NREG, MBASE,
                 PSSE_GEN_DEFAULT_ZR, PSSE_GEN_DEFAULT_ZX,
                 PSSE_GEN_DEFAULT_RT, PSSE_GEN_DEFAULT_XT, PSSE_GEN_DEFAULT_GTAP,
-                STAT, PSSE_GEN_DEFAULT_RMPCT, PT, PB, PSSE_GEN_DEFAULT_BASLOD,
+                STAT, RMPCT, PT, PB, PSSE_GEN_DEFAULT_BASLOD,
                 PSSE_GEN_DEFAULT_WMOD, PSSE_GEN_DEFAULT_WPF,
             )
         else
-            IREG = PSSE_DEFAULT
+            IREG = _psse_bus_or_default(md, remote_bus, PSSE_DEFAULT)
             ZR = PSSE_DEFAULT
             ZX = PSSE_DEFAULT
             RT = PSSE_DEFAULT
             XT = PSSE_DEFAULT
             GTAP = PSSE_DEFAULT
-            RMPCT = PSSE_DEFAULT
+            RMPCT = _psse_rmpct(generator, 100.0)
             WMOD = PSSE_DEFAULT
             WPF = PSSE_DEFAULT
             _write_generator_v33_record!(
@@ -1804,16 +1878,11 @@ function _write_discrete_branch_record!(
     GJ = 0.0
     BJ = 0.0
 
+    # The switching device record's RATE1 is in MVA, like every other PSS/E rating.
     RATEA = _value_or_default(PSY.get_rating(branch, PSY.NU), PSSE_DEFAULT)
     RATEB = 0.0
     RATEC = 0.0
-    # PFFP's switch/breaker importer stores RATE unscaled, so export divides by SBASE to
-    # round-trip.
-    if RATEA >= INFINITE_BOUND
-        RATEA = 0.0
-    else
-        RATEA = RATEA / PSY.get_base_power(exporter.system, PSY.NU)
-    end
+    RATEA = RATEA >= INFINITE_BOUND ? 0.0 : RATEA
 
     @fastprintdelim_unroll(io, false, I, J, CKT, R, X, B,
         RATEA, RATEB, RATEC, GI, BI,
@@ -1946,13 +2015,9 @@ function write_to_buffers!(
         CKT = _psse_quote_string(CKT)
 
         X = PSY.get_x(branch, PSY.SU)
+        # RATE1 is in MVA, like every other PSS/E rating.
         RATE1 = _value_or_default(PSY.get_rating(branch, PSY.NU), PSSE_DEFAULT)
-        # See `_write_discrete_branch_record!`.
-        if RATE1 >= INFINITE_BOUND
-            RATE1 = 0.0
-        else
-            RATE1 = RATE1 / PSY.get_base_power(exporter.system, PSY.NU)
-        end
+        RATE1 = RATE1 >= INFINITE_BOUND ? 0.0 : RATE1
 
         rates = [RATE1]
         # Using 0.0 as default for rating exporter, since PSSEv35 does not allow blank values
@@ -2267,10 +2332,16 @@ function _compute_dcline_common_fields(
     VSCHD = PSY.get_scheduled_dc_voltage(dcline)
     # RDC is a DC-circuit resistance: PSY per-unitizes it against the DC base (VSCHD^2 /
     # baseMVA), not the rectifier AC commutating base, so the inverse conversion must use
-    # the same base or the raw round trip scales `r` by (VSCHD/EBASR)^2.
-    RDC = PSY.get_r(dcline) * VSCHD^2 / PSY.get_base_power(exporter.system, PSY.NU)
+    # the same base or the raw round trip scales `r` by (VSCHD/EBASR)^2. A line scheduled at
+    # 0 kV (out of service) is per-unitized on the rectifier's AC base instead, by both the
+    # parser and PSY, so the inverse follows that fallback.
+    dc_base_voltage = iszero(VSCHD) ? PSY.get_rectifier_base_voltage(dcline) : VSCHD
+    RDC =
+        PSY.get_r(dcline) * dc_base_voltage^2 / PSY.get_base_power(exporter.system, PSY.NU)
     VCMOD = PSY.get_switch_mode_voltage(dcline)
-    RCOMP = PSY.get_compounding_resistance(dcline)
+    RCOMP =
+        PSY.get_compounding_resistance(dcline) * dc_base_voltage^2 /
+        PSY.get_base_power(exporter.system, PSY.NU)
     DELTI = PSSE_DEFAULT
     METER = PSSE_DEFAULT
     DCVMIN = PSY.get_min_compounding_voltage(dcline)
@@ -2305,11 +2376,14 @@ function _compute_dcline_rectifier_fields(
     TMXR = PSY.get_rectifier_tap_limits(dcline).max
     TMNR = PSY.get_rectifier_tap_limits(dcline).min
     STPR = PSY.get_rectifier_tap_step(dcline)
-    ICR = PSSE_DEFAULT
+    ICR = _psse_bus_or_default(
+        exporter.md_dict,
+        PSY.get_rectifier_commutating_bus(dcline),
+        PSSE_DEFAULT,
+    )
     NDR = PSSE_DEFAULT
-    IFR = PSSE_DEFAULT
-    ITR = PSSE_DEFAULT
-    IDR = PSSE_DEFAULT
+    IFR, ITR, IDR =
+        _psse_tap_transformer_fields(exporter, PSY.get_rectifier_tap_transformer(dcline))
     XCAPR =
         PSY.get_rectifier_capacitor_reactance(dcline) *
         PSY.get_rectifier_base_voltage(dcline)^2 /
@@ -2343,11 +2417,14 @@ function _compute_dcline_inverter_fields(
     TMXI = PSY.get_inverter_tap_limits(dcline).max
     TMNI = PSY.get_inverter_tap_limits(dcline).min
     STPI = PSY.get_inverter_tap_step(dcline)
-    ICI = PSSE_DEFAULT
+    ICI = _psse_bus_or_default(
+        exporter.md_dict,
+        PSY.get_inverter_commutating_bus(dcline),
+        PSSE_DEFAULT,
+    )
     NDI = PSSE_DEFAULT
-    IFI = PSSE_DEFAULT
-    ITI = PSSE_DEFAULT
-    IDI = PSSE_DEFAULT
+    IFI, ITI, IDI =
+        _psse_tap_transformer_fields(exporter, PSY.get_inverter_tap_transformer(dcline))
     XCAPI =
         PSY.get_inverter_capacitor_reactance(dcline) *
         PSY.get_inverter_base_voltage(dcline)^2 /
@@ -2507,8 +2584,12 @@ function _compute_vsc_converter_fields(
         PWF = PSY.get_power_factor_weighting_fraction_from(vscline)
         q_limits = PSY.get_reactive_power_limits_from(vscline, PSY.SU)
         # PSY spells local (terminal-bus) regulation as `nothing`; PSS/E as REMOT = 0.
-        REMOT = _value_or_default(PSY.get_remote_bus_control_from(vscline), 0)
-        RMPCT = PSY.get_rmpct_from(vscline)
+        REMOT = _psse_bus_or_default(
+            exporter.md_dict,
+            PSY.get_remote_regulated_bus_from(vscline),
+            0,
+        )
+        RMPCT = _psse_rmpct(vscline, 100.0; terminal = PSY.VoltageControlTerminal.FROM)
     else
         MODE =
             PSY.get_ac_control_to(vscline) == PSY.VSCACControlModes.AC_VOLTAGE ? 1 : 2
@@ -2519,8 +2600,12 @@ function _compute_vsc_converter_fields(
         get_imax = PSY.get_max_dc_current_to
         PWF = PSY.get_power_factor_weighting_fraction_to(vscline)
         q_limits = PSY.get_reactive_power_limits_to(vscline, PSY.SU)
-        REMOT = _value_or_default(PSY.get_remote_bus_control_to(vscline), 0)
-        RMPCT = PSY.get_rmpct_to(vscline)
+        REMOT = _psse_bus_or_default(
+            exporter.md_dict,
+            PSY.get_remote_regulated_bus_to(vscline),
+            0,
+        )
+        RMPCT = _psse_rmpct(vscline, 100.0; terminal = PSY.VoltageControlTerminal.TO)
     end
 
     # Invert the parser's loss normalization: ALOSS/MINLOSS are kW normalized by
@@ -2597,21 +2682,16 @@ function write_to_buffers!(
         MDC = PSY.get_available(vscline) ? 1 : 0
         from_dc_control = PSY.get_dc_control_from(vscline)
         to_dc_control = PSY.get_dc_control_to(vscline)
-        # Base (DC) voltage comes from a terminal carrying a DC-voltage reference (strict DC_VOLTAGE
-        # or droop); a pure MW (DC_POWER) terminal's setpoint is a power, not a voltage. The DC-side
-        # kV is the per-unit setpoint times `rated_dc_voltage` (kV); `rated_dc_voltage == 0` treats
-        # the setpoint as already in kV. RDC is reconstructed from `g` and Zbase (round-trips `g`).
+        # The DC-side kV of a setpoint is the per-unit setpoint times `rated_dc_voltage` (kV);
+        # `rated_dc_voltage == 0` treats the setpoint as already in kV.
         vdc_scale = if iszero(PSY.get_rated_dc_voltage(vscline))
             1.0
         else
             PSY.get_rated_dc_voltage(vscline)
         end
-        if _has_dc_voltage_reference(from_dc_control)
-            base_voltage = PSY.get_dc_setpoint_from(vscline) * vdc_scale
-        else
-            base_voltage = PSY.get_dc_setpoint_to(vscline) * vdc_scale
-        end
-        Zbase = base_voltage^2 / PSY.get_base_power(exporter.system, PSY.NU)
+        # PSY holds `g` per unit on rated_dc_voltage^2 / base power (kV, MVA), the base its
+        # importer converts siemens against, so RDC in ohm is 1 / g times that base.
+        Zbase = vdc_scale^2 / PSY.get_base_power(exporter.system, PSY.NU)
         RDC = if iszero(PSY.get_g(vscline))
             0.0
         else
@@ -2838,14 +2918,14 @@ function write_to_buffers!(
         VSMX = PSSE_DEFAULT
         IMX = PSSE_DEFAULT
         LINX = PSSE_DEFAULT
-        RMPCT = PSSE_DEFAULT
+        RMPCT = _psse_rmpct(facts, 100.0)
         OWNER = PSSE_DEFAULT
         SET1 = PSSE_DEFAULT
         SET2 = PSSE_DEFAULT
         VSREF = PSSE_DEFAULT
-        FCREG = PSY.get_regulated_bus_number(facts)
+        FCREG = _psse_bus_or_default(md, PSY.get_remote_regulated_bus(facts), 0)
         NREG = PSSE_DEFAULT
-        REMOT = PSY.get_regulated_bus_number(facts)
+        REMOT = FCREG
         MNAME = _psse_quote_string("")
 
         if exporter.psse_version == :v35
@@ -2971,13 +3051,13 @@ function write_to_buffers!(
         VSWLO = admittance_limits.min
 
         if exporter.psse_version == :v35
-            SWREG = PSY.get_regulated_bus_number(shunt)
+            SWREG = _psse_bus_or_default(md, PSY.get_remote_regulated_bus(shunt), 0)
             NREG = PSSE_DEFAULT
         else
-            SWREM = PSY.get_regulated_bus_number(shunt)
+            SWREM = _psse_bus_or_default(md, PSY.get_remote_regulated_bus(shunt), 0)
         end
 
-        RMPCT = PSSE_DEFAULT
+        RMPCT = _psse_rmpct(shunt, 100.0)
         RMIDNT = _psse_quote_string("")
         BINIT =
             _switched_shunt_binit(

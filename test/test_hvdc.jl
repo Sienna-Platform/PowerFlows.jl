@@ -298,7 +298,10 @@ end
     # where [time_step, i] was incorrectly used instead of [i, time_step]
     # The bug only manifested when there were multiple LCC lines.
     raw_path = joinpath(TEST_DATA_DIR, "case5_2_lcc.raw")
-    sys = make_system(PFP.PowerModelsData(raw_path); runchecks = false)
+    sys = PowerSystemCaseBuilder.system_from_openapi(
+        PFP.PowerModelsData(raw_path);
+        runchecks = false,
+    )
 
     # Verify we have multiple LCC lines
     lcc_components = collect(get_components(TwoTerminalLCCLine, sys))

@@ -40,7 +40,10 @@ end
 
 @testset "continuation checkpoint restores LCC solver state" begin
     raw = joinpath(TEST_DATA_DIR, "case5_2_lcc.raw")
-    sys = make_system(PFP.PowerModelsData(raw); runchecks = false)
+    sys = PowerSystemCaseBuilder.system_from_openapi(
+        PFP.PowerModelsData(raw);
+        runchecks = false,
+    )
     pf = ACPolarPowerFlow(; check_reactive_power_limits = false)
     data = PowerFlowData(pf, sys)
     ts = 1
@@ -92,7 +95,10 @@ end
 
 @testset "LCC + control_discrete_devices constructs at any time_steps" begin
     raw = joinpath(TEST_DATA_DIR, "case5_2_lcc.raw")
-    sys = make_system(PFP.PowerModelsData(raw); runchecks = false)
+    sys = PowerSystemCaseBuilder.system_from_openapi(
+        PFP.PowerModelsData(raw);
+        runchecks = false,
+    )
     for nts in (1, 3)
         pf = ACPolarPowerFlow(; control_discrete_devices = true, time_steps = nts)
         data = PowerFlowData(pf, sys)   # must not throw
@@ -138,7 +144,9 @@ function build_locked_twin(results, ts::Int)
     sa = get_component(SwitchedAdmittance, sys, "ctrl_shunt_101")
     set_solved_admittance!(sa, shunt_final)
     set_reactive_power_required!(
-        get_component(FACTSControlDevice, sys, "ctrl_facts_101"), facts_q)
+        get_component(FACTSControlDevice, sys, "ctrl_facts_101"),
+        facts_q / get_base_power(sys) * PSY.SU,
+    )
     add_component!(
         sys,
         FixedAdmittance(;

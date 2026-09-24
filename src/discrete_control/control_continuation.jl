@@ -141,7 +141,10 @@ function _plant_sign(
     y0 = measured_value(d, data, ts)
     _capture_state!(snap, data, ts)
     lo, hi = parameter_limits(d)
-    δ = 1e-3 * (hi - lo)
+    # A thousandth of the parameter range, capped relative to the operating point: a device
+    # with a very wide range (a FACTS device sized never to bind) would otherwise be probed
+    # with a step large enough for the |V|^2 nonlinearity to bias the slope.
+    δ = min(1e-3 * (hi - lo), 1e-2 * max(abs(p0), 1.0))
     if δ <= 0.0
         δ = 1e-6
     end

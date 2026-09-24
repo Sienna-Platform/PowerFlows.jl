@@ -170,7 +170,10 @@ so the devices clear `CONTROL_GAIN_FLOOR` and enroll instead of being frozen as 
 and their setpoints sit above the reachable voltage so the continuation keeps driving them."""
 function build_lcc_control_system(; p_set_mw::Union{Nothing, Float64} = nothing)
     raw = joinpath(TEST_DATA_DIR, "case5_2_lcc.raw")
-    sys = make_system(PFP.PowerModelsData(raw); runchecks = false)
+    sys = PowerSystemCaseBuilder.system_from_openapi(
+        PFP.PowerModelsData(raw);
+        runchecks = false,
+    )
     bus101 = get_bus(sys, 101)
     add_component!(
         sys,
@@ -191,7 +194,7 @@ function build_lcc_control_system(; p_set_mw::Union{Nothing, Float64} = nothing)
             max_shunt_current = 1000.0,
             max_reactive_power = 9999.0,
             shunt_control_type = PSY.FACTSShuntControlType.STATCOM,
-            regulated_bus_number = 0, input_basis = PSY.CU,
+            input_basis = PSY.CU,
         ),
     )
     if p_set_mw !== nothing
