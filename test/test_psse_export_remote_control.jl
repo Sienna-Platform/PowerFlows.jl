@@ -19,7 +19,7 @@ function _add_control_transformer!(
     to_bus::ACBus;
     control_objective = PSY.TransformerControlObjective.VOLTAGE,
     regulated_bus = nothing,
-    regulated_bus_side = nothing,
+    regulated_bus_side = PSY.TransformerRegulatedBusSide.UNDEFINED,
     load_drop_compensation_r = 0.0,
     load_drop_compensation_x = 0.0,
 )
