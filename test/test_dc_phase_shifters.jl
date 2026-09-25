@@ -26,7 +26,7 @@ function _dc_line_pst_parallel_sys(; load_p::Float64 = 0.0, pst_r::Float64 = 0.0
         x = 0.1,
         b = (from = 0.0, to = 0.0),
         rating = 2.0,
-        angle_limits = (min = -pi / 2, max = pi / 2),
+        angle_limits = (min = -pi / 2, max = pi / 2), input_basis = PSY.CU,
     )
     add_component!(sys, line)
     pst = PSY.TwoWindingTransformer(;
@@ -40,8 +40,8 @@ function _dc_line_pst_parallel_sys(; load_p::Float64 = 0.0, pst_r::Float64 = 0.0
             α = 0.15,
             rating = 2.0,
             base_power = 100.0,
-            control_limits = (min = -0.7, max = 0.7),
-        ),
+            control_limits = (min = -0.7, max = 0.7), input_basis = PSY.CU,
+        ), input_basis = PSY.CU,
     )
     add_component!(sys, pst)
     return sys
@@ -85,7 +85,7 @@ function _dc_pst_loop_sys()
         x = 0.1,
         b = (from = 0.0, to = 0.0),
         rating = 2.0,
-        angle_limits = (min = -pi / 2, max = pi / 2),
+        angle_limits = (min = -pi / 2, max = pi / 2), input_basis = PSY.CU,
     )
     add_component!(sys, line12)
     line23 = PSY.Line(;
@@ -98,7 +98,7 @@ function _dc_pst_loop_sys()
         x = 0.1,
         b = (from = 0.0, to = 0.0),
         rating = 2.0,
-        angle_limits = (min = -pi / 2, max = pi / 2),
+        angle_limits = (min = -pi / 2, max = pi / 2), input_basis = PSY.CU,
     )
     add_component!(sys, line23)
     pst = PSY.TwoWindingTransformer(;
@@ -112,8 +112,8 @@ function _dc_pst_loop_sys()
             α = 0.15,
             rating = 2.0,
             base_power = 100.0,
-            control_limits = (min = -0.7, max = 0.7),
-        ),
+            control_limits = (min = -0.7, max = 0.7), input_basis = PSY.CU,
+        ), input_basis = PSY.CU,
     )
     add_component!(sys, pst)
     return sys
@@ -225,7 +225,7 @@ function _dc_pst_loop_with_series_pst_sys()
         x = 0.1,
         b = (from = 0.0, to = 0.0),
         rating = 2.0,
-        angle_limits = (min = -pi / 2, max = pi / 2),
+        angle_limits = (min = -pi / 2, max = pi / 2), input_basis = PSY.CU,
     )
     add_component!(sys, line15)
     pst53 = PSY.TwoWindingTransformer(;
@@ -239,8 +239,8 @@ function _dc_pst_loop_with_series_pst_sys()
             α = 0.1,
             rating = 2.0,
             base_power = 100.0,
-            control_limits = (min = -0.7, max = 0.7),
-        ),
+            control_limits = (min = -0.7, max = 0.7), input_basis = PSY.CU,
+        ), input_basis = PSY.CU,
     )
     add_component!(sys, pst53)
     return sys

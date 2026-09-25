@@ -162,50 +162,38 @@ function _plant_sign(
 end
 
 # ── Linearized plant sensitivities ───────────────────────────────────────────────────────
-# Differentiating F(x,p)=0 at the converged base: dx/dp = −J⁻¹·(∂F/∂p), and dy/dp is the
-# controlled-bus voltage component — no perturbation, one triangular solve per device on the base
-# NR solve's reused factorization instead of a full nonlinear solve. Polar + voltage-device (tap/shunt/FACTS)
-# only (state layout x[2b−1]=Vm, x[2b]=Va and ∂F/∂p are polar-specific); rect/mixed formulations
-# fall back to the FD `_plant_sign`. Signs are validated against the FD probe in the tests.
+# dy/dp via dx/dp = −J⁻¹·(∂F/∂p): one triangular solve per device against a Jacobian factored
+# for this purpose, instead of a full nonlinear solve. Falls back to `_plant_sign`'s FD probe
+# only when the base Jacobian is singular.
 
-# Sensitivity context: residual+Jacobian built at the CURRENT converged base state and numerically
-# factored (reusing the base NR solve's persisted symbolic factorization). Built ONCE per
-# continuation (probe phase) and thereafter kept current by `_refresh_sensitivity_context!`
-# (values-only, no rebuild) after each batched-pass joint solve. `nothing` ⇒ the linear path is
-# unavailable (non-polar formulation, or the base Jacobian is singular) and the caller uses FD probes.
-struct _SensitivityContext{C, R, JT}
+# Fallback sensitivity type for a singular base Jacobian; consumers dispatch on this vs
+# `_SensitivityContext` rather than testing for absence.
+struct FiniteDifferenceProbes end
+
+struct _SensitivityContext{C, R, JT, P}
     lin_cache::C
     residual::R             # persisted; re-evaluated in place by _refresh_sensitivity_context!
     J::JT                   # persisted; re-evaluated in place by _refresh_sensitivity_context!
     rhs::Vector{Float64}    # ∂F/∂p scratch, refilled per device
     sol::Vector{Float64}    # J⁻¹·∂F/∂p scratch
-    # Snapshot of bus_type at build time. `ACPowerFlowResidual`'s subnetworks/slack-participation
-    # factors/validate_indices are computed ONCE at construction from bus_type and are NOT
-    # recomputed by the residual functor — a Q-limit PV→PQ flip elsewhere in the network after
-    # this ctx was built silently stales that structure. `_refresh_sensitivity_context!` checks
-    # this snapshot and refuses to reuse a ctx whose bus-type pattern has since changed.
+    # Snapshot of bus_type at build time. A Q-limit PV→PQ flip after construction silently stales
+    # `ACPowerFlowResidual`'s cached subnetwork/slack structure; `_refresh_sensitivity_context!`
+    # checks this snapshot and forces a rebuild instead of reusing stale structure.
     bus_type::Vector{PSY.ACBusTypes.Value}
+    probe::P                # StateVectorCache scratch for `_singular_base_solve!`
 end
 
-# Values-only refresh at a new converged base state: the Jacobian sparsity depends only on
-# topology/REF layout (invariant across the continuation), so re-evaluating values + numeric
-# refactor into the persisted objects replaces a full rebuild — UNLESS a PV↔PQ flip has changed
-# the slack-participation/subnetwork layout the persisted `residual` baked in at construction
-# (see `_SensitivityContext.bus_type`); that case, and a singular refactor, both return `false`
-# so the caller falls back to the sequential path (which rebuilds fresh).
+# Values-only refresh at a new converged base state: sparsity is topology-invariant, so a
+# numeric refactor replaces a full rebuild — unless a PV↔PQ flip changed the persisted subnetwork
+# layout (`_SensitivityContext.bus_type`) or the refactor went singular, in which case this
+# returns `false` and the caller rebuilds fresh.
 #
-# `P_net`/`Q_net`/`P_net_set` and the four constant-I/Z withdrawal vectors are all captured from
-# `data` ONCE at `ACPowerFlowResidual` construction and are NOT independently re-read by the
-# residual functor: `_update_residual_values!`'s PQ-bus case does `P_net[ix] += ...` (a
-# TELESCOPING correction from the bus's voltage at the residual's LAST evaluation to its new
-# value), which is only correct when the SAME residual object is the one driving every
-# evaluation of a single NR solve. Here `ctx.residual` is evaluated once per PASS while `data`'s
-# voltage is moved BETWEEN passes by the joint solve's OWN, unrelated residual object — so
-# `P_net`/`Q_net` must be rebuilt from `data` (exactly like the constructor) before every
-# evaluation, or they silently accumulate a wrong, ever-growing correction. Likewise
-# `apply_parameter!` for switched shunts/FACTS writes device moves directly into
-# `data.bus_reactive_power_constant_impedance_withdrawals`, so the four constant-I/Z vectors need
-# the same re-sync.
+# `P_net`/`Q_net`/`P_net_set` and the constant-I/Z withdrawal vectors must be rebuilt from `data`
+# before every `ctx.residual` evaluation: `_update_residual_values!`'s telescoping correction is
+# only valid when the same residual object drives every evaluation, but `ctx.residual` runs once
+# per pass while `data`'s voltage moves between passes via the joint solve's own residual object.
+# `apply_parameter!` also writes shunt/FACTS moves directly into `data`, so the constant-I/Z
+# vectors need the same re-sync.
 # Shared bisection sub-step walk for the robust continuation applicators
 # (`_continuation_to!` and `_restore_one!`). The full move having failed, step from `start`
 # toward `target` (each interpolated point clamped to `[lo, hi]`), growing the step on NR
@@ -427,10 +415,11 @@ function _step_device!(
     return abs(Δp)
 end
 
-# One device's plant sign: the linear sensitivity when a polar `ctx` is live and the family has an
-# analytic form (tap/shunt/FACTS), else the FD probe (non-polar formulations, singular base).
+# One device's plant sign: the linear sensitivity when a `ctx` is live (available on every AC
+# formulation for tap/shunt/FACTS), else the FD probe (singular base).
 _probe_one_sign(
-    d, data, ts::Int, pf, scratch_snap::ControlStateSnapshot, ::Nothing; kwargs...,
+    d, data, ts::Int, pf, scratch_snap::ControlStateSnapshot, ::FiniteDifferenceProbes;
+    kwargs...,
 ) = _plant_sign(d, data, ts, pf, scratch_snap; kwargs...)
 function _probe_one_sign(
     d, data, ts::Int, pf, scratch_snap::ControlStateSnapshot,
@@ -446,7 +435,7 @@ end
 # effect is below the gain floor (e.g. a PV-pinned bus, sensitivity 0) — stepping them would rail.
 function _probe_device_signs!(
     devices, offset::Int, dVdp::Vector{Float64}, frozen::Vector{Bool},
-    ctx::Union{Nothing, _SensitivityContext}, data, ts::Int, pf,
+    ctx::Union{_SensitivityContext, FiniteDifferenceProbes}, data, ts::Int, pf,
     scratch_snap::ControlStateSnapshot; kwargs...,
 )
     for (i, d) in enumerate(devices)
@@ -539,19 +528,31 @@ function _refresh_gains_group!(
     return
 end
 
+# Post-solve gain refresh on the rebuilt context. A live context refreshes every moved device's
+# gain and accepts; a singular fallback accepts nothing, so the caller rolls the pass back.
+function _accept_refreshed_context!(
+    ctx::_SensitivityContext, set::ControlledDeviceSet, n_taps::Int, off_facts::Int,
+    data, ts::Int, frozen::Vector{Bool}, dVdp::Vector{Float64}, did_move::Vector{Bool},
+)
+    _refresh_gains_group!(set.taps, 0, data, ts, frozen, dVdp, did_move, ctx)
+    _refresh_gains_group!(set.shunts, n_taps, data, ts, frozen, dVdp, did_move, ctx)
+    _refresh_gains_group!(set.facts, off_facts, data, ts, frozen, dVdp, did_move, ctx)
+    return true
+end
+_accept_refreshed_context!(::FiniteDifferenceProbes, set, n_taps, off_facts, data, ts,
+    frozen, dVdp, did_move) = false
+
 # One batched pass over the voltage-device groups (taps, shunts, FACTS). Returns
-# `(settled, converged)`: `converged=false` means the joint solve failed (or, rarely, the
-# post-solve sensitivity refresh hit a singular Jacobian) and the pass was fully rolled back —
-# the caller must run the sequential path for this pass. `ctx` is the ONE
-# `_SensitivityContext` persisted for the whole continuation (built once in
-# `_control_continuation!`); a converged joint solve refreshes it in place instead of rebuilding.
+# `(settled, converged, ctx)`: `converged=false` means the pass fully rolled back and the caller
+# must run the sequential path instead. `ctx` is refreshed or rebuilt in place and carried into
+# the next pass.
 function _batched_pass!(
     set::ControlledDeviceSet, n_taps::Int, n_shunts::Int, data, ts::Int, S::Float64, pf,
     snap::ControlStateSnapshot, frozen::Vector{Bool}, dVdp::Vector{Float64},
     osc::Vector{Int}, prev_sign::Vector{Int}, n_shared::Vector{Int},
     p_prev::Vector{Float64}, did_move::Vector{Bool},
     ctx::_SensitivityContext; kwargs...,
-)
+)::Tuple{Bool, Bool, Union{_SensitivityContext, FiniteDifferenceProbes}}
     fill!(did_move, false)
     _capture_state!(snap, data, ts)
     # A failed+rolled-back batched attempt must leave NO trace, so the sequential fallback is the
@@ -568,12 +569,13 @@ function _batched_pass!(
     _refresh_facts_limits!(set.facts, off_facts, data, ts, frozen)
     moved |= _apply_targets_group!(set.facts, off_facts, data, ts, S, frozen, dVdp, osc,
         prev_sign, n_shared, p_prev, did_move)
-    moved || return true, true            # nothing wanted to move ⇒ settled, no solve needed
-    if _ctrl_solve!(pf, data, ts; kwargs...) && _refresh_sensitivity_context!(ctx, data, ts)
-        _refresh_gains_group!(set.taps, 0, data, ts, frozen, dVdp, did_move, ctx)
-        _refresh_gains_group!(set.shunts, n_taps, data, ts, frozen, dVdp, did_move, ctx)
-        _refresh_gains_group!(set.facts, off_facts, data, ts, frozen, dVdp, did_move, ctx)
-        return false, true                # moved + converged ⇒ not settled
+    moved || return true, true, ctx       # nothing wanted to move ⇒ settled, no solve needed
+    if _ctrl_solve!(pf, data, ts; kwargs...)
+        refreshed = _refresh_or_rebuild_context(ctx, pf, data, ts; kwargs...)
+        if _accept_refreshed_context!(
+            refreshed, set, n_taps, off_facts, data, ts, frozen, dVdp, did_move)
+            return false, true, refreshed # moved + converged ⇒ not settled
+        end
     end
     _rollback_targets_group!(set.taps, 0, data, ts, p_prev, did_move)
     _rollback_targets_group!(set.shunts, n_taps, data, ts, p_prev, did_move)
@@ -582,7 +584,8 @@ function _batched_pass!(
     copyto!(osc, osc0)
     copyto!(prev_sign, prev0)
     copyto!(frozen, frozen0)
-    return false, false          # joint solve or sensitivity refresh failed ⇒ run sequential path
+    # joint solve failed, or every rebuild attempt hit a singular Jacobian ⇒ sequential path
+    return false, false, ctx
 end
 
 function _count_controlled_buses!(counts::Dict{Int, Int}, devices)
@@ -620,27 +623,39 @@ function _step_voltage_groups!(
     return settled
 end
 
-# One continuation pass. Voltage devices go through the batched (one-solve) path when it is
-# enabled and its joint solve converges, else the sequential path (which fully preserves the
-# backtracking/freeze behavior). Returns whether the whole pass settled. `ctx` is the
-# persisted sensitivity context (non-`nothing` iff `use_batched`); passed through unchanged
-# so `_batched_pass!` can refresh it in place.
+# One continuation pass. Voltage devices go through the batched (one-solve) path when enabled,
+# `ctx` is live, and its joint solve converges; otherwise the sequential path. Returns
+# `(settled, ctx)`; `ctx` may come back refreshed, rebuilt, or fallen back to
+# `FiniteDifferenceProbes()`, which always goes sequential.
 function _control_pass!(
     set::ControlledDeviceSet, n_taps::Int, n_shunts::Int, use_batched::Bool,
     data, ts::Int, S::Float64, pf, scratch_snap::ControlStateSnapshot,
     frozen::Vector{Bool}, dVdp::Vector{Float64},
     osc::Vector{Int}, prev_sign::Vector{Int}, n_shared::Vector{Int},
     p_prev::Vector{Float64}, did_move::Vector{Bool},
-    ctx::Union{Nothing, _SensitivityContext}; kwargs...,
-)
+    ctx::_SensitivityContext; kwargs...,
+)::Tuple{Bool, Union{_SensitivityContext, FiniteDifferenceProbes}}
     if use_batched
-        s, converged =
+        s, converged, ctx =
             _batched_pass!(set, n_taps, n_shunts, data, ts, S, pf, scratch_snap, frozen,
                 dVdp, osc, prev_sign, n_shared, p_prev, did_move, ctx; kwargs...)
-        converged && return s
+        converged && return s, ctx
     end
-    return _step_voltage_groups!(set, n_taps, n_shunts, data, ts, S, pf, scratch_snap,
+    settled = _step_voltage_groups!(set, n_taps, n_shunts, data, ts, S, pf, scratch_snap,
         frozen, dVdp, osc, prev_sign, n_shared; kwargs...)
+    return settled, ctx
+end
+function _control_pass!(
+    set::ControlledDeviceSet, n_taps::Int, n_shunts::Int, use_batched::Bool,
+    data, ts::Int, S::Float64, pf, scratch_snap::ControlStateSnapshot,
+    frozen::Vector{Bool}, dVdp::Vector{Float64},
+    osc::Vector{Int}, prev_sign::Vector{Int}, n_shared::Vector{Int},
+    p_prev::Vector{Float64}, did_move::Vector{Bool},
+    ctx::FiniteDifferenceProbes; kwargs...,
+)::Tuple{Bool, Union{_SensitivityContext, FiniteDifferenceProbes}}
+    settled = _step_voltage_groups!(set, n_taps, n_shunts, data, ts, S, pf, scratch_snap,
+        frozen, dVdp, osc, prev_sign, n_shared; kwargs...)
+    return settled, ctx
 end
 
 function _control_continuation!(
@@ -681,9 +696,7 @@ function _control_continuation!(
     # is `snap_and_restore!`'s `pre`, which allocates its own.
     scratch_snap = _snapshot_state(data, ts)
 
-    # Build the linearized-sensitivity context ONCE (one numeric factorization reusing the base NR
-    # solve's symbolic factor); all device probes below are then triangular solves against it. `nothing`
-    # for non-polar formulations or a singular base ⇒ each probe falls back to the FD solve.
+    # Built once; every device probe below is a triangular solve against it.
     ctx = _sensitivity_context(pf, data, ts; kwargs...)
     _probe_device_signs!(
         set.taps,
@@ -724,22 +737,25 @@ function _control_continuation!(
     # once). Intermediate stages solve at CONTROL_STAGE_TOL; full tol only at the final stage and
     # snap/restore, and never looser than a user-supplied tol.
     user_tol = Float64(get(kwargs, :tol, DEFAULT_NR_TOL))
-    # Gated on `_refreshable`, not just `ctx`'s presence: a formulation can supply analytic
-    # sensitivities before it supplies a per-pass refresh, and batching without one would read
-    # a stale Jacobian after the first device move.
-    use_batched = _supports_batched_refresh(ctx)
     p_prev = zeros(n_dev)
     did_move = fill(false, n_dev)
     S = INITIAL_CONTROL_STEEPNESS
     regulation_complete = false
     while true
+        # Retry promotion out of the FD-probe fallback once per stage: a singular base
+        # Jacobian at an earlier converged state may factor cleanly at this one. No-op on
+        # an already-live context.
+        ctx = _maybe_repromote(ctx, pf, data, ts; kwargs...)
         stage_tol = user_tol
         if S < MAX_CONTROL_STEEPNESS
             stage_tol = max(user_tol, CONTROL_STAGE_TOL)
         end
         settled = false
         for _ in 1:MAX_CONTROL_PASSES_PER_STAGE
-            settled = _control_pass!(
+            # Recomputed every pass, not hoisted: `ctx` can be rebuilt within a stage, so a
+            # stale `use_batched` could skip an available batched pass.
+            use_batched = _supports_batched_refresh(ctx)
+            settled, ctx = _control_pass!(
                 set, n_taps, n_shunts, use_batched, data, ts, S, pf,
                 scratch_snap,
                 frozen, dVdp, osc, prev_sign, n_shared, p_prev, did_move, ctx;

@@ -64,6 +64,7 @@ const LCC_sinϕ_TOLERANCE = 1e-8 # if sin(ϕ) < this, treat dQ/dV as zero to avo
 const LCC_SMALL_ANGLE_THRESHOLD = deg2rad(5) # warn if converged LCC thyristor angle α_r/α_i falls outside (this, π/2 − this)
 
 const DEFAULT_NR_MAX_ITER = 50 # default maxIterations for the NR power flow
+const UNSET_MAX_ITERATIONS = -1 # -1 = unset; formulation constructors replace it with the solver default (see _resolved_max_iterations).
 const DEFAULT_NR_TOL = 1e-9 # default tolerance for the NR power flow
 const DEFAULT_REFINEMENT_THRESHOLD = 5e-2 # do refinement if relative error > 5%.
 const DEFAULT_REFINEMENT_MAX_ITER = 10 # how many times to try iterative refinement

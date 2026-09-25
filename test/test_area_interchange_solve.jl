@@ -631,8 +631,9 @@ end
     delta_p_first = copy(data.area_interchange.delta_p)
 
     @test_logs(
-        (:info, r"converged after [01] iterations"),
+        (:debug, r"converged after [01] iterations"),
         match_mode = :any,
+        min_level = Logging.Debug,
         solve_power_flow!(data)
     )
 
@@ -802,9 +803,9 @@ end
 function _weak_tie_three_area_fixture(; x_weak::Float64 = 2.0, pdes2::Float64 = 0.1,
     pdes3::Float64 = 2.0)
     sys = System(100.0)
-    area1 = PSY.Area(; name = "Area1")
-    area2 = PSY.Area(; name = "Area2")
-    area3 = PSY.Area(; name = "Area3")
+    area1 = PSY.Area(; name = "Area1", input_basis = PSY.CU)
+    area2 = PSY.Area(; name = "Area2", input_basis = PSY.CU)
+    area3 = PSY.Area(; name = "Area3", input_basis = PSY.CU)
     PSY.add_component!(sys, area1)
     PSY.add_component!(sys, area2)
     PSY.add_component!(sys, area3)
@@ -2185,8 +2186,8 @@ genuinely merges them (`fix == tix`) -- the self-tie merge guard case, distinct 
 "interior DC link" test (same-tail on two DIFFERENT buses, not a merge)."""
 function _lcc_self_merge_fixture()
     sys = System(100.0)
-    area_a = PSY.Area(; name = "AreaA")
-    area_b = PSY.Area(; name = "AreaB")
+    area_a = PSY.Area(; name = "AreaA", input_basis = PSY.CU)
+    area_b = PSY.Area(; name = "AreaB", input_basis = PSY.CU)
     PSY.add_component!(sys, area_a)
     PSY.add_component!(sys, area_b)
 

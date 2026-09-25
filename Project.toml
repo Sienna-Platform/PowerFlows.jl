@@ -40,7 +40,7 @@ InfrastructureSystems = {rev = "IS4", url = "https://github.com/Sienna-Platform/
 PowerSystems = {url = "https://github.com/Sienna-Platform/PowerSystems.jl.git", rev = "psy6"}
 # Pinned to the branch rather than the registry: registry PNM v0.24 requires PowerSystems
 # 5.11, which this line (5.10.0) does not satisfy.
-PowerNetworkMatrices = {url = "https://github.com/Sienna-Platform/PowerNetworkMatrices.jl.git", rev = "jd/psy6_correctness"}
+PowerNetworkMatrices = {url = "https://github.com/Sienna-Platform/PowerNetworkMatrices.jl.git", rev = "psy6"}
 
 InfrastructureCoreOpenAPIModels = {url = "https://github.com/Sienna-Platform/PowerOpenAPIModels.git", rev = "main", subdir = "InfrastructureCoreOpenAPIModels.jl"}
 InfrastructureTimeSeriesOpenAPIModels = {url = "https://github.com/Sienna-Platform/PowerOpenAPIModels.git", rev = "main", subdir = "InfrastructureTimeSeriesOpenAPIModels.jl"}

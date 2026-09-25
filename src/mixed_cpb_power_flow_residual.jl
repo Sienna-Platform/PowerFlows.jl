@@ -15,8 +15,8 @@ never allocates a `Set`; `validate_offsets` are the precomputed PQ/PV `x`-
 offsets for the voltage-magnitude diagnostic. Remaining fields are named
 after their roles.
 """
-struct ACMixedCPBResidual
-    data::ACPowerFlowData
+struct ACMixedCPBResidual{D <: ACPowerFlowData}
+    data::D
     Rv::Vector{Float64}
     Y_bus_eff::SparseMatrixCSC{ComplexF64, Int}
     P_net_const::Vector{Float64}

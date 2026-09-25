@@ -16,7 +16,7 @@ function build_ieee14_facts_system(;
     stress::Float64 = 1.0,
     shunt9_off::Bool = false,
 )
-    sys = make_system(PFP.PowerModelsData(IEEE14_FACTS_RAW); runchecks = false)
+    sys = system_from_openapi(PFP.PowerModelsData(IEEE14_FACTS_RAW); runchecks = false)
     if !isone(stress)
         for load in get_components(StandardLoad, sys)
             set_constant_active_power!(
@@ -49,7 +49,7 @@ function build_ieee14_facts_system(;
         control_mode = PSY.FACTSOperationModes.NML,
         voltage_setpoint = vset,
         shunt_control_type = shunt_control_type,
-        regulated_bus_number = regulated_bus_number,
+        regulated_bus_number = regulated_bus_number, input_basis = PSY.CU,
     )
     # `max_shunt_current`/`max_reactive_power` are stored in device base; the constructor
     # kwargs take a raw CU value, so set them through the units-aware setters to honor the
@@ -217,6 +217,21 @@ end
     @test t.vset ≈ 1.03
     @test t.vset_lo ≈ 1.03
     @test t.vset_hi ≈ 1.03
+end
+
+@testset "discrete control: negative regulated_bus_number resolves via abs (PSS/E CONT<0)" begin
+    # PSS/E CONT1<0 marks which side of the transformer regulates; the bus number itself is
+    # |CONT1|. A raw negative value must not be used as a bus number directly (it resolves no
+    # bus, so the tap would de-enroll with "controlled bus -3 is not in the network").
+    sys = _make_tap_shunt_system()
+    tx = first(PSY.get_components(PSY.TwoWindingTransformer, sys))
+    PSY.set_regulated_bus_number!(PSY.get_circuit(tx), -3)
+    data = PowerFlowData(ACPolarPowerFlow(), sys)
+    bl = PF.get_bus_lookup(data)
+    set = PowerFlows.build_controlled_device_set(
+        sys, bl, data.power_network_matrix)
+    @test length(set.taps) == 1
+    @test set.taps[1].controlled_ix == bl[3]
 end
 
 @testset "discrete control: implausible vset locks the device" begin
@@ -983,6 +998,28 @@ end
     @test PSY.get_tap(PSY.get_circuit(tx0)) in levels       # the written tap is a valid discrete level
 end
 
+@testset "discrete control: write-back survives a Line sharing the transformer's name" begin
+    # write_device_settings! re-resolves a tap's owning transformer by name; looking it up
+    # under the abstract PSY.ACTransmission (rather than the concrete arity types) throws
+    # "More than one ... ACTransmission with name ..." the moment a Line shares that name.
+    sys = _make_solvable_tap_shunt_system()
+    tx = first(PSY.get_components(PSY.TwoWindingTransformer, sys))
+    tap_name = PSY.get_name(tx)
+    b2 = PSY.get_component(ACBus, sys, "bus_2")
+    b3 = PSY.get_component(ACBus, sys, "bus_3")
+    # A new arc (bus_2 <-> bus_3, not previously connected), so this only adds a name
+    # collision, not a parallel line group on an existing arc.
+    add_component!(
+        sys,
+        Line(; name = tap_name, available = true, active_power_flow = 0.0,
+            reactive_power_flow = 0.0, arc = Arc(; from = b2, to = b3),
+            r = 0.1, x = 0.1, b = (from = 0.0, to = 0.0), rating = 1.0,
+            angle_limits = (min = -pi / 2, max = pi / 2), input_basis = PSY.CU),
+    )
+    pf = ACPolarPowerFlow(; control_discrete_devices = true)
+    @test solve_and_store_power_flow!(pf, sys)
+end
+
 @testset "write-back round-trips the API shunt convention" begin
     sys = _make_tap_shunt_system()
     sa = first(PSY.get_components(PSY.SwitchedAdmittance, sys))
@@ -1056,7 +1093,7 @@ end
 
 @testset "discrete control: analytic sensitivity is available on every AC formulation" begin
     # Every formulation must reach the analytic path and earn batched passes via a
-    # `_refresh_residual_inputs!`/`_refresh_jacobian_yb_caches!` pair that re-syncs its caches.
+    # `_refresh_residual_setpoints!`/`_refresh_jacobian_yb_caches!` pair that re-syncs its caches.
     for pf in (
         ACPolarPowerFlow(; control_discrete_devices = true),
         ACRectangularPowerFlow(; control_discrete_devices = true),
@@ -1065,11 +1102,10 @@ end
         data = PowerFlowData(pf, _make_solvable_tap_shunt_system())
         PowerFlows._solve_with_q_limits!(pf, data, 1)
         ctx = PowerFlows._sensitivity_context(pf, data, 1)
-        @test !isnothing(ctx)
         @test PowerFlows._supports_batched_refresh(ctx)
     end
-    # No context at all ⇒ no batching, and the predicate must not throw.
-    @test !PowerFlows._supports_batched_refresh(nothing)
+    # Singular-base fallback ⇒ no batching, and the predicate must not throw.
+    @test !PowerFlows._supports_batched_refresh(PowerFlows.FiniteDifferenceProbes())
 end
 
 @testset "discrete control: analytic sensitivity agrees across AC formulations" begin
@@ -1089,7 +1125,7 @@ end
             PowerFlows._solve_with_q_limits!(pf, data, 1)
             set = data.controlled_devices
             ctx = PowerFlows._sensitivity_context(pf, data, 1)
-            @test !isnothing(ctx)
+            @test PowerFlows._supports_batched_refresh(ctx)
             snap = PowerFlows._snapshot_state(data, 1)
             gains = Dict{String, Float64}()
             for devices in (set.taps, set.shunts, set.facts)
@@ -1118,7 +1154,7 @@ end
     end
 end
 
-@testset "discrete control: linearized plant sensitivity matches FD probe (P2)" begin
+@testset "discrete control: linearized plant sensitivity matches FD probe" begin
     # The linearized sensitivity dy/dp = (−J⁻¹ ∂F/∂p)[Vm(controlled)] must agree with the
     # finite-difference probe in SIGN and magnitude (the FD probe carries O(δ) truncation, so
     # the linear form is if anything more accurate). A sign error here would silently invert a
@@ -1129,7 +1165,7 @@ end
     PowerFlows._solve_with_q_limits!(pf, data, 1)   # converge base case only
     set = data.controlled_devices
     ctx = PowerFlows._sensitivity_context(pf, data, 1)
-    @test !isnothing(ctx)
+    @test PowerFlows._supports_batched_refresh(ctx)
     scratch_snap = PowerFlows._snapshot_state(data, 1)
     for d in (set.taps[1], set.shunts[1])
         lin, ok_lin = PowerFlows._linear_plant_sign(d, data, 1, ctx)
@@ -1157,7 +1193,28 @@ end
     @test PowerFlows.get_control_inner_solve_count(data) > 1
 end
 
-@testset "discrete control: batched passes keep inner solves ~flat in device count (P3)" begin
+@testset "discrete control: batched refresh rebuilds after a bus-type flip" begin
+    # `_refresh_sensitivity_context!` refuses to reuse a ctx whose bus-type snapshot has gone
+    # stale (a Q-limit PV<->PQ flip invalidates its baked-in subnetwork/slack layout) but never
+    # replaces `ctx` itself; `_refresh_or_rebuild_context` must rebuild fresh instead.
+    sys = _make_solvable_tap_shunt_system()
+    pf = ACPolarPowerFlow(; control_discrete_devices = true)
+    data = PowerFlowData(pf, sys)
+    ts = 1
+    @test PowerFlows.solve_power_flow!(data)
+    ctx = PowerFlows._sensitivity_context(pf, data, ts)
+    @test PowerFlows._supports_batched_refresh(ctx)
+    # Simulate a Q-limit-driven flip elsewhere in the network (bus 2, a PQ bus in this fixture).
+    bus2_ix = PowerFlows.get_bus_lookup(data)[2]
+    data.bus_type[bus2_ix, ts] = PSY.ACBusTypes.PV
+    @test !PowerFlows._refresh_sensitivity_context!(ctx, data, ts)   # refuses reuse, as designed
+    rebuilt = PowerFlows._refresh_or_rebuild_context(ctx, pf, data, ts)
+    @test PowerFlows._supports_batched_refresh(rebuilt)
+    @test rebuilt !== ctx                        # a genuinely fresh context, not the stale one
+    @test collect(view(data.bus_type, :, ts)) == rebuilt.bus_type
+end
+
+@testset "discrete control: batched passes keep inner solves ~flat in device count" begin
     # P3 does one inner solve per PASS (not per device). On a set of decoupled controlled
     # feeders the inner-solve count must stay ~flat as the device count grows — the sequential
     # path would scale it ~linearly. Build K feeders (REF ─tap─ PQ-load, REF ─line─ PQ-shunt).
@@ -1172,13 +1229,15 @@ end
                 sys,
                 PowerLoad(; name = "l$k", available = true, bus = bl,
                     active_power = 0.5, reactive_power = 0.25, base_power = 100.0,
-                    max_active_power = 100.0, max_reactive_power = 100.0),
+                    max_active_power = 100.0, max_reactive_power = 100.0,
+                    input_basis = PSY.CU),
             )
             add_component!(
                 sys,
                 PowerLoad(; name = "s$k", available = true, bus = bs,
                     active_power = 0.05, reactive_power = 0.025, base_power = 100.0,
-                    max_active_power = 100.0, max_reactive_power = 100.0),
+                    max_active_power = 100.0, max_reactive_power = 100.0,
+                    input_basis = PSY.CU),
             )
             _add_simple_line!(sys, ref, bs, 1e-2, 1e-2, 0.0)
             add_component!(
@@ -1187,7 +1246,8 @@ end
                     circuit = TransformerCircuit(; available = true,
                         arc = Arc(; from = ref, to = bl), r = 0.01, x = 0.10,
                         tap = 1.0, rating = 1.0, base_power = 100.0,
-                        control_objective = PSY.TransformerControlObjective.VOLTAGE)),
+                        control_objective = PSY.TransformerControlObjective.VOLTAGE,
+                        input_basis = PSY.CU), input_basis = PSY.CU),
             )
             add_component!(
                 sys,
@@ -1212,6 +1272,49 @@ end
     @test n8 < 2 * n1 + 20
 end
 
+@testset "discrete control: batched pass stays active across an organic Q-limit flip" begin
+    # `build_ieee14_facts_system(stress=1.1, shmx_mva=10.0)`: bus 6 is still PV after the
+    # UNMOVED-device base solve (Q-limits alone don't flip it yet), but flips PQ once the FACTS
+    # device's continuation moves the network enough — an organic, mid-continuation flip, not
+    # one manufactured by hand-editing `data.bus_type`. A one-time `ctx.bus_type` snapshot would
+    # let this flip silently disable batching for the rest of the continuation.
+    sys0 = build_ieee14_facts_system(; stress = 1.1, shmx_mva = 10.0)
+    pf = ACPolarPowerFlow(;
+        control_discrete_devices = true,
+        check_reactive_power_limits = true,
+    )
+    data0 = PowerFlowData(pf, sys0)
+    ts = 1
+    @test PowerFlows._solve_with_q_limits!(pf, data0, ts)   # base solve only, no continuation
+    bl = PowerFlows.get_bus_lookup(data0)
+    bus6_ix = bl[6]
+    @test data0.bus_type[bus6_ix, ts] == PSY.ACBusTypes.PV   # not yet flipped
+
+    sys = build_ieee14_facts_system(; stress = 1.1, shmx_mva = 10.0)
+    data = PowerFlowData(pf, sys)
+    @test solve_power_flow!(data)
+    @test all(data.converged)
+    @test data.bus_type[bus6_ix, ts] == PSY.ACBusTypes.PQ    # flipped DURING the continuation
+
+    # Base NR cache (1) + initial `_sensitivity_context` build (2) + exactly one rebuild after
+    # the flip (3). >2 is the signature that `_refresh_or_rebuild_context` fired and produced a
+    # live context, rather than leaving batching permanently disabled after the flip.
+    @test PowerFlows.get_control_symbolic_factor_count(data) > 2
+
+    # The REBUILT (post-flip) context's analytic gain must still agree with the FD-probe
+    # oracle (the sequential path's own sign/magnitude source) — the same cross-check other
+    # tests apply to the original context, here applied after the flip and rebuild.
+    ctx = PowerFlows._sensitivity_context(pf, data, ts)
+    @test PowerFlows._supports_batched_refresh(ctx)
+    facts = only(data.controlled_devices.facts)
+    scratch_snap = PowerFlows._snapshot_state(data, ts)
+    lin, ok_lin = PowerFlows._linear_plant_sign(facts, data, ts, ctx)
+    fd, ok_fd = PowerFlows._plant_sign(facts, data, ts, pf, scratch_snap)
+    @test ok_lin && ok_fd
+    @test sign(lin) == sign(fd)
+    @test isapprox(lin, fd; rtol = 1e-2)
+end
+
 @testset "linear plant sign matches FD probe at PV controlled bus" begin
     sys = _make_tap_shunt_system()
     pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; control_discrete_devices = true)
@@ -1220,7 +1323,7 @@ end
     # Converge the base state, then build the sensitivity context the probes use.
     @test PowerFlows._solve_with_q_limits!(pf, data, ts)
     ctx = PowerFlows._sensitivity_context(pf, data, ts)
-    @test !isnothing(ctx)
+    @test PowerFlows._supports_batched_refresh(ctx)
     set = PowerFlows.get_controlled_devices(data)
     for d in set.shunts
         cbus = PowerFlows.controlled_bus_ix(d)
@@ -1309,7 +1412,7 @@ end
     _add_control_tap!(sys, pq[2], pq[3])   # incident to the AC-voltage-controlled VSC bus
     pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
         control_discrete_devices = true,
-        solver_settings = VSC_SETTINGS,
+        solution_parameters = VSC_SOLUTION_PARAMETERS,
     )
     data = PowerFlowData(pf, sys)
     ts = 1
@@ -1390,4 +1493,25 @@ end
     @test !any(occursin("oscillat", r.message) for r in tl.logs)
     n_inner = PowerFlows.get_control_inner_solve_count(data)
     @test 0 < n_inner < 300
+end
+
+@testset "discrete control: _maybe_repromote retries the FD-probe fallback" begin
+    # `_maybe_repromote` is the per-stage retry that gets a continuation out of the
+    # `FiniteDifferenceProbes` fallback once the base Jacobian stops being singular. This
+    # system's base Jacobian is nonsingular, so a manually-constructed `FiniteDifferenceProbes()`
+    # must be promoted back to a live `_SensitivityContext`.
+    sys = _make_solvable_tap_shunt_system()
+    pf = ACPolarPowerFlow(; control_discrete_devices = true)
+    data = PowerFlowData(pf, sys)
+    ts = 1
+    @test PowerFlows._solve_with_q_limits!(pf, data, ts)
+
+    promoted =
+        PowerFlows._maybe_repromote(PowerFlows.FiniteDifferenceProbes(), pf, data, ts)
+    @test PowerFlows._supports_batched_refresh(promoted)
+
+    # A live context is already promoted: no-op, same object back.
+    ctx = PowerFlows._sensitivity_context(pf, data, ts)
+    @test PowerFlows._supports_batched_refresh(ctx)
+    @test PowerFlows._maybe_repromote(ctx, pf, data, ts) === ctx
 end

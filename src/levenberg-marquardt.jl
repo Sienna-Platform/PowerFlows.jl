@@ -1,22 +1,21 @@
 """Pre-allocated workspace for the Levenberg-Marquardt solver.
 
-Holds the augmented matrix `[J; √λ·D]` with a fixed sparsity pattern, a mapping
-to update its entries in-place, and a cached QR factorization. `D` is the
-Marquardt column scaling (identity when disabled)."""
+Solves each trial step from the normal equations `N = JᵀJ + λ·D²`. `N`'s
+sparsity pattern is fixed for the life of a solve, so its CHOLMOD symbolic
+factorization is computed once and reused across every λ update and
+iteration; only the numeric factorization reruns. `D` is the Marquardt column
+scaling (identity when disabled), floored to keep every entry positive, which
+makes `N` positive definite whenever `λ > 0`. `_lm_qr_fallback` solves the
+augmented system `[J; √λ·D]` by QR instead, for the rare case `N` is not
+positive definite."""
 mutable struct LMWorkspace
-    A::SparseMatrixCSC{Float64, Int64}
-    # Indices into A.nzval for the J block entries (same order as J.Jv.nzval)
-    j_nzval_indices::Vector{Int}
-    # Indices into A.nzval for the √λ diagonal entries (length n)
-    λ_diag_indices::Vector{Int}
-    # SPQR: enables a cached symbolic factorization with in-place numeric
-    # updates on the augmented [J; √λ·I]; the J^TJ normal-equations form is
-    # less stable for the rectangular system.
-    # Cached QR factorization
-    F::SparseArrays.SPQR.QRSparse{Float64, Int64}
-    # Preallocated augmented RHS [-Rv; 0] (length m + n); bottom n stay zero.
-    b::Vector{Float64}
-    # Marquardt diagonal scaling (length n). All-ones ⇒ √λ·I.
+    N::SparseMatrixCSC{Float64, J_INDEX_TYPE}    # JᵀJ + λ·D², fixed pattern
+    jtj::JtJRefillCache
+    diag_nz::Vector{Int}        # N.nzval index of each diagonal entry i
+    mat::FixedStructureCHOLMOD{Float64, J_INDEX_TYPE}
+    F::SparseArrays.CHOLMOD.Factor{Float64, J_INDEX_TYPE}
+    rhs::Vector{Float64}        # -Jᵀ·Rv, length n
+    # Marquardt diagonal scaling (length n). All-ones ⇒ λ·I.
     D::Vector{Float64}
     marquardt_scaling::Bool
     # Per-iteration scratch: temp_x = Rv + J·Δx (m); x_trial = x + Δx (n).
@@ -24,48 +23,32 @@ mutable struct LMWorkspace
     x_trial::Vector{Float64}
 end
 
-"""Build the augmented matrix `[J; D]` once, recording which `A.nzval` entries
-correspond to J values vs the damping diagonal."""
+"""Build the fixed-pattern normal-equations matrix `N = JᵀJ` (values zeroed)
+once, its CHOLMOD symbolic factorization, and the JᵀJ row-pair refill cache."""
 function LMWorkspace(
     Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE};
     marquardt_scaling::Bool = false,
 )
     m, n = size(Jv)
 
-    # Convert J to Int64 indices for SPQR compatibility, then vcat with identity.
-    Jv64 = SparseMatrixCSC{Float64, Int64}(
-        Jv.m, Jv.n,
-        Vector{Int64}(Jv.colptr),
-        Vector{Int64}(Jv.rowval),
-        copy(Jv.nzval),
-    )
-    Iλ = sparse(Int64.(1:n), Int64.(1:n), ones(n), n, n)
-    A = vcat(Jv64, Iλ)
+    # Force the maximal J'*J pattern the same way HomotopyHessian does, then
+    # restore Jv's real values (see homotopy_hessian.jl's HomotopyHessian ctor).
+    original_nzval = copy(Jv.nzval)
+    fill!(Jv.nzval, 1.0)
+    N = Jv' * Jv
+    SparseArrays.nonzeros(N) .= 0.0
+    copyto!(Jv.nzval, original_nzval)
 
-    # Identify which A.nzval entries come from J vs the diagonal.
-    j_nzval_indices = Vector{Int}(undef, length(Jv.nzval))
-    λ_diag_indices = Vector{Int}(undef, n)
+    jtj = _build_jtj_nz_cache(Jv, N)
+    diag_nz = [_nz_index(N, i, i) for i in 1:n]
 
-    j_idx = 0
-    for col in 1:n
-        for a_idx in SparseArrays.nzrange(A, col)
-            row = A.rowval[a_idx]
-            if row <= m
-                j_idx += 1
-                j_nzval_indices[j_idx] = a_idx
-            elseif row == m + col
-                λ_diag_indices[col] = a_idx
-            end
-        end
-    end
-    @assert j_idx == length(Jv.nzval) "Expected $(length(Jv.nzval)) J entries, found $j_idx"
-
-    b = zeros(m + n)
-    F = LinearAlgebra.qr(A)
+    mat = FixedStructureCHOLMOD(N)
+    F = symbolic_factor(mat)
     D = marquardt_scaling ? zeros(n) : ones(n)
 
     ws = LMWorkspace(
-        A, j_nzval_indices, λ_diag_indices, F, b, D, marquardt_scaling,
+        N, jtj, diag_nz, mat, F,
+        Vector{Float64}(undef, n), D, marquardt_scaling,
         Vector{Float64}(undef, m), Vector{Float64}(undef, n))
     if marquardt_scaling
         update_column_scale!(ws, Jv)
@@ -73,18 +56,9 @@ function LMWorkspace(
     return ws
 end
 
-"""Copy current Jacobian values into the augmented matrix."""
-function copy_jacobian!(ws::LMWorkspace, Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE})
-    nzv = Jv.nzval
-    for (i, a_idx) in enumerate(ws.j_nzval_indices)
-        ws.A.nzval[a_idx] = nzv[i]
-    end
-    return
-end
-
 """Update `ws.D`, the per-column damping scale: each entry is the running
 maximum (across iterations) of the corresponding Jacobian column's 2-norm. It
-is used as the Levenberg-Marquardt diagonal damping `√λ·D` in
+is used as the Levenberg-Marquardt diagonal damping `λ·D²` in
 [`update_lambda!`](@ref). A column whose running max is still zero is floored
 to `1.0`, keeping `D > 0` so the damped block stays nonsingular."""
 function update_column_scale!(
@@ -106,22 +80,76 @@ function update_column_scale!(
     return
 end
 
-"""Update the √λ·D damping diagonal and re-factorize."""
-function update_lambda!(ws::LMWorkspace, λ::Float64)
-    sqrtλ = sqrt(λ)
-    @inbounds for col in eachindex(ws.λ_diag_indices)
-        ws.A.nzval[ws.λ_diag_indices[col]] = sqrtλ * ws.D[col]
+"""Refresh `ws.N = JᵀJ + λ·D²` in place from the current `Jv` (via the cached
+row-pair map) and run a numeric CHOLMOD factorization reusing the symbolic
+factorization computed once in the `LMWorkspace` constructor."""
+function update_lambda!(
+    ws::LMWorkspace,
+    Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
+    λ::Float64,
+)
+    Nnz = SparseArrays.nonzeros(ws.N)
+    fill!(Nnz, 0.0)
+    _refresh_JtJ!(ws.N, Jv, ws.jtj)
+    @inbounds for i in eachindex(ws.diag_nz)
+        Nnz[ws.diag_nz[i]] += λ * ws.D[i]^2
     end
-    ws.F = LinearAlgebra.qr(ws.A)
+    set_values!(ws.mat, Nnz)
+    numeric_factor!(ws.F, ws.mat)
     return
 end
 
-"""Marquardt column scaling default per formulation: the rectangular CI state
-columns `(e, f, Q, P_gen)` differ in natural scale, so identity damping is
-ill-conditioned there — default it on. The polar state is well-scaled; keep it
-off so the polar solver is bit-identical to before."""
-_default_marquardt_scaling(::AbstractACPowerFlow) = false
-_default_marquardt_scaling(::ACRectangularPowerFlow) = true
+"""Solve one LM trial step `(JᵀJ + λ·D²)Δx = -Jᵀ·Rv`. Falls back to a fresh
+sparse QR of the augmented system `[J; √λ·D]` (uncached; not meant to be hot)
+if the normal-equations factorization is not positive definite."""
+function _lm_solve_step!(
+    ws::LMWorkspace,
+    Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
+    Rv::Vector{Float64},
+    λ::Float64,
+)
+    ok = try
+        update_lambda!(ws, Jv, λ)
+        LinearAlgebra.issuccess(ws.F)
+    catch e
+        e isa SparseArrays.CHOLMOD.CHOLMODException ||
+            e isa SparseArrays.CHOLMOD.PosDefException || rethrow(e)
+        false
+    end
+    if ok
+        LinearAlgebra.mul!(ws.rhs, Jv', Rv)
+        ws.rhs .*= -1
+        return ws.F \ ws.rhs
+    end
+    @warn "LM normal-equations factorization was not positive definite; falling \
+        back to a sparse QR solve of the augmented system for this step." maxlog = 5
+    return _lm_qr_fallback(Jv, Rv, ws.D, λ)
+end
+
+function _lm_qr_fallback(
+    Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
+    Rv::Vector{Float64},
+    D::Vector{Float64},
+    λ::Float64,
+)
+    m, n = size(Jv)
+    Jv64 = SparseMatrixCSC{Float64, Int64}(
+        Jv.m, Jv.n, Vector{Int64}(Jv.colptr), Vector{Int64}(Jv.rowval), copy(Jv.nzval))
+    Iλ = sparse(Int64.(1:n), Int64.(1:n), sqrt(λ) .* D, n, n)
+    A = vcat(Jv64, Iλ)
+    b = zeros(m + n)
+    b[1:m] .= .-Rv
+    return LinearAlgebra.qr(A) \ b
+end
+
+"""Marquardt column scaling default per formulation, dispatched on the formulation TYPE (so
+it can be resolved at evaluation-model construction time, before an instance exists — see the
+`marquardt_scaling` keyword on [`ACPolarPowerFlow`](@ref)/[`ACRectangularPowerFlow`](@ref)/
+[`ACMixedPowerFlow`](@ref)). The rectangular CI state columns `(e, f, Q, P_gen)` differ in
+natural scale, so identity damping is ill-conditioned there — default it on. The polar and
+mixed states are well-scaled, so it defaults off."""
+_default_marquardt_scaling(::Type{<:AbstractACPowerFlow}) = false
+_default_marquardt_scaling(::Type{<:ACRectangularPowerFlow}) = true
 
 """Driver for the LevenbergMarquardtACPowerFlow method: sets up the data
 structures (e.g. residual), runs the power flow method via calling `_run_power_flow_method`
@@ -189,8 +217,9 @@ function _run_power_flow_method(
     linf = norm(residual.Rv, Inf)
     @debug "initially: sum of squares $(siground(resSize)), L ∞ norm $(siground(linf)), λ = $λ"
     monitor, diag_state = setup_solver_diagnostics(J, stop_at_fold)
-    # LM factorizes the augmented [J; √λ·D], not J, so the diagnostic keeps its own
-    # KLU factor of J (symbolic once here, refreshed each iteration by the hook).
+    # LM factorizes JᵀJ + λ·D² (or, on the rare QR fallback, the augmented
+    # [J; √λ·D]), not J itself, so the diagnostic keeps its own KLU factor of J
+    # (symbolic once here, refreshed each iteration by the hook).
     diag_cache =
         isnothing(diag_state) ? nothing :
         make_linear_solver_cache(PNM.KLUSolver(), J.Jv)
@@ -242,15 +271,8 @@ function compute_error(
     residualSize::Float64,
     ws::LMWorkspace,
 )
-    copy_jacobian!(ws, J.Jv)
     ws.marquardt_scaling && update_column_scale!(ws, J.Jv)
-    update_lambda!(ws, λ)
-
-    m = length(residual.Rv)
-    @assert m == length(ws.b) - size(J.Jv, 2) "residual/J size mismatch vs preallocated LM buffer (m=$m, buf=$(length(ws.b)), n=$(size(J.Jv, 2)))"
-    @views ws.b[1:m] .= .-residual.Rv   # bottom n entries stay zero from construction
-    # Δx left allocating: SPQR has no in-place reuse, and the QR rebuild dominates anyway.
-    Δx = ws.F \ ws.b
+    Δx = _lm_solve_step!(ws, J.Jv, residual.Rv, λ)
 
     # temp_x = Rv + J·Δx
     LinearAlgebra.mul!(ws.temp_x, J.Jv, Δx)

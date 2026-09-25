@@ -446,14 +446,14 @@ function _zir_merge_test_sys(lines, nbus)
             Line(; name = name, available = true,
                 active_power_flow = 0.0, reactive_power_flow = 0.0, arc = arc, r = r, x = x,
                 b = (from = 0.0, to = 0.0), rating = 4.0,
-                angle_limits = (min = -pi, max = pi)),
+                angle_limits = (min = -pi, max = pi), input_basis = PSY.CU),
         )
     end
     add_component!(
         sys,
         PowerLoad(; name = "zload2", available = true,
             bus = buses[2], active_power = 1.0, reactive_power = 0.2, base_power = 100.0,
-            max_active_power = 1.0, max_reactive_power = 0.2),
+            max_active_power = 1.0, max_reactive_power = 0.2, input_basis = PSY.CU),
     )
     add_component!(
         sys,
@@ -464,7 +464,7 @@ function _zir_merge_test_sys(lines, nbus)
             reactive_power_limits = (min = -5.0, max = 5.0), ramp_limits = nothing,
             operation_cost = ThermalGenerationCost(nothing), base_power = 100.0,
             time_limits = nothing, prime_mover_type = PrimeMovers.OT,
-            fuel = ThermalFuels.OTHER),
+            fuel = ThermalFuels.OTHER, input_basis = PSY.CU),
     )
     return sys
 end

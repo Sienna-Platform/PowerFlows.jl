@@ -80,7 +80,7 @@ end
         x = 0.2,
         b = (from = 0.0, to = 0.0),
         rating = 0.0,
-        angle_limits = (min = -pi, max = pi),
+        angle_limits = (min = -pi, max = pi), input_basis = PSY.CU,
     )
     line_4_6 = Line(;
         name = "l_4_6",
@@ -92,7 +92,7 @@ end
         x = 0.2,
         b = (from = 0.0, to = 0.0),
         rating = 0.0,
-        angle_limits = (min = -pi, max = pi),
+        angle_limits = (min = -pi, max = pi), input_basis = PSY.CU,
     )
     add_component!(sys, line_2_6)
     add_component!(sys, line_4_6)

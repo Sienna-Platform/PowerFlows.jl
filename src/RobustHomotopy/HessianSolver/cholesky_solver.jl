@@ -1,4 +1,4 @@
-struct CholeskyHessianSolver <: HessianSolver
+struct CholeskyHessianSolver
     F::SparseArrays.CHOLMOD.Factor{Float64, J_INDEX_TYPE}
     mat::FixedStructureCHOLMOD{Float64, J_INDEX_TYPE}
     buff::Vector{Float64} # buffer for solving

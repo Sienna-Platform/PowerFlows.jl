@@ -110,14 +110,15 @@ function _voltage_controlled_tap_candidates(sys)
 end
 
 """Tap-control metadata for one regulating `PSY.TransformerCircuit`, of either arity.
-`control_limits` is already in tap-ratio units (the PSS/E parser scales RMI1/RMA1 by WINDV2);
+`control_limits` is the tap-ratio band `[pmin, pmax]`, on the same basis as `PSY.get_tap`.
 `get_regulated_bus_number` is 0 for local (to-bus) control."""
 function _tap_metadata(circuit::PSY.TransformerCircuit, to_bus::Int)
     lims = PSY.get_control_limits(circuit)
     reg = PSY.get_regulated_bus_number(circuit)
     cbus = to_bus
     if !iszero(reg)
-        cbus = reg
+        # The sign marks the regulation side (PSS/E CONT<0); the bus number itself is |reg|.
+        cbus = abs(reg)
     end
     # The tap is held anywhere inside the VMA/VMI band and regulates toward its midpoint on
     # an excursion — the same posture as a switched shunt's VSWLO/VSWHI.
@@ -139,18 +140,17 @@ end
 _solved_flag(::Nothing) = false
 _solved_flag(::Float64) = true
 
-_shunt_baseline(solved::Float64, ::Vector{Int}, ::Vector{Float64}) = solved
-_shunt_baseline(::Nothing, engaged::Vector{Int}, dB::Vector{Float64}) =
-    sum(engaged .* dB; init = 0.0)
-
 function _shunt_susceptance_model(
     name::String,
     solved::Union{Nothing, Float64},
+    y_increase::Vector{Complex{Float64}},
     steps::Vector{Int},
     dB::Vector{Float64},
     engaged::Vector{Int},
 )
-    current = _shunt_baseline(solved, engaged, dB)
+    # `_switched_admittance` (common.jl) is the one baseline calculation; a shunt's
+    # susceptance is a pure imaginary admittance, so `imag` recovers it.
+    current = imag(_switched_admittance(solved, engaged, y_increase))
     b_min = sum(min.(steps .* dB, 0.0); init = 0.0)
     b_max = sum(max.(steps .* dB, 0.0); init = 0.0)
     if !(b_min - BOUNDS_TOLERANCE <= current <= b_max + BOUNDS_TOLERANCE)
@@ -179,6 +179,7 @@ function build_controlled_device_set(
     reverse_bus_search_map::Dict{Int, Int} = Dict{Int, Int}(),
     n_time_steps::Int = 1,
 )
+    nrd = PNM.get_network_reduction_data(ybus)
     taps = ControlledTap[]
     for (name, branch, circuit, device_name, circuit_index) in
         _voltage_controlled_tap_candidates(sys)
@@ -210,9 +211,10 @@ function build_controlled_device_set(
         end
         _validate_tap(name, md.pmin, md.pmax, md.ntp) || continue
         _validate_vset("ControlledTap", name, md.vset) || continue
-        # PNM owns the π-model, including the r == x == 0 floor that a hand-built
-        # `1/(r + jx)` would miss (a jumper under tap control would yield `Inf`).
-        adm = PNM.branch_admittance(branch)
+        # PNM owns the π-model, including the r == x == 0 floor a hand-built `1/(r + jx)` would
+        # miss, and applies the same impedance-correction factor the assembled Ybus was stamped
+        # with.
+        adm = PNM.branch_admittance(branch, nrd)
         yt = complex(adm.g, adm.b)
         tap0 = adm.tap
         if !(md.pmin - BOUNDS_TOLERANCE <= tap0 <= md.pmax + BOUNDS_TOLERANCE)
@@ -289,10 +291,11 @@ function build_controlled_device_set(
         _validate_vset("ControlledSwitchedShunt", name, vset) || continue
         solved = PSY.get_solved_admittance(sa)
         steps = PSY.get_number_of_steps(sa)
-        dB = imag.(PSY.get_Y_increase(sa))
+        y_increase = PSY.get_Y_increase(sa)
+        dB = imag.(y_increase)
         engaged = PSY.get_number_engaged(sa)
         current_b, bmin, bmax = _shunt_susceptance_model(
-            name, solved, steps, dB, engaged)
+            name, solved, y_increase, steps, dB, engaged)
         _validate_shunt(name, bmin, bmax, steps, dB) || continue
         push!(
             shunts,

@@ -1,3 +1,13 @@
+"""Row-pair cache for [`_refresh_JtJ!`](@ref): for each nzval index of `H` (whose
+pattern is the fixed pattern of `JᵀJ`), the range of `J.nzval` offset pairs `(a, b)`
+from the same row whose products sum to that entry. Built once by
+[`_build_jtj_nz_cache`](@ref); shared by `HomotopyHessian` and `LMWorkspace`."""
+struct JtJRefillCache
+    p1::Vector{Int}
+    p2::Vector{Int}
+    offsets::Vector{Int}  # length nnz(H) + 1
+end
+
 struct HomotopyHessian
     # PERF: data is stored in triplicate: here, inside pfResidual, and inside J.
     data::ACPowerFlowData
@@ -11,17 +21,78 @@ struct HomotopyHessian
     # (avoids a per-call sparse `setindex!` on those diagonals).
     Jt_R::Vector{Float64}
     pq_diag_nz::Vector{Int}
+    # nzval-offset caches for _update_hessian_matrix_values!, built once at construction
+    # (bus types are fixed for the life of a Hessian); see _build_hessian_edge_nz_cache.
+    # Each row of edge_nz/diag_nz holds an Hv.nzval index, or 0 when that term's
+    # write is structurally absent for the given bus-type combination.
+    edge_i::Vector{Int}
+    edge_k::Vector{Int}
+    edge_nz::Matrix{Int}      # 11 x n_edges
+    diag_nz::Matrix{Int}      # 4 x n_buses
+    diag_accum::Matrix{Float64} # 4 x n_buses scratch for the per-bus diagonal sums
+    jtj::JtJRefillCache
 end
 
-"""Does `A += B' * B`, in a way that preserves the sparse structure of `A`, if possible.
-A workaround for the fact that Julia seems to run `dropzeros!(A)` automatically if I just 
-do `A .+= B' * B`."""
-function A_plus_eq_BT_B!(A::SparseMatrixCSC, B::SparseMatrixCSC)
-    M = B' * B # shouldn't this be allocating too?
-    IS.@assert_op M.colptr == A.colptr
-    IS.@assert_op M.rowval == A.rowval
-    A.nzval .+= M.nzval
+"""Refill `Hv.nzval[e] += dot(J[:,i], J[:,j])` for every structural entry `Hv[i,j]`,
+using the row-pair cache from `_build_jtj_nz_cache` (built once per solve since J's
+sparsity pattern is fixed). Replaces rebuilding `J' * J` from scratch every call."""
+function _refresh_JtJ!(
+    Hv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
+    Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
+    cache::JtJRefillCache,
+)
+    Jnz = Jv.nzval
+    Hnz = SparseArrays.nonzeros(Hv)
+    p1, p2, offsets = cache.p1, cache.p2, cache.offsets
+    @inbounds for e in eachindex(Hnz)
+        s = 0.0
+        for k in offsets[e]:(offsets[e + 1] - 1)
+            s += Jnz[p1[k]] * Jnz[p2[k]]
+        end
+        Hnz[e] += s
+    end
     return
+end
+
+"""Build the once-per-construction row-pair cache for [`_refresh_JtJ!`](@ref): for
+each nzval index of `Hv` (whose pattern is the fixed pattern of `J' * J`), the
+`Jv.nzval` offset pairs `(a, b)` with the same row, one from column `i` and one from
+column `j`, so that `Hv[i,j] = sum(Jv.nzval[a] * Jv.nzval[b] for (a,b) in pairs)`.
+Both `Jv.rowval` ranges are sorted, so this is a merge, mirroring how sparse
+matrix-matrix multiplication derives its numeric phase from a fixed symbolic pattern."""
+function _build_jtj_nz_cache(
+    Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
+    Hv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
+)
+    nnzH = length(SparseArrays.nonzeros(Hv))
+    offsets = Vector{Int}(undef, nnzH + 1)
+    p1 = Int[]
+    p2 = Int[]
+    Jrv = SparseArrays.rowvals(Jv)
+    offsets[1] = 1
+    for col in 1:size(Hv, 2)
+        for hv_idx in SparseArrays.nzrange(Hv, col)
+            i = Hv.rowval[hv_idx]
+            ra, rb = SparseArrays.nzrange(Jv, i), SparseArrays.nzrange(Jv, col)
+            a, b = first(ra), first(rb)
+            enda, endb = last(ra), last(rb)
+            while a <= enda && b <= endb
+                row_a, row_b = Jrv[a], Jrv[b]
+                if row_a == row_b
+                    push!(p1, a)
+                    push!(p2, b)
+                    a += 1
+                    b += 1
+                elseif row_a < row_b
+                    a += 1
+                else
+                    b += 1
+                end
+            end
+            offsets[hv_idx + 1] = length(p1) + 1
+        end
+    end
+    return JtJRefillCache(p1, p2, offsets)
 end
 
 """Compute value of gradient and Hessian at x."""
@@ -30,8 +101,10 @@ function (hess::HomotopyHessian)(x::Vector{Float64}, t_k::Float64, time_step::In
     Rv = hess.pfResidual.Rv
     hess.J(time_step)
     Jv = hess.J.Jv
-    _update_hessian_matrix_values!(hess.Hv, Rv, hess.data, time_step)
-    A_plus_eq_BT_B!(hess.Hv, Jv)
+    _update_hessian_matrix_values!(
+        hess.Hv, Rv, hess.data, time_step,
+        hess.edge_i, hess.edge_k, hess.edge_nz, hess.diag_nz, hess.diag_accum)
+    _refresh_JtJ!(hess.Hv, Jv, hess.jtj)
     Hvnz = SparseArrays.nonzeros(hess.Hv)
     Hvnz .*= t_k
     # (1−t) homotopy term on the PQ |V| diagonal.
@@ -186,8 +259,6 @@ function HomotopyHessian(data::ACPowerFlowData, time_step::Int)
     # the maximal pattern. We then restore J.Jv's original nzval — some
     # entries (e.g. LCC angle-constraint diagonals of 1.0) are set at
     # structure creation and not rewritten by subsequent J(time_step) calls.
-    # The per-call IS.@assert_op in A_plus_eq_BT_B! guards against any future
-    # change in Julia that would drop structural zeros at runtime.
     original_J_nzval = copy(SparseArrays.nonzeros(J.Jv))
     fill!(SparseArrays.nonzeros(J.Jv), 1.0)
     Hv = J.Jv' * J.Jv
@@ -211,9 +282,85 @@ function HomotopyHessian(data::ACPowerFlowData, time_step::Int)
         _nz_index(Hv, 2 * b - 1, 2 * b - 1)
         for b in 1:nbuses if bus_types[b] == PSY.ACBusTypes.PQ
     ]
+    edge_i, edge_k, edge_nz, diag_nz =
+        _build_hessian_edge_nz_cache(Hv, data, time_step)
+    jtj = _build_jtj_nz_cache(J.Jv, Hv)
     return HomotopyHessian(
         data, pfResidual, J, PQ_V_mags, zeros(n_state), Hv,
-        zeros(n_state), pq_diag_nz)
+        zeros(n_state), pq_diag_nz,
+        edge_i, edge_k, edge_nz, diag_nz, zeros(4, nbuses),
+        jtj)
+end
+
+_has_theta(bt::PSY.ACBusTypes.Value) = bt == PSY.ACBusTypes.PQ || bt == PSY.ACBusTypes.PV
+
+"""Build the once-per-construction nzval-offset caches that drive
+[`_update_hessian_matrix_values!`](@ref): for every ordered neighbor pair
+`(i, k)` (i != k) and for every bus `i`, the `Hv.nzval` index of each term the
+fill loop writes, or `0` when that term's bus-type combination means the write
+is skipped (matching the loop's own conditionals exactly). Bus types are fixed
+for the life of a `HomotopyHessian`, so this is safe to compute once and reuse
+every call, replacing a sparse `setindex!` (binary search) with a direct
+`Hvnz[idx] += val` per write."""
+function _build_hessian_edge_nz_cache(
+    Hv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
+    data::ACPowerFlowData,
+    time_step::Int,
+)
+    num_buses = first(size(data.bus_type))
+    bus_type = view(data.bus_type, :, time_step)
+    edge_i = Int[]
+    edge_k = Int[]
+    for i in 1:num_buses
+        for k in data.neighbors[i]
+            i == k && continue
+            push!(edge_i, i)
+            push!(edge_k, k)
+        end
+    end
+    n_edges = length(edge_i)
+    edge_nz = zeros(Int, 11, n_edges)
+    for e in 1:n_edges
+        i, k = edge_i[e], edge_k[e]
+        bt_i, bt_k = bus_type[i], bus_type[k]
+        has_θi, has_θk = _has_theta(bt_i), _has_theta(bt_k)
+        pq_i = bt_i == PSY.ACBusTypes.PQ
+        pq_k = bt_k == PSY.ACBusTypes.PQ
+        # F_i's cross contribution to bus k's diagonal; bus i's own self term needs the
+        # full neighbor sum and is written once after the edge loop via diag_accum/diag_nz.
+        has_θk && (edge_nz[1, e] = _nz_index(Hv, 2 * k, 2 * k))
+        if pq_k
+            edge_nz[2, e] = _nz_index(Hv, 2 * k - 1, 2 * k)
+            edge_nz[3, e] = _nz_index(Hv, 2 * k, 2 * k - 1)
+        end
+        if has_θi && has_θk
+            edge_nz[4, e] = _nz_index(Hv, 2 * i, 2 * k)
+            edge_nz[5, e] = _nz_index(Hv, 2 * k, 2 * i)
+        end
+        if pq_i && has_θk
+            edge_nz[6, e] = _nz_index(Hv, 2 * i - 1, 2 * k)
+            edge_nz[7, e] = _nz_index(Hv, 2 * k, 2 * i - 1)
+        end
+        if pq_k && has_θi
+            edge_nz[8, e] = _nz_index(Hv, 2 * i, 2 * k - 1)
+            edge_nz[9, e] = _nz_index(Hv, 2 * k - 1, 2 * i)
+        end
+        if pq_k && pq_i
+            edge_nz[10, e] = _nz_index(Hv, 2 * i - 1, 2 * k - 1)
+            edge_nz[11, e] = _nz_index(Hv, 2 * k - 1, 2 * i - 1)
+        end
+    end
+    diag_nz = zeros(Int, 4, num_buses)
+    for i in 1:num_buses
+        bt_i = bus_type[i]
+        _has_theta(bt_i) && (diag_nz[1, i] = _nz_index(Hv, 2 * i, 2 * i))
+        if bt_i == PSY.ACBusTypes.PQ
+            diag_nz[2, i] = _nz_index(Hv, 2 * i, 2 * i - 1)
+            diag_nz[3, i] = _nz_index(Hv, 2 * i - 1, 2 * i)
+            diag_nz[4, i] = _nz_index(Hv, 2 * i - 1, 2 * i - 1)
+        end
+    end
+    return edge_i, edge_k, edge_nz, diag_nz
 end
 
 """
@@ -275,148 +422,151 @@ function _update_hessian_matrix_values!(
     Hv::SparseArrays.SparseMatrixCSC{Float64, J_INDEX_TYPE},
     F_value::Vector{Float64},
     data::ACPowerFlowData,
-    time_step::Int64)
+    time_step::Int64,
+    edge_i::Vector{Int},
+    edge_k::Vector{Int},
+    edge_nz::Matrix{Int},
+    diag_nz::Matrix{Int},
+    diag_accum::Matrix{Float64})
     Yb = data.power_network_matrix.data
     Vm = view(data.bus_magnitude, :, time_step)
     θ = view(data.bus_angles, :, time_step)
     num_buses = first(size(data.bus_type))
-    SparseArrays.nonzeros(Hv) .= 0.0
-    for i in 1:num_buses
-        bt_i = data.bus_type[i, time_step]
-        Pi_θiθi, Qi_θiθi = 0.0, 0.0
-        Pi_Viθi, Qi_Viθi = 0.0, 0.0
-        has_θi = (bt_i == PSY.ACBusTypes.PQ) || (bt_i == PSY.ACBusTypes.PV)
-        for k in data.neighbors[i]
-            if i != k
-                bt_k = data.bus_type[k, time_step]
-                Gik, Bik = real(Yb[i, k]), imag(Yb[i, k])
-                has_θk = (bt_k == PSY.ACBusTypes.PQ) || (bt_k == PSY.ACBusTypes.PV)
-                # the partials where all 3 indices are different vanish
-                # naively count 8 with 2 distinct indices: {∂Vₖ, ∂θₖ} x {∂Vₖ, ∂θₖ, ∂Vᵢ, ∂θᵢ}
-                # but can reduce to 6: ∂²/∂Vₖ∂θₖ = ∂²/∂θₖ∂Vₖ, and ∂²Δ{Pᵢ, Qᵢ}/∂²Vₖ is 0.
-                # start with the 4 involving ∂θₖ, then do remaining the 2 involving ∂Vₖ
-                if has_θk
-                    # ∂²Δ{Pᵢ, Qᵢ}/∂²θₖ
-                    Pi_θkθk =
-                        Vm[i] * Vm[k] * ( # = Vm[k] * Qi_θkVk
-                            -Gik * cos(θ[i] - θ[k])
-                            -
-                            Bik * sin(θ[i] - θ[k])
-                        )
-                    Qi_θkθk =
-                        Vm[i] * Vm[k] * ( # = -Vm[k] * Pi_θkVk
-                            -Gik * sin(θ[i] - θ[k])
-                            +
-                            Bik * cos(θ[i] - θ[k])
-                        )
-                    θkθks = Pi_θkθk * F_value[2 * i - 1] + Qi_θkθk * F_value[2 * i]
-                    Hv[2 * k, 2 * k] += θkθks
-                end
-                if bt_k == PSY.ACBusTypes.PQ
-                    # ∂²Δ{Pᵢ, Qᵢ}/∂θₖ∂Vₖ
-                    Pi_θkVk = Vm[i] * (
-                        Gik * sin(θ[i] - θ[k])
-                        -
-                        Bik * cos(θ[i] - θ[k])
-                    )
-                    Qi_θkVk = Vm[i] * (
-                        -Gik * cos(θ[i] - θ[k])
-                        -
-                        Bik * sin(θ[i] - θ[k])
-                    )
-                    θkVks = Pi_θkVk * F_value[2 * i - 1] + Qi_θkVk * F_value[2 * i]
-                    Hv[2 * k - 1, 2 * k] += θkVks
-                    Hv[2 * k, 2 * k - 1] += θkVks
-                end
-                if has_θi
-                    Pi_θkθi =
-                        Vm[i] * Vm[k] * (
-                            Gik * cos(θ[i] - θ[k]) +
-                            Bik * sin(θ[i] - θ[k])
-                        )
-                    Qi_θkθi =
-                        Vm[i] * Vm[k] * (
-                            Gik * sin(θ[i] - θ[k])
-                            -
-                            Bik * cos(θ[i] - θ[k])
-                        )
-                    # contribution towards sum in ∂²Δ{Pᵢ, Qᵢ}/∂θᵢ∂θᵢ
-                    Pi_θiθi -= Pi_θkθi
-                    Qi_θiθi -= Qi_θkθi
-                    if has_θk
-                        # ∂²Δ{Pᵢ, Qᵢ}/∂θₖ∂θᵢ
-                        θiθks = Pi_θkθi * F_value[2 * i - 1] + Qi_θkθi * F_value[2 * i]
-                        Hv[2 * i, 2 * k] += θiθks
-                        Hv[2 * k, 2 * i] += θiθks
-                    end
-                end
-                if bt_i == PSY.ACBusTypes.PQ
-                    Pi_θkVi = Vm[k] * ( # = Vm[k] * Qi_VkVi 
-                        Gik * sin(θ[i] - θ[k])
-                        -
-                        Bik * cos(θ[i] - θ[k])
-                    )
-                    Qi_θkVi = Vm[k] * ( # = -Vm[k] * Pi_VkVi 
-                        -Gik * cos(θ[i] - θ[k])
-                        -
-                        Bik * sin(θ[i] - θ[k])
-                    )
-                    # contribution towards sum in ∂²Δ{Pᵢ, Qᵢ}/∂θᵢ∂Vᵢ
-                    Pi_Viθi -= Pi_θkVi
-                    Qi_Viθi -= Qi_θkVi
-                    if has_θk
-                        # ∂²Δ{Pᵢ, Qᵢ}/∂θₖ∂Vᵢ
-                        Viθks = Pi_θkVi * F_value[2 * i - 1] + Qi_θkVi * F_value[2 * i]
-                        Hv[2 * i - 1, 2 * k] += Viθks
-                        Hv[2 * k, 2 * i - 1] += Viθks
-                    end
-                end
-                if bt_k == PSY.ACBusTypes.PQ && has_θi
-                    # ∂²Δ{Pᵢ, Qᵢ}/∂Vₖ∂θᵢ
-                    Pi_Vkθi = Vm[i] * ( # = -Vm[i] * Qi_VkVi 
-                        -Gik * sin(θ[i] - θ[k])
-                        +
-                        Bik * cos(θ[i] - θ[k])
-                    )
-                    Qi_Vkθi = Vm[i] * ( # = Vm[i] * Pi_VkVi 
-                        Gik * cos(θ[i] - θ[k])
-                        +
-                        Bik * sin(θ[i] - θ[k])
-                    )
-                    θiVks = Pi_Vkθi * F_value[2 * i - 1] + Qi_Vkθi * F_value[2 * i]
-                    Hv[2 * i, 2 * k - 1] += θiVks
-                    Hv[2 * k - 1, 2 * i] += θiVks
-                end
-                if bt_k == PSY.ACBusTypes.PQ && bt_i == PSY.ACBusTypes.PQ
-                    # ∂²Δ{Pᵢ, Qᵢ}/∂Vₖ∂Vᵢ
-                    Pi_VkVi = Gik * cos(θ[i] - θ[k]) + Bik * sin(θ[i] - θ[k])
-                    Qi_VkVi = Gik * sin(θ[i] - θ[k]) - Bik * cos(θ[i] - θ[k])
-                    ViVks = Pi_VkVi * F_value[2 * i - 1] + Qi_VkVi * F_value[2 * i]
-                    Hv[2 * i - 1, 2 * k - 1] += ViVks
-                    Hv[2 * k - 1, 2 * i - 1] += ViVks
-                end
+    Hvnz = SparseArrays.nonzeros(Hv)
+    Hvnz .= 0.0
+    fill!(diag_accum, 0.0)
+    @inbounds for e in eachindex(edge_i)
+        i, k = edge_i[e], edge_k[e]
+        bt_i, bt_k = data.bus_type[i, time_step], data.bus_type[k, time_step]
+        Gik, Bik = real(Yb[i, k]), imag(Yb[i, k])
+        has_θi, has_θk = _has_theta(bt_i), _has_theta(bt_k)
+        # the partials where all 3 indices are different vanish
+        # naively count 8 with 2 distinct indices: {∂Vₖ, ∂θₖ} x {∂Vₖ, ∂θₖ, ∂Vᵢ, ∂θᵢ}
+        # but can reduce to 6: ∂²/∂Vₖ∂θₖ = ∂²/∂θₖ∂Vₖ, and ∂²Δ{Pᵢ, Qᵢ}/∂²Vₖ is 0.
+        # start with the 4 involving ∂θₖ, then do remaining the 2 involving ∂Vₖ
+        if has_θk
+            # ∂²Δ{Pᵢ, Qᵢ}/∂²θₖ
+            Pi_θkθk =
+                Vm[i] * Vm[k] * ( # = Vm[k] * Qi_θkVk
+                    -Gik * cos(θ[i] - θ[k])
+                    -
+                    Bik * sin(θ[i] - θ[k])
+                )
+            Qi_θkθk =
+                Vm[i] * Vm[k] * ( # = -Vm[k] * Pi_θkVk
+                    -Gik * sin(θ[i] - θ[k])
+                    +
+                    Bik * cos(θ[i] - θ[k])
+                )
+            θkθks = Pi_θkθk * F_value[2 * i - 1] + Qi_θkθk * F_value[2 * i]
+            Hvnz[edge_nz[1, e]] += θkθks
+        end
+        if bt_k == PSY.ACBusTypes.PQ
+            # ∂²Δ{Pᵢ, Qᵢ}/∂θₖ∂Vₖ
+            Pi_θkVk = Vm[i] * (
+                Gik * sin(θ[i] - θ[k])
+                -
+                Bik * cos(θ[i] - θ[k])
+            )
+            Qi_θkVk = Vm[i] * (
+                -Gik * cos(θ[i] - θ[k])
+                -
+                Bik * sin(θ[i] - θ[k])
+            )
+            θkVks = Pi_θkVk * F_value[2 * i - 1] + Qi_θkVk * F_value[2 * i]
+            Hvnz[edge_nz[2, e]] += θkVks
+            Hvnz[edge_nz[3, e]] += θkVks
+        end
+        if has_θi
+            Pi_θkθi =
+                Vm[i] * Vm[k] * (
+                    Gik * cos(θ[i] - θ[k]) +
+                    Bik * sin(θ[i] - θ[k])
+                )
+            Qi_θkθi =
+                Vm[i] * Vm[k] * (
+                    Gik * sin(θ[i] - θ[k])
+                    -
+                    Bik * cos(θ[i] - θ[k])
+                )
+            # contribution towards sum in ∂²Δ{Pᵢ, Qᵢ}/∂θᵢ∂θᵢ
+            diag_accum[1, i] -= Pi_θkθi
+            diag_accum[2, i] -= Qi_θkθi
+            if has_θk
+                # ∂²Δ{Pᵢ, Qᵢ}/∂θₖ∂θᵢ
+                θiθks = Pi_θkθi * F_value[2 * i - 1] + Qi_θkθi * F_value[2 * i]
+                Hvnz[edge_nz[4, e]] += θiθks
+                Hvnz[edge_nz[5, e]] += θiθks
             end
         end
-        # now, do the diagonal terms that depend only on i: these are sums [except for ∂²Vᵢ],
-        # but we've been accumulating the sums as we go.
-
-        # ∂²Δ{Pᵢ, Qᵢ}/∂²θᵢ: PQ and PV
-        if has_θi
-            θiθis = Pi_θiθi * F_value[2 * i - 1] + Qi_θiθi * F_value[2 * i]
-            Hv[2 * i, 2 * i] += θiθis
+        if bt_i == PSY.ACBusTypes.PQ
+            Pi_θkVi = Vm[k] * ( # = Vm[k] * Qi_VkVi
+                Gik * sin(θ[i] - θ[k])
+                -
+                Bik * cos(θ[i] - θ[k])
+            )
+            Qi_θkVi = Vm[k] * ( # = -Vm[k] * Pi_VkVi
+                -Gik * cos(θ[i] - θ[k])
+                -
+                Bik * sin(θ[i] - θ[k])
+            )
+            # contribution towards sum in ∂²Δ{Pᵢ, Qᵢ}/∂θᵢ∂Vᵢ
+            diag_accum[3, i] -= Pi_θkVi
+            diag_accum[4, i] -= Qi_θkVi
+            if has_θk
+                # ∂²Δ{Pᵢ, Qᵢ}/∂θₖ∂Vᵢ
+                Viθks = Pi_θkVi * F_value[2 * i - 1] + Qi_θkVi * F_value[2 * i]
+                Hvnz[edge_nz[6, e]] += Viθks
+                Hvnz[edge_nz[7, e]] += Viθks
+            end
         end
-
+        if bt_k == PSY.ACBusTypes.PQ && has_θi
+            # ∂²Δ{Pᵢ, Qᵢ}/∂Vₖ∂θᵢ
+            Pi_Vkθi = Vm[i] * ( # = -Vm[i] * Qi_VkVi
+                -Gik * sin(θ[i] - θ[k])
+                +
+                Bik * cos(θ[i] - θ[k])
+            )
+            Qi_Vkθi = Vm[i] * ( # = Vm[i] * Pi_VkVi
+                Gik * cos(θ[i] - θ[k])
+                +
+                Bik * sin(θ[i] - θ[k])
+            )
+            θiVks = Pi_Vkθi * F_value[2 * i - 1] + Qi_Vkθi * F_value[2 * i]
+            Hvnz[edge_nz[8, e]] += θiVks
+            Hvnz[edge_nz[9, e]] += θiVks
+        end
+        if bt_k == PSY.ACBusTypes.PQ && bt_i == PSY.ACBusTypes.PQ
+            # ∂²Δ{Pᵢ, Qᵢ}/∂Vₖ∂Vᵢ
+            Pi_VkVi = Gik * cos(θ[i] - θ[k]) + Bik * sin(θ[i] - θ[k])
+            Qi_VkVi = Gik * sin(θ[i] - θ[k]) - Bik * cos(θ[i] - θ[k])
+            ViVks = Pi_VkVi * F_value[2 * i - 1] + Qi_VkVi * F_value[2 * i]
+            Hvnz[edge_nz[10, e]] += ViVks
+            Hvnz[edge_nz[11, e]] += ViVks
+        end
+    end
+    # now, do the diagonal terms that depend only on i: these are sums [except for ∂²Vᵢ],
+    # accumulated above as the edge loop ran.
+    @inbounds for i in 1:num_buses
+        bt_i = data.bus_type[i, time_step]
+        # ∂²Δ{Pᵢ, Qᵢ}/∂²θᵢ: PQ and PV
+        if _has_theta(bt_i)
+            θiθis =
+                diag_accum[1, i] * F_value[2 * i - 1] + diag_accum[2, i] * F_value[2 * i]
+            Hvnz[diag_nz[1, i]] += θiθis
+        end
         # ∂²Δ{Pᵢ, Qᵢ}/∂Vᵢ∂θᵢ and ∂²Δ{Pᵢ, Qᵢ}/∂²Vᵢ: PQ only.
         if bt_i == PSY.ACBusTypes.PQ
-            Viθis = Pi_Viθi * F_value[2 * i - 1] + Qi_Viθi * F_value[2 * i]
-            Hv[2 * i, 2 * i - 1] += Viθis
-            Hv[2 * i - 1, 2 * i] += Viθis
+            Viθis =
+                diag_accum[3, i] * F_value[2 * i - 1] + diag_accum[4, i] * F_value[2 * i]
+            Hvnz[diag_nz[2, i]] += Viθis
+            Hvnz[diag_nz[3, i]] += Viθis
 
             Pi_ViVi = 2 * real(Yb[i, i])
             Qi_ViVi = -2 * imag(Yb[i, i])
 
             ViVis = Pi_ViVi * F_value[2 * i - 1] + Qi_ViVi * F_value[2 * i]
-            Hv[2 * i - 1, 2 * i - 1] += ViVis
+            Hvnz[diag_nz[4, i]] += ViVis
         end
     end
     _update_hessian_lcc_contributions!(Hv, F_value, data, time_step)

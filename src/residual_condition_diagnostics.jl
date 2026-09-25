@@ -303,13 +303,13 @@ function _decide_det_sign_switch!(
             continue
         end
         n_finite += 1
-        vote = _bordering_flipped(mon, g, k)
-        isnothing(vote) && continue
-        n_voting += 1
-        n_flipped += vote
+        if _bordering_has_vote(mon, g, k)
+            n_voting += 1
+            n_flipped += _bordering_flipped(mon, g, k)
+        end
     end
 
-    if n_finite == 0
+    if iszero(n_finite)
         @warn "$label: every fold-monitor bordering is degenerate; read as a " *
               "fold$(bail ? ", aborting." : ".")"
         return bail
@@ -324,29 +324,32 @@ function _decide_det_sign_switch!(
     for k in eachindex(gs)
         g = gs[k]
         isfinite(g) || continue
-        if split && _bordering_flipped(mon, g, k) === true
+        if split && _bordering_has_vote(mon, g, k) && _bordering_flipped(mon, g, k)
             _handle_border_pole!(mon, label, k)
         elseif !iszero(sign(g))
             mon.signs[k] = Int8(sign(g))
         end
     end
 
-    (split || n_flipped == 0) && return false
+    (split || iszero(n_flipped)) && return false
 
     @warn "$label: sign(det J) flipped on all $(n_voting) borderings. Fold / " *
           "voltage-collapse signature$(bail ? ", aborting." : ".")"
     return bail
 end
 
-"""Did bordering `k` flip sign this iteration? `nothing` when it has no vote to cast:
-no previous sign yet (fresh or just re-picked), or an exactly zero `g`, which holds
-the previous sign rather than replacing it. Reads `mon.signs` without writing, so it
-answers the same before and after the verdict — which is why the signs are committed
-in a second pass."""
-function _bordering_flipped(mon::BorderedFoldMonitor, g::Float64, k::Int)
-    current = Int8(sign(g))
-    (iszero(current) || iszero(mon.signs[k])) && return nothing
-    return current != mon.signs[k]
+"""Does bordering `k` have a previous sign to vote with this iteration? `false` when it has none
+yet (fresh or just re-picked), or `g` is exactly zero, which holds the previous sign rather than
+casting a vote. Reads `mon.signs` without writing, so it answers the same before and after the
+verdict — which is why the signs are committed in a second pass."""
+function _bordering_has_vote(mon::BorderedFoldMonitor, g::Float64, k::Int)::Bool
+    return !iszero(sign(g)) && !iszero(mon.signs[k])
+end
+
+"""Did bordering `k` flip sign this iteration versus its last recorded sign? Only meaningful
+when [`_bordering_has_vote`](@ref) is `true` for the same `(g, k)`."""
+function _bordering_flipped(mon::BorderedFoldMonitor, g::Float64, k::Int)::Bool
+    return Int8(sign(g)) != mon.signs[k]
 end
 
 """Handle a degenerate bordering: `det M` — not `J` — went singular. Re-pick slot `k`;
@@ -479,7 +482,16 @@ function run_solver_diagnostics!(
 end
 
 """`+`/`−` for the monitor's sign, or `n/a` when `g` is unavailable."""
-_fmt_det_sign(g::Float64) = !isfinite(g) ? "n/a" : (g > 0 ? "+" : (g < 0 ? "−" : "0"))
+function _fmt_det_sign(g::Float64)
+    isfinite(g) || return "n/a"
+    if g > 0
+        return "+"
+    elseif g < 0
+        return "−"
+    else
+        return "0"
+    end
+end
 
 """
     _report_area_interchange_failure(data, time_step)

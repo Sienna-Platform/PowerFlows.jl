@@ -158,20 +158,13 @@ struct PowerFlowData{
     dc_network::Base.RefValue{DCNetwork}
     arc_lossy_admittance_from_to::Union{SparseMatrixCSC{YBUS_ELTYPE, Int}, Nothing}
     arc_lossy_admittance_to_from::Union{SparseMatrixCSC{YBUS_ELTYPE, Int}, Nothing}
-    # Persistent solver cache, reused across repeated solves on the same data (e.g. a PCM loop:
-    # fixed network, changing injections) so factorizations are computed once and solve buffers
-    # are not reallocated. Lazily populated in place on the first solve (the `Base.Ref` avoids
-    # reconstructing `data`). Holds a [`SolverCache`](@ref) — an abstract supertype forward-declared
-    # in `power_flow_types.jl` so the field type resolves before the concrete subtypes are defined.
-    # Two TYPE-DISJOINT subtypes share this one slot:
-    #   * DC path (`ABA`/PTDF data): a [`DCSolverCache`](@ref) holding the factored network matrix +
-    #     backend (the invalidation key — rebuild when either changes, see
-    #     `_get_or_build_solver_cache!`), the `PFLinearSolverCache`, and the per-solve scratch.
-    #   * AC path, FastDecoupled solver (`ACPowerFlowData`): a `FastDecoupledCache` holding the
-    #     factored B′ (once per data/scheme/backend) and per-PQ-set factored B″ submatrices
-    #     (see `_get_or_build_fd_cache!`).
-    # Each getter dispatches on the cached subtype, so an empty slot or a cross-use fails loudly
-    # (a `MethodError`) instead of being silently mis-read — no sentinel tag needed.
+    # Persistent solver cache, reused across repeated solves on the same `data` so factorizations
+    # aren't recomputed. Lazily populated on first solve. Holds a [`SolverCache`](@ref);
+    # TYPE-DISJOINT subtypes share this slot:
+    #   * DC (`ABA`/PTDF/vPTDF): [`DCSolverCache`](@ref).
+    #   * FastDecoupled: `FastDecoupledCache` (`:decoupled`) or `FDFixedJacobianCache` (`:fixed_jacobian`).
+    #   * rect/mixed NR/TR: `RectMixedNRCache`; a cross-use from another AC subtype rebuilds instead of erroring.
+    # A getter on the wrong subtype otherwise fails loudly (`MethodError`), not a silent mis-read.
     solver_cache::Base.RefValue{Union{Nothing, SolverCache}}
     controlled_devices::Union{Nothing, ControlledDeviceSet}
     # Memoized NR/TR AC-Jacobian sparse structure. Its OWN slot (not `solver_cache`) because the

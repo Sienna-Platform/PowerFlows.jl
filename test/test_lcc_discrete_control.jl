@@ -40,7 +40,7 @@ end
 
 @testset "continuation checkpoint restores LCC solver state" begin
     raw = joinpath(TEST_DATA_DIR, "case5_2_lcc.raw")
-    sys = make_system(PFP.PowerModelsData(raw); runchecks = false)
+    sys = system_from_openapi(PFP.PowerModelsData(raw); runchecks = false)
     pf = ACPolarPowerFlow(; check_reactive_power_limits = false)
     data = PowerFlowData(pf, sys)
     ts = 1
@@ -92,7 +92,7 @@ end
 
 @testset "LCC + control_discrete_devices constructs at any time_steps" begin
     raw = joinpath(TEST_DATA_DIR, "case5_2_lcc.raw")
-    sys = make_system(PFP.PowerModelsData(raw); runchecks = false)
+    sys = system_from_openapi(PFP.PowerModelsData(raw); runchecks = false)
     for nts in (1, 3)
         pf = ACPolarPowerFlow(; control_discrete_devices = true, time_steps = nts)
         data = PowerFlowData(pf, sys)   # must not throw

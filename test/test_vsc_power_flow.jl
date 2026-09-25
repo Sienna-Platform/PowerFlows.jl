@@ -66,7 +66,7 @@ end
         dc_setpoint_from = 1.0,
         dc_control_to = PSY.VSCDCControlModes.DC_VOLTAGE_DROOP,
         dc_voltage_droop_to = 0.05,
-        dc_setpoint_to = 1.0,
+        dc_setpoint_to = 1.0, input_basis = PSY.CU,
     )
     PSY.add_component!(sys, vsc)
     data = PowerFlowData(
@@ -154,7 +154,7 @@ function _vsc_system(; g = 50.0, vsc_kwargs...)
         active_power_limits_from = (min = -2.0, max = 2.0),
         active_power_limits_to = (min = -2.0, max = 2.0),
         g = g,
-        vsc_kwargs...,
+        vsc_kwargs..., input_basis = PSY.CU,
     )
     PSY.add_component!(sys, vsc)
     return (sys, PSY.get_number(pq[1]), PSY.get_number(pq[2]))
@@ -772,7 +772,7 @@ function _build_parallel_ic_system(; shared_ac::Bool = true)
             loss_function = PSY.LossCurve(
                 PSY.QuadraticCurve(0.005, 0.01, 0.002),
                 PSY.NaturalUnit(),
-            ),
+            ), input_basis = PSY.CU,
         )
         PSY.add_component!(sys, ic)
     end
@@ -788,7 +788,7 @@ function _build_parallel_ic_system(; shared_ac::Bool = true)
         l = 0.0,
         c = 0.0,
         active_power_limits_from = (min = -5.0, max = 5.0),
-        active_power_limits_to = (min = -5.0, max = 5.0),
+        active_power_limits_to = (min = -5.0, max = 5.0), input_basis = PSY.CU,
     )
     PSY.add_component!(sys, dcl)
     return sys
@@ -845,7 +845,7 @@ function _vsc_system_ref_terminal(; g = 45.0)
         converter_loss_to = PSY.LossCurve(
             PSY.QuadraticCurve(0.01, 0.02, 0.005),
             PSY.NaturalUnit(),
-        ),
+        ), input_basis = PSY.CU,
     )
     PSY.add_component!(sys, vsc)
     return sys
@@ -948,7 +948,7 @@ end
         dc_control_to = PSY.VSCDCControlModes.DC_POWER,
         ac_control_to = PSY.VSCACControlModes.AC_VOLTAGE,
         dc_setpoint_to = 0.3,
-        ac_setpoint_to = 1.0,
+        ac_setpoint_to = 1.0, input_basis = PSY.CU,
     )
     PSY.add_component!(sys_pv, vsc)
     @test_throws ErrorException PowerFlowData(
@@ -988,7 +988,7 @@ end
             ac_setpoint_from = 1.0,
             dc_control_to = PSY.VSCDCControlModes.DC_POWER,
             ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
-            dc_setpoint_to = 0.2,
+            dc_setpoint_to = 0.2, input_basis = PSY.CU,
         )
         PSY.add_component!(sys_dup, vsc_k)
     end
