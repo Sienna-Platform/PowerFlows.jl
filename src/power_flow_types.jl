@@ -302,7 +302,7 @@ ACRectangularPowerFlow{FastDecoupledACPowerFlow{FDFixedJacobian, FDSchemeXB}}()
 ```
 
 # Settings (via `solution_parameters` and/or call kwargs)
-- `handoff_solver`: `nothing` (pure FD; default) or [`NewtonRaphsonACPowerFlow`](@ref) /
+- `handoff_solver`: `Nothing` (pure FD; default) or [`NewtonRaphsonACPowerFlow`](@ref) /
     [`TrustRegionACPowerFlow`](@ref) / [`LevenbergMarquardtACPowerFlow`](@ref) for final
     refinement to `tol`.
 - `handoff_tol::Float64`: FD-stage exit ∞-norm when a handoff solver is configured.

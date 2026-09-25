@@ -129,9 +129,8 @@ end
     a = Logging.with_logger(Logging.NullLogger()) do
         @allocated PF._newton_workspace!(pf, data, 1, backend, PF.DEFAULT_NR_TOL, init_kwargs)
     end
-    # Measured 5.2 KB/call on c_sys14: 1.4 KB dispatch and return boxing at the abstract cache
-    # slot, 3.9 KB in the reuse arm (slack-factor rebuild, improve_x0). The un-narrowed path
-    # this guards against was 10.5 KB.
+    # Measured 5.2 KB/call on c_sys14: 1.4 KB dispatch/return boxing at the abstract cache slot,
+    # 3.9 KB in the reuse arm (slack-factor rebuild, improve_x0); the un-narrowed path costs 10.5 KB.
     @test a < 8_000
 end
 

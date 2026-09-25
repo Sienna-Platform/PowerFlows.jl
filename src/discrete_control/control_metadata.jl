@@ -110,11 +110,7 @@ function _voltage_controlled_tap_candidates(sys)
 end
 
 """Tap-control metadata for one regulating `PSY.TransformerCircuit`, of either arity.
-`control_limits` is used directly as the tap-ratio band `[pmin, pmax]`, but PSS/E's RMI1/RMA1
-bound WINDV1 while `PSY.get_tap` stores the ratio WINDV1/WINDV2; `TransformerCircuit` has no
-WINDV2-equivalent field, so this band is wrong by a factor of WINDV2 whenever WINDV2 != 1 for
-the parsed transformer (the correct band would be `control_limits ./ WINDV2`). Fixing this
-needs a data-model change upstream (PFFP/PSY), not here.
+`control_limits` is the tap-ratio band `[pmin, pmax]`, on the same basis as `PSY.get_tap`.
 `get_regulated_bus_number` is 0 for local (to-bus) control."""
 function _tap_metadata(circuit::PSY.TransformerCircuit, to_bus::Int)
     lims = PSY.get_control_limits(circuit)
@@ -215,11 +211,9 @@ function build_controlled_device_set(
         end
         _validate_tap(name, md.pmin, md.pmax, md.ntp) || continue
         _validate_vset("ControlledTap", name, md.vset) || continue
-        # PNM owns the π-model, including the r == x == 0 floor that a hand-built
-        # `1/(r + jx)` would miss (a jumper under tap control would yield `Inf`), and the
-        # `nrd`-aware method applies the same impedance-correction factor the assembled
-        # Ybus was stamped with — the uncorrected component form would drift from the
-        # actual matrix the moment a correction table is in play.
+        # PNM owns the π-model, including the r == x == 0 floor a hand-built `1/(r + jx)` would
+        # miss, and applies the same impedance-correction factor the assembled Ybus was stamped
+        # with.
         adm = PNM.branch_admittance(branch, nrd)
         yt = complex(adm.g, adm.b)
         tap0 = adm.tap

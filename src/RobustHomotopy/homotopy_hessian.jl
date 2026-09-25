@@ -1,3 +1,13 @@
+"""Row-pair cache for [`_refresh_JtJ!`](@ref): for each nzval index of `H` (whose
+pattern is the fixed pattern of `JᵀJ`), the range of `J.nzval` offset pairs `(a, b)`
+from the same row whose products sum to that entry. Built once by
+[`_build_jtj_nz_cache`](@ref); shared by `HomotopyHessian` and `LMWorkspace`."""
+struct JtJRefillCache
+    p1::Vector{Int}
+    p2::Vector{Int}
+    offsets::Vector{Int}  # length nnz(H) + 1
+end
+
 struct HomotopyHessian
     # PERF: data is stored in triplicate: here, inside pfResidual, and inside J.
     data::ACPowerFlowData
@@ -20,11 +30,7 @@ struct HomotopyHessian
     edge_nz::Matrix{Int}      # 11 x n_edges
     diag_nz::Matrix{Int}      # 4 x n_buses
     diag_accum::Matrix{Float64} # 4 x n_buses scratch for the per-bus diagonal sums
-    # JᵀJ refill cache: for each hess.Hv nzval index, the pairs of J.Jv.nzval offsets
-    # (same row) whose product sums to that entry; see _build_jtj_nz_cache.
-    jtj_p1::Vector{Int}
-    jtj_p2::Vector{Int}
-    jtj_offsets::Vector{Int}  # length nnz(Hv) + 1
+    jtj::JtJRefillCache
 end
 
 """Refill `Hv.nzval[e] += dot(J[:,i], J[:,j])` for every structural entry `Hv[i,j]`,
@@ -33,12 +39,11 @@ sparsity pattern is fixed). Replaces rebuilding `J' * J` from scratch every call
 function _refresh_JtJ!(
     Hv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
     Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
-    p1::Vector{Int},
-    p2::Vector{Int},
-    offsets::Vector{Int},
+    cache::JtJRefillCache,
 )
     Jnz = Jv.nzval
     Hnz = SparseArrays.nonzeros(Hv)
+    p1, p2, offsets = cache.p1, cache.p2, cache.offsets
     @inbounds for e in eachindex(Hnz)
         s = 0.0
         for k in offsets[e]:(offsets[e + 1] - 1)
@@ -87,7 +92,7 @@ function _build_jtj_nz_cache(
             offsets[hv_idx + 1] = length(p1) + 1
         end
     end
-    return p1, p2, offsets
+    return JtJRefillCache(p1, p2, offsets)
 end
 
 """Compute value of gradient and Hessian at x."""
@@ -99,7 +104,7 @@ function (hess::HomotopyHessian)(x::Vector{Float64}, t_k::Float64, time_step::In
     _update_hessian_matrix_values!(
         hess.Hv, Rv, hess.data, time_step,
         hess.edge_i, hess.edge_k, hess.edge_nz, hess.diag_nz, hess.diag_accum)
-    _refresh_JtJ!(hess.Hv, Jv, hess.jtj_p1, hess.jtj_p2, hess.jtj_offsets)
+    _refresh_JtJ!(hess.Hv, Jv, hess.jtj)
     Hvnz = SparseArrays.nonzeros(hess.Hv)
     Hvnz .*= t_k
     # (1−t) homotopy term on the PQ |V| diagonal.
@@ -279,12 +284,12 @@ function HomotopyHessian(data::ACPowerFlowData, time_step::Int)
     ]
     edge_i, edge_k, edge_nz, diag_nz =
         _build_hessian_edge_nz_cache(Hv, data, time_step)
-    jtj_p1, jtj_p2, jtj_offsets = _build_jtj_nz_cache(J.Jv, Hv)
+    jtj = _build_jtj_nz_cache(J.Jv, Hv)
     return HomotopyHessian(
         data, pfResidual, J, PQ_V_mags, zeros(n_state), Hv,
         zeros(n_state), pq_diag_nz,
         edge_i, edge_k, edge_nz, diag_nz, zeros(4, nbuses),
-        jtj_p1, jtj_p2, jtj_offsets)
+        jtj)
 end
 
 _has_theta(bt::PSY.ACBusTypes.Value) = bt == PSY.ACBusTypes.PQ || bt == PSY.ACBusTypes.PV
@@ -321,6 +326,8 @@ function _build_hessian_edge_nz_cache(
         has_θi, has_θk = _has_theta(bt_i), _has_theta(bt_k)
         pq_i = bt_i == PSY.ACBusTypes.PQ
         pq_k = bt_k == PSY.ACBusTypes.PQ
+        # F_i's cross contribution to bus k's diagonal; bus i's own self term needs the
+        # full neighbor sum and is written once after the edge loop via diag_accum/diag_nz.
         has_θk && (edge_nz[1, e] = _nz_index(Hv, 2 * k, 2 * k))
         if pq_k
             edge_nz[2, e] = _nz_index(Hv, 2 * k - 1, 2 * k)

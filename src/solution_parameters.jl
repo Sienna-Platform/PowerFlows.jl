@@ -60,7 +60,7 @@ take effect.
   keyword is given explicitly there.
 
 # Fast decoupled
-- `handoff_solver` (`NoHandoff` for pure FD), `handoff_tol`, `refreeze_on_stall`,
+- `handoff_solver` (`Nothing` for pure FD), `handoff_tol`, `refreeze_on_stall`,
   `fd_non_divergent`, `fd_blowup`, `fd_dvlim`, `fd_vm_abort`, `fd_ndvfct`,
   `fd_max_step_halvings`.
 
@@ -76,13 +76,6 @@ take effect.
 
 Per-call data (`x0`) is not a parameter and is not carried here — pass it at the call site.
 """
-
-"""Sentinel [`ACPowerFlowSolverType`](@ref)-shaped marker for "no fast-decoupled handoff
-solver configured" — the [`SolutionParameters`](@ref) `handoff_solver` default. A concrete
-singleton type (not `nothing`) keeps the field concretely typed; FD dispatches on the value
-(`_fd_maybe_handoff!(::Type{NoHandoff}, …)` vs. the solver-type method) instead of an
-`isnothing` check."""
-struct NoHandoff end
 
 Base.@kwdef struct SolutionParameters
     tol::Float64 = DEFAULT_NR_TOL
@@ -118,9 +111,9 @@ Base.@kwdef struct SolutionParameters
 
     # `handoff_solver` is typed as `DataType`, not `ACPowerFlowSolverType`, because that
     # type is defined after this file in the include order; `_validate_fd_handoff_solver`
-    # checks the value anyway. Defaults to the `NoHandoff` sentinel (not `nothing`) so the
-    # field stays concrete.
-    handoff_solver::DataType = NoHandoff
+    # checks the value anyway. Defaults to `Nothing` (not the value `nothing`) so the
+    # field stays concrete and FD dispatches on `::Type{Nothing}`.
+    handoff_solver::DataType = Nothing
     handoff_tol::Float64 = DEFAULT_FD_HANDOFF_TOL
     refreeze_on_stall::Bool = DEFAULT_FD_REFREEZE_ON_STALL
     fd_non_divergent::Bool = DEFAULT_FD_NON_DIVERGENT

@@ -42,7 +42,7 @@ system rejects them) and the `FDDecoupled`-is-polar-only constraint is enforced 
 """
 function _validate_fd_handoff_solver(handoff_solver)
     if !(
-        handoff_solver === NoHandoff ||
+        handoff_solver === Nothing ||
         handoff_solver === NewtonRaphsonACPowerFlow ||
         handoff_solver === TrustRegionACPowerFlow ||
         handoff_solver === LevenbergMarquardtACPowerFlow
@@ -50,7 +50,7 @@ function _validate_fd_handoff_solver(handoff_solver)
         throw(
             ArgumentError(
                 "FastDecoupled: unsupported handoff_solver $(handoff_solver). Must be " *
-                "NoHandoff (pure FD), NewtonRaphsonACPowerFlow, TrustRegionACPowerFlow, or " *
+                "Nothing (pure FD), NewtonRaphsonACPowerFlow, TrustRegionACPowerFlow, or " *
                 "LevenbergMarquardtACPowerFlow.",
             ),
         )
@@ -72,7 +72,7 @@ function _newton_power_flow(
     time_step::Int64;
     tol = DEFAULT_NR_TOL,
     maxIterations = DEFAULT_FD_MAX_ITER,
-    handoff_solver = NoHandoff,
+    handoff_solver = Nothing,
     handoff_tol = DEFAULT_FD_HANDOFF_TOL,
     refreeze_on_stall = DEFAULT_FD_REFREEZE_ON_STALL,
     fd_non_divergent = DEFAULT_FD_NON_DIVERGENT,
@@ -131,7 +131,7 @@ function _fd_run(
 end
 
 # =====================================================================================
-# Shared FD safeguards (WP2; reused by WP3's decoupled half-steps and WP5).
+# Shared FD safeguards, reused by the decoupled half-steps below.
 #
 # These operate on a generic Newton-style cycle: a candidate step `Δx` (already
 # solve-then-negated, ready for `x .+= Δx`) is conditioned in place before being applied,
@@ -271,7 +271,7 @@ _fd_v_state_indices(::ACRectangularCIResidual) = Int[]
 _fd_v_state_indices(::ACMixedCPBResidual) = Int[]
 
 # =====================================================================================
-# Opt-in handoff (WP4). The FD stage iterates to a loose `handoff_tol` (`stage_tol`), then
+# Opt-in handoff. The FD stage iterates to a loose `handoff_tol` (`stage_tol`), then
 # this helper hands the FD state off to the existing NR/TR inner method for final
 # refinement to the real `tol`. No-op when handoff is disabled or FD already met `tol`.
 # =====================================================================================
@@ -279,12 +279,12 @@ _fd_v_state_indices(::ACMixedCPBResidual) = Int[]
 """The FD-stage exit tolerance: the loose `handoff_tol` when a handoff will polish the result to
 the real `tol`, else `tol` itself (pure FD). Dispatches on `handoff_solver` (a `Type`) rather
 than branching on an `isnothing`/`===` check."""
-_fd_stage_tol(::Type{NoHandoff}, tol, handoff_tol) = tol
+_fd_stage_tol(::Type{Nothing}, tol, handoff_tol) = tol
 _fd_stage_tol(::Type{<:ACPowerFlowSolverType}, tol, handoff_tol) = handoff_tol
 
 """Whether a configured [`FastDecoupledACPowerFlow`](@ref) handoff solver requires the
 formulation Jacobian to be assembled (the :decoupled loop otherwise skips it)."""
-_fd_needs_handoff_jacobian(::Type{NoHandoff}) = false
+_fd_needs_handoff_jacobian(::Type{Nothing}) = false
 _fd_needs_handoff_jacobian(::Type{<:ACPowerFlowSolverType}) = true
 
 # The `Jv` argument for `_finalize_power_flow`: the assembled Jacobian values when the :decoupled
@@ -292,13 +292,17 @@ _fd_needs_handoff_jacobian(::Type{<:ACPowerFlowSolverType}) = true
 _fd_finalize_jv(::Nothing) = nothing
 _fd_finalize_jv(J) = J.Jv
 
+# The Type methods live in levenberg-marquardt.jl; this instance form lets call sites pass `pf`
+# directly instead of `typeof(pf)`.
+_default_marquardt_scaling(pf::AbstractACPowerFlow) = _default_marquardt_scaling(typeof(pf))
+
 """
     _fd_maybe_handoff!(handoff_solver, pf, sv, residual, J, time_step, tol, linear_solver,
                        solver_name, fd_iters) -> (converged::Bool, handoff_iters::Int)
 
 Run the opt-in handoff solver (`NewtonRaphsonACPowerFlow` / `TrustRegionACPowerFlow` /
 `LevenbergMarquardtACPowerFlow`) from the current FD state `sv.x` for final refinement to the
-real `tol`. Dispatches on `handoff_solver` (a `Type`): the [`NoHandoff`](@ref) method is a no-op
+real `tol`. Dispatches on `handoff_solver` (a `Type`): the `::Type{Nothing}` method is a no-op
 (returns the current convergence status and `0` handoff iterations); the general
 `ACPowerFlowSolverType` method also no-ops when the FD state already meets `tol`, else refreshes
 the formulation Jacobian VALUES at the current FD state and calls the matching inner method:
@@ -309,7 +313,7 @@ caller's subsequent `J(time_step)` / `_finalize_*` see the refined solution. `fd
 `solver_name` are used only for the `@info` handoff log line.
 """
 function _fd_maybe_handoff!(
-    ::Type{NoHandoff},
+    ::Type{Nothing},
     pf::AbstractACPowerFlow{<:FastDecoupledACPowerFlow},
     sv::StateVectorCache,
     residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
@@ -341,7 +345,7 @@ function _fd_maybe_handoff!(
     if handoff_solver === LevenbergMarquardtACPowerFlow
         # LM's inner method takes the raw state vector + an LMWorkspace (a different signature
         # from NR/TR) and mutates x0 in place; see src/levenberg-marquardt.jl.
-        ws = LMWorkspace(J.Jv; marquardt_scaling = _default_marquardt_scaling(typeof(pf)))
+        ws = LMWorkspace(J.Jv; marquardt_scaling = _default_marquardt_scaling(pf))
         converged, i2 = _run_power_flow_method(
             time_step, sv.x, residual, J, ws;
             tol, maxIterations = DEFAULT_NR_MAX_ITER, λ_0 = DEFAULT_λ_0,
@@ -455,7 +459,7 @@ function _fd_fixed_jacobian_power_flow(
     fd_vm_abort::Float64 = DEFAULT_FD_VM_ABORT,
     fd_ndvfct::Float64 = DEFAULT_FD_NDVFCT,
     fd_max_step_halvings::Int = DEFAULT_FD_MAX_STEP_HALVINGS,
-    handoff_solver = NoHandoff,
+    handoff_solver = Nothing,
     handoff_tol::Float64 = DEFAULT_FD_HANDOFF_TOL,
     validate_voltage_magnitudes::Bool = DEFAULT_VALIDATE_VOLTAGES,
     vm_validation_range::MinMax = DEFAULT_VALIDATION_RANGE,
@@ -651,7 +655,7 @@ function _fd_restore_best!(
 end
 
 # =====================================================================================
-# Polar :decoupled (B′/B″ half-iteration) loop — WP3.
+# Polar :decoupled (B′/B″ half-iteration) loop.
 #
 # Classic fast decoupled power flow: solve the active-power
 # mismatch against the constant B′ (P-θ half-step), re-evaluate the residual, then the
@@ -661,19 +665,18 @@ end
 # data.bus_reactive_power_injections stays current for the Q-limit outer loop.
 #
 # Sign convention (the load-bearing piece): both half-steps mirror NR's solve-then-negate
-# (`x .-= B⁻¹·r`), pinned by T2 NR-parity. The explicit-row updates use the SAME contract;
-# `FD_EXPLICIT_SYNC_SIGN = -1` corresponds to the plan's `x[...] -= sign·Rv[...]` so each
-# explicit update reduces to `x[...] += Rv[...]` (single Newton step on a ±1-coefficient row /
-# the rank-1 distributed-slack column where Σγ = 1).
+# (`x .-= B⁻¹·r`). The explicit-row updates use the SAME contract; `FD_EXPLICIT_SYNC_SIGN = -1`
+# makes each explicit update reduce to `x[...] += Rv[...]` (single Newton step on a
+# ±1-coefficient row / the rank-1 distributed-slack column where Σγ = 1).
 # =====================================================================================
 
-# Plan §4.1 "Explicit-row sync": the slack scalar column has ∂Rv[2i-1]/∂s = −γᵢ (Σγ = 1 over a
-# subnetwork ⇒ a single exact rank-1 update), and the PV/REF Q rows have a −1 self-coefficient.
-# The solve-then-negate contract therefore gives `x[...] += Rv[...]`, i.e. `−= sign·Rv` with:
+# Explicit-row sync: the slack scalar column has ∂Rv[2i-1]/∂s = −γᵢ (Σγ = 1 over a subnetwork
+# ⇒ a single exact rank-1 update), and the PV/REF Q rows have a −1 self-coefficient. The
+# solve-then-negate contract therefore gives `x[...] += Rv[...]`, i.e. `−= sign·Rv` with:
 const FD_EXPLICIT_SYNC_SIGN = -1.0
 
 # =====================================================================================
-# Factor-once caching for the polar :decoupled loop (WP5b).
+# Factor-once caching for the polar :decoupled loop.
 #
 # The fast-decoupled performance contract: the active-power/angle matrix B′ remains
 # fixed throughout the solution, and the reactive-power/voltage matrix B″ changes only as
@@ -1184,19 +1187,17 @@ end
 Polar classic fast-decoupled (B′/B″ half-iteration) FD loop. Builds the constant B′/B″ matrices
 once (factor-once via `build_fd_matrices`/`extract_bpp`), then iterates strict P-θ → Q-V
 half-steps with an exact residual re-evaluation after EACH half-step (the mid-cycle refresh
-prevents convergence cycling — do NOT skip it). Shared WP2 safeguards
-(non-divergent backtracking with best-state restore, BLOWUP, DVLIM, V≈0 abort) protect the
-documented FD failure modes. The FD stage converges on `‖Rv‖∞ < stage_tol`, where `stage_tol`
-is the real `tol` for pure FD (`handoff_solver === NoHandoff`) or the loose `handoff_tol` when an
-opt-in handoff (WP4) is configured — the handoff then refines to the real `tol`
-(`_fd_maybe_handoff!`).
+prevents convergence cycling — do NOT skip it). Shared safeguards (non-divergent backtracking
+with best-state restore, BLOWUP, DVLIM, V≈0 abort) protect the documented FD failure modes. The
+FD stage converges on `‖Rv‖∞ < stage_tol`, where `stage_tol` is the real `tol` for pure FD
+(`handoff_solver === Nothing`) or the loose `handoff_tol` when an opt-in handoff is configured —
+the handoff then refines to the real `tol` (`_fd_maybe_handoff!`).
 
 Distributed slack is supported via the per-iteration rank-1 slack sync in
-[`_sync_explicit_state!`] (decision recorded in WP3 / T6). Returns `(converged, iters)`; the
-public driver returns only `converged`, so this is wrapped by `_newton_power_flow`. When
-`_return_iters = true` the tuple is returned directly (used by T2 to assert the FD iteration
-count); when `_return_stage_iters = true` it returns `(converged, fd_iters, handoff_iters)`
-(used by T4 to assert the FD stage ran and the handoff was small/skipped).
+[`_sync_explicit_state!`]. Returns `(converged, iters)`; the public driver returns only
+`converged`, so this is wrapped by `_newton_power_flow`. When `_return_iters = true` the tuple
+is returned directly; when `_return_stage_iters = true` it returns
+`(converged, fd_iters, handoff_iters)`.
 """
 function _fd_decoupled_power_flow(
     pf::AbstractACPowerFlow{<:FastDecoupledACPowerFlow},
@@ -1211,7 +1212,7 @@ function _fd_decoupled_power_flow(
     fd_vm_abort::Float64 = DEFAULT_FD_VM_ABORT,
     fd_ndvfct::Float64 = DEFAULT_FD_NDVFCT,
     fd_max_step_halvings::Int = DEFAULT_FD_MAX_STEP_HALVINGS,
-    handoff_solver = NoHandoff,
+    handoff_solver = Nothing,
     handoff_tol::Float64 = DEFAULT_FD_HANDOFF_TOL,
     validate_voltage_magnitudes::Bool = DEFAULT_VALIDATE_VOLTAGES,
     vm_validation_range::MinMax = DEFAULT_VALIDATION_RANGE,
@@ -1262,12 +1263,11 @@ function _fd_decoupled_power_flow(
         )
     end
 
-    # Factor-once cache (WP5b): B′ over fd.pvpq factored exactly once per (data, scheme, backend)
+    # Factor-once cache: B′ over fd.pvpq factored exactly once per (data, scheme, backend)
     # lifetime; the [pq, pq] B″ submatrix + half-step buffers factored once per distinct PQ set
     # (bus-type signature) and reused across Q-limit retries / multi-period steps. The hot loop
     # fetches its matrices, index vectors, and rp/rq buffers from the cache (no per-invocation
-    # build_fd_matrices/extract_bpp call, no per-iteration allocation). Behavior is identical to
-    # building them inline — only WHERE they come from changes (T2/T6 arbitrate equivalence).
+    # build_fd_matrices/extract_bpp call, no per-iteration allocation).
     backend_id = _fd_backend_id(linear_solver)
     cache = _get_or_build_fd_cache!(data, time_step, scheme, backend_id, linear_solver)
     pqdata = _get_pq_data!(cache, data, time_step, linear_solver)
@@ -1405,8 +1405,8 @@ function _fd_decoupled_power_flow(
             break
         end
 
-        # --- non-divergent backtracking (shared with WP2): if the full cycle failed to
-        # improve Σ(Rv²) enough, re-apply a halved cycle step from the cycle-start state. ---
+        # --- non-divergent backtracking: if the full cycle failed to improve Σ(Rv²) enough,
+        # re-apply a halved cycle step from the cycle-start state. ---
         if fd_non_divergent && ss >= fd_ndvfct * sg.prev_ss
             accepted = false
             factor = 1.0

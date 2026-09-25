@@ -79,9 +79,10 @@ end
 # the PQ ZIP path in `_update_residual_values!` telescopes onto whatever is here, so every caller
 # (construction, `_refresh_polar_residual!`'s cache reuse, the sensitivity context's per-pass
 # refresh) must rebuild it fresh from `data`, not fold onto a stale value.
+"""Always succeeds for the polar residual; returns `true`."""
 function _refresh_residual_setpoints!(
     residual::ACPowerFlowResidual, data::ACPowerFlowData, time_step::Int64,
-)
+)::Bool
     @inbounds for ix in eachindex(residual.P_net)
         p =
             data.bus_active_power_injections[ix, time_step] -
@@ -101,7 +102,7 @@ function _refresh_residual_setpoints!(
         view(data.bus_active_power_constant_impedance_withdrawals, :, time_step)
     residual.bus_reactive_constant_Z .=
         view(data.bus_reactive_power_constant_impedance_withdrawals, :, time_step)
-    return
+    return true
 end
 
 """

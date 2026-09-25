@@ -10,9 +10,7 @@ augmented system `[J; √λ·D]` by QR instead, for the rare case `N` is not
 positive definite."""
 mutable struct LMWorkspace
     N::SparseMatrixCSC{Float64, J_INDEX_TYPE}    # JᵀJ + λ·D², fixed pattern
-    jtj_p1::Vector{Int}
-    jtj_p2::Vector{Int}
-    jtj_offsets::Vector{Int}    # see _build_jtj_nz_cache
+    jtj::JtJRefillCache
     diag_nz::Vector{Int}        # N.nzval index of each diagonal entry i
     mat::FixedStructureCHOLMOD{Float64, J_INDEX_TYPE}
     F::SparseArrays.CHOLMOD.Factor{Float64, J_INDEX_TYPE}
@@ -41,7 +39,7 @@ function LMWorkspace(
     SparseArrays.nonzeros(N) .= 0.0
     copyto!(Jv.nzval, original_nzval)
 
-    jtj_p1, jtj_p2, jtj_offsets = _build_jtj_nz_cache(Jv, N)
+    jtj = _build_jtj_nz_cache(Jv, N)
     diag_nz = [_nz_index(N, i, i) for i in 1:n]
 
     mat = FixedStructureCHOLMOD(N)
@@ -49,7 +47,7 @@ function LMWorkspace(
     D = marquardt_scaling ? zeros(n) : ones(n)
 
     ws = LMWorkspace(
-        N, jtj_p1, jtj_p2, jtj_offsets, diag_nz, mat, F,
+        N, jtj, diag_nz, mat, F,
         Vector{Float64}(undef, n), D, marquardt_scaling,
         Vector{Float64}(undef, m), Vector{Float64}(undef, n))
     if marquardt_scaling
@@ -92,7 +90,7 @@ function update_lambda!(
 )
     Nnz = SparseArrays.nonzeros(ws.N)
     fill!(Nnz, 0.0)
-    _refresh_JtJ!(ws.N, Jv, ws.jtj_p1, ws.jtj_p2, ws.jtj_offsets)
+    _refresh_JtJ!(ws.N, Jv, ws.jtj)
     @inbounds for i in eachindex(ws.diag_nz)
         Nnz[ws.diag_nz[i]] += λ * ws.D[i]^2
     end
@@ -149,7 +147,7 @@ it can be resolved at evaluation-model construction time, before an instance exi
 `marquardt_scaling` keyword on [`ACPolarPowerFlow`](@ref)/[`ACRectangularPowerFlow`](@ref)/
 [`ACMixedPowerFlow`](@ref)). The rectangular CI state columns `(e, f, Q, P_gen)` differ in
 natural scale, so identity damping is ill-conditioned there — default it on. The polar and
-mixed states are well-scaled; keep it off so those solvers are bit-identical to before."""
+mixed states are well-scaled, so it defaults off."""
 _default_marquardt_scaling(::Type{<:AbstractACPowerFlow}) = false
 _default_marquardt_scaling(::Type{<:ACRectangularPowerFlow}) = true
 
@@ -180,7 +178,7 @@ function _newton_power_flow(
     converged = norm(residual.Rv, Inf) < tol
     i = 0
     if !converged
-        use_scaling = something(marquardt_scaling, _default_marquardt_scaling(typeof(pf)))
+        use_scaling = something(marquardt_scaling, _default_marquardt_scaling(pf))
         ws = LMWorkspace(J.Jv; marquardt_scaling = use_scaling)
         converged, i = _run_power_flow_method(
             time_step,

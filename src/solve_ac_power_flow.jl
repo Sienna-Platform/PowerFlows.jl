@@ -242,6 +242,9 @@ function solve_power_flow!(
 )
     pf = get_pf(data)
     merged_kwargs = merge(get_solver_kwargs(pf), NamedTuple(kwargs))
+    merged_kwargs.maxIterations < 1 && error(
+        "maxIterations must be >= 1, got $(merged_kwargs.maxIterations) for $(typeof(pf)).",
+    )
     sorted_time_steps =
         get(merged_kwargs, :time_steps, sort(collect(keys(get_time_step_map(data)))))
     # This can be done from PSI by directly writing to `data`'s fields; we just don't
@@ -381,8 +384,8 @@ end
 `isnothing`/`isempty` in one method body, so the discrete-control continuation
 (`_control_continuation!` and everything it pulls in) is only ever type-inferred and compiled
 for a call that actually carries a `ControlledDeviceSet` — never for the plain (no discrete
-control) solve, which is the common case and was paying 36-55% of first-solve compile time
-for a code path it never takes."""
+control) solve, which is the common case and would otherwise pay 36-55% of first-solve compile
+time for a code path it never takes."""
 function _ac_power_flow(
     data::ACPowerFlowData,
     pf::AbstractACPowerFlow{<:ACPowerFlowSolverType},

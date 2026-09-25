@@ -62,9 +62,8 @@ end
 end
 
 @testset "check_reactive_power_limits overrides per call" begin
-    # Regression: a per-call `check_reactive_power_limits = true` was silently ignored
-    # because `_solve_with_q_limits!` read only the stored parameter. c_sys14 bus 8's Q
-    # violates its limit unless the flag is honored.
+    # `_solve_with_q_limits!` must read the per-call override, not just the stored parameter.
+    # c_sys14 bus 8's Q violates its limit unless the flag is honored.
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
     pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; correct_bustypes = true)
     data = PF.PowerFlowData(pf, sys)
@@ -105,4 +104,11 @@ end
         ),
     )
     @test PF.get_interchange_tolerance(pf) == PF.MIN_INTERCHANGE_TOLERANCE
+end
+
+@testset "maxIterations < 1 errors loudly instead of silently non-converging" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; correct_bustypes = true)
+    data = PF.PowerFlowData(pf, sys)
+    @test_throws ErrorException PF.solve_power_flow!(data; maxIterations = -1)
 end

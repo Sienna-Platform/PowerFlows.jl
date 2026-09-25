@@ -49,7 +49,7 @@ function build_ieee14_facts_system(;
         control_mode = PSY.FACTSOperationModes.NML,
         voltage_setpoint = vset,
         shunt_control_type = shunt_control_type,
-        regulated_bus_number = regulated_bus_number,
+        regulated_bus_number = regulated_bus_number, input_basis = PSY.CU,
     )
     # `max_shunt_current`/`max_reactive_power` are stored in device base; the constructor
     # kwargs take a raw CU value, so set them through the units-aware setters to honor the
@@ -1014,7 +1014,7 @@ end
         Line(; name = tap_name, available = true, active_power_flow = 0.0,
             reactive_power_flow = 0.0, arc = Arc(; from = b2, to = b3),
             r = 0.1, x = 0.1, b = (from = 0.0, to = 0.0), rating = 1.0,
-            angle_limits = (min = -pi / 2, max = pi / 2)),
+            angle_limits = (min = -pi / 2, max = pi / 2), input_basis = PSY.CU),
     )
     pf = ACPolarPowerFlow(; control_discrete_devices = true)
     @test solve_and_store_power_flow!(pf, sys)
@@ -1093,7 +1093,7 @@ end
 
 @testset "discrete control: analytic sensitivity is available on every AC formulation" begin
     # Every formulation must reach the analytic path and earn batched passes via a
-    # `_refresh_residual_inputs!`/`_refresh_jacobian_yb_caches!` pair that re-syncs its caches.
+    # `_refresh_residual_setpoints!`/`_refresh_jacobian_yb_caches!` pair that re-syncs its caches.
     for pf in (
         ACPolarPowerFlow(; control_discrete_devices = true),
         ACRectangularPowerFlow(; control_discrete_devices = true),
@@ -1194,11 +1194,9 @@ end
 end
 
 @testset "discrete control: batched refresh rebuilds after a bus-type flip" begin
-    # `_refresh_sensitivity_context!` correctly refuses to reuse a ctx whose bus-type snapshot
-    # has gone stale (a Q-limit PV<->PQ flip invalidates its baked-in subnetwork/slack layout),
-    # but on its own it never replaces `ctx` — so a single flip anywhere in the network used to
-    # disable batching for the rest of the continuation. `_refresh_or_rebuild_context` must
-    # rebuild fresh instead.
+    # `_refresh_sensitivity_context!` refuses to reuse a ctx whose bus-type snapshot has gone
+    # stale (a Q-limit PV<->PQ flip invalidates its baked-in subnetwork/slack layout) but never
+    # replaces `ctx` itself; `_refresh_or_rebuild_context` must rebuild fresh instead.
     sys = _make_solvable_tap_shunt_system()
     pf = ACPolarPowerFlow(; control_discrete_devices = true)
     data = PowerFlowData(pf, sys)
@@ -1231,13 +1229,15 @@ end
                 sys,
                 PowerLoad(; name = "l$k", available = true, bus = bl,
                     active_power = 0.5, reactive_power = 0.25, base_power = 100.0,
-                    max_active_power = 100.0, max_reactive_power = 100.0),
+                    max_active_power = 100.0, max_reactive_power = 100.0,
+                    input_basis = PSY.CU),
             )
             add_component!(
                 sys,
                 PowerLoad(; name = "s$k", available = true, bus = bs,
                     active_power = 0.05, reactive_power = 0.025, base_power = 100.0,
-                    max_active_power = 100.0, max_reactive_power = 100.0),
+                    max_active_power = 100.0, max_reactive_power = 100.0,
+                    input_basis = PSY.CU),
             )
             _add_simple_line!(sys, ref, bs, 1e-2, 1e-2, 0.0)
             add_component!(
@@ -1246,7 +1246,8 @@ end
                     circuit = TransformerCircuit(; available = true,
                         arc = Arc(; from = ref, to = bl), r = 0.01, x = 0.10,
                         tap = 1.0, rating = 1.0, base_power = 100.0,
-                        control_objective = PSY.TransformerControlObjective.VOLTAGE)),
+                        control_objective = PSY.TransformerControlObjective.VOLTAGE,
+                        input_basis = PSY.CU), input_basis = PSY.CU),
             )
             add_component!(
                 sys,
@@ -1492,4 +1493,25 @@ end
     @test !any(occursin("oscillat", r.message) for r in tl.logs)
     n_inner = PowerFlows.get_control_inner_solve_count(data)
     @test 0 < n_inner < 300
+end
+
+@testset "discrete control: _maybe_repromote retries the FD-probe fallback" begin
+    # `_maybe_repromote` is the per-stage retry that gets a continuation out of the
+    # `FiniteDifferenceProbes` fallback once the base Jacobian stops being singular. This
+    # system's base Jacobian is nonsingular, so a manually-constructed `FiniteDifferenceProbes()`
+    # must be promoted back to a live `_SensitivityContext`.
+    sys = _make_solvable_tap_shunt_system()
+    pf = ACPolarPowerFlow(; control_discrete_devices = true)
+    data = PowerFlowData(pf, sys)
+    ts = 1
+    @test PowerFlows._solve_with_q_limits!(pf, data, ts)
+
+    promoted =
+        PowerFlows._maybe_repromote(PowerFlows.FiniteDifferenceProbes(), pf, data, ts)
+    @test PowerFlows._supports_batched_refresh(promoted)
+
+    # A live context is already promoted: no-op, same object back.
+    ctx = PowerFlows._sensitivity_context(pf, data, ts)
+    @test PowerFlows._supports_batched_refresh(ctx)
+    @test PowerFlows._maybe_repromote(ctx, pf, data, ts) === ctx
 end

@@ -626,8 +626,8 @@ end
             rating = 1.0,
             base_power = 100.0,
             base_voltage_primary = 230,
-            base_voltage_secondary = 110,
-        ),
+            base_voltage_secondary = 110, input_basis = PSY.CU,
+        ), input_basis = PSY.CU,
     )
     add_component!(sys, t)
 
@@ -738,7 +738,7 @@ function test_lcc_ac_solver(ACSolver)
     sys, lcc = simple_lcc_system()
     # FastDecoupled :decoupled (the polar default) cannot span the LCC state variables; use its
     # :fixed_jacobian variant, which freezes the full Jacobian (LCC rows included). Dedicated FD
-    # LCC parity lives in test_fast_decoupled.jl ("FastDecoupled WP5: :fixed_jacobian + LCC HVDC").
+    # LCC parity lives in test_fast_decoupled.jl ("FastDecoupled :fixed_jacobian + LCC HVDC").
     pf = if ACSolver === FastDecoupledACPowerFlow
         ACPowerFlow{FastDecoupledACPowerFlow{FDFixedJacobian, FDSchemeXB}}(;
             correct_bustypes = true,

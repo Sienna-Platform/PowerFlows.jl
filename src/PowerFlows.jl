@@ -112,8 +112,6 @@ include("fast_decoupled_method.jl")
 # RobustHomotopy's HessianSolver machinery (FixedStructureCHOLMOD, the JᵀJ nzval-pair
 # cache) precedes levenberg-marquardt.jl because LMWorkspace reuses both as a struct
 # field type and via the shared JᵀJ refill helpers.
-include("RobustHomotopy/HessianSolver/hessian_solver.jl")
-include("RobustHomotopy/HessianSolver/KLU_hessian_solver.jl")
 include("RobustHomotopy/HessianSolver/fixed_structure_CHOLMOD.jl")
 include("RobustHomotopy/HessianSolver/cholesky_solver.jl")
 include("RobustHomotopy/homotopy_hessian.jl")

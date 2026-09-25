@@ -185,6 +185,7 @@ end
         max_impedance_reactive_power = PSY.get_max_reactive_power(load, PSY.NU),
         max_current_active_power = PSY.get_max_active_power(load, PSY.NU),
         max_current_reactive_power = PSY.get_max_reactive_power(load, PSY.NU),
+        input_basis = PSY.CU,
     )
     add_component!(sys, new_load)
     set_zip_load_in_mva!(sys, (0.0, P, 0.0))
@@ -372,6 +373,19 @@ end
         aba_matrix, _ = _dc_test_pieces(data)
         solve_power_flow!(data; linear_solver = "KLU")
         @test data.solver_cache[].cache === aba_matrix.K
+    end
+end
+
+@testset "Switching linear_solver backend on the same data errors" begin
+    # Only meaningful where a second backend exists alongside KLU (AppleAccelerate, macOS only).
+    if Sys.isapple()
+        sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+        data = PowerFlowData(DCPowerFlow(), sys)
+        solve_power_flow!(data; linear_solver = "KLU")
+        @test_throws ErrorException solve_power_flow!(
+            data;
+            linear_solver = "AppleAccelerateLU",
+        )
     end
 end
 

@@ -158,29 +158,13 @@ struct PowerFlowData{
     dc_network::Base.RefValue{DCNetwork}
     arc_lossy_admittance_from_to::Union{SparseMatrixCSC{YBUS_ELTYPE, Int}, Nothing}
     arc_lossy_admittance_to_from::Union{SparseMatrixCSC{YBUS_ELTYPE, Int}, Nothing}
-    # Persistent solver cache, reused across repeated solves on the same data (e.g. a PCM loop:
-    # fixed network, changing injections) so factorizations are computed once and solve buffers
-    # are not reallocated. Lazily populated in place on the first solve (the `Base.Ref` avoids
-    # reconstructing `data`). Holds a [`SolverCache`](@ref) — an abstract supertype forward-declared
-    # in `power_flow_types.jl` so the field type resolves before the concrete subtypes are defined.
-    # Several TYPE-DISJOINT subtypes share this one slot:
-    #   * DC path (`ABA`/PTDF/vPTDF data): a [`DCSolverCache`](@ref) holding the factored network
-    #     matrix + backend (the invalidation key — rebuild when either changes, see
-    #     `_dc_solve!`), the `PFLinearSolverCache`, and the per-solve scratch.
-    #   * PTDF only, before its first solve: a `DCScratchStage` holding scratch built at
-    #     construction (while the source `Ybus` is still in scope), promoted to a
-    #     `DCSolverCache` on the first solve once a backend is chosen.
-    #   * AC path, FastDecoupled solver (`ACPowerFlowData`): a `FastDecoupledCache` (`:decoupled`)
-    #     or `FDFixedJacobianCache` (`:fixed_jacobian`), holding the factored B′/frozen-Jacobian
-    #     factorization (see `_get_or_build_fd_cache!` / `_get_or_build_fdj_cache!`).
-    #   * AC path, rect/mixed NR/TR (`ACPowerFlowData`): a `RectMixedNRCache`
-    #     (`power_flow_method.jl`) holding the linear-solver factorization and state-vector
-    #     buffers, reused when the rebuilt Jacobian's pattern matches (see
-    #     `_get_or_build_rect_mixed_cache!`); unlike the FD caches, a cross-use from this slot's
-    #     other AC-path subtypes rebuilds rather than erroring — an ordinary solver-type switch on
-    #     the same `data`, not a program bug.
-    # Except where noted above, a getter dispatching on the cached subtype fails loudly (a
-    # `MethodError`) on an empty slot or a cross-use, instead of being silently mis-read.
+    # Persistent solver cache, reused across repeated solves on the same `data` so factorizations
+    # aren't recomputed. Lazily populated on first solve. Holds a [`SolverCache`](@ref);
+    # TYPE-DISJOINT subtypes share this slot:
+    #   * DC (`ABA`/PTDF/vPTDF): [`DCSolverCache`](@ref).
+    #   * FastDecoupled: `FastDecoupledCache` (`:decoupled`) or `FDFixedJacobianCache` (`:fixed_jacobian`).
+    #   * rect/mixed NR/TR: `RectMixedNRCache`; a cross-use from another AC subtype rebuilds instead of erroring.
+    # A getter on the wrong subtype otherwise fails loudly (`MethodError`), not a silent mis-read.
     solver_cache::Base.RefValue{Union{Nothing, SolverCache}}
     controlled_devices::Union{Nothing, ControlledDeviceSet}
     # Memoized NR/TR AC-Jacobian sparse structure. Its OWN slot (not `solver_cache`) because the
@@ -856,26 +840,13 @@ function PowerFlowData(
     aux_network_matrix = PNM.ABA_Matrix(ybus; factorize = true)
     # `get_arc_axis(data)`/`get_bus_lookup(data)` read the PTDF (metadata) matrix for this method.
     arc_bus_incidence = _signed_arc_bus_incidence(ybus, power_network_matrix)
-    # Built from the SAME `ybus` as the PTDF matrix so its bus/arc axes match without a
-    # permutation; staged into scratch below.
-    ba_matrix = PNM.BA_Matrix(ybus)
-    if PNM.get_arc_axis(ba_matrix) != PNM.get_arc_axis(power_network_matrix) ||
-       PNM.get_bus_axis(ba_matrix) != PNM.get_bus_axis(power_network_matrix)
-        error(
-            "PNM.BA_Matrix and PNM.PTDF built from the same Ybus have different axes; " *
-            "this is a bug in PowerNetworkMatrices.",
-        )
-    end
-    data = make_and_initialize_power_flow_data(
+    return make_and_initialize_power_flow_data(
         pf,
         sys,
         power_network_matrix,
         aux_network_matrix;
         arc_bus_incidence = arc_bus_incidence,
     )
-    # Stage the scratch now, while `ba_matrix` is in scope; the first solve promotes it.
-    data.solver_cache[] = DCScratchStage(_make_dc_scratch(data; ba = ba_matrix.data))
-    return data
 end
 
 # DC Power Flow Data with virtual PTDF matrix

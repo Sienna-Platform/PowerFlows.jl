@@ -1,4 +1,4 @@
-# Fast/Fixed Decoupled Newton-Raphson (FDNR) — B′/B″ matrix machinery (WP1).
+# Fast/Fixed Decoupled Newton-Raphson (FDNR) — B′/B″ matrix machinery.
 #
 # Builds the constant fast-decoupled Jacobian approximations B′ (active-power/angle) and
 # B″ (reactive-power/voltage) from the PowerFlowData network matrices. Everything here is a
@@ -31,10 +31,10 @@
 #   * Sign convention for B′/B″: they approximate the codebase's OWN Jacobian sub-blocks. On a
 #     lossless, shunt-free, nominal-tap network at flat start, B′ = (P-θ block)/V over pvpq and
 #     B″ = (Q-V block)/V over pq EXACTLY, which equals −imag(Ybus) restricted to those rows/cols.
-#     T1 (`test/test_fast_decoupled.jl`, "FastDecoupled WP1: B′/B″ vs exact Jacobian") is the
-#     arbiter — it compares against the real `ACPowerFlowJacobian.Jv`, never against this code.
+#     `test/test_fast_decoupled.jl`'s "FastDecoupled B′/B″ vs exact Jacobian" is the arbiter — it
+#     compares against the real `ACPowerFlowJacobian.Jv`, never against this code.
 #
-# See also `src/fast_decoupled_method.jl` (WP2/WP3 drivers) which consume these matrices.
+# See also `src/fast_decoupled_method.jl`, which consumes these matrices.
 
 # 1/x cap for the resistance-neglecting B′/B″ stamp (sign preserved for series capacitors), locked
 # to PowerNetworkMatrices' reactance floor: PNM substitutes x = ZERO_IMPEDANCE_X_EPSILON for an
@@ -234,7 +234,7 @@ end
 """
     _restamp_ybus(p::FDArcParams) -> SparseMatrixCSC{ComplexF64, Int}
 
-Rebuild the full Ybus from the π-model parameters plus per-bus shunts. Used by the WP1
+Rebuild the full Ybus from the π-model parameters plus per-bus shunts. Used by the
 restamp-reconstruction tests; should match the original Ybus within ComplexF32 noise.
 """
 function _restamp_ybus(p::FDArcParams)

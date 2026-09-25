@@ -35,9 +35,9 @@ struct DCSolverCache{M, B, C, S} <: SolverCache
 end
 
 # Per-solve scratch + network-fixed precomputes, reused across time steps and repeated
-# solves. Parametrized on `A` (arc-bus incidence) and `B` (`ba`, below) so both stay
-# concrete after the function-barrier dispatch.
-struct DCSolveScratch{A, B}
+# solves. Parametrized on `A` (arc-bus incidence) so it stays concrete after the
+# function-barrier dispatch.
+struct DCSolveScratch{A}
     power_injections::Matrix{Float64}
     p_inj::Matrix{Float64}
     rs::Vector{Float64}
@@ -48,34 +48,10 @@ struct DCSolveScratch{A, B}
     # Pre-computed from/to bus indices for arc angle differences (avoids per-call allocation)
     fb_ix::Vector{Int}
     tb_ix::Vector{Int}
-    # PNM's `BA_Matrix.data` (bus × arc, susceptance-weighted incidence), PTDF only. Built
-    # from the same `Ybus` as the PTDF matrix so the axes match without a permutation.
-    # `Nothing` for ABA (uses its own `BA_Matrix` as `aux_network_matrix`) and vPTDF.
-    ba::B
-    # PTDF-only loss-factor buffers (arc × T and bus × T); zero-sized otherwise.
-    lf_rf::Matrix{Float64}
-    lf_rhs::Matrix{Float64}
 end
 
 """
-    DCScratchStage{S <: DCSolveScratch} <: SolverCache
-
-Scratch staged in `data.solver_cache[]` at construction, before a backend is chosen; the
-first solve promotes it to a [`DCSolverCache`](@ref). Type-disjoint from `DCSolverCache`
-and `FastDecoupledCache`, so the slot's concrete type drives dispatch with no sentinel tag.
-"""
-struct DCScratchStage{S <: DCSolveScratch} <: SolverCache
-    scratch::S
-end
-
-# Loss-factor buffers for `_dc_ptdf_loss_factors!`: sized only when `ba` (PTDF) is present.
-_loss_factor_buffers(::Nothing, n_arcs, n_buses, n_ts) =
-    (Matrix{Float64}(undef, 0, 0), Matrix{Float64}(undef, 0, 0))
-_loss_factor_buffers(::SparseMatrixCSC, n_arcs, n_buses, n_ts) =
-    (Matrix{Float64}(undef, n_arcs, n_ts), Matrix{Float64}(undef, n_buses, n_ts))
-
-"""
-    _make_dc_scratch(data::PowerFlowData; ba = nothing) -> DCSolveScratch
+    _make_dc_scratch(data::PowerFlowData) -> DCSolveScratch
 
 Build the `DCSolveScratch` a DC solve reuses across time steps: the injection work
 buffers, plus the topology-fixed precomputes (non-reference bus rows, per-arc from/to bus
@@ -83,10 +59,7 @@ indices, per-arc equivalent resistances, and the arc-bus incidence). Built once 
 matrix because everything but the work buffers depends only on the topology, not on the
 injections that change between steps.
 """
-function _make_dc_scratch(
-    data::PowerFlowData;
-    ba::Union{Nothing, SparseMatrixCSC{Float64, Int}} = nothing,
-)
+function _make_dc_scratch(data::PowerFlowData)
     n_buses = size(data.bus_active_power_injections, 1)
     valid_ix = collect(1:n_buses)[get_valid_ix(data)]  # resolve Not(ref) → Vector{Int}
     n_ts = size(data.bus_active_power_injections, 2)
@@ -95,7 +68,6 @@ function _make_dc_scratch(
     bus_lookup = get_bus_lookup(data)
     fb_ix = [bus_lookup[bus_no] for bus_no in first.(arcs)]
     tb_ix = [bus_lookup[bus_no] for bus_no in last.(arcs)]
-    lf_rf, lf_rhs = _loss_factor_buffers(ba, length(arcs), n_buses, n_ts)
     return DCSolveScratch(
         similar(data.bus_active_power_injections),
         Matrix{Float64}(undef, length(valid_ix), n_ts),
@@ -104,9 +76,6 @@ function _make_dc_scratch(
         valid_ix,
         fb_ix,
         tb_ix,
-        ba,
-        lf_rf,
-        lf_rhs,
     )
 end
 
@@ -127,17 +96,19 @@ end
 _dc_solve!(data, ::Nothing, backend, aba_matrix, run!::F) where {F} =
     _dc_build_cache_and_solve!(data, backend, aba_matrix, _make_dc_scratch(data), run!)
 
-_dc_solve!(data, staged::DCScratchStage, backend, aba_matrix, run!::F) where {F} =
-    _dc_build_cache_and_solve!(data, backend, aba_matrix, staged.scratch, run!)
-
 function _dc_solve!(data, entry::DCSolverCache, backend, aba_matrix, run!::F) where {F}
     M = aba_matrix.data
     if entry.matrix === M && typeof(entry.backend) === typeof(backend)
         run!(data, entry.cache, entry.scratch)
         return nothing
     end
-    # Matrix identity never actually changes for a given `data` (only the backend can), so
-    # the topology-fixed scratch is reused as-is; only the factorization is rebuilt.
+    if typeof(entry.backend) !== typeof(backend)
+        error(
+            "DC solve backend changed from $(typeof(entry.backend)) to $(typeof(backend)) " *
+            "on the same PowerFlowData. Construct a new PowerFlowData to switch backends.",
+        )
+    end
+    # Matrix changed under the same backend; scratch is topology-fixed and reused as-is.
     return _dc_build_cache_and_solve!(data, backend, aba_matrix, entry.scratch, run!)
 end
 
@@ -195,6 +166,13 @@ function _run_ptdf_solve!(
         data.bus_active_power_injections - data.bus_active_power_withdrawals
     power_injections .+= data.bus_hvdc_net_power
     power_injections .+= data.bus_phase_shift_injections
+    mul!(
+        data.arc_active_power_flow_from_to,
+        transpose(data.power_network_matrix.data),
+        power_injections,
+    )
+    data.arc_active_power_flow_from_to .-= data.arc_phase_shift_flow_offsets
+    @. data.arc_active_power_flow_to_from = -data.arc_active_power_flow_from_to
     # HVDC flows stored separately and already calculated: see initialize_power_flow_data!
     valid_ix = scratch.valid_ix
     p_inj = scratch.p_inj
@@ -202,49 +180,13 @@ function _run_ptdf_solve!(
     solve!(solver_cache, p_inj)
     @views data.bus_angles[valid_ix, :] .= p_inj
     _shift_angles_to_stored_reference!(data)
-    # f = BAᵀθ − offsets, from the already-solved angles.
-    mul!(data.arc_active_power_flow_from_to, transpose(scratch.ba), data.bus_angles)
-    data.arc_active_power_flow_from_to .-= data.arc_phase_shift_flow_offsets
-    @. data.arc_active_power_flow_to_from = -data.arc_active_power_flow_from_to
     mul!(data.arc_angle_differences, scratch.arc_bus_incidence, data.bus_angles)
     @. data.arc_active_power_losses = scratch.rs * data.arc_active_power_flow_from_to^2
     data.converged .= true
     _adjust_dc_slack_injections!(data, power_injections)
     if get_calculate_loss_factors(data)
-        _dc_ptdf_loss_factors!(
-            data.loss_factors,
-            data.arc_active_power_flow_from_to,
-            solver_cache,
-            scratch,
-        )
+        data.loss_factors .= dc_loss_factors(data, scratch.rs)
     end
-    return
-end
-
-"""
-    _dc_ptdf_loss_factors!(loss_factors, flow, solver_cache, scratch)
-
-In-place PTDF loss factors: `2 · ABA⁻¹_ext · (BA · (R∘f))` (ref-bus rows zero), solved
-against `solver_cache` — the same factorization the angle solve already used.
-`scratch.p_inj` is reused as the solve buffer; its θ-solve contents are no longer needed
-by this point in `_run_ptdf_solve!`.
-"""
-function _dc_ptdf_loss_factors!(
-    loss_factors::Matrix{Float64},
-    flow::Matrix{Float64},
-    solver_cache::PFLinearSolverCache,
-    scratch::DCSolveScratch,
-)
-    valid_ix = scratch.valid_ix
-    rf = scratch.lf_rf
-    @. rf = scratch.rs * flow
-    rhs = scratch.lf_rhs
-    mul!(rhs, scratch.ba, rf)
-    x = scratch.p_inj
-    @views x .= rhs[valid_ix, :]
-    solve!(solver_cache, x)
-    fill!(loss_factors, 0.0)
-    @views loss_factors[valid_ix, :] .= 2 .* x
     return
 end
 
