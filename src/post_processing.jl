@@ -1788,7 +1788,9 @@ function _branch_flow_entries(
 )
     ix_arc = arc_lookup[arc]
     nrd = PNM.get_network_reduction_data(get_power_network_matrix(data))
-    return _distribute_arc_flows(
+    entries = BranchFlowEntry[]
+    _distribute_arc_flows!(
+        entries,
         entry,
         nrd,
         arc_P_from_to[ix_arc],
@@ -1797,6 +1799,7 @@ function _branch_flow_entries(
         arc_Q_to_from[ix_arc],
         arc_P_losses[ix_arc],
     )
+    return entries
 end
 
 """AC: recompute per-segment flows from solved voltages using `_compute_segment_flows`."""
@@ -1815,10 +1818,11 @@ function _branch_flow_entries(
     return _compute_segment_flows(entry, data, arc, time_step)
 end
 
-"""Distribute pre-computed arc-level flows to individual branches for non-AC power flow.
-Returns a `Vector{BranchFlowEntry}`, analogous to `_compute_segment_flows` for AC.
+"""Distribute pre-computed arc-level flows to individual branches for non-AC power flow,
+pushing into the caller-supplied `entries`. Analogous to `_compute_segment_flows` for AC.
 Uses the precomputed `arc_P_losses` (e.g. from lossy DC `P_ft + P_tf`) directly."""
-function _distribute_arc_flows(
+function _distribute_arc_flows!(
+    entries::Vector{BranchFlowEntry},
     arc_entry::PSY.ACTransmission,
     ::PNM.NetworkReductionData,
     P_from_to::Float64,
@@ -1828,7 +1832,8 @@ function _distribute_arc_flows(
     arc_P_losses::Float64,
 )
     arc_tuple = PNM.get_arc_tuple(arc_entry)
-    return [
+    push!(
+        entries,
         BranchFlowEntry((
             PNM.get_name(arc_entry),
             arc_tuple[1],
@@ -1840,10 +1845,12 @@ function _distribute_arc_flows(
             Q_to_from,
             0.0,
         )),
-    ]
+    )
+    return entries
 end
 
-function _distribute_arc_flows(
+function _distribute_arc_flows!(
+    entries::Vector{BranchFlowEntry},
     arc_entry::PNM.ThreeWindingTransformerCircuit,
     ::PNM.NetworkReductionData,
     P_from_to::Float64,
@@ -1853,7 +1860,8 @@ function _distribute_arc_flows(
     arc_P_losses::Float64,
 )
     arc_tuple = PNM.get_arc_tuple(arc_entry)
-    return [
+    push!(
+        entries,
         BranchFlowEntry((
             PNM.get_name(arc_entry),
             arc_tuple[1],
@@ -1865,12 +1873,14 @@ function _distribute_arc_flows(
             Q_to_from,
             0.0,
         )),
-    ]
+    )
+    return entries
 end
 
 # Member shares (`m`, `c`) are computed in the group's own arc frame, so a member keyed the
 # other way (`arc_tuple != group_arc`) has its ft/tf shares swapped before being labeled.
-function _distribute_arc_flows(
+function _distribute_arc_flows!(
+    entries::Vector{BranchFlowEntry},
     arc_entry::PNM.AbstractBranchesParallel,
     nrd::PNM.NetworkReductionData,
     P_from_to::Float64,
@@ -1879,7 +1889,6 @@ function _distribute_arc_flows(
     Q_to_from::Float64,
     arc_P_losses::Float64,
 )
-    entries = BranchFlowEntry[]
     group_arc = PNM.get_arc_tuple(arc_entry, nrd)
     for br in arc_entry
         m = PNM.compute_parallel_multiplier(arc_entry, br)
@@ -1892,15 +1901,13 @@ function _distribute_arc_flows(
             (P_ft, P_tf) = (P_tf, P_ft)
             (Q_ft, Q_tf) = (Q_tf, Q_ft)
         end
-        append!(
-            entries,
-            _distribute_arc_flows(br, nrd, P_ft, Q_ft, P_tf, Q_tf, arc_P_losses * m),
-        )
+        _distribute_arc_flows!(entries, br, nrd, P_ft, Q_ft, P_tf, Q_tf, arc_P_losses * m)
     end
     return entries
 end
 
-function _distribute_arc_flows(
+function _distribute_arc_flows!(
+    entries::Vector{BranchFlowEntry},
     arc_entry::PNM.BranchesSeries,
     nrd::PNM.NetworkReductionData,
     P_from_to::Float64,
@@ -1909,11 +1916,11 @@ function _distribute_arc_flows(
     Q_to_from::Float64,
     arc_P_losses::Float64,
 )
-    entries = BranchFlowEntry[]
     n_segments = length(arc_entry)
     for (segment_ix, segment) in enumerate(arc_entry)
         m = arc_entry.segment_orientations[segment_ix] == :ToFrom ? -1.0 : 1.0
-        for entry in _distribute_arc_flows(
+        _distribute_arc_flows!(
+            entries,
             segment,
             nrd,
             P_from_to * m,
@@ -1922,8 +1929,6 @@ function _distribute_arc_flows(
             Q_to_from * m,
             arc_P_losses / n_segments,
         )
-            push!(entries, entry)
-        end
     end
     return entries
 end
@@ -2055,6 +2060,9 @@ Returns a dictionary containing the AC power flow results.
 
 Only single-period evaluation is supported at the moment for AC Power flows. The resulting
 dictionary will therefore feature just one key linked to one `DataFrame`.
+
+`P_load`/`Q_load` report total bus withdrawal, including switched-shunt and StandardLoad
+constant-current/impedance (ZIP) terms, not just the constant-power load bucket.
 
 # Arguments:
 - `::ACPowerFlow`:

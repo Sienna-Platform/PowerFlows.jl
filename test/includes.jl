@@ -10,7 +10,7 @@ using PowerFlows
 using PowerSystems
 using PowerSystemCaseBuilder
 import PowerSystemCaseBuilder: make_system
-const PFP = PowerSystemCaseBuilder.PowerFlowFileParser
+import PowerFlowFileParser as PFP
 using PowerNetworkMatrices
 using InfrastructureSystems
 using CSV

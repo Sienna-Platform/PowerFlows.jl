@@ -319,12 +319,10 @@ function _ends_solution_block(line::AbstractString)
     return !isnothing(tryparse(Int, token))
 end
 
-# Records, with the `@!` column-header comments and blank lines dropped. A v35 export leads
-# with a `@!IC,SBASE,REV,...` header, so the case identification record is not necessarily
-# the first line of the file. Used only for the solution-record block itself: the two title
-# records ahead of it are skipped by fixed position (see `_case_header_and_block`), not by
-# this filter, because PSS/E writes them even when blank, and a non-blank second title line
-# must not be mistaken for the block's first record.
+# Records, with the `@!` column-header comments and blank lines dropped. Used only for the
+# solution-record block: the two title records ahead of it are skipped by fixed position
+# (see `_case_header_and_block`), not by this filter, so a non-blank second title line is
+# never mistaken for the block's first record.
 function _significant_records(lines)
     return [
         line for line in map(strip, lines)

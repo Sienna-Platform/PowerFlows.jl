@@ -206,8 +206,9 @@ mutable struct PSSEExporter <: SystemPowerFlowContainer
     write_comments::Bool
     overwrite::Bool
     # A label folded into the export directory name by `_step_to_string`: `nothing`, an
-    # iterable such as `(year, period)`, or a bare scalar. Untyped on purpose: POM dispatches
-    # on the invariant `PowerFlowEvaluationData{PSSEExporter}`, so the type takes no parameter.
+    # iterable such as `(year, period)`, or a bare scalar. E.g. `name = "foo"` with
+    # `step = (1, 2)` exports as `foo_1_2.raw`. Untyped on purpose: POM dispatches on the
+    # invariant `PowerFlowEvaluationData{PSSEExporter}`, so the type takes no parameter.
     step::Any
     raw_buffer::IOBuffer  # Persist an IOBuffer to reduce allocations on repeated exports
     md_dict::OrderedDict{String, Any}  # Persist metadata to avoid unnecessary recomputation
@@ -2882,7 +2883,12 @@ function _build_switched_shunt_steps_v35(
     B_vals = []
     for (N, B) in zip(steps, increases)
         # Si is a whole-block status (0/1), not a step count; a partly engaged block can
-        # only be expressed through BINIT.
+        # only be expressed through BINIT. BINIT is written with the exact total (see
+        # `_switched_shunt_binit` above), but it is NOT authoritative on reread for
+        # discrete-control shunts at non-REF buses: PowerFlowFileParser's
+        # `_binit_is_authoritative` only trusts BINIT for solved/REF/locked-control cases,
+        # and otherwise reconstructs admittance from the N/B/S triplet — so a partially
+        # engaged block round-trips as fully engaged (Si=1) and loses precision.
         push!(S_vals, get(engaged, length(S_vals) + 1, 1) != 0 ? 1 : 0)
         push!(N_vals, N)
         push!(B_vals, imag(B) * base_power)
