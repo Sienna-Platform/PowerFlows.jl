@@ -1205,6 +1205,8 @@ end
     # One converter must keep a real DC-voltage reference or the record has no TYPE-1
     # terminal and re-parsing rejects it; only the `to` side is droop, the case under test.
     PSY.set_dc_control_from!(vsc, PSY.VSCDCControlModes.DC_VOLTAGE)
+    PSY.set_rated_dc_voltage!(vsc, 300.0)
+    PSY.set_dc_setpoint_from!(vsc, 1.0)
     PSY.set_dc_control_to!(vsc, PSY.VSCDCControlModes.DC_VOLTAGE_DROOP)
 
     export_location = joinpath(test_psse_export_dir, "v35", "vsc_droop_dcset")
@@ -1219,9 +1221,7 @@ end
     @test PSY.get_dc_setpoint_to(vsc2) > 0.0
 end
 
-@testset "PSSE Exporter: switching-device RATE1 round-trips through SBASE" begin
-    # PFFP's switch/breaker importer stores RATE1 unscaled, so a 12.06 CU rating must
-    # export as 12.06, not 1206.0, to round-trip.
+@testset "PSSE Exporter: switching-device RATE1 round-trips in MVA" begin
     sys = System(100.0)
     b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230.0)
     b2 = _add_simple_bus!(sys, 2, ACBusTypes.PQ, 230.0)
