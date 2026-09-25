@@ -39,9 +39,8 @@ const CONTROL_FACTS_SETPOINT_BAND = 1e-3
 # too tight to recognize a saturated device. A regulating device sits well below the bound.
 const CONTROL_FACTS_LIMIT_RTOL = 2e-2
 # Voltage setpoints outside this band are treated as data errors and lock the device
-# (PSY's `admittance_limits` carries the PSS/E VSWLO/VSWHI *voltage* band only by parser
-# convention; an API-built component holding actual admittance bounds there would
-# otherwise silently drive |V| toward a garbage setpoint).
+# (an implausible regulated-voltage band would otherwise silently drive |V| toward a
+# garbage setpoint).
 const CONTROL_VSET_MIN = 0.5
 const CONTROL_VSET_MAX = 1.5
 const DEFAULT_MAX_REDISTRIBUTION_ITERATIONS = 10

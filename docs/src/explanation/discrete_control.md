@@ -300,10 +300,10 @@ handled as an angle rather than a ratio.
 | Parameter      | First-class field on the circuit          |
 |:-------------- |:----------------------------------------- |
 | Controlled bus | `regulated_bus_number` (0 ⇒ local/to-bus) |
-| Tap ratio min  | `control_limits.min`                      |
-| Tap ratio max  | `control_limits.max`                      |
+| Tap ratio min  | `tap_ratio_limits.min`                    |
+| Tap ratio max  | `tap_ratio_limits.max`                    |
 | Tap positions  | `number_of_tap_positions`                 |
-| Voltage band   | `controlled_quantity_limits` (VMI/VMA)    |
+| Voltage band   | `controlled_voltage_limits` (VMI/VMA)     |
 
 A nonzero `regulated_bus_number` wins for the controlled bus, otherwise the
 to-bus is used. The tap is held anywhere inside the VMA/VMI band and regulates
@@ -312,6 +312,7 @@ VSWLO/VSWHI. The discrete tap levels are `range(p_min, p_max; length=NTP)`,
 collected once at construction. The phase shift is taken from
 `PSY.get_α(circuit)`. Setpoints outside `[0.5, 1.5]` p.u. de-enroll the device
 with a warning.
+A circuit missing either band is de-enrolled with a warning.
 
 Results follow the same circuit-level shape for both arities — see
 [`get_controlled_device_results`](@ref), whose `device_name` and `circuit_index`
@@ -324,7 +325,7 @@ columns address the owning circuit as
 |:----------------- |:---------------------------------------------------------------------------------------------------------------- |
 | Control mode      | `get_control_mode`: locked ⇒ skipped; discrete and continuous enroll; unsupported modes warn + lock              |
 | Controlled bus    | `regulated_bus_number` (0 ⇒ own bus)                                                                             |
-| Voltage setpoint  | midpoint of `get_admittance_limits` — the VSWLO/VSWHI band for parsed systems                                    |
+| Voltage setpoint  | midpoint of `get_voltage_limits` — the VSWLO/VSWHI band for parsed systems                                       |
 | Susceptance range | spanned by the blocks: `[Σ min(steps·dB, 0), Σ max(steps·dB, 0)]` (plus the fixed base for API-built components) |
 | Block structure   | `get_number_of_steps`, `get_Y_increase`, `get_number_engaged`                                                    |
 

@@ -62,11 +62,15 @@ end
         active_power_limits_to = (min = -1.0, max = 1.0),
         g = 40.0,
         dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE_DROOP,
+        ac_control_from = PSY.VSCACControlModes.AC_VOLTAGE,
+        ac_voltage_setpoint_from = 1.0,
         dc_voltage_droop_from = 0.05,
-        dc_setpoint_from = 1.0,
+        dc_voltage_setpoint_from = 1.0,
         dc_control_to = PSY.VSCDCControlModes.DC_VOLTAGE_DROOP,
+        ac_control_to = PSY.VSCACControlModes.AC_VOLTAGE,
+        ac_voltage_setpoint_to = 1.0,
         dc_voltage_droop_to = 0.05,
-        dc_setpoint_to = 1.0, input_basis = PSY.CU,
+        dc_voltage_setpoint_to = 1.0, input_basis = PSY.CU,
     )
     PSY.add_component!(sys, vsc)
     data = PowerFlowData(
@@ -164,12 +168,16 @@ end
     sys, _, _ = _vsc_system(;
         g = 50.0,
         dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE_DROOP,
+        ac_control_from = PSY.VSCACControlModes.AC_VOLTAGE,
+        ac_voltage_setpoint_from = 1.0,
         dc_voltage_droop_from = 0.02,
-        dc_setpoint_from = 1.05,
+        dc_voltage_setpoint_from = 1.05,
         reactive_power_from = 0.0,
         dc_control_to = PSY.VSCDCControlModes.DC_VOLTAGE_DROOP,
+        ac_control_to = PSY.VSCACControlModes.AC_VOLTAGE,
+        ac_voltage_setpoint_to = 1.0,
         dc_voltage_droop_to = 0.03,
-        dc_setpoint_to = 1.03,
+        dc_voltage_setpoint_to = 1.03,
         reactive_power_to = 0.0,
     )
     data = PowerFlowData(
@@ -201,12 +209,12 @@ end
         g = 50.0,
         dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
         ac_control_from = PSY.VSCACControlModes.AC_VOLTAGE,
-        dc_setpoint_from = 1.05,
-        ac_setpoint_from = 1.01,
+        dc_voltage_setpoint_from = 1.05,
+        ac_voltage_setpoint_from = 1.01,
         dc_control_to = PSY.VSCDCControlModes.DC_POWER,
         ac_control_to = PSY.VSCACControlModes.AC_VOLTAGE,
-        dc_setpoint_to = 0.25,
-        ac_setpoint_to = 1.0,
+        dc_power_setpoint_to = 0.25,
+        ac_voltage_setpoint_to = 1.0,
     )
     data = PowerFlowData(
         ACPowerFlow{NewtonRaphsonACPowerFlow}(;
@@ -230,11 +238,13 @@ end
         g = 45.0,
         dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
         ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
-        dc_setpoint_from = 1.03,
+        power_factor_setpoint_from = 1.0,
+        dc_voltage_setpoint_from = 1.03,
         reactive_power_from = 0.0,
         dc_control_to = PSY.VSCDCControlModes.DC_POWER,
         ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
-        dc_setpoint_to = 0.35,
+        power_factor_setpoint_to = 1.0,
+        dc_power_setpoint_to = 0.35,
         reactive_power_to = 0.05,
         converter_loss_to = PSY.LossCurve(
             PSY.QuadraticCurve(0.01, 0.02, 0.005),
@@ -288,10 +298,12 @@ end
         g = 0.0,
         dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
         ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
-        dc_setpoint_from = 1.03,
+        power_factor_setpoint_from = 1.0,
+        dc_voltage_setpoint_from = 1.03,
         dc_control_to = PSY.VSCDCControlModes.DC_POWER,
         ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
-        dc_setpoint_to = 0.3,
+        power_factor_setpoint_to = 1.0,
+        dc_power_setpoint_to = 0.3,
     )
     data = PowerFlowData(
         ACPowerFlow{NewtonRaphsonACPowerFlow}(;
@@ -358,11 +370,13 @@ end
         g = 45.0,
         dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
         ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
-        dc_setpoint_from = 1.03,
+        power_factor_setpoint_from = 1.0,
+        dc_voltage_setpoint_from = 1.03,
         reactive_power_from = 0.0,
         dc_control_to = PSY.VSCDCControlModes.DC_POWER,
         ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
-        dc_setpoint_to = 0.35,
+        power_factor_setpoint_to = 1.0,
+        dc_power_setpoint_to = 0.35,
         reactive_power_to = 0.05,
         converter_loss_to = PSY.LossCurve(
             PSY.QuadraticCurve(0.01, 0.02, 0.005),
@@ -385,11 +399,13 @@ end
         g = 45.0,
         dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
         ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
-        dc_setpoint_from = 1.03,
+        power_factor_setpoint_from = 1.0,
+        dc_voltage_setpoint_from = 1.03,
         reactive_power_from = 0.0,
         dc_control_to = PSY.VSCDCControlModes.DC_POWER,
         ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
-        dc_setpoint_to = 0.35,
+        power_factor_setpoint_to = 1.0,
+        dc_power_setpoint_to = 0.35,
         reactive_power_to = 0.05,
         converter_loss_to = PSY.LossCurve(
             PSY.QuadraticCurve(0.01, 0.02, 0.005),
@@ -422,12 +438,16 @@ function _vsc_droop_system()
     sys, _, _ = _vsc_system(;
         g = 50.0,
         dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE_DROOP,
+        ac_control_from = PSY.VSCACControlModes.AC_VOLTAGE,
+        ac_voltage_setpoint_from = 1.0,
         dc_voltage_droop_from = 0.02,
-        dc_setpoint_from = 1.05,
+        dc_voltage_setpoint_from = 1.05,
         reactive_power_from = 0.0,
         dc_control_to = PSY.VSCDCControlModes.DC_VOLTAGE_DROOP,
+        ac_control_to = PSY.VSCACControlModes.AC_VOLTAGE,
+        ac_voltage_setpoint_to = 1.0,
         dc_voltage_droop_to = 0.03,
-        dc_setpoint_to = 1.03,
+        dc_voltage_setpoint_to = 1.03,
         reactive_power_to = 0.0,
         converter_loss_to = PSY.LossCurve(
             PSY.QuadraticCurve(0.01, 0.02, 0.005),
@@ -444,12 +464,12 @@ function _vsc_ac_voltage_system()
         g = 50.0,
         dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
         ac_control_from = PSY.VSCACControlModes.AC_VOLTAGE,
-        dc_setpoint_from = 1.05,
-        ac_setpoint_from = 1.01,
+        dc_voltage_setpoint_from = 1.05,
+        ac_voltage_setpoint_from = 1.01,
         dc_control_to = PSY.VSCDCControlModes.DC_POWER,
         ac_control_to = PSY.VSCACControlModes.AC_VOLTAGE,
-        dc_setpoint_to = 0.25,
-        ac_setpoint_to = 1.0,
+        dc_power_setpoint_to = 0.25,
+        ac_voltage_setpoint_to = 1.0,
     )
     return sys
 end
@@ -539,11 +559,13 @@ end
         g = 50.0,
         dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
         ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
-        dc_setpoint_from = 1.04,
+        power_factor_setpoint_from = 1.0,
+        dc_voltage_setpoint_from = 1.04,
         reactive_power_from = 0.0,
         dc_control_to = PSY.VSCDCControlModes.DC_POWER,
         ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
-        dc_setpoint_to = 0.3,
+        power_factor_setpoint_to = 1.0,
+        dc_power_setpoint_to = 0.3,
         reactive_power_to = 0.05,
     )
     pf = PF_T(; time_steps = time_steps, solution_parameters = VSC_SOLUTION_PARAMETERS)
@@ -638,9 +660,13 @@ end
     sys, from_no, to_no = _vsc_system(;
         g = 50.0,
         dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
-        dc_setpoint_from = 1.03,
+        ac_control_from = PSY.VSCACControlModes.AC_VOLTAGE,
+        ac_voltage_setpoint_from = 1.0,
+        dc_voltage_setpoint_from = 1.03,
         dc_control_to = PSY.VSCDCControlModes.DC_POWER,
-        dc_setpoint_to = 0.3,
+        ac_control_to = PSY.VSCACControlModes.AC_VOLTAGE,
+        ac_voltage_setpoint_to = 1.0,
+        dc_power_setpoint_to = 0.3,
     )
     pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
         solution_parameters = VSC_SOLUTION_PARAMETERS,
@@ -664,9 +690,13 @@ end
     sys, from_no, to_no = _vsc_system(;
         g = 50.0,
         dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
-        dc_setpoint_from = 1.03,
+        ac_control_from = PSY.VSCACControlModes.AC_VOLTAGE,
+        ac_voltage_setpoint_from = 1.0,
+        dc_voltage_setpoint_from = 1.03,
         dc_control_to = PSY.VSCDCControlModes.DC_POWER,
-        dc_setpoint_to = 0.3,
+        ac_control_to = PSY.VSCACControlModes.AC_VOLTAGE,
+        ac_voltage_setpoint_to = 1.0,
+        dc_power_setpoint_to = 0.3,
     )
     irr = PF._dc_converter_ac_buses(sys)
     @test from_no in irr
@@ -675,9 +705,13 @@ end
     sys0, _, _ = _vsc_system(;
         g = 0.0,
         dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
-        dc_setpoint_from = 1.03,
+        ac_control_from = PSY.VSCACControlModes.AC_VOLTAGE,
+        ac_voltage_setpoint_from = 1.0,
+        dc_voltage_setpoint_from = 1.03,
         dc_control_to = PSY.VSCDCControlModes.DC_POWER,
-        dc_setpoint_to = 0.3,
+        ac_control_to = PSY.VSCACControlModes.AC_VOLTAGE,
+        ac_voltage_setpoint_to = 1.0,
+        dc_power_setpoint_to = 0.3,
     )
     @test isempty(PF._dc_converter_ac_buses(sys0))
     # MTDC: every interconnecting-converter AC bus is collected
@@ -705,15 +739,19 @@ end
     sys, _, _ = _vsc_system(;
         g = 50.0,
         dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
-        dc_setpoint_from = 1.04,
+        ac_control_from = PSY.VSCACControlModes.AC_VOLTAGE,
+        ac_voltage_setpoint_from = 1.0,
+        dc_voltage_setpoint_from = 1.04,
         dc_control_to = PSY.VSCDCControlModes.DC_VOLTAGE_DROOP,
+        ac_control_to = PSY.VSCACControlModes.AC_VOLTAGE,
+        ac_voltage_setpoint_to = 1.0,
         dc_voltage_droop_to = 0.05,
-        dc_setpoint_to = 1.0,
+        dc_voltage_setpoint_to = 1.0,
     )
     vsc = first(PSY.get_components(PSY.TwoTerminalVSCLine, sys))
     base = PSY.get_base_power(sys)
     # strict DC_VOLTAGE terminal keeps its voltage setpoint as DCSET
-    @test PF._vsc_export_dcset(vsc, :from, base) == PSY.get_dc_setpoint_from(vsc)
+    @test PF._vsc_export_dcset(vsc, :from, base) == PSY.get_dc_voltage_setpoint_from(vsc)
     # droop terminal's DCSET is its MW feed into the AC network: +P_flow on the `to` side
     @test isapprox(
         PF._vsc_export_dcset(vsc, :to, base),
@@ -759,9 +797,18 @@ function _build_parallel_ic_system(; shared_ac::Bool = true)
     # ic1 = Vdc slack on (pq[1], dc1); ic2 on (pq[2], dc2); ic3 on (ac3, dc2). ic2/ic3 always share
     # the DC node dc2 — `shared_ac` decides whether they also share the AC bus.
     configs = (
-        (ac = pq[1], dc = dcbuses[1], mode = PSY.VSCDCControlModes.DC_VOLTAGE, set = 1.05),
-        (ac = pq[2], dc = dcbuses[2], mode = PSY.VSCDCControlModes.DC_POWER, set = 0.15),
-        (ac = ac3, dc = dcbuses[2], mode = PSY.VSCDCControlModes.DC_POWER, set = 0.10),
+        (
+            ac = pq[1], dc = dcbuses[1], mode = PSY.VSCDCControlModes.DC_VOLTAGE,
+            setpoint = (; dc_voltage_setpoint = 1.05),
+        ),
+        (
+            ac = pq[2], dc = dcbuses[2], mode = PSY.VSCDCControlModes.DC_POWER,
+            setpoint = (; dc_power_setpoint = 0.15),
+        ),
+        (
+            ac = ac3, dc = dcbuses[2], mode = PSY.VSCDCControlModes.DC_POWER,
+            setpoint = (; dc_power_setpoint = 0.10),
+        ),
     )
     for (k, cfg) in enumerate(configs)
         ic = PSY.InterconnectingConverter(;
@@ -775,7 +822,8 @@ function _build_parallel_ic_system(; shared_ac::Bool = true)
             base_power = 100.0,
             dc_control = cfg.mode,
             ac_control = PSY.VSCACControlModes.AC_REACTIVE_POWER,
-            dc_setpoint = cfg.set,
+            power_factor_setpoint = 1.0,
+            cfg.setpoint...,
             loss_function = PSY.LossCurve(
                 PSY.QuadraticCurve(0.005, 0.01, 0.002),
                 PSY.NaturalUnit(),
@@ -843,11 +891,13 @@ function _vsc_system_ref_terminal(; g = 45.0)
         g = g,
         dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
         ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
-        dc_setpoint_from = 1.03,
+        power_factor_setpoint_from = 1.0,
+        dc_voltage_setpoint_from = 1.03,
         reactive_power_from = 0.0,
         dc_control_to = PSY.VSCDCControlModes.DC_POWER,
         ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
-        dc_setpoint_to = 0.35,
+        power_factor_setpoint_to = 1.0,
+        dc_power_setpoint_to = 0.35,
         reactive_power_to = 0.05,
         converter_loss_to = PSY.LossCurve(
             PSY.QuadraticCurve(0.01, 0.02, 0.005),
@@ -951,11 +1001,12 @@ end
         g = 45.0,
         dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
         ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
-        dc_setpoint_from = 1.03,
+        power_factor_setpoint_from = 1.0,
+        dc_voltage_setpoint_from = 1.03,
         dc_control_to = PSY.VSCDCControlModes.DC_POWER,
         ac_control_to = PSY.VSCACControlModes.AC_VOLTAGE,
-        dc_setpoint_to = 0.3,
-        ac_setpoint_to = 1.0, input_basis = PSY.CU,
+        dc_power_setpoint_to = 0.3,
+        ac_voltage_setpoint_to = 1.0, input_basis = PSY.CU,
     )
     PSY.add_component!(sys_pv, vsc)
     @test_throws ErrorException PowerFlowData(
@@ -991,11 +1042,12 @@ end
             g = 45.0,
             dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
             ac_control_from = PSY.VSCACControlModes.AC_VOLTAGE,
-            dc_setpoint_from = 1.03,
-            ac_setpoint_from = 1.0,
+            dc_voltage_setpoint_from = 1.03,
+            ac_voltage_setpoint_from = 1.0,
             dc_control_to = PSY.VSCDCControlModes.DC_POWER,
             ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
-            dc_setpoint_to = 0.2, input_basis = PSY.CU,
+            power_factor_setpoint_to = 1.0,
+            dc_power_setpoint_to = 0.2, input_basis = PSY.CU,
         )
         PSY.add_component!(sys_dup, vsc_k)
     end
@@ -1024,11 +1076,12 @@ end
         g = 50.0,
         dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
         ac_control_from = PSY.VSCACControlModes.AC_VOLTAGE,
-        dc_setpoint_from = 1.05,
-        ac_setpoint_from = 1.01,
+        dc_voltage_setpoint_from = 1.05,
+        ac_voltage_setpoint_from = 1.01,
         dc_control_to = PSY.VSCDCControlModes.DC_POWER,
         ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
-        dc_setpoint_to = 0.25,
+        power_factor_setpoint_to = 1.0,
+        dc_power_setpoint_to = 0.25,
     )
     data_vac = PowerFlowData(
         ACPowerFlow{PF.FastDecoupledACPowerFlow}(;
@@ -1047,11 +1100,13 @@ end
         g = 45.0,
         dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
         ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
-        dc_setpoint_from = 1.03,
+        power_factor_setpoint_from = 1.0,
+        dc_voltage_setpoint_from = 1.03,
         reactive_power_from = 0.0,
         dc_control_to = PSY.VSCDCControlModes.DC_POWER,
         ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
-        dc_setpoint_to = 0.35,
+        power_factor_setpoint_to = 1.0,
+        dc_power_setpoint_to = 0.35,
         reactive_power_to = 0.05,
         converter_loss_to = PSY.LossCurve(
             PSY.QuadraticCurve(0.01, 0.02, 0.005),
@@ -1086,11 +1141,13 @@ end
         g = 50.0,
         dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
         ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
-        dc_setpoint_from = 1.04,
+        power_factor_setpoint_from = 1.0,
+        dc_voltage_setpoint_from = 1.04,
         reactive_power_from = 0.0,
         dc_control_to = PSY.VSCDCControlModes.DC_POWER,
         ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
-        dc_setpoint_to = 0.3,
+        power_factor_setpoint_to = 1.0,
+        dc_power_setpoint_to = 0.3,
         reactive_power_to = 0.05,
     )
     pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;

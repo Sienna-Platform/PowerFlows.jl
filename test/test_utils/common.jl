@@ -448,8 +448,8 @@ function _add_simple_vsc!(
         reactive_power_from = 0.0,
         dc_control_from = PSY.VSCDCControlModes.DC_POWER,
         ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
-        dc_setpoint_from = 0.0,
-        ac_setpoint_from = 1.0,
+        dc_power_setpoint_from = 0.0,
+        power_factor_setpoint_from = 1.0,
         converter_loss_from = LossCurve(LinearCurve(loss_coefficient), NaturalUnit()),
         max_dc_current_from = 1.0,
         rating_from = 1.0,
@@ -459,8 +459,8 @@ function _add_simple_vsc!(
         reactive_power_to = 0.0,
         dc_control_to = PSY.VSCDCControlModes.DC_POWER,
         ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
-        dc_setpoint_to = 0.0,
-        ac_setpoint_to = 1.0,
+        dc_power_setpoint_to = 0.0,
+        power_factor_setpoint_to = 1.0,
         converter_loss_to = LossCurve(LinearCurve(loss_coefficient), NaturalUnit()),
         max_dc_current_to = 1.0,
         rating_to = 1.0,
@@ -486,7 +486,8 @@ function _add_simple_lcc!(
         arc = Arc(bus1, bus2),
         active_power_flow = 0.0,
         r = r,
-        transfer_setpoint = 0.5,  # 50 MW
+        control_mode = PSY.LCCControlMode.POWER,
+        power_transfer_setpoint = 0.5,  # 50 MW
         scheduled_dc_voltage = 800.0,
         rectifier_bridges = 1,
         rectifier_delay_angle_limits = (min = 0.0, max = π / 2),
@@ -499,7 +500,6 @@ function _add_simple_lcc!(
         inverter_rc = 0.0,
         inverter_xc = xi,
         inverter_base_voltage = 230.0,
-        power_mode = true,
         switch_mode_voltage = 0.0,
         compounding_resistance = 0.0,
         min_compounding_voltage = 0.0,
@@ -577,7 +577,8 @@ function _make_tap_shunt_system()
             rating = 1.0,
             base_power = 100.0,
             control_objective = PSY.TransformerControlObjective.VOLTAGE,
-            controlled_quantity_limits = (min = 1.0, max = 1.0), input_basis = PSY.CU,
+            tap_ratio_limits = (min = 0.9, max = 1.1),
+            controlled_voltage_limits = (min = 1.0, max = 1.0), input_basis = PSY.CU,
         ), input_basis = PSY.CU,
     )
     add_component!(sys, tx)
@@ -588,7 +589,7 @@ function _make_tap_shunt_system()
         number_engaged = [0],
         number_of_steps = [4],
         Y_increase = [0.0 + 0.05im],
-        admittance_limits = (min = 0.9, max = 1.1),
+        voltage_limits = (min = 0.9, max = 1.1),
         control_mode = PSY.SwitchedAdmittanceControlMode.DISCRETE_VOLTAGE,
     )
     add_component!(sys, sa)
@@ -652,7 +653,8 @@ function _make_solvable_tap_shunt_system()
             rating = 1.0,
             base_power = 100.0,
             control_objective = PSY.TransformerControlObjective.VOLTAGE,
-            controlled_quantity_limits = (min = 1.0, max = 1.0), input_basis = PSY.CU,
+            tap_ratio_limits = (min = 0.9, max = 1.1),
+            controlled_voltage_limits = (min = 1.0, max = 1.0), input_basis = PSY.CU,
         ), input_basis = PSY.CU,
     )
     add_component!(sys, tx)
@@ -663,7 +665,7 @@ function _make_solvable_tap_shunt_system()
         number_engaged = [0],
         number_of_steps = [4],
         Y_increase = [0.0 + 0.05im],
-        admittance_limits = (min = 0.9, max = 1.1),
+        voltage_limits = (min = 0.9, max = 1.1),
         control_mode = PSY.SwitchedAdmittanceControlMode.DISCRETE_VOLTAGE,
     )
     add_component!(sys, sa)
@@ -734,7 +736,7 @@ function _add_mp_load!(
 end
 
 """Add a CONTINUOUS_VOLTAGE `SwitchedAdmittance` (named `shunt_<busno>`) regulating `bus`. The
-narrow `admittance_limits` band (±5e-4 around 1.0) settles the continuous continuation tight to
+narrow `voltage_limits` band (±5e-4 around 1.0) settles the continuous continuation tight to
 the setpoint. `Y` is the FIXED susceptance, folded in as an always-fully-engaged block (nonzero
 = a constant-Z baseline, "b0"); the second block is the CONTINUOUS_VOLTAGE-adjustable one."""
 function _add_cv_shunt!(sys::System, bus::ACBus; Y = 0.0 + 0.0im)
@@ -745,7 +747,7 @@ function _add_cv_shunt!(sys::System, bus::ACBus; Y = 0.0 + 0.0im)
         number_engaged = [1, 0],
         number_of_steps = [1, 12],
         Y_increase = [Y, 0.0 + 0.1im],
-        admittance_limits = (min = 0.9995, max = 1.0005),
+        voltage_limits = (min = 0.9995, max = 1.0005),
         control_mode = PSY.SwitchedAdmittanceControlMode.CONTINUOUS_VOLTAGE,
     )
     add_component!(sys, sa)
@@ -926,10 +928,10 @@ function _make_multiperiod_tap_system()
             tap = 1.0,
             rating = 1.0,
             base_power = 100.0,
-            control_limits = (min = 0.85, max = 1.15),
+            tap_ratio_limits = (min = 0.85, max = 1.15),
             number_of_tap_positions = 31,
             regulated_bus_number = 2,
-            controlled_quantity_limits = (min = 1.0, max = 1.0),
+            controlled_voltage_limits = (min = 1.0, max = 1.0),
             control_objective = PSY.TransformerControlObjective.VOLTAGE,
             input_basis = PSY.CU,
         ), input_basis = PSY.CU,
@@ -984,7 +986,7 @@ function _make_shunt_snap_system()
         number_engaged = Int[],
         number_of_steps = [4],
         Y_increase = [0.0 + 0.05im],
-        admittance_limits = (min = 0.98, max = 1.02),
+        voltage_limits = (min = 0.98, max = 1.02),
         control_mode = PSY.SwitchedAdmittanceControlMode.DISCRETE_VOLTAGE,
     )
     add_component!(sys, sa)
@@ -1012,10 +1014,10 @@ function _make_field_controlled_tap_system()
             tap = 1.0,
             rating = 1.0,
             base_power = 100.0,
-            control_limits = (min = 0.85, max = 1.15),
+            tap_ratio_limits = (min = 0.85, max = 1.15),
             number_of_tap_positions = 17,
             regulated_bus_number = 3,
-            controlled_quantity_limits = (min = 1.02, max = 1.02),
+            controlled_voltage_limits = (min = 1.02, max = 1.02),
             control_objective = PSY.TransformerControlObjective.VOLTAGE,
             input_basis = PSY.CU,
         ), input_basis = PSY.CU,
@@ -1063,7 +1065,7 @@ end
 """Add a discrete `SwitchedAdmittance` (PSS/E-style block-switched capacitor bank) at
 `bus_number`, built from `n_steps` blocks of `mvar_per_step` MVar each so the total capacity
 (`n_steps * mvar_per_step` MVar) doesn't saturate. `voltage_setpoint` becomes the midpoint of
-a narrow `admittance_limits` deadband (`± deadband`, in p.u.) — narrow enough that the
+a narrow `voltage_limits` deadband (`± deadband`, in p.u.) — narrow enough that the
 discrete continuation drives the bus close to `voltage_setpoint` rather than stopping as soon
 as voltage enters a wide PSS/E-style VSWLO/VSWHI band."""
 function _add_switched_shunt!(
@@ -1083,7 +1085,7 @@ function _add_switched_shunt!(
         number_engaged = [0],
         number_of_steps = [n_steps],
         Y_increase = [0.0 + (mvar_per_step / base_power) * im],
-        admittance_limits = (
+        voltage_limits = (
             min = voltage_setpoint - deadband,
             max = voltage_setpoint + deadband,
         ),
@@ -1126,7 +1128,8 @@ function _make_primary_controlled_tap_system()
             rating = 1.0,
             base_power = 100.0,
             control_objective = PSY.TransformerControlObjective.VOLTAGE,
-            controlled_quantity_limits = (min = 1.0, max = 1.0),
+            tap_ratio_limits = (min = 0.9, max = 1.1),
+            controlled_voltage_limits = (min = 1.0, max = 1.0),
             regulated_bus_number = 2, input_basis = PSY.CU,  # controlled bus = bus 2 (FROM) → primary
         ), input_basis = PSY.CU,
     )
@@ -1288,7 +1291,8 @@ function _add_control_tap!(sys, from_bus, to_bus; name = "tap_ctrl")
             rating = 1.0,
             base_power = 100.0,
             control_objective = PSY.TransformerControlObjective.VOLTAGE,
-            controlled_quantity_limits = (min = 1.0, max = 1.0), input_basis = PSY.CU,
+            tap_ratio_limits = (min = 0.9, max = 1.1),
+            controlled_voltage_limits = (min = 1.0, max = 1.0), input_basis = PSY.CU,
         ), input_basis = PSY.CU,
     )
     PSY.add_component!(sys, tx)
@@ -1339,12 +1343,14 @@ function _build_vsc_pq_system(;
         # from: DC-voltage control (slack), reactive setpoint
         dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
         ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
-        dc_setpoint_from = vdc,
+        power_factor_setpoint_from = 1.0,
+        dc_voltage_setpoint_from = vdc,
         reactive_power_from = q_set_from,
         # to: power control (P, Q)
         dc_control_to = PSY.VSCDCControlModes.DC_POWER,
         ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
-        dc_setpoint_to = p_set,
+        power_factor_setpoint_to = 1.0,
+        dc_power_setpoint_to = p_set,
         reactive_power_to = q_set,
         vsc_kwargs..., input_basis = PSY.CU,
     )
@@ -1382,9 +1388,18 @@ function _build_mtdc_system()
         push!(dcbuses, dcb)
     end
     configs = (
-        (dc_control = PSY.VSCDCControlModes.DC_VOLTAGE, dc_setpoint = 1.05),
-        (dc_control = PSY.VSCDCControlModes.DC_POWER, dc_setpoint = 0.30),
-        (dc_control = PSY.VSCDCControlModes.DC_POWER, dc_setpoint = 0.20),
+        (
+            dc_control = PSY.VSCDCControlModes.DC_VOLTAGE,
+            setpoint = (; dc_voltage_setpoint = 1.05),
+        ),
+        (
+            dc_control = PSY.VSCDCControlModes.DC_POWER,
+            setpoint = (; dc_power_setpoint = 0.30),
+        ),
+        (
+            dc_control = PSY.VSCDCControlModes.DC_POWER,
+            setpoint = (; dc_power_setpoint = 0.20),
+        ),
     )
     for k in 1:3
         ic = PSY.InterconnectingConverter(;
@@ -1398,7 +1413,8 @@ function _build_mtdc_system()
             base_power = 100.0,
             dc_control = configs[k].dc_control,
             ac_control = PSY.VSCACControlModes.AC_REACTIVE_POWER,
-            dc_setpoint = configs[k].dc_setpoint, input_basis = PSY.CU,
+            power_factor_setpoint = 1.0,
+            configs[k].setpoint..., input_basis = PSY.CU,
         )
         PSY.add_component!(sys, ic)
     end
@@ -1609,11 +1625,13 @@ function _comprehensive_area_dc_fixture(; lcc_metered_end::String = "from")
         g = 50.0,
         dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
         ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
-        dc_setpoint_from = 1.05,
+        power_factor_setpoint_from = 1.0,
+        dc_voltage_setpoint_from = 1.05,
         reactive_power_from = 0.02,
         dc_control_to = PSY.VSCDCControlModes.DC_POWER,
         ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
-        dc_setpoint_to = 0.2,
+        power_factor_setpoint_to = 1.0,
+        dc_power_setpoint_to = 0.2,
         reactive_power_to = 0.05, input_basis = PSY.CU,
     )
     PSY.add_component!(sys, vsc)

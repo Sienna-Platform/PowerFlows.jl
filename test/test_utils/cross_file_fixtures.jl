@@ -170,13 +170,13 @@ so the devices clear `CONTROL_GAIN_FLOOR` and enroll instead of being frozen as 
 and their setpoints sit above the reachable voltage so the continuation keeps driving them."""
 function build_lcc_control_system(; p_set_mw::Union{Nothing, Float64} = nothing)
     raw = joinpath(TEST_DATA_DIR, "case5_2_lcc.raw")
-    sys = make_system(PFP.PowerModelsData(raw); runchecks = false)
+    sys = system_from_openapi(PFP.PowerModelsData(raw); runchecks = false)
     bus101 = get_bus(sys, 101)
     add_component!(
         sys,
         SwitchedAdmittance(; name = "ctrl_shunt_101", available = true,
             bus = bus101, number_engaged = [0], number_of_steps = [8],
-            Y_increase = [0.0 + 0.5im], admittance_limits = (min = 1.05, max = 1.08),
+            Y_increase = [0.0 + 0.5im], voltage_limits = (min = 1.05, max = 1.08),
             control_mode = PSY.SwitchedAdmittanceControlMode.DISCRETE_VOLTAGE,
         ),
     )
@@ -195,10 +195,9 @@ function build_lcc_control_system(; p_set_mw::Union{Nothing, Float64} = nothing)
         ),
     )
     if p_set_mw !== nothing
-        # `transfer_setpoint` is stored per-unit on the system base.
         base = get_base_power(sys, PSY.NU)
         for l in get_components(TwoTerminalLCCLine, sys)
-            set_transfer_setpoint!(l, p_set_mw / base)
+            set_power_transfer_setpoint!(l, p_set_mw / base * PSY.SU)
         end
     end
     return sys
@@ -442,13 +441,13 @@ function _build_vsc_system(; g = 50.0)
         # from converter: DC-voltage control (DC slack), no AC-voltage control
         dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
         ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
-        dc_setpoint_from = 1.0,
-        ac_setpoint_from = 1.0,
+        dc_voltage_setpoint_from = 1.0,
+        power_factor_setpoint_from = 1.0,
         # to converter: power control (P, Q)
         dc_control_to = PSY.VSCDCControlModes.DC_POWER,
         ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
-        dc_setpoint_to = 0.5,
-        ac_setpoint_to = 1.0, input_basis = PSY.CU,
+        dc_power_setpoint_to = 0.5,
+        power_factor_setpoint_to = 1.0, input_basis = PSY.CU,
     )
     PSY.add_component!(sys, vsc)
     return sys
@@ -481,11 +480,13 @@ function _vsc_system_pv_terminal(; g = 45.0)
         g = g,
         dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
         ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
-        dc_setpoint_from = 1.03,
+        power_factor_setpoint_from = 1.0,
+        dc_voltage_setpoint_from = 1.03,
         reactive_power_from = 0.0,
         dc_control_to = PSY.VSCDCControlModes.DC_POWER,
         ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
-        dc_setpoint_to = 0.35,
+        power_factor_setpoint_to = 1.0,
+        dc_power_setpoint_to = 0.35,
         reactive_power_to = 0.05,
         converter_loss_to = PSY.LossCurve(
             PSY.QuadraticCurve(0.01, 0.02, 0.005),

@@ -40,7 +40,7 @@ function _dc_line_pst_parallel_sys(; load_p::Float64 = 0.0, pst_r::Float64 = 0.0
             α = 0.15,
             rating = 2.0,
             base_power = 100.0,
-            control_limits = (min = -0.7, max = 0.7), input_basis = PSY.CU,
+            input_basis = PSY.CU,
         ), input_basis = PSY.CU,
     )
     add_component!(sys, pst)
@@ -112,7 +112,7 @@ function _dc_pst_loop_sys()
             α = 0.15,
             rating = 2.0,
             base_power = 100.0,
-            control_limits = (min = -0.7, max = 0.7), input_basis = PSY.CU,
+            input_basis = PSY.CU,
         ), input_basis = PSY.CU,
     )
     add_component!(sys, pst)
@@ -239,7 +239,7 @@ function _dc_pst_loop_with_series_pst_sys()
             α = 0.1,
             rating = 2.0,
             base_power = 100.0,
-            control_limits = (min = -0.7, max = 0.7), input_basis = PSY.CU,
+            input_basis = PSY.CU,
         ), input_basis = PSY.CU,
     )
     add_component!(sys, pst53)

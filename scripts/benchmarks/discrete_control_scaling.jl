@@ -68,12 +68,14 @@ function _add_feeder!(sys::PSY.System, ref::PSY.ACBus, k::Int)
                 arc = PSY.Arc(; from = ref, to = b_load),
                 r = 0.01, x = 0.10, tap = 1.0, rating = 1.0, base_power = 100.0,
                 control_objective = PSY.TransformerControlObjective.VOLTAGE,
+                tap_ratio_limits = (min = 0.9, max = 1.1),
+                controlled_voltage_limits = (min = 0.9, max = 1.1),
                 input_basis = PSY.CU),
             input_basis = PSY.CU))
     PSY.add_component!(sys,
         PSY.SwitchedAdmittance(; name = "shunt_$k", available = true, bus = b_sh,
             number_engaged = [0], number_of_steps = [4],
-            Y_increase = [0.0 + 0.05im], admittance_limits = (min = 0.9, max = 1.1)))
+            Y_increase = [0.0 + 0.05im]))
     return nothing
 end
 

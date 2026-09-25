@@ -26,12 +26,12 @@ InfrastructureSystems = {rev = "IS4", url = "https://github.com/Sienna-Platform/
 # Pinned to the branch rather than the registry: registry PNM v0.24 requires PowerSystems
 # 5.11, which this line (5.10.0) does not satisfy.
 PowerNetworkMatrices = {url = "https://github.com/Sienna-Platform/PowerNetworkMatrices.jl.git", rev = "jd/psy6_correctness"}
-PowerSystemCaseBuilder = {url = "https://github.com/Sienna-Platform/PowerSystemCaseBuilder.jl.git", rev = "psy6"}
-PowerSystems = {rev = "psy6", url = "https://github.com/Sienna-Platform/PowerSystems.jl.git"}
+PowerSystemCaseBuilder = {url = "https://github.com/Sienna-Platform/PowerSystemCaseBuilder.jl.git", rev = "ac/fixed-quantity-fields"}
+PowerSystems = {rev = "ac/fixed-quantity-fields", url = "https://github.com/Sienna-Platform/PowerSystems.jl.git"}
 # PSCB's own [sources] pin for this is ignored once PSCB is a dependency rather than the root
 # project; the docs env needs its own pin so Pkg can resolve PSCB's unregistered parser dep.
-PowerTableDataParser = {url = "https://github.com/NLR-Sienna/PowerTableDataParser.jl.git", rev = "psy6"}
-PowerFlowFileParser = {url = "https://github.com/Sienna-Platform/PowerFlowFileParser.jl.git", rev = "psy6"}
+PowerTableDataParser = {url = "https://github.com/NLR-Sienna/PowerTableDataParser.jl.git", rev = "ac/fixed-quantity-fields"}
+PowerFlowFileParser = {url = "https://github.com/Sienna-Platform/PowerFlowFileParser.jl.git", rev = "ac/fixed-quantity-fields"}
 
 [compat]
 Documenter = "^1.0"

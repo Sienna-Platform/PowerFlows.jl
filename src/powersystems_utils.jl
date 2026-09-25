@@ -140,6 +140,15 @@ function can_be_PV(sys::System)
     return pv_buses
 end
 
+# The setpoint a device's control mode selects. PSY leaves the unselected setpoints `nothing`;
+# a missing selected one is a data error, not a zero.
+function _required_setpoint(value::Union{Nothing, Float64}, field::String, label::String)
+    isnothing(value) && throw(
+        ArgumentError("$label: its control mode selects $field, which is nothing."),
+    )
+    return value
+end
+
 error_if_reversed(::PSY.TwoTerminalHVDC, ::Float64) = nothing
 
 function error_if_reversed(hvdc::PSY.TwoTerminalLCCLine, P_dc::Float64)

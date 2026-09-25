@@ -22,8 +22,8 @@
 # A mode fixes the DC-node voltage (makes its node a DC slack) iff it is a V_dc-control mode.
 fixes_dc_voltage(m::VSCControlMode) = m == ControlVdc || m == ControlVdcQ
 
-# Whether the PSY `dc_setpoint` field is a V_dc target (vs an active-power order) for a given mode.
-# Drives how the overloaded `dc_setpoint` is split into `vdc_set` vs `p_set` at lowering.
+# Whether a mode's DC-side target is a V_dc setpoint (PSY `dc_voltage_setpoint`) rather than an
+# active-power order (PSY `dc_power_setpoint`); selects which one fills `vdc_set` vs `p_set`.
 uses_vdc_setpoint(m::VSCControlMode) =
     m == ControlVdc || m == ControlVdcQ || m == ControlPVdcDroop
 

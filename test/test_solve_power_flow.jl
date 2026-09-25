@@ -158,7 +158,7 @@ end
         TEST_DATA_DIR,
         "WECC240_v04_DPV_RE20_v33_6302_xfmr_DPbuscode_PFadjusted_V32_noRemoteVctrl.raw",
     )
-    system = make_system(
+    system = system_from_openapi(
         PFP.PowerModelsData(
             file;
             bus_name_formatter = x ->
@@ -726,7 +726,7 @@ end
 
     # repeat with a different setpoint
     sys, lcc = simple_lcc_system()
-    PSY.set_transfer_setpoint!(lcc, -0.25)
+    PSY.set_power_transfer_setpoint!(lcc, -0.25 * PSY.SU)
     lcc_results = solve_power_flow(pf, sys)["lcc_results"]
     solve_and_store_power_flow!(pf, sys)
     check_lcc_consistency(lcc, lcc_results)
@@ -809,7 +809,7 @@ function test_lcc_ac_solver(ACSolver)
     # bugs in the LCC Hessian assembly.
     ACSolver === RobustHomotopyPowerFlow && return
 
-    PSY.set_transfer_setpoint!(lcc, -0.25)
+    PSY.set_power_transfer_setpoint!(lcc, -0.25 * PSY.SU)
     data = PowerFlowData(pf, sys)
     solve_power_flow!(data)
 
@@ -824,7 +824,7 @@ function test_lcc_ac_solver(ACSolver)
     @test get_active_power_flow(lcc, PSY.SU) ==
           data.lcc.arc_active_power_flow_from_to[1, 1]
 
-    PSY.set_transfer_setpoint!(lcc, 0.0)
+    PSY.set_power_transfer_setpoint!(lcc, 0.0 * PSY.SU)
     data = PowerFlowData(pf, sys)
     solve_power_flow!(data)
 

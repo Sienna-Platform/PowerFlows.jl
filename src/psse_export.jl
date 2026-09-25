@@ -890,27 +890,44 @@ function _psse_enum_code(value, undefined)
     return Integer(value)
 end
 
-const _PSSE_PHASE_SHIFT_OBJECTIVES = (
-    PSY.TransformerControlObjective.ACTIVE_POWER_FLOW,
-    PSY.TransformerControlObjective.ACTIVE_POWER_FLOW_DISABLED,
-    PSY.TransformerControlObjective.ASYMMETRIC_ACTIVE_POWER_FLOW,
-    PSY.TransformerControlObjective.ASYMMETRIC_ACTIVE_POWER_FLOW_DISABLED,
-)
-
-# `control_limits` (RMA/RMI) is documented as radians for the four phase-shift control
-# objectives, degrees on the PSS/E side. Not `PSY.is_phase_shifting` — that predicate is
-# also true for α ≠ 0 with a voltage objective, which would wrongly convert tap-ratio bounds.
-function _circuit_control_limits_degrees(circuit::PSY.TransformerCircuit)
-    control_limits = PSY.get_control_limits(circuit)
-    objective = PSY.get_control_objective(circuit)
-    if objective in _PSSE_PHASE_SHIFT_OBJECTIVES
-        return (
-            min = rad2deg(control_limits.min),
-            max = rad2deg(control_limits.max),
-        )
-    end
-    return control_limits
+# PSS/E RMA/RMI and VMA/VMI of one circuit, in PSS/E units: the actuator band the control
+# objective selects (tap ratio, or phase angle in degrees) and its target band (pu voltage, MVAr
+# or MW). A band the objective does not select, or one left unset, writes a blank field.
+function _circuit_control_bands(circuit::PSY.TransformerCircuit)
+    fields = PSY.control_band_fields(PSY.get_control_objective(circuit))
+    isempty(fields) && return (rm = _psse_band(nothing), vm = _psse_band(nothing))
+    actuator, target = fields
+    return (
+        rm = _psse_band(_psse_actuator_band(circuit, actuator)),
+        vm = _psse_band(_psse_target_band(circuit, target)),
+    )
 end
+
+_psse_band(::Nothing) = (min = PSSE_DEFAULT, max = PSSE_DEFAULT)
+_psse_band(band::NamedTuple{(:min, :max)}) = band
+
+function _psse_actuator_band(circuit::PSY.TransformerCircuit, field::Symbol)
+    if field === :tap_ratio_limits
+        return PSY.get_tap_ratio_limits(circuit)
+    elseif field === :phase_angle_limits
+        band = PSY.get_phase_angle_limits(circuit)
+        isnothing(band) && return nothing
+        return (min = rad2deg(band.min), max = rad2deg(band.max))
+    end
+    error("unhandled TransformerCircuit actuator band $field")
+end
+
+function _psse_target_band(circuit::PSY.TransformerCircuit, field::Symbol)
+    if field === :controlled_voltage_limits
+        return PSY.get_controlled_voltage_limits(circuit)
+    elseif field === :controlled_reactive_power_flow_limits
+        return PSY.get_controlled_reactive_power_flow_limits(circuit, PSY.NU)
+    elseif field === :controlled_active_power_flow_limits
+        return PSY.get_controlled_active_power_flow_limits(circuit, PSY.NU)
+    end
+    error("unhandled TransformerCircuit target band $field")
+end
+
 """Write the third record line (winding 1 data) for a 2-winding transformer."""
 function _write_2w_transformer_record3_winding1!(
     io::IO,
@@ -927,12 +944,11 @@ function _write_2w_transformer_record3_winding1!(
         PSY.TransformerControlObjective.UNDEFINED,
     )
 
-    control_limits = _circuit_control_limits_degrees(circuit)
-    RMA1 = control_limits.max
-    RMI1 = control_limits.min
-    controlled_quantity_limits = PSY.get_controlled_quantity_limits(circuit)
-    VMA1 = controlled_quantity_limits.max
-    VMI1 = controlled_quantity_limits.min
+    bands = _circuit_control_bands(circuit)
+    RMA1 = bands.rm.max
+    RMI1 = bands.rm.min
+    VMA1 = bands.vm.max
+    VMI1 = bands.vm.min
     NTP1 = PSY.get_number_of_tap_positions(circuit)
     NOD1 = PSSE_DEFAULT
     CONT1 = PSY.get_regulated_bus_number(circuit)
@@ -1071,12 +1087,11 @@ function _collect_3w_winding_data(
         )
         CONT = PSY.get_regulated_bus_number(circuit)
         NOD = PSSE_DEFAULT
-        control_limits = _circuit_control_limits_degrees(circuit)
-        RMA = control_limits.max
-        RMI = control_limits.min
-        controlled_quantity_limits = PSY.get_controlled_quantity_limits(circuit)
-        VMA = controlled_quantity_limits.max
-        VMI = controlled_quantity_limits.min
+        bands = _circuit_control_bands(circuit)
+        RMA = bands.rm.max
+        RMI = bands.rm.min
+        VMA = bands.vm.max
+        VMI = bands.vm.min
         NTP = PSY.get_number_of_tap_positions(circuit)
         TAB = 0
         supp_attr =
@@ -1946,12 +1961,10 @@ function write_to_buffers!(
         CKT = _psse_quote_string(CKT)
 
         X = PSY.get_x(branch, PSY.SU)
+        # RATE1 is MVA, which is how PFFP's switching-device reader takes it back.
         RATE1 = _value_or_default(PSY.get_rating(branch, PSY.NU), PSSE_DEFAULT)
-        # See `_write_discrete_branch_record!`.
         if RATE1 >= INFINITE_BOUND
             RATE1 = 0.0
-        else
-            RATE1 = RATE1 / PSY.get_base_power(exporter.system, PSY.NU)
         end
 
         rates = [RATE1]
@@ -2250,6 +2263,23 @@ function write_to_buffers!(
     end
 end
 
+# SETVL is MW under power control and A under current control; a blocked line holds no schedule.
+function _lcc_export_setvl(dcline::PSY.TwoTerminalLCCLine)
+    mode = PSY.get_control_mode(dcline)
+    if mode == PSY.LCCControlMode.POWER
+        return _required_setpoint(
+            PSY.get_power_transfer_setpoint(dcline, PSY.NU),
+            "power_transfer_setpoint", PSY.summary(dcline))
+    elseif mode == PSY.LCCControlMode.CURRENT
+        return _required_setpoint(
+            PSY.get_current_transfer_setpoint(dcline),
+            "current_transfer_setpoint", PSY.summary(dcline))
+    elseif mode == PSY.LCCControlMode.BLOCKED
+        return 0.0
+    end
+    error("unhandled LCCControlMode $mode on $(PSY.summary(dcline))")
+end
+
 """Compute common DC line fields (record 1) for Two-Terminal DC export."""
 function _compute_dcline_common_fields(
     exporter::PSSEExporter,
@@ -2261,16 +2291,19 @@ function _compute_dcline_common_fields(
     # Using last() since some DC lines share rectifier bus numbers
     NAME = _is_valid_psse_name(dcline_name) ? dcline_name : last(dcline_name, 12)
     NAME = _psse_quote_string(NAME)
-    MDC = Int(PSY.get_power_mode(dcline))
-    # SETVL is MW (power mode) or A (current mode).
-    SETVL = PSY.get_transfer_setpoint(dcline, PSY.NU)
+    # The LCCControlMode values are exactly PSS/E's MDC codes.
+    MDC = Int(PSY.get_control_mode(dcline))
+    SETVL = _lcc_export_setvl(dcline)
     VSCHD = PSY.get_scheduled_dc_voltage(dcline)
     # RDC is a DC-circuit resistance: PSY per-unitizes it against the DC base (VSCHD^2 /
     # baseMVA), not the rectifier AC commutating base, so the inverse conversion must use
     # the same base or the raw round trip scales `r` by (VSCHD/EBASR)^2.
     RDC = PSY.get_r(dcline) * VSCHD^2 / PSY.get_base_power(exporter.system, PSY.NU)
     VCMOD = PSY.get_switch_mode_voltage(dcline)
-    RCOMP = PSY.get_compounding_resistance(dcline)
+    # RCOMP shares RDC's DC base.
+    RCOMP =
+        PSY.get_compounding_resistance(dcline) * VSCHD^2 /
+        PSY.get_base_power(exporter.system, PSY.NU)
     DELTI = PSSE_DEFAULT
     METER = PSSE_DEFAULT
     DCVMIN = PSY.get_min_compounding_voltage(dcline)
@@ -2441,9 +2474,9 @@ function _vsc_export_dc_type(dc_control)
     return 2
 end
 
-# Whether a terminal carries a usable DC-voltage reference (so its `dc_setpoint` is a voltage):
-# true for strict DC-voltage and droop control, false for MW (DC_POWER) control whose setpoint is
-# a power. Used to source the DC line's base voltage from the correct terminal.
+# Whether a terminal carries a DC-voltage reference (a `dc_voltage_setpoint`): true for strict
+# DC-voltage and droop control, false for MW (DC_POWER) control, which holds a
+# `dc_power_setpoint`. Used to source the DC line's base voltage from the correct terminal.
 function _has_dc_voltage_reference(dc_control)
     return dc_control == PSY.VSCDCControlModes.DC_VOLTAGE ||
            dc_control == PSY.VSCDCControlModes.DC_VOLTAGE_DROOP
@@ -2451,11 +2484,10 @@ end
 
 # DCSET for one converter. A droop terminal is exported as MW control, so its setpoint is the
 # scheduled active-power demand (NOT the droop reference voltage, which the record cannot hold).
-# `dc_setpoint`'s convention is positive == supplies the AC network at that bus: from
-# withdraws (negative), to supplies (positive). Setpoints are stored in system-base p.u.;
-# scale back to PSS/E units — a DC-voltage setpoint by `rated_dc_voltage` (kV), a DC-power
-# setpoint by `base_power` (MW). `rated_dc_voltage == 0` (unspecified) writes the DC-voltage
-# setpoint through unchanged.
+# `dc_power_setpoint`'s convention is positive == supplies the AC network at that bus: from
+# withdraws (negative), to supplies (positive). A DC-voltage setpoint is p.u. of
+# `rated_dc_voltage` and scales back to kV; `rated_dc_voltage == 0` (unspecified) writes it
+# through unchanged. A DC-power setpoint is written in MW.
 function _vsc_export_dcset(
     vscline::PSY.TwoTerminalVSCLine,
     side::Symbol,
@@ -2463,22 +2495,47 @@ function _vsc_export_dcset(
 )
     if side == :from
         dc_control = PSY.get_dc_control_from(vscline)
-        dc_setpoint = PSY.get_dc_setpoint_from(vscline)
+        dc_voltage_setpoint = PSY.get_dc_voltage_setpoint_from(vscline)
+        dc_power_setpoint = PSY.get_dc_power_setpoint_from(vscline, PSY.NU)
         flow_sign = -1.0
     else
         dc_control = PSY.get_dc_control_to(vscline)
-        dc_setpoint = PSY.get_dc_setpoint_to(vscline)
+        dc_voltage_setpoint = PSY.get_dc_voltage_setpoint_to(vscline)
+        dc_power_setpoint = PSY.get_dc_power_setpoint_to(vscline, PSY.NU)
         flow_sign = 1.0
     end
     if dc_control == PSY.VSCDCControlModes.DC_VOLTAGE_DROOP
         return flow_sign * PSY.get_active_power_flow(vscline, PSY.SU) * base_power
     end
     if dc_control == PSY.VSCDCControlModes.DC_VOLTAGE
+        dc_voltage_setpoint = _required_setpoint(
+            dc_voltage_setpoint, "dc_voltage_setpoint_$side", PSY.summary(vscline))
         vdc_base = PSY.get_rated_dc_voltage(vscline)
-        iszero(vdc_base) && return dc_setpoint
-        return dc_setpoint * vdc_base
+        iszero(vdc_base) && return dc_voltage_setpoint
+        return dc_voltage_setpoint * vdc_base
     end
-    return dc_setpoint * base_power
+    return _required_setpoint(
+        dc_power_setpoint, "dc_power_setpoint_$side", PSY.summary(vscline))
+end
+
+# ACSET for one converter: the AC-voltage target (p.u.) under AC-voltage control, else the
+# power-factor setpoint.
+function _vsc_export_acset(vscline::PSY.TwoTerminalVSCLine, side::Symbol)
+    if side == :from
+        ac_control = PSY.get_ac_control_from(vscline)
+        ac_voltage_setpoint = PSY.get_ac_voltage_setpoint_from(vscline)
+        power_factor_setpoint = PSY.get_power_factor_setpoint_from(vscline)
+    else
+        ac_control = PSY.get_ac_control_to(vscline)
+        ac_voltage_setpoint = PSY.get_ac_voltage_setpoint_to(vscline)
+        power_factor_setpoint = PSY.get_power_factor_setpoint_to(vscline)
+    end
+    if ac_control == PSY.VSCACControlModes.AC_VOLTAGE
+        return _required_setpoint(
+            ac_voltage_setpoint, "ac_voltage_setpoint_$side", PSY.summary(vscline))
+    end
+    return _required_setpoint(
+        power_factor_setpoint, "power_factor_setpoint_$side", PSY.summary(vscline))
 end
 
 """Compute VSC converter fields for one side (from or to) of a VSC DC line."""
@@ -2490,7 +2547,6 @@ function _compute_vsc_converter_fields(
     side::Symbol,
 )
     base_power = PSY.get_base_power(exporter.system, PSY.NU)
-    suffix = side == :from ? "FROM" : "TO"
 
     IBUS = bus_number
     # TYPE (DC control) and MODE (AC control) are reconstructed from the control enums, not stored.
@@ -2500,7 +2556,7 @@ function _compute_vsc_converter_fields(
         MODE =
             PSY.get_ac_control_from(vscline) == PSY.VSCACControlModes.AC_VOLTAGE ? 1 : 2
         DCSET = _vsc_export_dcset(vscline, :from, base_power)
-        ACSET = PSY.get_ac_setpoint_from(vscline)
+        ACSET = _vsc_export_acset(vscline, :from)
         converter_loss = PSY.get_converter_loss_from(vscline)
         get_rating = PSY.get_rating_from
         get_imax = PSY.get_max_dc_current_from
@@ -2513,7 +2569,7 @@ function _compute_vsc_converter_fields(
         MODE =
             PSY.get_ac_control_to(vscline) == PSY.VSCACControlModes.AC_VOLTAGE ? 1 : 2
         DCSET = _vsc_export_dcset(vscline, :to, base_power)
-        ACSET = PSY.get_ac_setpoint_to(vscline)
+        ACSET = _vsc_export_acset(vscline, :to)
         converter_loss = PSY.get_converter_loss_to(vscline)
         get_rating = PSY.get_rating_to
         get_imax = PSY.get_max_dc_current_to
@@ -2598,18 +2654,21 @@ function write_to_buffers!(
         from_dc_control = PSY.get_dc_control_from(vscline)
         to_dc_control = PSY.get_dc_control_to(vscline)
         # Base (DC) voltage comes from a terminal carrying a DC-voltage reference (strict DC_VOLTAGE
-        # or droop); a pure MW (DC_POWER) terminal's setpoint is a power, not a voltage. The DC-side
-        # kV is the per-unit setpoint times `rated_dc_voltage` (kV); `rated_dc_voltage == 0` treats
-        # the setpoint as already in kV. RDC is reconstructed from `g` and Zbase (round-trips `g`).
+        # or droop); a pure MW (DC_POWER) terminal holds no voltage setpoint. The DC-side kV is the
+        # per-unit setpoint times `rated_dc_voltage` (kV); `rated_dc_voltage == 0` treats the
+        # setpoint as already in kV. With no DC-voltage reference on either terminal the base is
+        # `rated_dc_voltage` itself. RDC is reconstructed from `g` and Zbase (round-trips `g`).
         vdc_scale = if iszero(PSY.get_rated_dc_voltage(vscline))
             1.0
         else
             PSY.get_rated_dc_voltage(vscline)
         end
         if _has_dc_voltage_reference(from_dc_control)
-            base_voltage = PSY.get_dc_setpoint_from(vscline) * vdc_scale
+            base_voltage = PSY.get_dc_voltage_setpoint_from(vscline) * vdc_scale
+        elseif _has_dc_voltage_reference(to_dc_control)
+            base_voltage = PSY.get_dc_voltage_setpoint_to(vscline) * vdc_scale
         else
-            base_voltage = PSY.get_dc_setpoint_to(vscline) * vdc_scale
+            base_voltage = vdc_scale
         end
         Zbase = base_voltage^2 / PSY.get_base_power(exporter.system, PSY.NU)
         RDC = if iszero(PSY.get_g(vscline))
@@ -2637,17 +2696,18 @@ function write_to_buffers!(
         @fastprintdelim_unroll(io, false, NAME, MDC, RDC)
         fastprintln_psse_default_ownership(io)
 
-        # The converter sub-record ends in `REMOT, RMPCT` in both v33 and v35 (PSS/E's parser uses
-        # one VSC converter schema across versions), so the trailing fields are written the same.
-        @fastprintdelim_unroll(io, false,
-            c1.IBUS, c1.TYPE, c1.MODE, c1.DCSET, c1.ACSET, c1.ALOSS, c1.BLOSS,
-            c1.MINLOSS, c1.SMAX, c1.IMAX, c1.PWF, c1.MAXQ, c1.MINQ, c1.REMOT)
-        fastprintln(io, c1.RMPCT)
-
-        @fastprintdelim_unroll(io, false,
-            c2.IBUS, c2.TYPE, c2.MODE, c2.DCSET, c2.ACSET, c2.ALOSS, c2.BLOSS,
-            c2.MINLOSS, c2.SMAX, c2.IMAX, c2.PWF, c2.MAXQ, c2.MINQ, c2.REMOT)
-        fastprintln(io, c2.RMPCT)
+        for c in (c1, c2)
+            @fastprintdelim_unroll(io, false,
+                c.IBUS, c.TYPE, c.MODE, c.DCSET, c.ACSET, c.ALOSS, c.BLOSS,
+                c.MINLOSS, c.SMAX, c.IMAX, c.PWF, c.MAXQ, c.MINQ, c.REMOT)
+            # v33 ends the converter sub-record `REMOT, RMPCT`; v35 names REMOT `VSREG` and
+            # places the regulated node `NREG` before RMPCT. PSY models no node number, so
+            # NREG is 0 (the bus itself).
+            if exporter.psse_version == :v35
+                fastprintdelim(io, PSSE_GEN_DEFAULT_NREG)
+            end
+            fastprintln(io, c.RMPCT)
+        end
     end
     end_group(
         io,
@@ -2752,7 +2812,7 @@ function write_to_buffers!(
     end
 
     for (I, icd) in unique_icd_entries
-        points = PSY.get_points(PSY.get_impedance_correction_curve(icd))
+        points = _icd_export_points(icd)
         if exporter.psse_version == :v35
             _write_icd_v35_points!(io, I, points)
         else
@@ -2761,6 +2821,36 @@ function write_to_buffers!(
     end
 
     end_group(io, md, exporter, "Transformer Impedance Correction Tables", true)
+end
+
+# The correction curve the table's control mode selects, with a phase-angle curve's x axis
+# converted from radians to PSS/E's degrees.
+function _icd_export_points(icd::PSY.ImpedanceCorrectionData)
+    mode = PSY.get_transformer_control_mode(icd)
+    if mode == PSY.ImpedanceCorrectionTransformerControlMode.TAP_RATIO
+        return PSY.get_points(PSY.get_tap_ratio_correction_curve(icd))
+    elseif mode == PSY.ImpedanceCorrectionTransformerControlMode.PHASE_SHIFT_ANGLE
+        return [
+            (x = rad2deg(p.x), y = p.y) for
+            p in PSY.get_points(PSY.get_phase_angle_correction_curve(icd))
+        ]
+    end
+    error("unhandled ImpedanceCorrectionTransformerControlMode $mode")
+end
+
+# VSWLO/VSWHI of a switched shunt: the band its control mode selects — the regulated-voltage
+# band under the voltage modes, the fraction-of-range band under the reactive modes — and
+# nothing under FIXED/UNDEFINED.
+function _switched_shunt_band(shunt::PSY.SwitchedAdmittance)
+    fields = PSY.switched_admittance_band_fields(PSY.get_control_mode(shunt))
+    isempty(fields) && return nothing
+    field = only(fields)
+    if field === :voltage_limits
+        return PSY.get_voltage_limits(shunt)
+    elseif field === :reactive_power_range_limits
+        return PSY.get_reactive_power_range_limits(shunt)
+    end
+    error("unhandled SwitchedAdmittance band $field")
 end
 
 # WRITTEN TO SPEC: PSS/E 33.3/35.4 POM 5.2.1 Zone Data
@@ -2966,9 +3056,9 @@ function write_to_buffers!(
         )
         ADJM = PSSE_DEFAULT
         STAT = PSY.get_available(shunt) ? 1 : 0
-        admittance_limits = PSY.get_admittance_limits(shunt)
-        VSWHI = admittance_limits.max
-        VSWLO = admittance_limits.min
+        band = _psse_band(_switched_shunt_band(shunt))
+        VSWHI = band.max
+        VSWLO = band.min
 
         if exporter.psse_version == :v35
             SWREG = PSY.get_regulated_bus_number(shunt)

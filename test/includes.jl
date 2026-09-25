@@ -9,7 +9,7 @@ using LinearAlgebra
 using PowerFlows
 using PowerSystems
 using PowerSystemCaseBuilder
-import PowerSystemCaseBuilder: make_system
+import PowerSystemCaseBuilder: system_from_openapi
 const PFP = PowerSystemCaseBuilder.PowerFlowFileParser
 using PowerNetworkMatrices
 using InfrastructureSystems

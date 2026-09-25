@@ -112,7 +112,7 @@ end
 
 @testset "RH method: hessian on inverter-setpoint LCC (asymptotic check)" begin
     # Same interior-point check as above, but with the P-setpoint metered at
-    # the inverter (`transfer_setpoint < 0` ⇒ `setpoint_at_rectifier = false`).
+    # the inverter (`power_transfer_setpoint < 0` ⇒ `setpoint_at_rectifier = false`).
     # Then the P-setpoint tail row F_t_r = -P_lcc_to - P_set carries inverter
     # curvature, so the homotopy Hessian's LCC contribution must attach F_t_r's
     # ∇²F to `d2P_i` (negated) instead of `d2P_r`. This regression would fail
@@ -120,7 +120,10 @@ end
     # on `setpoint_at_rectifier`.
     time_step = 1
     sys, lcc = simple_lcc_system()
-    set_transfer_setpoint!(lcc, -abs(get_transfer_setpoint(lcc)))
+    set_power_transfer_setpoint!(
+        lcc,
+        -abs(get_power_transfer_setpoint(lcc, PSY.SU)) * PSY.SU,
+    )
     pf = ACPowerFlow{NewtonRaphsonACPowerFlow}()
     data = PowerFlowData(pf, sys)
     solve_power_flow!(data; pf = pf)

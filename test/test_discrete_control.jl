@@ -16,7 +16,7 @@ function build_ieee14_facts_system(;
     stress::Float64 = 1.0,
     shunt9_off::Bool = false,
 )
-    sys = make_system(PFP.PowerModelsData(IEEE14_FACTS_RAW); runchecks = false)
+    sys = system_from_openapi(PFP.PowerModelsData(IEEE14_FACTS_RAW); runchecks = false)
     if !isone(stress)
         for load in get_components(StandardLoad, sys)
             set_constant_active_power!(
@@ -171,6 +171,7 @@ end
         PSY.SwitchedAdmittanceControlMode.DISCRETE_REACTIVE_PLANT,
         PSY.SwitchedAdmittanceControlMode.DISCRETE_REACTIVE_VSC,
         PSY.SwitchedAdmittanceControlMode.DISCRETE_ADMITTANCE_REMOTE,
+        PSY.SwitchedAdmittanceControlMode.DISCRETE_REACTIVE_FACTS,
     )
     for mode in unsupported
         setm = @test_logs (:warn, r"not supported") match_mode = :any _build(mode)
@@ -195,15 +196,15 @@ end
 end
 
 @testset "discrete control: tap reads first-class control fields" begin
-    # The builder reads regulated_bus_number (controlled bus), control_limits (ratio band),
-    # number_of_tap_positions, and controlled_quantity_limits (VMI/VMA) off the PSY circuit.
+    # The builder reads regulated_bus_number (controlled bus), tap_ratio_limits (ratio band),
+    # number_of_tap_positions, and controlled_voltage_limits (VMI/VMA) off the PSY circuit.
     sys = _make_tap_shunt_system()
     tx = first(PSY.get_components(PSY.TwoWindingTransformer, sys))
     PSY.set_regulated_bus_number!(PSY.get_circuit(tx), 3)
-    PSY.set_control_limits!(PSY.get_circuit(tx), (min = 0.88, max = 1.12))
+    PSY.set_tap_ratio_limits!(PSY.get_circuit(tx), (min = 0.88, max = 1.12))
     PSY.set_number_of_tap_positions!(PSY.get_circuit(tx), 25)
     # A degenerate band pins the regulation target to a single voltage.
-    PSY.set_controlled_quantity_limits!(PSY.get_circuit(tx), (min = 1.03, max = 1.03))
+    PSY.set_controlled_voltage_limits!(PSY.get_circuit(tx), (min = 1.03, max = 1.03))
     data = PowerFlowData(ACPolarPowerFlow(), sys)
     bl = PF.get_bus_lookup(data)
     set = PowerFlows.build_controlled_device_set(
@@ -235,12 +236,12 @@ end
 end
 
 @testset "discrete control: implausible vset locks the device" begin
-    # An API-built shunt whose admittance_limits hold actual susceptance bounds
-    # (per the PSY docstring) would yield a garbage voltage setpoint; the builder
-    # must de-enroll it with a warning instead of regulating |V| toward ~0.
+    # A shunt whose voltage_limits hold susceptance-like bounds would yield a garbage
+    # voltage setpoint; the builder must de-enroll it with a warning instead of
+    # regulating |V| toward ~0.
     sys = _make_tap_shunt_system()
     sa = first(PSY.get_components(PSY.SwitchedAdmittance, sys))
-    PSY.set_admittance_limits!(sa, (min = -0.3, max = 0.3))
+    PSY.set_voltage_limits!(sa, (min = -0.3, max = 0.3))
     data = PowerFlowData(ACPolarPowerFlow(), sys)
     set = @test_logs (:warn, r"voltage setpoint") match_mode = :any (
         PowerFlows.build_controlled_device_set(
@@ -337,14 +338,53 @@ end
     @test PowerFlows._validate_tap("ok_tap", 0.9, 1.1, 33) == true
 end
 
-@testset "tap ratio band comes from tap_limits" begin
+@testset "tap ratio band comes from tap_ratio_limits" begin
     sys = _make_tap_shunt_system()
     tx = first(PSY.get_components(PSY.TwoWindingTransformer, sys))
     circuit = PSY.get_circuit(tx)
-    PSY.set_control_limits!(circuit, (min = 0.9, max = 1.1))
-    md = PowerFlows._tap_metadata(circuit, 2)
-    @test md.pmin ≈ 0.9
-    @test md.pmax ≈ 1.1
+    PSY.set_tap_ratio_limits!(circuit, (min = 0.92, max = 1.08))
+    md = PowerFlows._tap_metadata("tap_1_2", circuit, 2)
+    @test md.pmin ≈ 0.92
+    @test md.pmax ≈ 1.08
+end
+
+@testset "discrete control: a missing control band locks the device" begin
+    for (label, clear!) in (
+        (
+            "tap_ratio_limits",
+            sys -> PSY.set_tap_ratio_limits!(
+                PSY.get_circuit(first(PSY.get_components(PSY.TwoWindingTransformer, sys))),
+                nothing,
+            ),
+        ),
+        (
+            "controlled_voltage_limits",
+            sys -> PSY.set_controlled_voltage_limits!(
+                PSY.get_circuit(first(PSY.get_components(PSY.TwoWindingTransformer, sys))),
+                nothing,
+            ),
+        ),
+    )
+        sys = _make_tap_shunt_system()
+        clear!(sys)
+        data = PowerFlowData(ACPolarPowerFlow(), sys)
+        set = @test_logs (:warn, Regex(label)) match_mode = :any (
+            PowerFlows.build_controlled_device_set(
+            sys, PF.get_bus_lookup(data), data.power_network_matrix)
+        )
+        @test length(set.taps) == 0
+        @test length(set.shunts) == 1
+    end
+
+    sys = _make_tap_shunt_system()
+    PSY.set_voltage_limits!(first(PSY.get_components(PSY.SwitchedAdmittance, sys)), nothing)
+    data = PowerFlowData(ACPolarPowerFlow(), sys)
+    set = @test_logs (:warn, r"no voltage_limits band") match_mode = :any (
+        PowerFlows.build_controlled_device_set(
+        sys, PF.get_bus_lookup(data), data.power_network_matrix)
+    )
+    @test length(set.taps) == 1
+    @test length(set.shunts) == 0
 end
 
 @testset "out-of-band initial tap ratio de-enrolls with a warning" begin
@@ -1249,13 +1289,15 @@ end
                         arc = Arc(; from = ref, to = bl), r = 0.01, x = 0.10,
                         tap = 1.0, rating = 1.0, base_power = 100.0,
                         control_objective = PSY.TransformerControlObjective.VOLTAGE,
+                        tap_ratio_limits = (min = 0.9, max = 1.1),
+                        controlled_voltage_limits = (min = 0.9, max = 1.1),
                         input_basis = PSY.CU), input_basis = PSY.CU),
             )
             add_component!(
                 sys,
                 SwitchedAdmittance(; name = "sh$k", available = true,
                     bus = bs, number_engaged = [0], number_of_steps = [4],
-                    Y_increase = [0.0 + 0.05im], admittance_limits = (min = 0.9, max = 1.1),
+                    Y_increase = [0.0 + 0.05im],
                 ),
             )
         end
@@ -1399,7 +1441,8 @@ end
     # needing a real restore — while p_c/node_vdc stay checked too (they should never move).
     sys = _build_vsc_pq_system(;
         ac_control_to = PSY.VSCACControlModes.AC_VOLTAGE,
-        ac_setpoint_to = 1.0,
+        power_factor_setpoint_to = nothing,
+        ac_voltage_setpoint_to = 1.0,
     )
     pq = sort!(
         collect(

@@ -60,8 +60,8 @@ function _validate_vset(kind::String, name::String, vset::Float64)::Bool
     if !(CONTROL_VSET_MIN <= vset <= CONTROL_VSET_MAX)
         @warn "$kind \"$name\": voltage setpoint $vset p.u. is outside \
             [$CONTROL_VSET_MIN, $CONTROL_VSET_MAX] — implausible control data (for parsed \
-            systems PSY's admittance_limits holds the PSS/E VSWLO/VSWHI voltage band; \
-            other sources may not). Leaving the device locked at its current setting."
+            systems the band comes from PSS/E VMI/VMA or VSWLO/VSWHI). Leaving the device \
+            locked at its current setting."
         return false
     end
     return true
@@ -109,24 +109,26 @@ function _voltage_controlled_tap_candidates(sys)
     return candidates
 end
 
-"""Tap-control metadata for one regulating `PSY.TransformerCircuit`, of either arity.
-`control_limits` is used directly as the tap-ratio band `[pmin, pmax]`, but PSS/E's RMI1/RMA1
-bound WINDV1 while `PSY.get_tap` stores the ratio WINDV1/WINDV2; `TransformerCircuit` has no
-WINDV2-equivalent field, so this band is wrong by a factor of WINDV2 whenever WINDV2 != 1 for
-the parsed transformer (the correct band would be `control_limits ./ WINDV2`). Fixing this
-needs a data-model change upstream (PFFP/PSY), not here.
+"""Tap-control metadata for one regulating `PSY.TransformerCircuit`, of either arity, or
+`nothing` when the circuit lacks the tap-ratio or regulated-voltage band its objective selects.
 `get_regulated_bus_number` is 0 for local (to-bus) control."""
-function _tap_metadata(circuit::PSY.TransformerCircuit, to_bus::Int)
-    lims = PSY.get_control_limits(circuit)
+function _tap_metadata(name::String, circuit::PSY.TransformerCircuit, to_bus::Int)
+    lims = PSY.get_tap_ratio_limits(circuit)
+    # The tap is held anywhere inside the VMA/VMI band and regulates toward its midpoint on
+    # an excursion — the same posture as a switched shunt's VSWLO/VSWHI.
+    vlims = PSY.get_controlled_voltage_limits(circuit)
+    if isnothing(lims) || isnothing(vlims)
+        @warn "ControlledTap \"$name\": voltage control needs both tap_ratio_limits and \
+            controlled_voltage_limits (tap_ratio_limits = $lims, controlled_voltage_limits \
+            = $vlims); leaving the tap locked at its current ratio."
+        return nothing
+    end
     reg = PSY.get_regulated_bus_number(circuit)
     cbus = to_bus
     if !iszero(reg)
         # The sign marks the regulation side (PSS/E CONT<0); the bus number itself is |reg|.
         cbus = abs(reg)
     end
-    # The tap is held anywhere inside the VMA/VMI band and regulates toward its midpoint on
-    # an excursion — the same posture as a switched shunt's VSWLO/VSWHI.
-    vlims = PSY.get_controlled_quantity_limits(circuit)
     return (
         cbus = cbus,
         pmin = lims.min,
@@ -190,7 +192,8 @@ function build_controlled_device_set(
         arc = PSY.get_arc(circuit)
         fb = PSY.get_number(PSY.get_from(arc))
         tb = PSY.get_number(PSY.get_to(arc))
-        md = _tap_metadata(circuit, tb)
+        md = _tap_metadata(name, circuit, tb)
+        isnothing(md) && continue
         fix = _resolve_bus_ix(bus_lookup, reverse_bus_search_map, fb)
         tix = _resolve_bus_ix(bus_lookup, reverse_bus_search_map, tb)
         cix = _resolve_bus_ix(bus_lookup, reverse_bus_search_map, md.cbus)
@@ -292,7 +295,12 @@ function build_controlled_device_set(
                 the (reduced) network; leaving the shunt locked."
             continue
         end
-        lims = PSY.get_admittance_limits(sa)
+        lims = PSY.get_voltage_limits(sa)
+        if isnothing(lims)
+            @warn "ControlledSwitchedShunt \"$name\": control_mode $mode has no \
+                voltage_limits band; leaving the shunt locked."
+            continue
+        end
         vset = (lims.min + lims.max) / 2.0
         _validate_vset("ControlledSwitchedShunt", name, vset) || continue
         solved = PSY.get_solved_admittance(sa)

@@ -276,7 +276,7 @@ stamp_control!(d::AbstractControlledDevice, args...) =
 
 # PSS/E deadband semantics: the device is held while the controlled voltage is anywhere INSIDE
 # its band — [VSWLO, VSWHI] for a switched shunt, [VMI, VMA] (the circuit's
-# `controlled_quantity_limits`) for a tap changer; only excursions outside trigger a move.
+# `controlled_voltage_limits`) for a tap changer; only excursions outside trigger a move.
 # Families with a point setpoint and no parsed band always regulate.
 _in_deadband(::AbstractControlledDevice, ::Float64) = false
 _in_deadband(d::ControlledSwitchedShunt, y::Float64) = d.vset_lo <= y <= d.vset_hi

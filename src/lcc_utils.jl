@@ -816,6 +816,33 @@ where the quadratic formula gives `I = 0/0 = NaN` instead of `I = p`.
 _lcc_i_dc_from_p_set(r::Float64, p::Float64) =
     iszero(r) ? p : (-1.0 + sqrt(1.0 + 4.0 * r * p)) / (2.0 * r)
 
+"""
+    _lcc_power_transfer_setpoint(lcc) -> Float64
+
+Scheduled power transfer of `lcc` in system-base p.u., selected by its control mode: positive
+is consumed at the rectifier, negative is delivered at the inverter. A blocked line holds no
+schedule and transfers nothing. Current-mode lines are rejected: the LCC model holds a power
+schedule, and no current-to-power conversion is modeled.
+"""
+function _lcc_power_transfer_setpoint(lcc::PSY.TwoTerminalLCCLine)
+    mode = PSY.get_control_mode(lcc)
+    if mode == PSY.LCCControlMode.POWER
+        return _required_setpoint(
+            PSY.get_power_transfer_setpoint(lcc, PSY.SU),
+            "power_transfer_setpoint", PSY.summary(lcc))
+    elseif mode == PSY.LCCControlMode.BLOCKED
+        return 0.0
+    elseif mode == PSY.LCCControlMode.CURRENT
+        throw(
+            ArgumentError(
+                "$(PSY.summary(lcc)) has control_mode CURRENT, which the power flow does " *
+                "not support: only POWER and BLOCKED LCC lines can be solved.",
+            ),
+        )
+    end
+    error("unhandled LCCControlMode $mode on $(PSY.summary(lcc))")
+end
+
 function initialize_LCCParameters!(
     data::ACPowerFlowData,
     sys::PSY.System,
@@ -853,12 +880,9 @@ function initialize_LCCParameters!(
 
     lcc_arcs = PSY.get_arc.(lccs)
 
-    base_power = PSY.get_base_power(sys, PSY.NU)
-    # todo: if current set point, transform into p set point
-    # lcc_p_set = I_dc_A * V_dc_V / system_base_MVA
-
-    lcc_setpoint_at_rectifier .= (PSY.get_transfer_setpoint.(lccs) .>= 0.0)
-    lcc_p_set .= abs.(PSY.get_transfer_setpoint.(lccs, PSY.NU) ./ base_power) # only one direction is supported, no reverse flow possible
+    p_transfer = _lcc_power_transfer_setpoint.(lccs)
+    lcc_setpoint_at_rectifier .= p_transfer .>= 0.0
+    lcc_p_set .= abs.(p_transfer) # only one direction is supported, no reverse flow possible
     lcc_rectifier_tap .= PSY.get_rectifier_tap_setting.(lccs)
     lcc_inverter_tap .= PSY.get_inverter_tap_setting.(lccs)
     # Fixed tap targets used to pin the tap state for 0-current (0-MW) converters.

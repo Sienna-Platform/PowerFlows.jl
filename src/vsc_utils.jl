@@ -311,10 +311,12 @@ function _dc_node!(b::_DCNetworkBuilder, dc_bus)
     end
 end
 
-# Append one converter; splits the overloaded `dc_set` into `vdc_set`/`p_set` by mode and marks its
-# DC node a slack when it pins V_dc.
+# Append one converter; takes the V_dc target or the active-power order and the AC-voltage target
+# as its mode selects, and marks its DC node a slack when it pins V_dc. `label` names the converter
+# (and its terminal) in data errors.
 function _push_converter!(
     b::_DCNetworkBuilder,
+    label::String,
     ac_bus_ix::Int,
     ac_bus_number::Int,
     dc_node_ix::Int,
@@ -327,8 +329,9 @@ function _push_converter!(
     s_max::Float64,
     p_lim,
     q_lim,
-    dc_set::Float64,
-    ac_set::Float64,
+    dc_power_set::Union{Nothing, Float64},
+    dc_voltage_set::Union{Nothing, Float64},
+    ac_voltage_set::Union{Nothing, Float64},
     q_set::Float64,
 )
     mode = _vsc_control_mode(dc_control, ac_control)
@@ -348,13 +351,17 @@ function _push_converter!(
     push!(b.q_max, qmax)
     push!(b.droop_k, droop)
     push!(b.q_set, q_set)
-    push!(b.vac_set, ac_set)
+    if controls_ac_voltage(mode)
+        push!(b.vac_set, _required_setpoint(ac_voltage_set, "ac_voltage_setpoint", label))
+    else
+        push!(b.vac_set, 1.0)
+    end
     if uses_vdc_setpoint(mode)
-        push!(b.vdc_set, dc_set)
+        push!(b.vdc_set, _required_setpoint(dc_voltage_set, "dc_voltage_setpoint", label))
         push!(b.p_set, 0.0)
     else
         push!(b.vdc_set, 1.0)
-        push!(b.p_set, dc_set)
+        push!(b.p_set, _required_setpoint(dc_power_set, "dc_power_setpoint", label))
     end
     fixes_dc_voltage(mode) && (b.node_is_slack[dc_node_ix] = true)
     return length(b.ac_bus_ix)
@@ -378,24 +385,29 @@ function _lower_vsc_lines!(
         nt = _new_dc_node!(b, -1)
         dev_base = PSY.get_base_power(line)
         _push_converter!(
-            b, from_ix, from_number, nf,
+            b, "$(PSY.summary(line)) from converter", from_ix, from_number, nf,
             PSY.get_dc_control_from(line), PSY.get_ac_control_from(line),
             PSY.get_dc_voltage_droop_from(line), PSY.get_converter_loss_from(line),
             sys_base, dev_base,
             PSY.get_rating_from(line, PSY.SU),
             PSY.get_active_power_limits_from(line, PSY.SU),
             PSY.get_reactive_power_limits_from(line, PSY.SU),
-            PSY.get_dc_setpoint_from(line),
-            PSY.get_ac_setpoint_from(line), PSY.get_reactive_power_from(line, PSY.SU),
+            PSY.get_dc_power_setpoint_from(line, PSY.SU),
+            PSY.get_dc_voltage_setpoint_from(line),
+            PSY.get_ac_voltage_setpoint_from(line),
+            PSY.get_reactive_power_from(line, PSY.SU),
         )
         _push_converter!(
-            b, to_ix, to_number, nt,
+            b, "$(PSY.summary(line)) to converter", to_ix, to_number, nt,
             PSY.get_dc_control_to(line), PSY.get_ac_control_to(line),
             PSY.get_dc_voltage_droop_to(line), PSY.get_converter_loss_to(line),
             sys_base, dev_base,
             PSY.get_rating_to(line, PSY.SU), PSY.get_active_power_limits_to(line, PSY.SU),
-            PSY.get_reactive_power_limits_to(line, PSY.SU), PSY.get_dc_setpoint_to(line),
-            PSY.get_ac_setpoint_to(line), PSY.get_reactive_power_to(line, PSY.SU),
+            PSY.get_reactive_power_limits_to(line, PSY.SU),
+            PSY.get_dc_power_setpoint_to(line, PSY.SU),
+            PSY.get_dc_voltage_setpoint_to(line),
+            PSY.get_ac_voltage_setpoint_to(line),
+            PSY.get_reactive_power_to(line, PSY.SU),
         )
         push!(b.branch_from, nf)
         push!(b.branch_to, nt)
@@ -420,13 +432,15 @@ function _lower_mtdc!(
         ac_ix = _get_bus_ix(bus_lookup, reverse_bus_search_map, bus_number)
         node = _dc_node!(b, PSY.get_dc_bus(ic))
         _push_converter!(
-            b, ac_ix, bus_number, node,
+            b, PSY.summary(ic), ac_ix, bus_number, node,
             PSY.get_dc_control(ic), PSY.get_ac_control(ic),
             PSY.get_dc_voltage_droop(ic), PSY.get_loss_function(ic),
             sys_base, PSY.get_base_power(ic),
             PSY.get_rating(ic, PSY.SU), PSY.get_active_power_limits(ic, PSY.SU),
-            PSY.get_reactive_power_limits(ic, PSY.SU), PSY.get_dc_setpoint(ic),
-            PSY.get_ac_setpoint(ic), 0.0,
+            PSY.get_reactive_power_limits(ic, PSY.SU),
+            PSY.get_dc_power_setpoint(ic, PSY.SU),
+            PSY.get_dc_voltage_setpoint(ic),
+            PSY.get_ac_voltage_setpoint(ic), 0.0,
         )
     end
     for dcline in PSY.get_available_components(PSY.TModelHVDCLine, sys)
