@@ -37,7 +37,7 @@
 
         # Solve with Gradient Descent (Adam)
         pf_gd = ACPowerFlow{GradientDescentACPowerFlow}(;
-            solver_settings = Dict{Symbol, Any}(:learning_rate => 0.01),
+            solution_parameters = SolutionParameters(; learning_rate = 0.01),
         )
         result_gd = solve_power_flow(pf_gd, sys2; maxIterations = 15000)
         @test !ismissing(result_gd)

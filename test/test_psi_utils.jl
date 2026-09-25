@@ -34,3 +34,11 @@
         append!(device_types, InteractiveUtils.subtypes(T))
     end
 end
+
+@testset "SwitchedAdmittance: empty `number_engaged` is 0, a mismatched length errors" begin
+    y_increase = ComplexF64[0.01 + 0.02im, 0.03 + 0.04im]
+    @test PF._switched_admittance(nothing, Int[], y_increase) == 0.0 + 0.0im
+    @test PF._switched_admittance(nothing, [1, 2], y_increase) ==
+          (0.01 + 0.02im) + 2 * (0.03 + 0.04im)
+    @test_throws DimensionMismatch PF._switched_admittance(nothing, [1], y_increase)
+end

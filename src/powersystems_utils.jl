@@ -102,12 +102,7 @@ set_power_flow!(br::PSY.TwoWindingTransformer, flow::Complex) =
     _set_circuit_power_flow!(PSY.get_circuit(br), flow)
 
 set_power_flow!(winding::PNM.ThreeWindingTransformerCircuit, flow::Complex) =
-    _set_circuit_power_flow!(_winding_circuit(winding), flow)
-
-# The wrapper's winding number indexes the parent's circuit tuple; flows, availability and the
-# series parameters all live on that circuit.
-_winding_circuit(winding::PNM.ThreeWindingTransformerCircuit) =
-    PSY.get_circuits(PNM.get_transformer(winding))[PNM.get_winding_number(winding)]
+    _set_circuit_power_flow!(PSY.get_circuit(winding), flow)
 
 function set_voltage!(bus::PSY.ACBus, V::Complex)
     PSY.set_magnitude!(bus, abs(V))
@@ -156,7 +151,7 @@ function error_if_reversed(hvdc::PSY.TwoTerminalLCCLine, P_dc::Float64)
     )
 end
 
-_eval_loss_function(curve::PSY.LinearCurve, x::Float64) = curve(x)
+_eval_loss_function(curve::PSY.InputOutputCurve, x::Float64) = curve(x)
 
 _eval_loss_function(pwl::PSY.PiecewiseIncrementalCurve, x::Float64) =
     IS.InputOutputCurve(pwl)(x)

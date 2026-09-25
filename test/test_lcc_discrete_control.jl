@@ -115,50 +115,14 @@ end
 # test_multiperiod_discrete_control.jl, the same comparison without LCC converter state.
 const LCC_PARITY_ATOL = 1e-6
 
-"""Parse the bundled two-LCC fixture and add enrollable controlled devices: a stepping
-switched shunt and a shunt FACTS device at bus 101 (PQ, 230 kV, largest load). The fixture
-has no transformers, so no tap device is enrolled. `p_set_mw` overrides both LCC transfer
-setpoints (0.0 exercises the i_dc = 0 tap-pinning branch).
+"""Element-wise parity: every entry within `atol`.
 
-Every branch carries x = 1e-4 pu against a much larger r, so bus 101 is electrically bolted to
-the REF bus and the network is resistance-dominated — a reactive move there shifts angle far
-more than magnitude. Device ratings and setpoints are therefore sized past anything realistic,
-so the devices clear `CONTROL_GAIN_FLOOR` and enroll instead of being frozen as insensitive,
-and their setpoints sit above the reachable voltage so the continuation keeps driving them."""
-function build_lcc_control_system(; p_set_mw::Union{Nothing, Float64} = nothing)
-    raw = joinpath(TEST_DATA_DIR, "case5_2_lcc.raw")
-    sys = make_system(PFP.PowerModelsData(raw); runchecks = false)
-    bus101 = get_bus(sys, 101)
-    add_component!(
-        sys,
-        SwitchedAdmittance(; name = "ctrl_shunt_101", available = true,
-            bus = bus101, number_engaged = [0], number_of_steps = [8],
-            Y_increase = [0.0 + 0.5im], admittance_limits = (min = 1.05, max = 1.08),
-            control_mode = PSY.SwitchedAdmittanceControlMode.DISCRETE_VOLTAGE,
-        ),
-    )
-    add_component!(
-        sys,
-        FACTSControlDevice(;
-            name = "ctrl_facts_101",
-            available = true,
-            bus = bus101,
-            control_mode = PSY.FACTSOperationModes.NML,
-            voltage_setpoint = 1.06,
-            max_shunt_current = 1000.0,
-            max_reactive_power = 9999.0,
-            shunt_control_type = PSY.FACTSShuntControlType.STATCOM,
-            regulated_bus_number = 0,
-        ),
-    )
-    if p_set_mw !== nothing
-        # `initialize_LCCParameters!` seeds `p_set` from this setter's value in MW.
-        for l in get_components(TwoTerminalLCCLine, sys)
-            set_transfer_setpoint!(l, p_set_mw)
-        end
-    end
-    return sys
-end
+`isapprox` on two vectors compares `norm(x - y)`, a 2-norm over the whole vector, so the same
+per-entry error fails on a bigger system purely because there are more entries. Every tolerance
+here is a per-quantity statement — `_assert_steps_separated` below already reads
+`LCC_PARITY_ATOL` that way — so compare element-wise.
+"""
+_parity(x, y; atol = LCC_PARITY_ATOL) = all(isapprox.(x, y; atol = atol))
 
 """Rebuild the fixture with both controlled devices hard-locked at the settings `results`
 reports for time step `ts`, so it can be solved with control off. The shunt locks through its
@@ -248,15 +212,6 @@ function _set_lcc_bus101_load_at_step!(data, t::Int)
     data.bus_reactive_power_withdrawals[bix, 1] *= _lcc_bus101_q_scale(t)
     return
 end
-
-"""Element-wise parity: every entry within `atol`.
-
-`isapprox` on two vectors compares `norm(x - y)`, a 2-norm over the whole vector, so the same
-per-entry error fails on a bigger system purely because there are more entries. Every tolerance
-here is a per-quantity statement — `_assert_steps_separated` below already reads
-`LCC_PARITY_ATOL` that way — so compare element-wise.
-"""
-_parity(x, y; atol = LCC_PARITY_ATOL) = all(isapprox.(x, y; atol = atol))
 
 """Assert each pair of time-step columns in `pairs` is separated by more than the parity
 tolerance, so comparing against the wrong column would be caught. LCC converter state is not

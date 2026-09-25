@@ -88,7 +88,7 @@ Exported solver-model types and functions (see `src/PowerFlows.jl`):
 
 ## Commands (verified against this clone)
 
-This package uses **ReTest** and a `test/Project.toml` env (deps incl. PowerSystemCaseBuilder, ReTest, Pardiso, Aqua). Read the `sienna-test-environment` skill for the shared rules; PowerFlows specifics:
+This package uses **ParallelTestRunner** and a `test/Project.toml` env (deps incl. PowerSystemCaseBuilder, ParallelTestRunner, Pardiso, Aqua) — one worker process per `test_*.jl` file, sharing nothing but `test/includes.jl`'s preamble. Read the `sienna-test-environment` skill for the shared rules; PowerFlows specifics:
 
 ```sh
 # Compile-check between edits (package env, fast):
@@ -96,7 +96,7 @@ julia --project -e 'using PowerFlows'
 
 # One-time per clone: make --project=test resolve PowerFlows to the WORKING TREE
 # (else it can resolve the registered copy in ~/.julia/packages and run stale source,
-#  and new test/test_*.jl files are invisible to the glob in test/PowerFlowsTests.jl):
+#  and new test/test_*.jl files are invisible to the glob in test/runtests.jl):
 julia --project=test -e 'using Pkg; Pkg.develop(PackageSpec(path=pwd()))'
 # Verify (must print the working-tree path, not ~/.julia/packages/...):
 julia --project=test -e 'import Pkg; println(Base.find_package("PowerFlows"))'
@@ -104,8 +104,10 @@ julia --project=test -e 'import Pkg; println(Base.find_package("PowerFlows"))'
 # Run full suite:
 julia --project=test test/runtests.jl
 
-# Run a filtered subset via ReTest:
-julia --project=test -e 'using PowerFlows; include("test/PowerFlowsTests.jl"); using .PowerFlowsTests, ReTest; retest(PowerFlowsTests, r"<regex>")'
+# Run a subset filtered by FILE name (startswith), cap parallelism, or list discoverable tests:
+julia --project=test test/runtests.jl test_dc_power_flow
+julia --project=test test/runtests.jl --jobs=4
+julia --project=test test/runtests.jl --list
 
 # Docs:
 julia --project=docs docs/make.jl
@@ -114,7 +116,7 @@ julia --project=docs docs/make.jl
 julia --project=scripts/formatter -e 'include("scripts/formatter/formatter_code.jl")'
 ```
 
-ReTest runs the whole suite and reports failures at the end (does not abort on first failure). Note `runtests.jl` aborts the whole run at the first exception outside a `@test`; "suite green" means the run REACHED the final `Main.PowerFlowsTests | <N>` summary with no Error column. Under recent PSY/IS, `PSY.System("file.raw")` may not parse PSS/E raw — use the PowerSystemCaseBuilder `PowerFlowFileParser` path for raw inputs in tests.
+Each test file runs as its own testset in its own worker process; the runner reports pass/fail per file and does not abort the whole run on one file's failure. Under recent PSY/IS, `PSY.System("file.raw")` may not parse PSS/E raw — use the PowerSystemCaseBuilder `PowerFlowFileParser` path for raw inputs in tests.
 
 ## Auto-generated files / do-not-edit
 
