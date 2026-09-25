@@ -308,7 +308,7 @@ function _build_offdiag_pv_nz_cache(
     Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
     Y_bus_eff::SparseMatrixCSC{ComplexF64, Int},
     bus_state_offset::Vector{REC_INDEX_TYPE},
-    bus_types::AbstractVector{PSY.ACBusTypes},
+    bus_types::AbstractVector{PSY.ACBusTypes.Value},
 )
     n_buses = length(bus_state_offset) - 1
     Yrows = SparseArrays.rowvals(Y_bus_eff)
@@ -376,7 +376,7 @@ function _populate_mixed_constant_yb_blocks!(
     Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
     Y_bus_eff::SparseMatrixCSC{ComplexF64, Int},
     bus_state_offset::Vector{REC_INDEX_TYPE},
-    bus_types::AbstractVector{PSY.ACBusTypes},
+    bus_types::AbstractVector{PSY.ACBusTypes.Value},
 )
     n_buses = length(bus_types)
     Yvals = SparseArrays.nonzeros(Y_bus_eff)

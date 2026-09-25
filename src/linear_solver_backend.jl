@@ -41,6 +41,12 @@ const PFLinearSolverCache =
         PardisoLinSolveCache,
     }
 
+"""Supertype for the polar NR/TR reuse cache (`PolarNRCache`, `power_flow_method.jl`).
+Exists so `PowerFlowData` can type its `polar_nr_cache` slot as a two-member union:
+the concrete type cannot be referenced there because of the construction cycle
+`PolarNRCache → ACPowerFlowResidual → PowerFlowData`."""
+abstract type AbstractNRCache end
+
 # --- Backend-agnostic operations (forward to the owning PNM namespace) ---
 
 symbolic_factor!(c::PNM.KLULinSolveCache, A::SparseMatrixCSC{Float64}) =

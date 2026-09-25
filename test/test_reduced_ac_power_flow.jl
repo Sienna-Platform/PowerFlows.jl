@@ -1,9 +1,17 @@
+# Select three-winding windings out of the merged direct branch map by dispatch; the house
+# rule forbids an `isa` gate even in tests.
+_is_3wt_winding(::PNM.ThreeWindingTransformerCircuit) = true
+_is_3wt_winding(::PSY.ACTransmission) = false
+
 const UNSUPPORTED =
     Set(
         [
         (PNM.WardReduction, PF.ACPowerFlow{PF.TrustRegionACPowerFlow}),
     ],
     )
+# PNM's radial reduction is exact only under the DC approximation; AC drops the leaf
+# branch's losses/Q and the radial bus's voltage regulation, so retained-bus results
+# aren't expected to match the unreduced solve (convergence-only check).
 const NOT_EQUIVALENT =
     Set(
         [
@@ -29,9 +37,12 @@ ac_reduction_types = Dict{String, Vector{PNM.NetworkReduction}}(
     unreduced = PF.PowerFlowData(pf_unreduced, sys)
     PF.solve_power_flow!(unreduced)
     @assert all(unreduced.converged)
-    pf = ACPowerFlow{PF.TrustRegionACPowerFlow}(; correct_bustypes = true)
     for (k, v) in ac_reduction_types
         isempty(v) && continue # no reduction at all.
+        pf = ACPowerFlow{PF.TrustRegionACPowerFlow}(;
+            correct_bustypes = true,
+            network_reductions = deepcopy(v),
+        )
         if any([(typeof(nr), typeof(pf)) in UNSUPPORTED for nr in v])
             @warn "Skipping unsupported combination"
             continue
@@ -49,9 +60,12 @@ end
 
 @testset "all reductions on psse_14_network_reduction_test_system" begin
     sys = PSB.build_system(PSSEParsingTestSystems, "psse_14_network_reduction_test_system")
-    pf = ACPowerFlow{PF.TrustRegionACPowerFlow}(; correct_bustypes = true)
 
     for (k, v) in ac_reduction_types
+        pf = ACPowerFlow{PF.TrustRegionACPowerFlow}(;
+            correct_bustypes = true,
+            network_reductions = deepcopy(v),
+        )
         if any([(typeof(nr), typeof(pf)) in UNSUPPORTED for nr in v])
             @warn "Skipping unsupported combination"
             continue
@@ -61,19 +75,6 @@ end
             @test all(result.converged)
         end
     end
-
-    # not yet implemented.
-    #=
-    @testset "ward reduction" begin
-        study_buses = [101, 114, 110, 111]
-        result = test_reduced_power_flow(
-            pf,
-            sys,
-            PNM.NetworkReduction[PNM.WardReduction(study_buses)],
-        )
-        @test all(result.converged) broken = true
-    end
-    =#
 end
 
 @testset "system + power flow solver calls" begin
@@ -89,22 +90,28 @@ end
             )
             supported = !any([(typeof(nr), typeof(pf)) in UNSUPPORTED for nr in v])
             if !supported
-                results = @test_logs((:error, r"failed to converge"),
+                results = @test_logs((:error, r"did not converge in 1 of 1"),
                     match_mode = :any,
                     solve_power_flow(pf, sys)
                 )
             else
                 results = solve_power_flow(pf, sys)
             end
-            @assert !isempty(PSY.get_components(PSY.Transformer3W, sys))
+            @assert !isempty(PSY.get_components(PSY.ThreeWindingTransformer, sys))
             if supported
                 arc_flows = results["flow_results"]
                 # Look up 3WT winding flows by bus_from/bus_to (arc endpoints).
-                temp_nrd = PNM.get_network_reduction_data(
+                # The branch index exists because the matrix exists; no populate step.
+                temp_catalog = PNM.get_branch_catalog(
                     PNM.Ybus(sys; network_reductions = deepcopy(v)))
-                test_trf = first(collect(PSY.get_components(PSY.Transformer3W, sys)))
+                test_trf =
+                    first(collect(PSY.get_components(PSY.ThreeWindingTransformer, sys)))
                 trf_arc_flows = zeros(ComplexF32, 3)
-                for (arc, winding) in PNM.get_transformer3W_map(temp_nrd)
+                # 3WT circuits share the direct branch map with ordinary branches, so gate on
+                # a dispatched predicate rather than a type check.
+                for (arc, winding) in
+                    PNM.get_direct_branch_map(PNM.get_network_reduction_data(temp_catalog))
+                    _is_3wt_winding(winding) || continue
                     PNM.get_transformer(winding) !== test_trf && continue
                     wnum = PNM.get_winding_number(winding)
                     ix =
@@ -116,35 +123,35 @@ end
                         im * sum(arc_flows[ix, "Q_from_to"])
                 end
                 @test solve_and_store_power_flow!(pf, sys)
-                base_power = PSY.get_base_power(sys)
+                base_power = PSY.get_base_power(sys, PSY.NU)
                 # check that transformer bus-to-star entries are there.
                 @test isapprox(
-                    PSY.get_active_power_flow_primary(test_trf),
+                    PSY.get_active_power_flow(PSY.get_circuits(test_trf)[1], PSY.SU),
                     real(trf_arc_flows[1]) / base_power;
                     atol = 1e-5,
                 )
                 @test isapprox(
-                    PSY.get_reactive_power_flow_primary(test_trf),
+                    PSY.get_reactive_power_flow(PSY.get_circuits(test_trf)[1], PSY.SU),
                     imag(trf_arc_flows[1]) / base_power;
                     atol = 1e-5,
                 )
                 @test isapprox(
-                    PSY.get_active_power_flow_secondary(test_trf),
+                    PSY.get_active_power_flow(PSY.get_circuits(test_trf)[2], PSY.SU),
                     real(trf_arc_flows[2]) / base_power;
                     atol = 1e-5,
                 )
                 @test isapprox(
-                    PSY.get_reactive_power_flow_secondary(test_trf),
+                    PSY.get_reactive_power_flow(PSY.get_circuits(test_trf)[2], PSY.SU),
                     imag(trf_arc_flows[2]) / base_power;
                     atol = 1e-5,
                 )
                 @test isapprox(
-                    PSY.get_active_power_flow_tertiary(test_trf),
+                    PSY.get_active_power_flow(PSY.get_circuits(test_trf)[3], PSY.SU),
                     real(trf_arc_flows[3]) / base_power;
                     atol = 1e-5,
                 )
                 @test isapprox(
-                    PSY.get_reactive_power_flow_tertiary(test_trf),
+                    PSY.get_reactive_power_flow(PSY.get_circuits(test_trf)[3], PSY.SU),
                     imag(trf_arc_flows[3]) / base_power;
                     atol = 1e-5,
                 )
@@ -183,9 +190,15 @@ function compare_power_flows(
     unreduced_active_flow = unreduced.arc_active_power_flow_from_to[arc_ix, 1]
     unreduced_reactive_flow = unreduced.arc_reactive_power_flow_from_to[arc_ix, 1]
     reduced_active_flow =
-        PSY.get_active_power_flow(PSY.get_component(PSY.Branch, sys, name))
+        PSY.get_active_power_flow(
+            flow_holder(PSY.get_component(PSY.Branch, sys, name)),
+            PSY.SU,
+        )
     reduced_reactive_flow =
-        PSY.get_reactive_power_flow(PSY.get_component(PSY.Branch, sys, name))
+        PSY.get_reactive_power_flow(
+            flow_holder(PSY.get_component(PSY.Branch, sys, name)),
+            PSY.SU,
+        )
     @test isapprox(unreduced_active_flow, reduced_active_flow; atol = 1e-3)
     @test isapprox(unreduced_reactive_flow, reduced_reactive_flow; atol = 1e-3)
 end
@@ -201,19 +214,22 @@ end
     pf = PF.ACPowerFlow{PF.TrustRegionACPowerFlow}(;
         skip_redistribution = true,
         correct_bustypes = true,
-        network_reductions = PNM.NetworkReduction[PNM.DegreeTwoReduction(;
-            reduce_reactive_power_injectors = false,
-        )],
+        # Keep reactive-injector hosts so the reduced network is physics-equivalent
+        # to the unreduced one; the default drops their shunts (intentional PNM
+        # approximation), which breaks reduced-vs-unreduced parity at the
+        # MW/MVAr-scale tolerances below. Same rationale as test_post_processing.jl.
+        network_reductions = PNM.NetworkReduction[
+            PNM.DegreeTwoReduction(; reduce_reactive_power_injectors = false),
+        ],
     )
     PF.solve_power_flow!(unreduced)
     PF.solve_and_store_power_flow!(pf, sys)
-    temp_ybus =
-        PNM.Ybus(
-            sys;
-            network_reductions = PNM.NetworkReduction[PNM.DegreeTwoReduction(;
-                reduce_reactive_power_injectors = false,
-            )],
-        )
+    temp_ybus = PNM.Ybus(
+        sys;
+        network_reductions = PNM.NetworkReduction[
+            PNM.DegreeTwoReduction(; reduce_reactive_power_injectors = false),
+        ],
+    )
     nrd = PNM.get_network_reduction_data(temp_ybus)
     temp_bus_map = Dict{Int, String}(
         PSY.get_number(b) => PSY.get_name(b) for b in PSY.get_components(PSY.ACBus, sys)
@@ -237,8 +253,8 @@ end
         for br in branches
             @assert PNM.get_arc_tuple(br) == (from_bus_no, to_bus_no)
             total_flow +=
-                PSY.get_active_power_flow(br) +
-                im * PSY.get_reactive_power_flow(br)
+                PSY.get_active_power_flow(flow_holder(br), PSY.SU) +
+                im * PSY.get_reactive_power_flow(flow_holder(br), PSY.SU)
         end
         if reversed
             @test isapprox(net_from_to_from, total_flow; atol = 1e-3)
@@ -255,19 +271,22 @@ end
     pf = PF.ACPowerFlow{PF.TrustRegionACPowerFlow}(;
         skip_redistribution = true,
         correct_bustypes = true,
-        network_reductions = PNM.NetworkReduction[PNM.DegreeTwoReduction(;
-            reduce_reactive_power_injectors = false,
-        )],
+        # Keep reactive-injector hosts so the reduced network is physics-equivalent
+        # to the unreduced one; the default drops their shunts (intentional PNM
+        # approximation), which breaks reduced-vs-unreduced parity at the
+        # MW/MVAr-scale tolerances below. Same rationale as test_post_processing.jl.
+        network_reductions = PNM.NetworkReduction[
+            PNM.DegreeTwoReduction(; reduce_reactive_power_injectors = false),
+        ],
     )
     PF.solve_power_flow!(unreduced)
     PF.solve_and_store_power_flow!(pf, sys)
-    temp_ybus =
-        PNM.Ybus(
-            sys;
-            network_reductions = PNM.NetworkReduction[PNM.DegreeTwoReduction(;
-                reduce_reactive_power_injectors = false,
-            )],
-        )
+    temp_ybus = PNM.Ybus(
+        sys;
+        network_reductions = PNM.NetworkReduction[
+            PNM.DegreeTwoReduction(; reduce_reactive_power_injectors = false),
+        ],
+    )
     nrd = PNM.get_network_reduction_data(temp_ybus)
     temp_bus_map = Dict{Int, String}(
         PSY.get_number(b) => PSY.get_name(b) for b in PSY.get_components(PSY.ACBus, sys)
@@ -312,4 +331,220 @@ end
     data = PF.PowerFlowData(pf, sys)   # must not throw (isolated-bus load skipped)
     @test !haskey(PF.get_bus_lookup(data), 99)
     @test PF.solve_power_flow!(data)
+end
+
+# Two degree-two chains that share an endpoint pair are electrically parallel, so the
+# reduction groups them onto one arc: `parallel_branch_map` holds a group whose members are
+# `BranchesSeries` rather than physical branches. Per-branch reporting therefore has to
+# recurse through both aggregate kinds, and the interior buses of a grouped chain still need
+# their solved voltages written back.
+function _sibling_degree_two_chains_sys()
+    sys = System(100.0)
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.0, 0.0)
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.PQ, 230, 1.0, 0.0)
+    b3 = _add_simple_bus!(sys, 3, ACBusTypes.PQ, 230, 1.0, 0.0)
+    b4 = _add_simple_bus!(sys, 4, ACBusTypes.PQ, 230, 1.0, 0.0)
+    b5 = _add_simple_bus!(sys, 5, ACBusTypes.PQ, 230, 1.0, 0.0)
+    b6 = _add_simple_bus!(sys, 6, ACBusTypes.PQ, 230, 1.0, 0.0)
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    _add_simple_line!(sys, b1, b2, 0.01, 0.05, 0.002)
+    # Chain 2-3-5 and chain 2-4-5: buses 3 and 4 are the only degree-two buses.
+    _add_simple_line!(sys, b2, b3, 0.01, 0.07, 0.002)
+    _add_simple_line!(sys, b3, b5, 0.01, 0.09, 0.002)
+    _add_simple_line!(sys, b2, b4, 0.01, 0.11, 0.002)
+    _add_simple_line!(sys, b4, b5, 0.01, 0.13, 0.002)
+    _add_simple_line!(sys, b5, b6, 0.01, 0.06, 0.002)
+    _add_simple_load!(sys, b2, 30, 10)
+    _add_simple_load!(sys, b6, 50, 15)
+    return sys
+end
+
+@testset "Degree-2 reduction: parallel group of series chains" begin
+    sys = _sibling_degree_two_chains_sys()
+    reductions = PNM.NetworkReduction[PNM.DegreeTwoReduction(;
+        reduce_reactive_power_injectors = false,
+    )]
+    nrd = PNM.get_network_reduction_data(PNM.Ybus(sys; network_reductions = reductions))
+
+    # Pin the structure under test: a single composite arc holding both chains. Without this
+    # the flow assertions below could pass on a topology that never builds the group.
+    grouped = [
+        (arc, group) for (arc, group) in PNM.get_parallel_branch_map(nrd) if
+        any(m -> m isa PNM.BranchesSeries, group)
+    ]
+    @test length(grouped) == 1
+    (group_arc, group) = only(grouped)
+    @test Set(group_arc) == Set((2, 5))
+    @test all(m -> m isa PNM.BranchesSeries, group)
+    @test length(collect(group)) == 2
+
+    n_lines = length(collect(get_components(Line, sys)))
+    # AC returns the frames flat for a single period; DC nests them under the time step.
+    _flows(results) =
+        if haskey(results, "flow_results")
+            results["flow_results"]
+        else
+            results["1"]["flow_results"]
+        end
+    ac_models = (
+        PF.ACPowerFlow{NewtonRaphsonACPowerFlow}(),
+        PF.ACPowerFlow{NewtonRaphsonACPowerFlow}(; network_reductions = reductions),
+    )
+    dc_models = (DCPowerFlow(), DCPowerFlow(; network_reductions = reductions))
+    for (unreduced_model, reduced_model) in (ac_models, dc_models)
+        unreduced =
+            _flows(solve_power_flow(unreduced_model, sys, PF.FlowReporting.BRANCH_FLOWS))
+        reduced =
+            _flows(solve_power_flow(reduced_model, sys, PF.FlowReporting.BRANCH_FLOWS))
+        # Every physical branch is reported exactly once, including those inside the group.
+        @test nrow(reduced) == n_lines
+        @test Set(reduced.flow_name) == Set(unreduced.flow_name)
+        for row in eachrow(unreduced)
+            reduced_row = only(eachrow(filter(:flow_name => ==(row.flow_name), reduced)))
+            @test isapprox(reduced_row.P_from_to, row.P_from_to; atol = 1e-3)
+        end
+    end
+
+    # Buses 3 and 4 live only inside the grouped chains; their voltages must still be solved
+    # and written back, not left at the flat start.
+    sys_unreduced = _sibling_degree_two_chains_sys()
+    solve_and_store_power_flow!(PF.ACPowerFlow{NewtonRaphsonACPowerFlow}(), sys_unreduced)
+    sys_reduced = _sibling_degree_two_chains_sys()
+    solve_and_store_power_flow!(
+        PF.ACPowerFlow{NewtonRaphsonACPowerFlow}(; network_reductions = reductions),
+        sys_reduced,
+    )
+    for bus_number in 1:6
+        expected = get_component(ACBus, sys_unreduced, "bus_$bus_number")
+        actual = get_component(ACBus, sys_reduced, "bus_$bus_number")
+        @test isapprox(get_magnitude(actual), get_magnitude(expected); atol = 1e-5)
+        @test isapprox(get_angle(actual), get_angle(expected); atol = 1e-5)
+    end
+end
+
+# Dispatched membership predicate: the house rule forbids an `isa` gate even in tests.
+_is_series_chain(::PNM.BranchesSeries) = true
+_is_series_chain(::PSY.ACTransmission) = false
+
+# lines: vector of (name, from, to, r, x); bus 1 is REF+gen, bus 2 is PQ+load, others bare.
+function _zir_merge_test_sys(lines, nbus)
+    sys = System(100.0)
+    buses = Dict{Int, ACBus}()
+    for n in 1:nbus
+        b = ACBus(; number = n, name = "zbus_$n", available = true,
+            bustype = n == 1 ? ACBusTypes.REF : ACBusTypes.PQ,
+            angle = 0.0, magnitude = 1.0, voltage_limits = (min = 0.9, max = 1.1),
+            base_voltage = 230.0)
+        add_component!(sys, b)
+        buses[n] = b
+    end
+    for (name, f, t, r, x) in lines
+        arc = Arc(; from = buses[f], to = buses[t])
+        add_component!(sys, arc)
+        add_component!(
+            sys,
+            Line(; name = name, available = true,
+                active_power_flow = 0.0, reactive_power_flow = 0.0, arc = arc, r = r, x = x,
+                b = (from = 0.0, to = 0.0), rating = 4.0,
+                angle_limits = (min = -pi, max = pi)),
+        )
+    end
+    add_component!(
+        sys,
+        PowerLoad(; name = "zload2", available = true,
+            bus = buses[2], active_power = 1.0, reactive_power = 0.2, base_power = 100.0,
+            max_active_power = 1.0, max_reactive_power = 0.2),
+    )
+    add_component!(
+        sys,
+        ThermalStandard(; name = "zgen1", available = true,
+            status = OperationalStates.ONLINE, bus = buses[1], active_power = 1.05,
+            reactive_power = 0.25, rating = 5.0,
+            active_power_limits = (min = 0.0, max = 5.0),
+            reactive_power_limits = (min = -5.0, max = 5.0), ramp_limits = nothing,
+            operation_cost = ThermalGenerationCost(nothing), base_power = 100.0,
+            time_limits = nothing, prime_mover_type = PrimeMovers.OT,
+            fuel = ThermalFuels.OTHER),
+    )
+    return sys
+end
+
+@testset "DC BRANCH_FLOWS: anti-parallel member of a parallel group keeps its own sign" begin
+    # ZIR merges bus 3 into bus 2, so L2 (3->1) becomes anti-parallel to L1 (1,2) within the
+    # same parallel group. Control has the identical circuit without the merge: L1 (1->2) and
+    # L2 (2->1) as separate direct arcs, so L2's flow there is ground truth for the merged case.
+    grouped_sys =
+        _zir_merge_test_sys(
+            [("L1", 1, 2, 0.01, 0.1), ("ZI23", 2, 3, 0.0, 1e-5), ("L2", 3, 1, 0.01, 0.1)], 3,
+        )
+    control_sys = _zir_merge_test_sys([("L1", 1, 2, 0.01, 0.1), ("L2", 2, 1, 0.01, 0.1)], 2)
+
+    nrd = PNM.get_network_reduction_data(PNM.Ybus(grouped_sys))
+    grouped_groups = collect(PNM.get_parallel_branch_map(nrd))
+    @test length(grouped_groups) == 1
+    (group_arc, group) = only(grouped_groups)
+    @test Set(group_arc) == Set((1, 2))
+    @test all(!_is_series_chain, group)
+
+    for model in (DCPowerFlow(), PTDFDCPowerFlow())
+        grouped =
+            solve_power_flow(model, grouped_sys, PF.FlowReporting.BRANCH_FLOWS)["1"]["flow_results"]
+        control =
+            solve_power_flow(model, control_sys, PF.FlowReporting.BRANCH_FLOWS)["1"]["flow_results"]
+        l2_grouped = only(eachrow(filter(:bus_from => ==(3), grouped)))
+        l2_control =
+            only(eachrow(filter(:bus_from => ==(2), filter(:bus_to => ==(1), control))))
+        @test isapprox(l2_grouped.P_from_to, l2_control.P_from_to; atol = 1e-6)
+        @test isapprox(l2_grouped.P_to_from, l2_control.P_to_from; atol = 1e-6)
+        # Power is delivered from the REF bus to the load on bus 2 through both parallel
+        # paths, so along L2's own declared direction (3 -> 1) the flow runs backward.
+        @test l2_grouped.P_from_to < 0.0
+    end
+end
+
+@testset "DC BRANCH_FLOWS: reversed sibling chains under degree-2 reduction" begin
+    # Two chains between REF bus 1 and PQ bus 2: 1-5-2 and 1-4-3-2. The reduction's canonical
+    # arc direction for the second chain (traversed from its lowest-index interior bus toward
+    # its smaller neighbour) is opposite the first, so the group holds anti-parallel chains.
+    sys_reduced = _zir_merge_test_sys(
+        [("L15", 1, 5, 0.01, 0.10), ("L52", 5, 2, 0.01, 0.12),
+            ("L14", 1, 4, 0.015, 0.05), ("L43", 4, 3, 0.015, 0.05),
+            ("L32", 3, 2, 0.015, 0.05)],
+        5,
+    )
+    reductions = PNM.NetworkReduction[PNM.DegreeTwoReduction(;
+        reduce_reactive_power_injectors = false,
+    )]
+    nrd = PNM.get_network_reduction_data(
+        PNM.Ybus(sys_reduced; network_reductions = reductions),
+    )
+    grouped_groups = [
+        (arc, group) for (arc, group) in PNM.get_parallel_branch_map(nrd) if
+        any(_is_series_chain, group)
+    ]
+    @test length(grouped_groups) == 1
+    (group_arc, group) = only(grouped_groups)
+    @test Set(group_arc) == Set((1, 2))
+    @test all(_is_series_chain, group)
+
+    sys_full = _zir_merge_test_sys(
+        [("L15", 1, 5, 0.01, 0.10), ("L52", 5, 2, 0.01, 0.12),
+            ("L14", 1, 4, 0.015, 0.05), ("L43", 4, 3, 0.015, 0.05),
+            ("L32", 3, 2, 0.015, 0.05)],
+        5,
+    )
+    full =
+        solve_power_flow(DCPowerFlow(), sys_full, PF.FlowReporting.BRANCH_FLOWS)["1"]["flow_results"]
+    reduced = solve_power_flow(
+        DCPowerFlow(; network_reductions = reductions),
+        sys_reduced,
+        PF.FlowReporting.BRANCH_FLOWS,
+    )["1"]["flow_results"]
+
+    @test Set(reduced.flow_name) == Set(full.flow_name)
+    for row in eachrow(full)
+        reduced_row = only(eachrow(filter(:flow_name => ==(row.flow_name), reduced)))
+        @test isapprox(reduced_row.P_from_to, row.P_from_to; atol = 1e-3)
+        @test isapprox(reduced_row.P_to_from, row.P_to_from; atol = 1e-3)
+    end
 end

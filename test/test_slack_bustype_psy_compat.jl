@@ -1,6 +1,6 @@
-# PSY 5.12.1 stopped coercing `ACBusTypes.SLACK` to REF in the `ACBus` constructor, so a
-# SLACK designation (PSS/E area-interchange ISW bus) now reaches PowerFlows intact. These
-# tests pin the three places that read the RAW `PSY.get_bustype` and so had to learn about it.
+# PSY does not coerce `ACBusTypes.SLACK` to REF in the `ACBus` constructor, so a SLACK
+# designation (PSS/E area-interchange ISW bus) reaches PowerFlows intact. These tests pin
+# the three places that read the RAW `PSY.get_bustype` and so must understand it.
 
 # Bus 2 of c_sys14 is a PV bus with a generator, i.e. a legal ISW bus.
 const _SLACK_COMPAT_BUS = "Bus 2"

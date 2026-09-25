@@ -53,55 +53,52 @@ function solve_and_store_power_flow!(
 )
     # converged must be defined in the outer scope to be visible for return
     converged = false
-    with_units_base(system, PSY.UnitSystem.SYSTEM_BASE) do
-        data = PowerFlowData(pf, system)
+    data = PowerFlowData(pf, system)
 
-        converged = solve_power_flow!(data; kwargs...)
+    converged = solve_power_flow!(data; kwargs...)
 
-        if converged
-            # Write moved device settings back BEFORE write_power_flow_solution! recomputes flows —
-            # its consistency assertion compares against the stored (moved) flows. Self-guards to a
-            # no-op when no discrete controls ran.
-            write_device_settings!(system, data)
-            write_power_flow_solution!(
-                system,
-                pf,
-                data,
-                get(kwargs, :maxIterations, DEFAULT_NR_MAX_ITER),
-            )
-            @info("PowerFlow solve converged, the results have been stored in the system")
-        else
-            @error("The power flow solver returned convergence = $converged")
-        end
+    if converged
+        # Write moved device settings back BEFORE write_power_flow_solution! recomputes flows —
+        # its consistency assertion compares against the stored (moved) flows. Self-guards to a
+        # no-op when no discrete controls ran.
+        write_device_settings!(system, data)
+        write_power_flow_solution!(
+            system,
+            pf,
+            data,
+            get(kwargs, :maxIterations, DEFAULT_NR_MAX_ITER),
+        )
+        @info("PowerFlow solve converged, the results have been stored in the system")
     end
 
     return converged
 end
 
+# Re-resolve a tap's circuit in `system` by name, rather than holding a reference, so the
+# write lands in the caller's system even when it is not the one enrollment read. The tap may
+# sit on either arity, and `PSY.get_circuits` covers both (a 2W returns a 1-tuple).
+function _resolve_tap_circuit(system::PSY.System, d::ControlledTap)
+    tx = PSY.get_component(PSY.ACTransmission, system, d.device_name)
+    isnothing(tx) && return nothing
+    circuits = PSY.get_circuits(tx)
+    if d.circuit_index > length(circuits)
+        return nothing
+    end
+    return circuits[d.circuit_index]
+end
+
 """
-    write_device_settings!(system, data)
+    write_device_settings!(system::PSY.System, data)
 
-Write the solved discrete-control device settings back into the `PSY.System`:
-tap ratios (`set_tap!`), switched-shunt admittances (`set_Y!`/`set_initial_status!`,
-convention-aware — see below), and phase-shifter angles (`set_α!`). FACTS devices
-carry no stored setting field in PSY and are skipped. A device no longer present
-in `system` is skipped with a `@warn` (its solved setting is not written back).
-Mutates the user's system — called by [`solve_and_store_power_flow!`](@ref) after a
-converged solve; a no-op when no discrete controls ran.
+Write solved discrete-control device settings back onto the components of `system`: tap
+ratios onto the owning `PSY.TransformerCircuit` (of either transformer arity), and switched
+shunt and FACTS settings onto their devices. A no-op when `data` carries no controlled
+devices.
 
-Switched shunts write back per their sourcing convention (see
-[Metadata sourcing](@ref discrete-control-metadata) for how `psse_convention` is
-determined): PSS/E-parsed (BINIT) components take the solved total straight into
-`Y`; PSY API-built components keep `Y` at the fixed base and write the last-snap
-`block_n` into `initial_status`, since overwriting `Y` would double-count the
-status on re-enrollment. A never-snapped API-built device (continuous, or held in
-its deadband the whole solve) whose `block_n` cannot reconstruct `d.current` falls
-back to the BINIT write (solved total into `Y`, `initial_status` zeroed).
-
-No-op for `time_steps > 1`: a PSY component holds a single scalar setting, but a
-multiperiod solve produces one setting per time step, so there is no single value to
-write back without silently discarding all but the last-processed step. Per-time-step
-results remain available via [`get_controlled_device_results`](@ref).
+Skips with a warning when `get_time_steps(data) > 1`: a PSY component holds a single scalar
+setting and cannot represent a per-time-step schedule, so writing back would silently
+discard every step but one. Use [`get_controlled_device_results`](@ref) for the full
+per-step settings.
 """
 function write_device_settings!(system::PSY.System, data)
     set = get_controlled_devices(data)
@@ -113,13 +110,14 @@ function write_device_settings!(system::PSY.System, data)
         return
     end
     for d in set.taps
-        tx = PSY.get_component(PSY.TapTransformer, system, d.name)
-        if isnothing(tx)
-            @warn "write_device_settings!: TapTransformer \"$(d.name)\" not found in the \
-                system; its solved tap ratio $(d.current) was NOT written back."
+        circuit = _resolve_tap_circuit(system, d)
+        if isnothing(circuit)
+            @warn "write_device_settings!: transformer \"$(d.device_name)\" not found in \
+                the system; the solved tap ratio $(d.current) for \"$(d.name)\" was NOT \
+                written back."
             continue
         end
-        PSY.set_tap!(tx, d.current)
+        PSY.set_tap!(circuit, d.current)
     end
     for d in set.shunts
         sa = PSY.get_component(PSY.SwitchedAdmittance, system, d.name)
@@ -129,15 +127,15 @@ function write_device_settings!(system::PSY.System, data)
             continue
         end
         if d.psse_convention
-            PSY.set_Y!(sa, Complex(d.g0, d.current))
+            PSY.set_solved_admittance!(sa, d.current)
         else
-            realizable = d.b0 + sum(d.block_n .* d.block_dB; init = 0.0)
+            realizable = sum(d.block_n .* d.block_dB; init = 0.0)
             if abs(realizable - d.current) <= BOUNDS_TOLERANCE
-                PSY.set_Y!(sa, Complex(d.g0, d.b0))
-                PSY.set_initial_status!(sa, copy(d.block_n))
+                PSY.set_number_engaged!(sa, copy(d.block_n))
+                PSY.set_solved_admittance!(sa, nothing)
             else
-                PSY.set_Y!(sa, Complex(d.g0, d.current))
-                PSY.set_initial_status!(sa, zeros(Int, length(d.block_n)))
+                PSY.set_number_engaged!(sa, zeros(Int, length(d.block_n)))
+                PSY.set_solved_admittance!(sa, d.current)
             end
         end
     end
@@ -156,7 +154,7 @@ function write_device_settings!(system::PSY.System, data)
 end
 
 """
-Similar to [solve\\_and\\_store\\_power\\_flow!](@ref) but does not update the system struct with results.
+Similar to [`solve_and_store_power_flow!`](@ref) but does not update the system struct with results.
 Returns the results in a dictionary of dataframes.
 
 ## Examples
@@ -177,25 +175,22 @@ end
 function solve_power_flow(
     pf::AbstractACPowerFlow{<:ACPowerFlowSolverType},
     system::PSY.System,
-    flow_reporting::FlowReporting;
+    flow_reporting::FlowReporting.Value;
     kwargs...,
 )
     # df_results must be defined in the outer scope first to be visible for return
     df_results = Dict{String, DataFrames.DataFrame}()
     converged = false
     time_step = 1
-    with_units_base(system, PSY.UnitSystem.SYSTEM_BASE) do
-        data = PowerFlowData(pf, system)
+    data = PowerFlowData(pf, system)
 
-        converged = solve_power_flow!(data; kwargs...)
+    converged = solve_power_flow!(data; kwargs...)
 
-        if converged
-            @info("PowerFlow solve converged, the results are exported in DataFrames")
-            df_results = write_results(pf, system, data, time_step, flow_reporting)
-        else
-            df_results = missing
-            @error("The power flow solver returned convergence = $(converged)")
-        end
+    if converged
+        @info("PowerFlow solve converged, the results are exported in DataFrames")
+        df_results = write_results(pf, system, data, time_step, flow_reporting)
+    else
+        df_results = missing
     end
 
     return df_results
@@ -212,7 +207,7 @@ The power flow solver settings are taken from the `ACPowerFlow` object stored in
 # Arguments
 - [`data::ACPowerFlowData`](@ref ACPowerFlowData): The power flow data containing the grid information and initial conditions.
 - `kwargs...`: Additional keyword arguments. If these overlap with those in the 
-    `solver_settings` of the `ACPowerFlow` object, the values in `kwargs` take precedence.
+    `solution_parameters` of the `ACPowerFlow` object, the values in `kwargs` take precedence.
 
 # Keyword Arguments
 - `time_steps`: Specifies the time steps to solve. Defaults to sorting and collecting the keys of `get_time_step_map(data)`.
@@ -237,8 +232,7 @@ function solve_power_flow!(
     kwargs...,
 )
     pf = get_pf(data)
-    # Merge solver_settings from pf with any explicitly passed kwargs (explicit kwargs take precedence)
-    merged_kwargs = merge(get_solver_kwargs(pf), kwargs)
+    merged_kwargs = merge(get_solver_kwargs(pf), NamedTuple(kwargs))
     sorted_time_steps =
         get(merged_kwargs, :time_steps, sort(collect(keys(get_time_step_map(data)))))
     # This can be done from PSI by directly writing to `data`'s fields; we just don't
@@ -327,6 +321,11 @@ function solve_power_flow!(
 
     data.converged[sorted_time_steps] .= ts_converged
 
+    if !all(ts_converged)
+        failed = sorted_time_steps[.!ts_converged]
+        @error "AC power flow did not converge in $(length(failed)) of $(length(ts_converged)) time step(s): $failed"
+    end
+
     return all(ts_converged)
 end
 
@@ -336,7 +335,7 @@ function _solve_with_q_limits!(
     time_step::Int64;
     kwargs...,
 )
-    check_reactive_power_limits = pf.check_reactive_power_limits
+    check_reactive_power_limits = get_check_reactive_power_limits(pf)
     converged = false
 
     for _ in 1:MAX_REACTIVE_POWER_ITERATIONS
@@ -476,7 +475,7 @@ end
 function bus_type_idx(
     data::ACPowerFlowData,
     time_step::Int64 = 1,
-    bus_types::Tuple{Vararg{PSY.ACBusTypes}} = (
+    bus_types::Tuple{Vararg{PSY.ACBusTypes.Value}} = (
         PSY.ACBusTypes.REF,
         PSY.ACBusTypes.PV,
         PSY.ACBusTypes.PQ,

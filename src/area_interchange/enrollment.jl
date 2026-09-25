@@ -55,14 +55,13 @@ end
 
 # Net-interchange target and incidence count per PSY area name, aggregated over ALL
 # `PSY.AreaInterchange` records (regardless of enrollment): PDES_a = Σ_{from=a} flow −
-# Σ_{to=a} flow. `check_unit_setting(sys)` (already asserted at every PowerFlows entry
-# point) guarantees SYSTEM_BASE, so `get_active_power_flow` already reads pu — no division
-# by base power.
+# Σ_{to=a} flow. Read explicitly in system base (`PSY.SU`), the unit convention of the
+# whole power-flow layer — no division by base power.
 function _area_pdes(sys::PSY.System)
     pdes = Dict{String, Float64}()
     incident = Dict{String, Int}()
     for ai in PSY.get_available_components(PSY.AreaInterchange, sys)
-        flow = PSY.get_active_power_flow(ai)
+        flow = PSY.get_active_power_flow(ai, PSY.SU)
         from_name = PSY.get_name(PSY.get_from_area(ai))
         to_name = PSY.get_name(PSY.get_to_area(ai))
         pdes[from_name] = get(pdes, from_name, 0.0) + flow
@@ -173,10 +172,10 @@ _tie_corridor_member(fix::Int, tix::Int, tie::AreaTie) =
 
 # Guard 7a: a voltage-controlling tap incident to a tie endpoint bus, but between a
 # DIFFERENT bus pair than that tie's own corridor.
-function _warn_tap_pollution_hazard(tx, fix::Int, tix::Int, tie::AreaTie)
+function _warn_tap_pollution_hazard(tap_name::String, fix::Int, tix::Int, tie::AreaTie)
     _tie_corridor_member(fix, tix, tie) && return
     (_tie_touches(fix, tie) || _tie_touches(tix, tie)) || return
-    @warn "ControlledTap \"$(PSY.get_name(tx))\": incident to the tie between reduced-\
+    @warn "ControlledTap \"$tap_name\": incident to the tie between reduced-\
         network buses $(tie.from_bus_ix) and $(tie.to_bus_ix) without being a member of \
         its corridor; its tap movement mutates that tie endpoint's Y-bus diagonal, which \
         the cached `diag_pollution` correction cannot track live. Net-interchange \
@@ -210,17 +209,15 @@ function _warn_diag_pollution_hazards(
     reverse_bus_search_map::Dict{Int, Int},
 )
     isempty(ties) && return
-    for tx in PSY.get_available_components(PSY.TapTransformer, sys)
-        PSY.get_control_objective(tx) == PSY.TransformerControlObjective.VOLTAGE ||
-            continue
-        arc = PSY.get_arc(tx)
+    for (name, _, circuit, _, _) in _voltage_controlled_tap_candidates(sys)
+        arc = PSY.get_arc(circuit)
         fix = _resolve_bus_ix(
             bus_lookup, reverse_bus_search_map, PSY.get_number(PSY.get_from(arc)))
         tix = _resolve_bus_ix(
             bus_lookup, reverse_bus_search_map, PSY.get_number(PSY.get_to(arc)))
         (isnothing(fix) || isnothing(tix)) && continue
         for tie in ties
-            _warn_tap_pollution_hazard(tx, fix, tix, tie)
+            _warn_tap_pollution_hazard(name, fix, tix, tie)
         end
     end
     for sa in PSY.get_available_components(PSY.SwitchedAdmittance, sys)

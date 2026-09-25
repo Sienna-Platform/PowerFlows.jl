@@ -1,19 +1,15 @@
-function _rect_pf_settings()
-    return Dict{Symbol, Any}(:validate_voltage_magnitudes => false)
-end
-
 @testset "Rectangular CI Power Flow: convergence" begin
     @testset "c_sys5 converges" begin
         sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
         pf_rect = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
-            solver_settings = _rect_pf_settings())
+            solution_parameters = _rect_pf_settings())
         @test PF.solve_and_store_power_flow!(pf_rect, sys)
     end
 
     @testset "c_sys14 converges" begin
         sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
         pf_rect = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
-            solver_settings = _rect_pf_settings())
+            solution_parameters = _rect_pf_settings())
         @test PF.solve_and_store_power_flow!(pf_rect, sys)
     end
 end
@@ -23,10 +19,9 @@ end
     # maxIterations = 1 from flat start cannot converge c_sys14; the solver must
     # report non-convergence (results = missing) rather than error or hang.
     pf = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
-        solver_settings = merge(_rect_pf_settings(),
-            Dict{Symbol, Any}(:maxIterations => 1)))
+        solution_parameters = PF._override(_rect_pf_settings(); maxIterations = 1))
     @test_logs(
-        (:error, r".*solver failed to converge"),
+        (:error, r"did not converge in 1 of 1"),
         match_mode = :any,
         @test ismissing(solve_power_flow(pf, sys))
     )
@@ -37,10 +32,9 @@ end
     # maxIterations = 1 from flat start cannot converge c_sys14; the solver must
     # report non-convergence (results = missing) rather than error or hang.
     pf = ACRectangularPowerFlow{LevenbergMarquardtACPowerFlow}(;
-        solver_settings = merge(_rect_pf_settings(),
-            Dict{Symbol, Any}(:maxIterations => 1)))
+        solution_parameters = PF._override(_rect_pf_settings(); maxIterations = 1))
     @test_logs(
-        (:error, r".*solver failed to converge"),
+        (:error, r"did not converge in 1 of 1"),
         match_mode = :any,
         @test ismissing(solve_power_flow(pf, sys))
     )
@@ -61,7 +55,7 @@ end
             sys_r = deepcopy(sys_p)
             pf_p = ACPowerFlow{NewtonRaphsonACPowerFlow}()
             pf_r = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
-                solver_settings = _rect_pf_settings())
+                solution_parameters = _rect_pf_settings())
             res_p = solve_power_flow(pf_p, sys_p)
             res_r = solve_power_flow(pf_r, sys_r)
             @test res_p !== missing
@@ -124,9 +118,9 @@ end
             for (label, solver, extra_settings) in strategies
                 @testset "$label" begin
                     sys_r = deepcopy(sys_p)
-                    settings = merge(extra_settings, _rect_pf_settings())
+                    settings = PF._override(_rect_pf_settings(), extra_settings)
                     pf_r = ACRectangularPowerFlow{solver}(;
-                        solver_settings = settings)
+                        solution_parameters = settings)
                     res_r = solve_power_flow(pf_r, sys_r)
                     @test res_r !== missing
                     @test maximum(
@@ -148,7 +142,7 @@ end
             pf_polar = ACPolarPowerFlow{LevenbergMarquardtACPowerFlow}()
             res_polar = solve_power_flow(pf_polar, deepcopy(sys))
             pf_rect = ACRectangularPowerFlow{LevenbergMarquardtACPowerFlow}(;
-                solver_settings = _rect_pf_settings())
+                solution_parameters = _rect_pf_settings())
             res_rect = solve_power_flow(pf_rect, deepcopy(sys))
             @test res_rect !== missing
             @test maximum(
@@ -163,26 +157,28 @@ end
 
 @testset "ACTIVSg2000 (LM): polar and rectangular match polar NR" begin
     sys = PSB.build_system(PSB.MatpowerTestSystems, "matpower_ACTIVSg2000_sys")
-    PSY.set_units_base_system!(sys, "SYSTEM_BASE")
 
     # Tight tolerance + generous iteration budget: LM refactorizes the sparse QR
     # every iteration and needs more iterations than NR on a 2000-bus system.
-    lm_settings = Dict{Symbol, Any}(:tol => 1e-10, :maxIterations => 100)
-    ref_settings = Dict{Symbol, Any}(:tol => 1e-10)
+    lm_settings = SolutionParameters(; tol = 1e-10, maxIterations = 100)
+    ref_settings = SolutionParameters(; tol = 1e-10)
 
     # Reference: Newton-Raphson on the polar formulation (trusted for ACTIVSg2000
     # elsewhere in the suite).
     pf_ref = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
-        correct_bustypes = true, solver_settings = ref_settings)
+        correct_bustypes = true, solution_parameters = ref_settings)
     res_ref = solve_power_flow(pf_ref, sys)
 
     pf_lm_polar = ACPolarPowerFlow{LevenbergMarquardtACPowerFlow}(;
-        correct_bustypes = true, solver_settings = lm_settings)
+        correct_bustypes = true, solution_parameters = lm_settings)
     res_lm_polar = solve_power_flow(pf_lm_polar, sys)
 
     pf_lm_rect = ACRectangularPowerFlow{LevenbergMarquardtACPowerFlow}(;
         correct_bustypes = true,
-        solver_settings = merge(_rect_pf_settings(), lm_settings))
+        solution_parameters = PF._override(
+            lm_settings;
+            validate_voltage_magnitudes = false,
+        ))
     res_lm_rect = solve_power_flow(pf_lm_rect, sys)
 
     @test res_lm_polar !== missing
@@ -228,9 +224,9 @@ end
 @testset "LM Marquardt diagonal scaling option" begin
     # Formulation-dispatched default: rectangular on, polar off.
     @test PF._default_marquardt_scaling(
-        ACPolarPowerFlow{LevenbergMarquardtACPowerFlow}()) == false
+        ACPolarPowerFlow{LevenbergMarquardtACPowerFlow}) == false
     @test PF._default_marquardt_scaling(
-        ACRectangularPowerFlow{LevenbergMarquardtACPowerFlow}()) == true
+        ACRectangularPowerFlow{LevenbergMarquardtACPowerFlow}) == true
 
     # Known J with distinct column 2-norms: col1 = 5, col2 = 12. Index type must
     # match `LMWorkspace`'s `J_INDEX_TYPE` (Int64 on Apple, Int32 elsewhere).
@@ -246,14 +242,15 @@ end
     @test ws_off.D == ones(2)               # identity damping ⇒ polar unaffected
     @test PF.LMWorkspace(J).marquardt_scaling == false  # defaults to off
 
-    # update_lambda! writes √λ·D into the damping diagonal.
+    # update_lambda! refreshes N = JᵀJ + λ·D² in place; check the λ·D²
+    # contribution against JᵀJ's own diagonal (JᵀJ[i,i] = colnorm(J,i)²).
     λ = 4.0
-    PF.update_lambda!(ws_on, λ)
-    PF.update_lambda!(ws_off, λ)
-    @test ws_on.A.nzval[ws_on.λ_diag_indices[1]] ≈ sqrt(λ) * 5.0
-    @test ws_on.A.nzval[ws_on.λ_diag_indices[2]] ≈ sqrt(λ) * 12.0
-    @test ws_off.A.nzval[ws_off.λ_diag_indices[1]] ≈ sqrt(λ)  # == identity
-    @test ws_off.A.nzval[ws_off.λ_diag_indices[2]] ≈ sqrt(λ)
+    PF.update_lambda!(ws_on, J, λ)
+    PF.update_lambda!(ws_off, J, λ)
+    @test ws_on.N[1, 1] ≈ 5.0^2 + λ * 5.0^2
+    @test ws_on.N[2, 2] ≈ 12.0^2 + λ * 12.0^2
+    @test ws_off.N[1, 1] ≈ 5.0^2 + λ  # == identity damping
+    @test ws_off.N[2, 2] ≈ 12.0^2 + λ
 
     # Integration: rectangular LM converges with the default (scaling on) and
     # with the explicit override (scaling off); both match the polar NR
@@ -264,11 +261,10 @@ end
 
     res_rect_default = solve_power_flow(
         ACRectangularPowerFlow{LevenbergMarquardtACPowerFlow}(;
-            solver_settings = _rect_pf_settings()), deepcopy(sys))
+            solution_parameters = _rect_pf_settings()), deepcopy(sys))
     res_rect_off = solve_power_flow(
         ACRectangularPowerFlow{LevenbergMarquardtACPowerFlow}(;
-            solver_settings = merge(_rect_pf_settings(),
-                Dict{Symbol, Any}(:marquardt_scaling => false))),
+            solution_parameters = _rect_pf_settings(), marquardt_scaling = false),
         deepcopy(sys))
 
     for res in (res_rect_default, res_rect_off)
@@ -305,7 +301,7 @@ end
     @testset "rectangular CI residual dispatch" begin
         sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
         pf = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
-            solver_settings = _rect_pf_settings())
+            solution_parameters = _rect_pf_settings())
         data = PF.PowerFlowData(pf, sys)
         residual, _, x = PF.initialize_power_flow_variables(pf, data, 1)
         bus_types = PF.get_bus_type(data)
@@ -330,7 +326,7 @@ end
     # (the 1/|V|² current-balance terms are otherwise unguarded).
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
     pf = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
-        solver_settings = _rect_pf_settings())
+        solution_parameters = _rect_pf_settings())
     data = PF.PowerFlowData(pf, sys)
     residual, J, x = PF.initialize_power_flow_variables(pf, data, 1)
     bus_types = PF.get_bus_type(data)
@@ -346,28 +342,12 @@ end
     @test all(isfinite, J.Jv.nzval)
 end
 
-# Synthetic two-swing island, built in code. Mirrors test_jacobian.jl's polar
-# `_two_swing_system()`; duplicated locally since the rect and mixed-CPB
-# multi-swing work is split across disjoint test files.
-function _rect_two_swing_system()
-    sys = System(100.0)
-    b1 = _add_simple_bus!(sys, 1, PSY.ACBusTypes.REF, 230, 1.06, 0.0)
-    b2 = _add_simple_bus!(sys, 2, PSY.ACBusTypes.REF, 230, 1.05, 0.05)
-    b3 = _add_simple_bus!(sys, 3, PSY.ACBusTypes.PQ, 230, 1.0, 0.0)
-    _add_simple_source!(sys, b1, 0.0, 0.0)
-    _add_simple_source!(sys, b2, 0.0, 0.0)
-    _add_simple_load!(sys, b3, 40, 15)
-    _add_simple_line!(sys, b1, b3, 5e-3, 5e-3, 1e-3)
-    _add_simple_line!(sys, b2, b3, 5e-3, 5e-3, 1e-3)
-    return sys
-end
-
 @testset "Rectangular CI Power Flow: multi-swing (two swings in one island)" begin
     @testset "$(nameof(V))" for V in (NewtonRaphsonACPowerFlow, TrustRegionACPowerFlow)
         sys_p = _rect_two_swing_system()
         sys_r = deepcopy(sys_p)
         pf_p = ACPowerFlow{V}()
-        pf_r = ACRectangularPowerFlow{V}(; solver_settings = _rect_pf_settings())
+        pf_r = ACRectangularPowerFlow{V}(; solution_parameters = _rect_pf_settings())
         res_p = solve_power_flow(pf_p, sys_p)
         res_r = solve_power_flow(pf_r, sys_r)
         @test res_p !== missing

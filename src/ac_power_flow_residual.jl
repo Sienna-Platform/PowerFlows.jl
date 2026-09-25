@@ -212,7 +212,7 @@ function _set_state_variables_at_bus!(
     data::ACPowerFlowData,
     time_step::Int64,
     ::Val{PSY.ACBusTypes.PV})
-    # When bustype == PV PSY.ACACBus, state variables are Reactive Power Generated and Voltage Angle
+    # When bustype == PV, state variables are Reactive Power Generated and Voltage Angle
     # We still update both P and Q values in case the PV bus participates in distributed slack
     P_net[ix] = P_net_set[ix] + P_slack
     Q_net[ix] = StateVector[2 * ix - 1]
@@ -443,7 +443,7 @@ end
 
 function _find_subnetworks_for_reference_buses(
     Ybus::SparseMatrixCSC,
-    bus_type::AbstractArray{PSY.ACBusTypes},
+    bus_type::AbstractArray{PSY.ACBusTypes.Value},
 )
     subnetworks = PNM.find_subnetworks(Ybus, collect(eachindex(bus_type)))
     ref_buses = findall(x -> x == PSY.ACBusTypes.REF, bus_type)
@@ -477,7 +477,7 @@ both need identical slack-distribution semantics.
 """
 function _build_bus_slack_participation_factors(
     data::ACPowerFlowData,
-    bus_type::AbstractVector{PSY.ACBusTypes},
+    bus_type::AbstractVector{PSY.ACBusTypes.Value},
     subnetworks::Dict{Int64, Vector{Int64}},
     time_step::Int64,
 )

@@ -12,7 +12,7 @@ Returns `(offsets, block_sizes, total_bus_state)` where
 - `total_bus_state` is the total count of bus-state slots (excluding LCC tail)
 """
 function compute_bus_state_offsets(
-    bus_type::AbstractVector{PSY.ACBusTypes},
+    bus_type::AbstractVector{PSY.ACBusTypes.Value},
 )
     n_buses = length(bus_type)
     offsets = Vector{REC_INDEX_TYPE}(undef, n_buses + 1)
@@ -92,9 +92,13 @@ function _rect_fill_state!(
             x[off] = Vm * cos(θ)
             x[off + 1] = Vm * sin(θ)
             if bt == PSY.ACBusTypes.PV
+                # The residual uses PV's Q slot as-is, with no `const_I_Q`
+                # correction (unlike REF above), so net it out here.
                 x[off + 2] =
                     data.bus_reactive_power_injections[i, value_time_step] -
-                    data.bus_reactive_power_withdrawals[i, value_time_step]
+                    get_bus_reactive_power_non_impedance_withdrawals(
+                        data, i, value_time_step,
+                    )
             end
         end
     end
@@ -213,16 +217,17 @@ Distribute the converged subnetwork slack across participating buses and write
 `bus_active_power_injections` and `bus_reactive_power_injections` accordingly.
 
 Mirrors polar `_set_state_variables_at_bus!` semantics: at every participating
-REF and PV bus, `P_gen = P_net_set[i] + c_i · P_slack_total`, where
-`P_slack_total = x[ref_off] - P_net_set[ref_bus]`. At REF, Q_gen is taken from
-`x[off + 1]`; at PV, Q_gen is taken from `x[off + 2]`. At PQ buses no slack
+REF and PV bus the solved net active power is `P_net_set[i] + c_i · P_slack_total`,
+where `P_slack_total = x[ref_off] - P_net_set[ref_bus]`; net reactive is `x[off + 1]`
+at REF, `x[off + 2]` at PV. Both are net, not generation — the withdrawal is added back
+below, differently per bus type (see the branch comments). At PQ buses no slack
 attribution is needed: `bus_active_power_injections` / `bus_reactive_power_injections`
 already hold the load setpoint from `PowerFlowData` construction.
 
 A multi-swing island (REF bus in `independent_ref`) holds each swing at its own
 fixed voltage and self-balances its own P-slot instead of sharing the island's
 distributed scalar (see `ACRectangularCIResidual`'s REF branch): such a REF's
-`P_gen = x[off]` directly, bypassing `c_k`/`P_slack_total` entirely.
+net active power is `x[off]` directly, bypassing `c_k`/`P_slack_total` entirely.
 
 Called once per time step after the NR loop converges (not on every iteration),
 because the slack distribution is only meaningful at the converged x.
@@ -248,23 +253,31 @@ function rect_finalize_bus_injections!(
             if bt == PSY.ACBusTypes.REF
                 if bus_k in independent_ref
                     # Multi-swing island: this swing self-balances at its own
-                    # P-slot; x[off] already IS P_gen (no c_k share to add).
-                    P_gen = x[off]
+                    # P-slot; x[off] is already the whole net power (no c_k share).
+                    P_net_cp = x[off]
                 else
-                    P_gen = P_net_set[bus_k] + c_k * P_slack_total
+                    P_net_cp = P_net_set[bus_k] + c_k * P_slack_total
                 end
-                Q_gen = x[off + 1]
+                Q_net_cp = x[off + 1]
+                # REF slots are net of constant power only (cp): the residual
+                # subtracts `const_I * V_set` from them itself.
                 data.bus_active_power_injections[bus_k, time_step] =
-                    P_gen + data.bus_active_power_withdrawals[bus_k, time_step]
+                    P_net_cp + data.bus_active_power_withdrawals[bus_k, time_step]
                 data.bus_reactive_power_injections[bus_k, time_step] =
-                    Q_gen + data.bus_reactive_power_withdrawals[bus_k, time_step]
+                    Q_net_cp + data.bus_reactive_power_withdrawals[bus_k, time_step]
             elseif bt == PSY.ACBusTypes.PV
-                P_gen = P_net_set[bus_k] + c_k * P_slack_total
-                Q_gen = x[off + 2]
+                # PV slots get no such correction in the residual, so they are also
+                # net of constant current — the residual's `P_eff`/`Q_eff`.
+                P_eff = P_net_set[bus_k] + c_k * P_slack_total
+                Q_eff = x[off + 2]
                 data.bus_active_power_injections[bus_k, time_step] =
-                    P_gen + data.bus_active_power_withdrawals[bus_k, time_step]
+                    P_eff + get_bus_active_power_non_impedance_withdrawals(
+                        data, bus_k, time_step,
+                    )
                 data.bus_reactive_power_injections[bus_k, time_step] =
-                    Q_gen + data.bus_reactive_power_withdrawals[bus_k, time_step]
+                    Q_eff + get_bus_reactive_power_non_impedance_withdrawals(
+                        data, bus_k, time_step,
+                    )
             end
         end
     end

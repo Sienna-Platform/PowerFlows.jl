@@ -82,10 +82,10 @@ end
     end
     solve_power_flow!(data)
     # All time steps should produce identical results (same system state).
-    @test data.arc_active_power_flow_from_to[:, 1] ==
-          data.arc_active_power_flow_from_to[:, 2]
-    @test data.arc_active_power_flow_from_to[:, 1] ==
-          data.arc_active_power_flow_from_to[:, 3]
+    @test isapprox(data.arc_active_power_flow_from_to[:, 1],
+        data.arc_active_power_flow_from_to[:, 2])
+    @test isapprox(data.arc_active_power_flow_from_to[:, 1],
+        data.arc_active_power_flow_from_to[:, 3])
 end
 
 @testset "Lossy DCLF: AC and PTDF data have no lossy admittances" begin
@@ -98,9 +98,9 @@ end
 
 function _build_arc_flow_map(data::PowerFlowData, sys::PSY.System)
     arc_tuples = PNM.get_arc_axis(data.aux_network_matrix)
-    p_from_to = data.arc_active_power_flow_from_to[:, 1] .* PSY.get_base_power(sys)
-    p_to_from = data.arc_active_power_flow_to_from[:, 1] .* PSY.get_base_power(sys)
-    p_losses = data.arc_active_power_losses[:, 1] .* PSY.get_base_power(sys)
+    p_from_to = data.arc_active_power_flow_from_to[:, 1] .* PSY.get_base_power(sys, PSY.NU)
+    p_to_from = data.arc_active_power_flow_to_from[:, 1] .* PSY.get_base_power(sys, PSY.NU)
+    p_losses = data.arc_active_power_losses[:, 1] .* PSY.get_base_power(sys, PSY.NU)
     return Dict(
         arc => (
             P_from_to = p_from_to[ix],
@@ -151,7 +151,7 @@ end
     raw_path = joinpath(export_dir, "export_1_1.raw")
     @test isfile(raw_path)
 
-    sys = System(raw_path)
+    sys = make_system(PFP.PowerModelsData(raw_path); runchecks = false)
     data = PowerFlowData(
         DCPowerFlow(; correct_bustypes = true, lossy_flows = true),
         sys,

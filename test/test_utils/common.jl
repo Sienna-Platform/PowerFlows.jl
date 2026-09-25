@@ -1,4 +1,8 @@
 const SYSTEM_REIMPORT_COMPARISON_TOLERANCE = 1e-10
+# PSS/E RAW numerics round-trip through Float32 (see `better_float_to_buf` in psse_export.jl),
+# so a re-imported value can differ from the original by up to ~1 Float32 ULP (relative
+# eps(Float32) ≈ 1.2e-7). This relative tolerance absorbs that with margin.
+const SYSTEM_REIMPORT_RELATIVE_TOLERANCE = 1e-6
 const POWERFLOW_COMPARISON_TOLERANCE = 3e-4  # TODO refine -- most comparisons can be made much tighter
 
 power_flow_match_fn(
@@ -24,7 +28,7 @@ function create_pf_friendly_rts_gmlc()
     ]
         set_reactive_power_limits!(
             get_component(component_type, sys, component_name),
-            new_limits,
+            (min = new_limits.min * PSY.SU, max = new_limits.max * PSY.SU),
         )
     end
     return sys
@@ -36,12 +40,14 @@ function modify_rts_system!(sys::System)
     ref_bus = get_bus(sys, 113)  # "Arne"
     @assert get_bustype(ref_bus) == ACBusTypes.REF
     # NOTE: we are not testing the correctness of _power_redistribution_ref here, it is used on both sides of the test
+    bus_injectors = PF._build_bus_injector_map(sys)
     PF._power_redistribution_ref(
         sys,
         2.4375,
         0.1875,
         ref_bus,
         PF.DEFAULT_MAX_REDISTRIBUTION_ITERATIONS,
+        bus_injectors,
     )
 
     # For PV bus, active and voltage are fixed; update reactive and angle
@@ -52,6 +58,7 @@ function modify_rts_system!(sys::System)
         0.37267,
         pv_bus,
         PF.DEFAULT_MAX_REDISTRIBUTION_ITERATIONS,
+        bus_injectors,
     )
     set_angle!(pv_bus, -0.13778)
 
@@ -85,19 +92,17 @@ function _system_generation_power(
     bus_power = zeros(Float64, length(bus_numbers))
     generators = collect(get_components(Union{Generator, Source}, sys))
     gen_power = zeros(Float64, length(generators))
-    with_units_base(sys, UnitSystem.NATURAL_UNITS) do
-        bus_power .= [
-            isempty(g) ? 0 : sum([get_active_power(gg) for gg in g]) for g in [
-                get_components(
-                    x -> get_number(get_bus(x)) == i,
-                    Union{Generator, Source},
-                    sys,
-                )
-                for i in bus_numbers
-            ]
+    bus_power .= [
+        isempty(g) ? 0 : sum([get_active_power(gg, PSY.NU) for gg in g]) for g in [
+            get_components(
+                x -> get_number(get_bus(x)) == i,
+                Union{Generator, Source},
+                sys,
+            )
+            for i in bus_numbers
         ]
-        gen_power .= get_active_power.(generators)
-    end
+    ]
+    gen_power .= get_active_power.(generators, (PSY.NU,))
     return bus_power, gen_power
 end
 
@@ -105,11 +110,9 @@ function _reset_gen_power!(
     sys::System,
     original_gen_power::Vector{Float64},
 )
-    with_units_base(sys, UnitSystem.NATURAL_UNITS) do
-        for (g, og) in
-            zip(get_components(Union{Generator, Source}, sys), original_gen_power)
-            set_active_power!(g, og)
-        end
+    for (g, og) in
+        zip(get_components(Union{Generator, Source}, sys), original_gen_power)
+        set_active_power!(g, og * u"MW")
     end
 end
 
@@ -206,13 +209,13 @@ function _check_name(sys::System, name::String, component_type::DataType)
 end
 
 """
-    _add_simple_bus!(sys::System, number::Int, bus_type::ACBusTypes, base_voltage::Number, voltage_magnitude::Float64=1.0, voltage_angle::Float64=0.0)
+    _add_simple_bus!(sys::System, number::Int, bus_type::ACBusTypes.Value, base_voltage::Number, voltage_magnitude::Float64=1.0, voltage_angle::Float64=0.0)
     Simplified function to create and add a bus to the system with the given parameters.
 """
 function _add_simple_bus!(
     sys::System,
     number::Int,
-    bus_type::ACBusTypes,
+    bus_type::ACBusTypes.Value,
     base_voltage::Number,
     voltage_magnitude::Float64 = 1.0,
     voltage_angle::Float64 = 0.0,
@@ -292,7 +295,7 @@ function _add_simple_thermal_standard!(
     gen = ThermalStandard(;
         name = _check_name(sys, "thermal_standard_$(get_number(bus))", ThermalStandard),
         available = true,
-        status = true,
+        status = OperationalStates.ONLINE,
         bus = bus,
         active_power = Float64(active_power),
         reactive_power = Float64(reactive_power),
@@ -343,9 +346,9 @@ end
 
 """
     _add_simple_transformer_3w!(sys, bus_p, bus_s, bus_t, star_number; kwargs...)
-    Creates a Transformer3W with its own star ACBus (auto-added, plus 3 star Arcs).
-    star_number must be unused; terminal buses must already exist. available_tertiary=false
-    by default (2-winding-equivalent).
+    Creates a ThreeWindingTransformer with its own star ACBus (auto-added, plus 3 star
+    Arcs). star_number must be unused; terminal buses must already exist.
+    available_tertiary=false by default (2-winding-equivalent).
 """
 function _add_simple_transformer_3w!(
     sys::System,
@@ -362,39 +365,25 @@ function _add_simple_transformer_3w!(
     available_tertiary::Bool = false,
 )
     star_bus = _add_simple_bus!(sys, star_number, ACBusTypes.PQ, get_base_voltage(bus_p))
-    xfmr = Transformer3W(;
+    function _star_circuit(bus::ACBus, r::Float64, x::Float64, avail::Bool)
+        return TransformerCircuit(;
+            available = avail,
+            arc = Arc(; from = bus, to = star_bus),
+            r = r,
+            x = x,
+            rating = 1.0,
+            base_power = 100.0,
+        )
+    end
+    xfmr = ThreeWindingTransformer(;
         name = _check_name(
             sys,
             "xfmr3w_$(get_number(bus_p))_$(get_number(bus_s))_$(get_number(bus_t))",
-            Transformer3W),
-        available = true,
-        primary_star_arc = Arc(; from = bus_p, to = star_bus),
-        secondary_star_arc = Arc(; from = bus_s, to = star_bus),
-        tertiary_star_arc = Arc(; from = bus_t, to = star_bus),
+            ThreeWindingTransformer),
+        primary_circuit = _star_circuit(bus_p, r_primary, x_primary, true),
+        secondary_circuit = _star_circuit(bus_s, r_secondary, x_secondary, true),
+        tertiary_circuit = _star_circuit(bus_t, r_tertiary, x_tertiary, available_tertiary),
         star_bus = star_bus,
-        active_power_flow_primary = 0.0,
-        reactive_power_flow_primary = 0.0,
-        active_power_flow_secondary = 0.0,
-        reactive_power_flow_secondary = 0.0,
-        active_power_flow_tertiary = 0.0,
-        reactive_power_flow_tertiary = 0.0,
-        r_primary = r_primary,
-        x_primary = x_primary,
-        r_secondary = r_secondary,
-        x_secondary = x_secondary,
-        r_tertiary = r_tertiary,
-        x_tertiary = x_tertiary,
-        rating = 1.0,
-        r_12 = r_primary + r_secondary,
-        x_12 = x_primary + x_secondary,
-        r_23 = r_secondary + r_tertiary,
-        x_23 = x_secondary + x_tertiary,
-        r_13 = r_primary + r_tertiary,
-        x_13 = x_primary + x_tertiary,
-        base_power_12 = 100.0,
-        base_power_23 = 100.0,
-        base_power_13 = 100.0,
-        available_tertiary = available_tertiary,
     )
     add_component!(sys, xfmr)
     return xfmr
@@ -461,7 +450,7 @@ function _add_simple_vsc!(
         ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
         dc_setpoint_from = 0.0,
         ac_setpoint_from = 1.0,
-        converter_loss_from = LinearCurve(loss_coefficient),
+        converter_loss_from = LossCurve(LinearCurve(loss_coefficient), NaturalUnit()),
         max_dc_current_from = 1.0,
         rating_from = 1.0,
         reactive_power_limits_from = (min = -1.0, max = 1.0),
@@ -472,7 +461,7 @@ function _add_simple_vsc!(
         ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
         dc_setpoint_to = 0.0,
         ac_setpoint_to = 1.0,
-        converter_loss_to = LinearCurve(loss_coefficient),
+        converter_loss_to = LossCurve(LinearCurve(loss_coefficient), NaturalUnit()),
         max_dc_current_to = 1.0,
         rating_to = 1.0,
         reactive_power_limits_to = (min = -1.0, max = 1.0),
@@ -497,7 +486,7 @@ function _add_simple_lcc!(
         arc = Arc(bus1, bus2),
         active_power_flow = 0.0,
         r = r,
-        transfer_setpoint = 50,
+        transfer_setpoint = 0.5,  # 50 MW
         scheduled_dc_voltage = 800.0,
         rectifier_bridges = 1,
         rectifier_delay_angle_limits = (min = 0.0, max = π / 2),
@@ -564,7 +553,7 @@ function prepare_ts_data!(data::PowerFlowData, time_steps::Int64 = 24)
     return
 end
 
-"""Build a minimal 3-bus system with one `TapTransformer` (VOLTAGE control) and one
+"""Build a minimal 3-bus system with one `TwoWindingTransformer` (VOLTAGE control) and one
 `SwitchedAdmittance` for testing `build_controlled_device_set`."""
 function _make_tap_shunt_system()
     sys = System(100.0)
@@ -577,27 +566,26 @@ function _make_tap_shunt_system()
     # Line between buses 1 and 3 so the network is connected.
     _add_simple_line!(sys, b1, b3, 1e-2, 1e-2, 0.0)
     tap_arc = Arc(; from = b1, to = b2)
-    tx = TapTransformer(;
+    tx = TwoWindingTransformer(;
         name = "tap_1_2",
-        available = true,
-        active_power_flow = 0.0,
-        reactive_power_flow = 0.0,
-        arc = tap_arc,
-        r = 0.01,
-        x = 0.10,
-        primary_shunt = 0.0 + 0.0im,
-        tap = 1.0,
-        rating = 1.0,
-        base_power = 100.0,
-        control_objective = PSY.TransformerControlObjective.VOLTAGE,
+        circuit = TransformerCircuit(;
+            available = true,
+            arc = tap_arc,
+            r = 0.01,
+            x = 0.10,
+            tap = 1.0,
+            rating = 1.0,
+            base_power = 100.0,
+            control_objective = PSY.TransformerControlObjective.VOLTAGE,
+            controlled_quantity_limits = (min = 1.0, max = 1.0),
+        ),
     )
     add_component!(sys, tx)
     sa = SwitchedAdmittance(;
         name = "shunt_3",
         available = true,
         bus = b3,
-        Y = 0.0 + 0.0im,
-        initial_status = [0],
+        number_engaged = [0],
         number_of_steps = [4],
         Y_increase = [0.0 + 0.05im],
         admittance_limits = (min = 0.9, max = 1.1),
@@ -607,7 +595,7 @@ function _make_tap_shunt_system()
     return sys
 end
 
-"""Build a 3-bus system with one `TapTransformer` (VOLTAGE control) and one
+"""Build a 3-bus system with one `TwoWindingTransformer` (VOLTAGE control) and one
 `SwitchedAdmittance`, designed so the AC base case converges cleanly.
 
 Bus 2 carries a significant load (0.5 pu on 100 MVA base) through a low-impedance
@@ -653,27 +641,26 @@ function _make_solvable_tap_shunt_system()
     # Bus 3 connected to REF bus; decoupled from bus 2.
     _add_simple_line!(sys, b1, b3, 1e-2, 1e-2, 0.0)
     tap_arc = Arc(; from = b1, to = b2)
-    tx = TapTransformer(;
+    tx = TwoWindingTransformer(;
         name = "tap_1_2",
-        available = true,
-        active_power_flow = 0.0,
-        reactive_power_flow = 0.0,
-        arc = tap_arc,
-        r = 0.01,
-        x = 0.10,
-        primary_shunt = 0.0 + 0.0im,
-        tap = 1.0,
-        rating = 1.0,
-        base_power = 100.0,
-        control_objective = PSY.TransformerControlObjective.VOLTAGE,
+        circuit = TransformerCircuit(;
+            available = true,
+            arc = tap_arc,
+            r = 0.01,
+            x = 0.10,
+            tap = 1.0,
+            rating = 1.0,
+            base_power = 100.0,
+            control_objective = PSY.TransformerControlObjective.VOLTAGE,
+            controlled_quantity_limits = (min = 1.0, max = 1.0),
+        ),
     )
     add_component!(sys, tx)
     sa = SwitchedAdmittance(;
         name = "shunt_3",
         available = true,
         bus = b3,
-        Y = 0.0 + 0.0im,
-        initial_status = [0],
+        number_engaged = [0],
         number_of_steps = [4],
         Y_increase = [0.0 + 0.05im],
         admittance_limits = (min = 0.9, max = 1.1),
@@ -716,9 +703,11 @@ function _make_svc_system(;
         bus = b2,
         control_mode = control_mode,
         voltage_setpoint = 1.0,
-        max_shunt_current = max_shunt_current,
         reactive_power_required = 100.0,
     )
+    # `max_shunt_current` is stored in device base; the constructor kwarg takes a raw CU
+    # value, so set it through the units-aware setter to honor the caller's MVA input.
+    set_max_shunt_current!(svc, max_shunt_current * u"MVA")
     add_component!(sys, svc)
     return sys
 end
@@ -746,16 +735,16 @@ end
 
 """Add a CONTINUOUS_VOLTAGE `SwitchedAdmittance` (named `shunt_<busno>`) regulating `bus`. The
 narrow `admittance_limits` band (±5e-4 around 1.0) settles the continuous continuation tight to
-the setpoint. `Y` is the FIXED susceptance (a nonzero value adds a constant-Z baseline, "b0")."""
+the setpoint. `Y` is the FIXED susceptance, folded in as an always-fully-engaged block (nonzero
+= a constant-Z baseline, "b0"); the second block is the CONTINUOUS_VOLTAGE-adjustable one."""
 function _add_cv_shunt!(sys::System, bus::ACBus; Y = 0.0 + 0.0im)
     sa = SwitchedAdmittance(;
         name = "shunt_$(get_number(bus))",
         available = true,
         bus = bus,
-        Y = Y,
-        initial_status = [0],
-        number_of_steps = [12],
-        Y_increase = [0.0 + 0.1im],
+        number_engaged = [1, 0],
+        number_of_steps = [1, 12],
+        Y_increase = [Y, 0.0 + 0.1im],
         admittance_limits = (min = 0.9995, max = 1.0005),
         control_mode = PSY.SwitchedAdmittanceControlMode.CONTINUOUS_VOLTAGE,
     )
@@ -860,7 +849,7 @@ function _make_multiperiod_qlimit_shunt_system()
     b3 = _add_simple_bus!(sys, 3, ACBusTypes.PQ, 230, 1.0, 0.0)
     _add_simple_source!(sys, b1, 0.0, 0.0)
     gen = _add_simple_thermal_standard!(sys, b2, 0.1, 0.0)
-    set_reactive_power_limits!(gen, (min = -0.02, max = 0.02))
+    set_reactive_power_limits!(gen, (min = -0.02 * PSY.SU, max = 0.02 * PSY.SU))
     _add_simple_line!(sys, b1, b2, 0.01, 0.10, 0.0)
     _add_simple_line!(sys, b2, b3, 0.01, 0.10, 0.0)
     _add_mp_load!(sys, b3, 0.2, 0.3)
@@ -899,10 +888,12 @@ function _make_multiperiod_facts_system()
         bus = b2,
         control_mode = PSY.FACTSOperationModes.NML,
         voltage_setpoint = 1.0,
-        max_shunt_current = 100.0,
         shunt_control_type = PSY.FACTSShuntControlType.SVC,
         reactive_power_required = 100.0,
     )
+    # `max_shunt_current` is stored in device base; the constructor kwarg takes a raw CU
+    # value, so set it through the units-aware setter to honor the MVA input.
+    set_max_shunt_current!(svc, 100.0 * u"MVA")
     add_component!(sys, svc)
     return sys
 end
@@ -911,7 +902,7 @@ function _set_multiperiod_facts_loads!(data, n::Int)
     return _set_multiperiod_loads!(data, n, _facts_step_q_scale)
 end
 
-"""Build a 2-bus system (REF—PQ) with one voltage-controlling `TapTransformer` regulating
+"""Build a 2-bus system (REF—PQ) with one voltage-controlling `TwoWindingTransformer` regulating
 the PQ bus, for multiperiod discrete-control tests (reset-to-baseline tap design). Mirrors
 `_make_solvable_tap_shunt_system`'s impedance (r=0.01, x=0.10) and base load (0.5+j0.25) so
 the tap has full authority over bus 2; the explicit control fields (`tap_limits`,
@@ -925,23 +916,22 @@ function _make_multiperiod_tap_system()
     _add_simple_source!(sys, b1, 0.0, 0.0)
     _add_mp_load!(sys, b2, 0.5, 0.25)
     tap_arc = Arc(; from = b1, to = b2)
-    tx = TapTransformer(;
+    tx = TwoWindingTransformer(;
         name = "tap_1_2",
-        available = true,
-        active_power_flow = 0.0,
-        reactive_power_flow = 0.0,
-        arc = tap_arc,
-        r = 0.01,
-        x = 0.10,
-        primary_shunt = 0.0 + 0.0im,
-        tap = 1.0,
-        rating = 1.0,
-        base_power = 100.0,
-        tap_limits = (min = 0.85, max = 1.15),
-        number_of_tap_positions = 31,
-        regulated_bus_number = 2,
-        voltage_setpoint = 1.0,
-        control_objective = PSY.TransformerControlObjective.VOLTAGE,
+        circuit = TransformerCircuit(;
+            available = true,
+            arc = tap_arc,
+            r = 0.01,
+            x = 0.10,
+            tap = 1.0,
+            rating = 1.0,
+            base_power = 100.0,
+            control_limits = (min = 0.85, max = 1.15),
+            number_of_tap_positions = 31,
+            regulated_bus_number = 2,
+            controlled_quantity_limits = (min = 1.0, max = 1.0),
+            control_objective = PSY.TransformerControlObjective.VOLTAGE,
+        ),
     )
     add_component!(sys, tx)
     return sys
@@ -990,8 +980,7 @@ function _make_shunt_snap_system()
         name = "shunt_2",
         available = true,
         bus = b2,
-        Y = 0.0 + 0.0im,
-        initial_status = Int[],
+        number_engaged = Int[],
         number_of_steps = [4],
         Y_increase = [0.0 + 0.05im],
         admittance_limits = (min = 0.98, max = 1.02),
@@ -1001,7 +990,7 @@ function _make_shunt_snap_system()
     return sys
 end
 
-"""Build a 3-bus system with one voltage-controlling `TapTransformer` whose controllability is set
+"""Build a 3-bus system with one voltage-controlling `TwoWindingTransformer` whose controllability is set
 through the FIRST-CLASS PSY fields (`tap_limits`, `number_of_tap_positions`, `regulated_bus_number`,
 `voltage_setpoint`) — no `ext` scrape — to exercise the post-#1684 builder path. The tap (b1→b2)
 remotely regulates b3."""
@@ -1012,23 +1001,22 @@ function _make_field_controlled_tap_system()
     b3 = _add_simple_bus!(sys, 3, ACBusTypes.PQ, 230, 1.0, 0.0)
     _add_simple_source!(sys, b1, 0.0, 0.0)
     _add_simple_line!(sys, b2, b3, 1e-2, 1e-2, 0.0)
-    tx = TapTransformer(;
+    tx = TwoWindingTransformer(;
         name = "tap_1_2",
-        available = true,
-        active_power_flow = 0.0,
-        reactive_power_flow = 0.0,
-        arc = Arc(; from = b1, to = b2),
-        r = 0.01,
-        x = 0.10,
-        primary_shunt = 0.0 + 0.0im,
-        tap = 1.0,
-        rating = 1.0,
-        base_power = 100.0,
-        tap_limits = (min = 0.85, max = 1.15),
-        number_of_tap_positions = 17,
-        regulated_bus_number = 3,
-        voltage_setpoint = 1.02,
-        control_objective = PSY.TransformerControlObjective.VOLTAGE,
+        circuit = TransformerCircuit(;
+            available = true,
+            arc = Arc(; from = b1, to = b2),
+            r = 0.01,
+            x = 0.10,
+            tap = 1.0,
+            rating = 1.0,
+            base_power = 100.0,
+            control_limits = (min = 0.85, max = 1.15),
+            number_of_tap_positions = 17,
+            regulated_bus_number = 3,
+            controlled_quantity_limits = (min = 1.02, max = 1.02),
+            control_objective = PSY.TransformerControlObjective.VOLTAGE,
+        ),
     )
     add_component!(sys, tx)
     return sys
@@ -1039,10 +1027,9 @@ scaled by `load_scale`. Used for testing reactive power control logic: switched 
 FACTS device adjustment."""
 function _make_ieee14_scaled_load_system(load_scale::Float64 = 1.4)
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
-    set_units_base_system!(sys, "SYSTEM_BASE")
     for load in get_components(PowerLoad, sys)
-        set_active_power!(load, get_active_power(load) * load_scale)
-        set_reactive_power!(load, get_reactive_power(load) * load_scale)
+        set_active_power!(load, get_active_power(load, PSY.SU) * load_scale * PSY.SU)
+        set_reactive_power!(load, get_reactive_power(load, PSY.SU) * load_scale * PSY.SU)
     end
     return sys
 end
@@ -1062,9 +1049,11 @@ function _add_facts_shunt!(
         bus = b,
         control_mode = PSY.FACTSOperationModes.NML,
         voltage_setpoint = voltage_setpoint,
-        max_shunt_current = max_shunt_current,
         reactive_power_required = 100.0,
     )
+    # `max_shunt_current` is stored in device base; the constructor kwarg takes a raw CU
+    # value, so set it through the units-aware setter to honor the caller's MVA input.
+    set_max_shunt_current!(facts, max_shunt_current * u"MVA")
     add_component!(sys, facts)
     return facts
 end
@@ -1089,8 +1078,7 @@ function _add_switched_shunt!(
         name = "shunt_$bus_number",
         available = true,
         bus = b,
-        Y = 0.0 + 0.0im,
-        initial_status = [0],
+        number_engaged = [0],
         number_of_steps = [n_steps],
         Y_increase = [0.0 + (mvar_per_step / base_power) * im],
         admittance_limits = (
@@ -1103,7 +1091,7 @@ function _add_switched_shunt!(
     return sa
 end
 
-"""Build a 4-bus system where the TapTransformer's FROM bus is the controlled bus,
+"""Build a 4-bus system where the transformer's FROM bus is the controlled bus,
 exercising the from-side control orientation (the plant-sign probe must measure the
 opposite dV/dp sign to the usual to-side wiring).
 
@@ -1125,20 +1113,20 @@ function _make_primary_controlled_tap_system()
     # Bus 4 connected to REF (keeps network connected after b3 has only the tap).
     _add_simple_line!(sys, b1, b4, 1e-2, 1e-2, 0.0)
     tap_arc = Arc(; from = b2, to = b3)
-    tx = TapTransformer(;
+    tx = TwoWindingTransformer(;
         name = "tap_2_3",
-        available = true,
-        active_power_flow = 0.0,
-        reactive_power_flow = 0.0,
-        arc = tap_arc,
-        r = 0.01,
-        x = 0.10,
-        primary_shunt = 0.0 + 0.0im,
-        tap = 1.0,
-        rating = 1.0,
-        base_power = 100.0,
-        control_objective = PSY.TransformerControlObjective.VOLTAGE,
-        regulated_bus_number = 2,  # controlled bus = bus 2 (FROM) → primary
+        circuit = TransformerCircuit(;
+            available = true,
+            arc = tap_arc,
+            r = 0.01,
+            x = 0.10,
+            tap = 1.0,
+            rating = 1.0,
+            base_power = 100.0,
+            control_objective = PSY.TransformerControlObjective.VOLTAGE,
+            controlled_quantity_limits = (min = 1.0, max = 1.0),
+            regulated_bus_number = 2,  # controlled bus = bus 2 (FROM) → primary
+        ),
     )
     add_component!(sys, tx)
     return sys
@@ -1204,34 +1192,28 @@ end
 function power_flow_with_units(
     sys::PSY.System,
     T::Type{<:PF.ACPowerFlow},
-    units::PSY.UnitSystem,
 )
-    with_units_base(sys, units) do
-        results = solve_power_flow(T(; correct_bustypes = true), sys)
-        if "1" in keys(results)
-            first_line_flow = results["1"]["flow_results"][1, :]
-        else
-            first_line_flow = results["flow_results"][1, :]
-        end
-        return (first_line_flow[:flow_name], first_line_flow[:P_from_to])
+    results = solve_power_flow(T(; correct_bustypes = true), sys)
+    if "1" in keys(results)
+        first_line_flow = results["1"]["flow_results"][1, :]
+    else
+        first_line_flow = results["flow_results"][1, :]
     end
+    return (first_line_flow[:flow_name], first_line_flow[:P_from_to])
 end
 
 function power_flow_with_units(
     sys::PSY.System,
     T::Type{<:PF.AbstractDCPowerFlow},
-    units::PSY.UnitSystem,
 )
-    with_units_base(sys, units) do
-        results =
-            solve_power_flow(T(; correct_bustypes = true), sys, PF.FlowReporting.ARC_FLOWS)
-        if "1" in keys(results)
-            first_line_flow = results["1"]["flow_results"][1, :]
-        else
-            first_line_flow = results["flow_results"][1, :]
-        end
-        return (first_line_flow[:flow_name], first_line_flow[:P_from_to])
+    results =
+        solve_power_flow(T(; correct_bustypes = true), sys, PF.FlowReporting.ARC_FLOWS)
+    if "1" in keys(results)
+        first_line_flow = results["1"]["flow_results"][1, :]
+    else
+        first_line_flow = results["flow_results"][1, :]
     end
+    return (first_line_flow[:flow_name], first_line_flow[:P_from_to])
 end
 
 # Reconstruct the polar state vector from solved `data` (REF→(P,Q),
@@ -1271,6 +1253,11 @@ end
 # Orientation is significant and must match: a VSC/HVDC line's from/to terminals carry distinct
 # controls, so an Arc oriented to->from must NOT be reused (it would swap the converter terminals).
 # A correctly-oriented parallel Arc is created instead; sharing only applies to a same-oriented branch.
+"""Where a branch's stored power flow lives: transformer flows sit on the
+`PSY.TransformerCircuit`; every other branch holds its own."""
+flow_holder(br::PSY.ACBranch) = br
+flow_holder(br::PSY.TwoWindingTransformer) = PSY.get_circuit(br)
+
 function _get_or_make_arc(sys, from_bus, to_bus)
     existing = PSY.get_components(
         a -> PSY.get_from(a) === from_bus && PSY.get_to(a) === to_bus,
@@ -1283,24 +1270,24 @@ function _get_or_make_arc(sys, from_bus, to_bus)
     return arc
 end
 
-# Add a voltage-controlling TapTransformer between two existing AC buses (mirrors the
-# TapTransformer block in `_make_tap_shunt_system`), for fixtures that need a controlled
+# Add a voltage-controlling transformer between two existing AC buses (mirrors the
+# transformer block in `_make_tap_shunt_system`), for fixtures that need a controlled
 # device layered on top of an otherwise-fixed system (e.g. a VSC system).
 function _add_control_tap!(sys, from_bus, to_bus; name = "tap_ctrl")
     tap_arc = _get_or_make_arc(sys, from_bus, to_bus)
-    tx = PSY.TapTransformer(;
+    tx = PSY.TwoWindingTransformer(;
         name = name,
-        available = true,
-        active_power_flow = 0.0,
-        reactive_power_flow = 0.0,
-        arc = tap_arc,
-        r = 0.01,
-        x = 0.10,
-        primary_shunt = 0.0 + 0.0im,
-        tap = 1.0,
-        rating = 1.0,
-        base_power = 100.0,
-        control_objective = PSY.TransformerControlObjective.VOLTAGE,
+        circuit = PSY.TransformerCircuit(;
+            available = true,
+            arc = tap_arc,
+            r = 0.01,
+            x = 0.10,
+            tap = 1.0,
+            rating = 1.0,
+            base_power = 100.0,
+            control_objective = PSY.TransformerControlObjective.VOLTAGE,
+            controlled_quantity_limits = (min = 1.0, max = 1.0),
+        ),
     )
     PSY.add_component!(sys, tx)
     return tx
@@ -1308,7 +1295,7 @@ end
 
 # ── Shared VSC test builders ────────────────────────────────────────────────────────────────────
 
-const VSC_SETTINGS = Dict{Symbol, Any}(:model_dc_network => true)
+const VSC_SOLUTION_PARAMETERS = SolutionParameters(; model_dc_network = true)
 
 # One point-to-point VSC line between the first two PQ buses of c_sys14: from = DC-voltage control
 # (DC slack), to = (P, Q) control. Extra `TwoTerminalVSCLine` fields pass through `vsc_kwargs...`
@@ -1325,7 +1312,6 @@ function _build_vsc_pq_system(;
     vsc_kwargs...,
 )
     sys = deepcopy(PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false))
-    set_system_base && PSY.set_units_base_system!(sys, "SYSTEM_BASE")
     pq = sort!(
         collect(
             PSY.get_components(
@@ -1369,7 +1355,6 @@ end
 # `active_power = 0.0`.
 function _build_mtdc_system()
     sys = deepcopy(PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false))
-    PSY.set_units_base_system!(sys, "SYSTEM_BASE")
     pq = sort!(
         collect(
             PSY.get_components(
@@ -1424,6 +1409,7 @@ function _build_mtdc_system()
             available = true,
             active_power_flow = 0.0,
             arc = arc,
+            base_current = 100.0,
             r = 0.01,
             l = 0.0,
             c = 0.0,
@@ -1480,10 +1466,8 @@ function _make_two_island_spanning_area_system()
     PSY.add_component!(sys, span)
 
     b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230)
-    # `ACBus(; bustype = SLACK, ...)` is auto-normalized to REF at construction time
-    # (`PowerSystems.check_bus_params`); build as PV first, then promote via the
-    # `set_bustype!` setter (mirrors this file's own `_set_slack!` idiom) to get a real
-    # SLACK bus without silently doubling up REF within island 1.
+    # Build as PV first, then promote via the `set_bustype!` setter (mirrors this file's
+    # own `_set_slack!` idiom) once the bus has its generator.
     b2 = _add_simple_bus!(sys, 2, ACBusTypes.PV, 230)
     PSY.set_area!(b1, home1)
     PSY.set_area!(b2, span)
@@ -1507,7 +1491,7 @@ end
 
 """Comprehensive fixture (area interchange x DC-line ties): single AC island; Area1 (bus1
 REF) never enrolls, Area2/Area3 enroll via SLACK buses 2/3. Boundary ties: LCC (bus10-11),
-VSC (bus12-13), controlled tap+shunt (bus4-6), breaker (bus5-7), Transformer3W (bus8-9).
+VSC (bus12-13), controlled tap+shunt (bus4-6), breaker (bus5-7), ThreeWindingTransformer (bus8-9).
 lcc_metered_end picks rectifier- vs inverter-metered DC tie.
 """
 function _comprehensive_area_dc_fixture(; lcc_metered_end::String = "from")
@@ -1650,7 +1634,7 @@ function _make_area3_schedule_infeasible!(sys::System)
     target = 30.0
     PSY.set_active_power_flow!(
         PSY.get_component(PSY.AreaInterchange, sys, "A3_A1"),
-        target,
+        target * PSY.SU,
     )
     return target
 end
@@ -1661,10 +1645,7 @@ solve still converged. Returns the captured log records.
 Deliberately does NOT assert WHICH area is de-enrolled first or how many are: the greedy rule
 picks `findmax(abs, gaps)` at a NON-CONVERGED iterate, where gaps measure divergence, not
 infeasibility -- a feasible area can show the larger gap (Area2 at 0.3 pu measured 54.0 vs
-Area3's 49.3). Pinning the order is what made these tests platform-dependent.
-`collect_test_logs` rather than `@test_logs`: ReTest has no
-`record(::ReTestSet, ::Test.LogTestFailure)`, so a `@test_logs` failure surfaces as an opaque
-MethodError instead of naming the unmatched pattern."""
+Area3's 49.3). Pinning the order is what made these tests platform-dependent."""
 function _assert_schedule_relaxed(data, area_name::String; time_step::Int = 1)
     logs, converged = Test.collect_test_logs(; min_level = Logging.Warn) do
         solve_power_flow!(data)

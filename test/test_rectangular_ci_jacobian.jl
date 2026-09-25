@@ -52,7 +52,7 @@
         PF.solve_and_store_power_flow!(pf_polar, sys)
         pf_rect = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
             correct_bustypes = true,
-            solver_settings = Dict{Symbol, Any}(:validate_voltage_magnitudes => false),
+            solution_parameters = SolutionParameters(; validate_voltage_magnitudes = false),
         )
         data = PF.PowerFlowData(pf_rect, sys)
         R = PF.ACRectangularCIResidual(data, 1)
@@ -120,12 +120,10 @@ end
 end
 
 @testset "Rectangular CI Jacobian: two swings in one island (multi-swing)" begin
-    # `_rect_two_swing_system` is defined in test_rectangular_ci_power_flow.jl;
-    # all test_*.jl files share one module scope and are fully included before
-    # any testset body runs.
+    # `_rect_two_swing_system` / `_rect_pf_settings` live in test_utils/cross_file_fixtures.jl.
     sys = _rect_two_swing_system()
     pf_rect = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
-        solver_settings = _rect_pf_settings())
+        solution_parameters = _rect_pf_settings())
     data = PF.PowerFlowData(pf_rect, sys)
     R = PF.ACRectangularCIResidual(data, 1)
     J = PF.ACRectangularCIJacobian(R, 1)

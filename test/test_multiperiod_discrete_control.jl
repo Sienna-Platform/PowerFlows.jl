@@ -45,7 +45,6 @@ end
     # makes Bus8's PV gen violate its Q limit; every identical step must reproduce the switch.
     time_steps = 3
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
-    set_units_base_system!(sys, UnitSystem.SYSTEM_BASE)
     pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
         check_reactive_power_limits = true, correct_bustypes = true,
         time_steps = time_steps)
@@ -56,7 +55,6 @@ end
 
     # Independent single-ts reference (its only column has correct bounds).
     sys_ref = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
-    set_units_base_system!(sys_ref, UnitSystem.SYSTEM_BASE)
     pf_ref = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
         check_reactive_power_limits = true, correct_bustypes = true)
     data_ref = PowerFlowData(pf_ref, sys_ref)
@@ -97,9 +95,10 @@ end
 
 @testset "write-back is skipped under time_steps>1 (no silent last-ts write)" begin
     sys = _make_multiperiod_shunt_system()
-    # capture the shunt's PSY Y before solving
+    # capture the shunt's PSY settings before solving
     shunt = only(collect(PSY.get_components(PSY.SwitchedAdmittance, sys)))
-    y_before = PSY.get_Y(shunt)
+    engaged_before = copy(PSY.get_number_engaged(shunt))
+    solved_before = PSY.get_solved_admittance(shunt)
     time_steps = 3
     pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
         control_discrete_devices = true, time_steps = time_steps)
@@ -108,19 +107,22 @@ end
     @test solve_power_flow!(data)
     # multi-ts: PSY component is NOT mutated (per-ts results are in get_controlled_device_results)
     PowerFlows.write_device_settings!(sys, data)
-    @test PSY.get_Y(shunt) == y_before
+    @test PSY.get_number_engaged(shunt) == engaged_before
+    @test PSY.get_solved_admittance(shunt) == solved_before
     @test nrow(PowerFlows.get_controlled_device_results(data)) >= time_steps
 end
 
 @testset "write-back still happens for time_steps==1 (no regression)" begin
     sys = _make_multiperiod_shunt_system()
     shunt = only(collect(PSY.get_components(PSY.SwitchedAdmittance, sys)))
-    y_before = PSY.get_Y(shunt)
+    engaged_before = copy(PSY.get_number_engaged(shunt))
+    solved_before = PSY.get_solved_admittance(shunt)
     pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(; control_discrete_devices = true)
     data = PowerFlowData(pf, sys)
     @test solve_power_flow!(data)
     PowerFlows.write_device_settings!(sys, data)
-    @test PSY.get_Y(shunt) != y_before
+    @test PSY.get_number_engaged(shunt) != engaged_before ||
+          PSY.get_solved_admittance(shunt) != solved_before
 end
 
 @testset "Branch-flow-inside-loop parity (no taps, multi-step)" begin
@@ -185,7 +187,7 @@ end
 
     # Tap moved differently across steps (control actually acted per-step):
     res = PowerFlows.get_controlled_device_results(data)
-    tap_rows = res[res.family .== "TapTransformer", :]
+    tap_rows = res[res.family .== "TransformerCircuit", :]
     @test length(unique(round.(tap_rows.final; digits = 6))) >= 2
 end
 

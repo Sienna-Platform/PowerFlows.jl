@@ -195,8 +195,12 @@ function _run_power_flow_method(
         isnothing(diag_state) ? nothing :
         make_linear_solver_cache(PNM.KLUSolver(), J.Jv)
     isnothing(diag_state) || symbolic_factor!(diag_cache, J.Jv)
+    # J is fresh from initialize_power_flow_variables, so the first iteration
+    # must not re-fill it.
+    step_accepted = false
     while i < maxIterations && !converged && isfinite(λ) && μ < DEFAULT_μ_MAX
-        λ, μ = update_damping_factor!(x, residual, J, μ, time_step, ws)
+        λ, μ, step_accepted =
+            update_damping_factor!(x, residual, J, μ, time_step, ws, step_accepted)
         if !isnothing(diag_state)
             # One-iterate lag: update_damping_factor! evaluated J at the pre-step
             # iterate but residual.Rv is already post-step, so κ̂/λ_min describe the
@@ -226,7 +230,8 @@ end
 # See Nocedal & Wright (2006), sections 10.3 and 11.2.
 
 """Compute one LM trial step. Assumes `residual` and `J` are already evaluated
-at `x` by the caller. Returns the gain ratio ρ."""
+at `x` by the caller. Returns `(ρ, accepted)`: `accepted` is true iff the step
+was taken (`x` mutated to `x + Δx`)."""
 function compute_error(
     x::Vector{Float64},
     residual::Union{ACPowerFlowResidual, ACRectangularCIResidual,
@@ -261,19 +266,19 @@ function compute_error(
     # Guard against zero/negative predicted reduction.
     if predicted_reduction <= 0.0 || !isfinite(predicted_reduction)
         residual(x, time_step)
-        return 0.0
+        return (0.0, false)
     end
 
     ρ = actual_reduction / predicted_reduction
 
     if ρ > 1e-4
         x .+= Δx
+        return (ρ, true)
     else
         # Bad step: restore data state to match x (not x_trial).
         residual(x, time_step)
+        return (ρ, false)
     end
-
-    return ρ
 end
 
 function update_damping_factor!(
@@ -284,13 +289,16 @@ function update_damping_factor!(
     μ::Float64,
     time_step::Int,
     ws::LMWorkspace,
+    previous_step_accepted::Bool,
 )
-    residual(x, time_step)
+    # residual.Rv is already current at x: every exit of compute_error (and the
+    # pre-loop init) leaves it evaluated at the held x.
     residualSize = dot(residual.Rv, residual.Rv)
-    J(time_step)
+    # J is current unless the previous step moved x; refresh only then.
+    previous_step_accepted && J(time_step)
 
     λ = μ * sqrt(residualSize)
-    ρ = compute_error(x, residual, J, λ, time_step, residualSize, ws)
+    ρ, accepted = compute_error(x, residual, J, λ, time_step, residualSize, ws)
     coef = 4.0
     if ρ > 0.75
         μ = max(μ / coef, 1e-8)
@@ -300,5 +308,5 @@ function update_damping_factor!(
         μ = min(μ * coef, DEFAULT_μ_MAX)
     end
 
-    return (λ, μ)
+    return (λ, μ, accepted)
 end

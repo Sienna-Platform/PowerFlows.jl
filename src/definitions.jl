@@ -57,6 +57,9 @@ const ISAPPROX_ZERO_TOLERANCE = 1e-6
 
 const V_FLOOR2 = 1e-16 # lower bound on |V|² (e²+f²) to guard 1/D in rectangular/MCPB current balance
 
+# FIXME really belongs in PowerFlowFileParser
+const PSSE_EXPORT_METADATA_EXTENSION = "_export_metadata.json"
+
 const LCC_sinϕ_TOLERANCE = 1e-8 # if sin(ϕ) < this, treat dQ/dV as zero to avoid singularity in Jacobian
 const LCC_SMALL_ANGLE_THRESHOLD = deg2rad(5) # warn if converged LCC thyristor angle α_r/α_i falls outside (this, π/2 − this)
 
@@ -165,7 +168,7 @@ const FORCE_UNIQUE_NAMES = true
 
 # SLACK is intentionally absent: `_normalize_slack_bustype` resolves it to PV/PQ at
 # ingestion, so a KeyError here means a SLACK bus leaked past normalization.
-const BUS_TYPE_PRIORITIES = Dict{PSY.ACBusTypes, Int}(
+const BUS_TYPE_PRIORITIES = Dict{PSY.ACBusTypes.Value, Int}(
     PSY.ACBusTypes.REF => 3,
     PSY.ACBusTypes.PV => 2,
     PSY.ACBusTypes.PQ => 1,
@@ -188,3 +191,16 @@ IS.@scoped_enum(
   - ARC_FLOWS = 0: Report total flows corresponding to arcs.
   - BRANCH_FLOWS = 1: Report flows for individual branches.
  " FlowReporting
+
+# Bordered fold monitor (`stop_at_fold`, see `residual_condition_diagnostics.jl`).
+# The monitor is g = 1/(d − cᵀJ⁻¹b) = det(J)/det(M) for the bordered matrix
+# M = [J b; cᵀ d]; sign(g) tracks sign(det J) up to the constant sign(det M).
+const FOLD_BORDER_D = 0.0 # the (n+1, n+1) entry `d` of the bordering
+const FOLD_MAX_BORDER_REPICKS = 3 # re-picks of (b, c) after a degenerate (pole) event
+# det J = 0 flips sign(g) on every bordering at the same step, while a degenerate
+# bordering (det M = 0) flips only its own. Two is enough to tell those apart; each
+# costs one back-solve per iteration.
+const FOLD_N_BORDERINGS = 2
+# Stride of the deterministic bordering vectors: v[i] = sin(i * k * stride). Irrational
+# so the samples never fall into a short cycle, whatever the state size.
+const FOLD_BORDER_STRIDE = 0.7390851332151607

@@ -17,14 +17,13 @@ function _get_injections!(
     removed_buses::Set{Int},
     sys::PSY.System,
 )
-    check_unit_setting(sys)
     for source in PSY.get_available_components(PSY.StaticInjection, sys)
         bus = PSY.get_bus(source)
         PSY.get_number(bus) in removed_buses && continue
         if contributes_active_power(source) &&
            active_power_contribution_type(source) == PowerContributionType.INJECTION
             bus_ix = _get_bus_ix(bus_lookup, reverse_bus_search_map, PSY.get_number(bus))
-            bus_active_power_injections[bus_ix] += PSY.get_active_power(source)
+            bus_active_power_injections[bus_ix] += PSY.get_active_power(source, PSY.SU)
         end
         if considers_reactive_power(pf) && contributes_reactive_power(source) &&
            reactive_power_contribution_type(source) == PowerContributionType.INJECTION
@@ -34,7 +33,8 @@ function _get_injections!(
                 bus_reactive_power_injections[bus_ix] +=
                     PSY.get_reactive_power_required(source)
             else
-                bus_reactive_power_injections[bus_ix] += PSY.get_reactive_power(source)
+                bus_reactive_power_injections[bus_ix] +=
+                    PSY.get_reactive_power(source, PSY.SU)
             end
         end
     end
@@ -69,7 +69,7 @@ function _compute_bus_active_power_range!(
         PSY.get_bustype(bus) ∈
         (PSY.ACBusTypes.REF, PSY.ACBusTypes.PV, PSY.ACBusTypes.SLACK) || continue
         limits = get_active_power_limits_for_power_flow(source)
-        range_k = limits.max - PSY.get_active_power(source)
+        range_k = limits.max - PSY.get_active_power(source, PSY.SU)
         range_k <= 0.0 && continue
         isfinite(range_k) || continue
         bus_ix = _get_bus_ix(bus_lookup, reverse_bus_search_map, PSY.get_number(bus))
@@ -79,6 +79,25 @@ function _compute_bus_active_power_range!(
         end
     end
     return
+end
+
+# `solved_admittance` replaces the engaged blocks; it is a pure susceptance.
+_switched_admittance(solved::Float64, ::Vector{Int}, ::Vector{Complex{Float64}}) =
+    im * solved
+# PSY defaults `number_engaged` to `Int[]` regardless of block count; that alone is legal (0 engaged).
+function _switched_admittance(
+    ::Nothing,
+    engaged::Vector{Int},
+    y_increase::Vector{Complex{Float64}},
+)
+    isempty(engaged) && return 0.0 + 0.0im
+    length(engaged) == length(y_increase) || throw(
+        DimensionMismatch(
+            "SwitchedAdmittance has $(length(y_increase)) blocks but " *
+            "number_engaged has $(length(engaged)) entries.",
+        ),
+    )
+    return sum(engaged .* y_increase; init = 0.0 + 0.0im)
 end
 
 function _get_withdrawals!(
@@ -101,12 +120,12 @@ function _get_withdrawals!(
         if contributes_active_power(l) &&
            active_power_contribution_type(l) == PowerContributionType.WITHDRAWAL
             bus_ix = _get_bus_ix(bus_lookup, reverse_bus_search_map, PSY.get_number(bus))
-            bus_active_power_withdrawals[bus_ix] += PSY.get_active_power(l)
+            bus_active_power_withdrawals[bus_ix] += PSY.get_active_power(l, PSY.SU)
         end
         if considers_reactive_power(pf) && contributes_reactive_power(l) &&
            reactive_power_contribution_type(l) == PowerContributionType.WITHDRAWAL
             bus_ix = _get_bus_ix(bus_lookup, reverse_bus_search_map, PSY.get_number(bus))
-            bus_reactive_power_withdrawals[bus_ix] += PSY.get_reactive_power(l)
+            bus_reactive_power_withdrawals[bus_ix] += PSY.get_reactive_power(l, PSY.SU)
         end
     end
     # handle StandardLoad: they have constant current and constant impedance withdrawals,
@@ -118,23 +137,27 @@ function _get_withdrawals!(
         bus = PSY.get_bus(l)
         PSY.get_number(bus) in removed_buses && continue
         bus_ix = _get_bus_ix(bus_lookup, reverse_bus_search_map, PSY.get_number(bus))
-        bus_active_power_withdrawals[bus_ix] += PSY.get_constant_active_power(l)
-        bus_reactive_power_withdrawals[bus_ix] += PSY.get_constant_reactive_power(l)
+        bus_active_power_withdrawals[bus_ix] += PSY.get_constant_active_power(l, PSY.SU)
+        bus_reactive_power_withdrawals[bus_ix] += PSY.get_constant_reactive_power(l, PSY.SU)
         bus_active_power_constant_current_withdrawals[bus_ix] +=
-            PSY.get_current_active_power(l)
+            PSY.get_current_active_power(l, PSY.SU)
         bus_active_power_constant_impedance_withdrawals[bus_ix] +=
-            PSY.get_impedance_active_power(l)
+            PSY.get_impedance_active_power(l, PSY.SU)
         bus_reactive_power_constant_current_withdrawals[bus_ix] +=
-            PSY.get_current_reactive_power(l)
+            PSY.get_current_reactive_power(l, PSY.SU)
         bus_reactive_power_constant_impedance_withdrawals[bus_ix] +=
-            PSY.get_impedance_reactive_power(l)
+            PSY.get_impedance_reactive_power(l, PSY.SU)
     end
     # FixedAdmittance components are already included in the Ybus matrix.
     for sa in PSY.get_available_components(PSY.SwitchedAdmittance, sys)
         bus = PSY.get_bus(sa)
         PSY.get_number(bus) in removed_buses && continue
         bus_ix = _get_bus_ix(bus_lookup, reverse_bus_search_map, PSY.get_number(bus))
-        Y = PSY.get_Y(sa) + sum(PSY.get_initial_status(sa) .* PSY.get_Y_increase(sa))
+        Y = _switched_admittance(
+            PSY.get_solved_admittance(sa),
+            PSY.get_number_engaged(sa),
+            PSY.get_Y_increase(sa),
+        )
         # Here we implement the switched admittance element as a constant impedance load.
         # The inputs for ZIP loads are provided for V = 1.0 p.u., so
         # the following is equivalent to S = V * conj(Y * V) for V = 1.0 p.u.
@@ -147,7 +170,7 @@ function _get_withdrawals!(
         bus = PSY.get_bus(sc)
         PSY.get_number(bus) in removed_buses && continue
         bus_ix = _get_bus_ix(bus_lookup, reverse_bus_search_map, PSY.get_number(bus))
-        bus_active_power_withdrawals[bus_ix] += PSY.get_active_power_losses(sc)
+        bus_active_power_withdrawals[bus_ix] += PSY.get_active_power_losses(sc, PSY.SU)
         # reactive power handled already:
         # contributes_reactive_power(PSY.SynchronousCondenser) is true.
     end
@@ -184,7 +207,7 @@ end
 
 function _set_bus_angles_and_magnitudes!(
     ::AbstractDCPowerFlow,
-    bus_type::Vector{PSY.ACBusTypes},
+    bus_type::Vector{PSY.ACBusTypes.Value},
     bus_angles::Vector{Float64},
     bus_magnitude::Vector{Float64},
     bus_lookup::Dict{Int, Int},
@@ -211,7 +234,7 @@ end
 
 function _set_bus_angles_and_magnitudes!(
     ::AbstractACPowerFlow{<:ACPowerFlowSolverType},
-    bus_type::Vector{PSY.ACBusTypes},
+    bus_type::Vector{PSY.ACBusTypes.Value},
     bus_angles::Vector{Float64},
     bus_magnitude::Vector{Float64},
     bus_lookup::Dict{Int, Int},
@@ -253,8 +276,10 @@ function _set_bus_angles_and_magnitudes!(
 end
 
 # ensures that we don't error/warn for PV vs PQ bus types in DC power flow.
-_considers_bustype(::AbstractACPowerFlow{<:ACPowerFlowSolverType}, ::PSY.ACBusTypes) = true
-_considers_bustype(::AbstractDCPowerFlow, bt::PSY.ACBusTypes) = (bt == PSY.ACBusTypes.REF)
+_considers_bustype(::AbstractACPowerFlow{<:ACPowerFlowSolverType}, ::PSY.ACBusTypes.Value) =
+    true
+_considers_bustype(::AbstractDCPowerFlow, bt::PSY.ACBusTypes.Value) =
+    (bt == PSY.ACBusTypes.REF)
 
 """Voltage regulation is irrelevant to DC power flow, so the PQ demotion in
 `_normalize_slack_bustype` warns only for AC evaluation models; DC demotes silently."""
@@ -278,7 +303,7 @@ A SLACK bus that normalizes to PQ cannot serve as an area slack; the area-interc
 enrollment guard then de-enrolls its area."""
 function _normalize_slack_bustype(
     pf::PowerFlowEvaluationModel,
-    bt::PSY.ACBusTypes,
+    bt::PSY.ACBusTypes.Value,
     bus_no::Int,
     bus_name::String,
     possible_PV::Set{Int},
@@ -301,8 +326,8 @@ end
 interchange control on the next `PowerFlowData` build. A SLACK→PQ demotion is still
 written back: it mirrors the PV→PQ Q-limit flip and is already warned about."""
 function _bustype_write_back_needed(
-    bus_bt::PSY.ACBusTypes,
-    solved_bt::PSY.ACBusTypes,
+    bus_bt::PSY.ACBusTypes.Value,
+    solved_bt::PSY.ACBusTypes.Value,
 )
     if bus_bt == PSY.ACBusTypes.SLACK && solved_bt == PSY.ACBusTypes.PV
         return false
@@ -312,7 +337,7 @@ end
 
 function _initialize_bus_data!(
     pf::PowerFlowEvaluationModel,
-    bus_type::Vector{PSY.ACBusTypes},
+    bus_type::Vector{PSY.ACBusTypes.Value},
     bus_angles::Vector{Float64},
     bus_magnitude::Vector{Float64},
     bus_lookup::Dict{Int, Int},
@@ -327,13 +352,24 @@ function _initialize_bus_data!(
     subnetworks = PNM.find_subnetworks(sys)
     subnetwork_keys = keys(subnetworks)
     # so that we don't warn if there's just 1 component.
-    main_ref_bus = argmax(x -> length(x[2]), subnetworks)[1]
-    check_unit_setting(sys)
+    #
+    # The main subnetwork's key is the one exempted from the REF promotion below, so it has
+    # to be a bus that already IS a REF: a subnetwork with no REF of its own is keyed by an
+    # arbitrary member, and exempting that one leaves it with no slack. Ranking on "is
+    # already REF" first and the bus number last also makes the choice independent of Dict
+    # iteration order, which is not stable across Julia versions and silently flipped this
+    # on two equal-sized islands.
+    system_ref_buses = Set(
+        PSY.get_number(b) for b in PSY.get_components(PSY.ACBus, sys) if
+        PSY.get_bustype(b) == PSY.ACBusTypes.REF
+    )
+    main_ref_bus =
+        argmax(x -> (x[1] in system_ref_buses, length(x[2]), -x[1]), subnetworks)[1]
     # correct/validate the bus types.
     forced_PV = must_be_PV(sys)
     possible_PV = can_be_PV(sys)
     bus_numbers = PSY.get_bus_numbers(sys)
-    temp_bus_types = Dict{Int, PSY.ACBusTypes}()
+    temp_bus_types = Dict{Int, PSY.ACBusTypes.Value}()
     sizehint!(temp_bus_types, length(bus_numbers))
     temp_bus_map = Dict{Int, String}()
     sizehint!(temp_bus_map, length(bus_numbers))
@@ -516,7 +552,7 @@ function make_bus_slack_participation_factors!(
     removed_buses::Set{Int},
     time_steps::Int,
     n_buses::Int,
-    ::Matrix{PSY.ACBusTypes},
+    ::Matrix{PSY.ACBusTypes.Value},
 )
     I = Int[]
     J = Int[]
@@ -553,7 +589,7 @@ function make_bus_slack_participation_factors!(
     removed_buses::Set{Int},
     time_steps::Int,
     n_buses::Int,
-    bus_type::Matrix{PSY.ACBusTypes},
+    bus_type::Matrix{PSY.ACBusTypes.Value},
 )
     if length(generator_slack_participation_factors_input) == 1
         make_bus_slack_participation_factors!(
@@ -624,7 +660,7 @@ function make_bus_slack_participation_factors!(
     ::Set{Int},
     time_steps::Int,
     n_buses::Int,
-    bus_type::Matrix{PSY.ACBusTypes},
+    bus_type::Matrix{PSY.ACBusTypes.Value},
 )
     I = Int[]
     J = Int[]
@@ -663,7 +699,7 @@ layout are invariant across NR/TR iterations, so this filtering is hoisted out
 of the per-iteration validator. `offsets[i]` is the start of bus `i`'s block;
 `(e, f) = (x[off], x[off + 1])`. REF is fixed and excluded here."""
 function _pqpv_validate_offsets(
-    bus_type::AbstractVector{PSY.ACBusTypes},
+    bus_type::AbstractVector{PSY.ACBusTypes.Value},
     offsets::AbstractVector{<:Integer},
 )
     validate_offsets = Int[]
@@ -679,7 +715,7 @@ end
 polar state layout (`x[2i-1]` = |V| of bus `i`). Bus types are invariant
 across NR/TR iterations, so this filtering is hoisted out of the per-iteration
 validator. Only PQ is checked (PV/REF have |V| pinned to a set-point)."""
-function _pq_validate_indices(bus_type::AbstractVector{PSY.ACBusTypes})
+function _pq_validate_indices(bus_type::AbstractVector{PSY.ACBusTypes.Value})
     validate_indices = Int[]
     for (i, bt) in enumerate(bus_type)
         bt == PSY.ACBusTypes.PQ && push!(validate_indices, 2 * i - 1)
@@ -729,11 +765,28 @@ function _validate_squared_voltage_magnitudes(
 end
 
 """Weighted dot product of two vectors."""
-wdot(wx::Vector{Float64}, x::Vector{Float64}, wy::Vector{Float64}, y::Vector{Float64}) =
-    LinearAlgebra.dot(wx .* x, wy .* y)
+function wdot(
+    wx::Vector{Float64},
+    x::Vector{Float64},
+    wy::Vector{Float64},
+    y::Vector{Float64},
+)
+    acc = 0.0
+    @inbounds @simd for i in eachindex(x, y, wx, wy)
+        acc += wx[i] * x[i] * wy[i] * y[i]
+    end
+    return acc
+end
 
 """Weighted norm of two vectors."""
-wnorm(w::Vector{Float64}, x::Vector{Float64}) = norm(w .* x)
+function wnorm(w::Vector{Float64}, x::Vector{Float64})
+    acc = 0.0
+    # Plain sum-of-abs2; PF magnitudes are O(1)–O(1e2), so LinearAlgebra's overflow-rescaling is unnecessary.
+    @inbounds @simd for i in eachindex(w, x)
+        acc += abs2(w[i] * x[i])
+    end
+    return sqrt(acc)
+end
 """For pretty printing floats in debugging messages."""
 siground(x::Float64) = round(x; sigdigits = 3)
 

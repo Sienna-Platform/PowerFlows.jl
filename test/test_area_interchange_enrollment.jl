@@ -20,17 +20,6 @@ function _tie_test_context(sys::PSY.System, area_tail::Dict{String, Int})
     )
 end
 
-function _find_tie(ties::Vector{PF.AreaTie}, fix::Int, tix::Int)
-    return only(
-        filter(
-            tie ->
-                (tie.from_bus_ix == fix && tie.to_bus_ix == tix) ||
-                    (tie.from_bus_ix == tix && tie.to_bus_ix == fix),
-            ties,
-        ),
-    )
-end
-
 @testset "area interchange tie enumeration" begin
     sys = _make_two_area_system()
     ctx = _tie_test_context(sys, Dict("Area1" => 1, "Area2" => 2))
@@ -61,7 +50,7 @@ end
 
 @testset "area interchange tie metered end ext flip" begin
     sys = _make_two_area_system()
-    trans1 = PSY.get_component(PSY.TapTransformer, sys, "Trans1")
+    trans1 = PSY.get_component(PSY.TwoWindingTransformer, sys, "Trans1")
     PSY.get_ext(trans1)["metered_end"] = "to"
 
     ctx = _tie_test_context(sys, Dict("Area1" => 1, "Area2" => 2))
@@ -81,7 +70,7 @@ end
 
 @testset "area interchange tie out-of-service exclusion" begin
     sys = _make_two_area_system()
-    trans2 = PSY.get_component(PSY.TapTransformer, sys, "Trans2")
+    trans2 = PSY.get_component(PSY.TwoWindingTransformer, sys, "Trans2")
     PSY.set_available!(trans2, false)
 
     ctx = _tie_test_context(sys, Dict("Area1" => 1, "Area2" => 2))
@@ -162,15 +151,15 @@ end
 end
 
 @testset "area interchange tie three-winding transformer boundary" begin
-    # `case10_radial_series_reductions` (PSB) has a real Transformer3W; re-area so the
-    # primary winding stays interior (terminal + star share AreaA, per PSS/E's star-bus
-    # convention) while secondary/tertiary straddle the AreaA/AreaB boundary.
+    # `case10_radial_series_reductions` (PSB) has a real ThreeWindingTransformer; re-area
+    # so the primary circuit stays interior (terminal + star share AreaA, per PSS/E's
+    # star-bus convention) while secondary/tertiary straddle the AreaA/AreaB boundary.
     sys = PSB.build_system(PSB.PSITestSystems, "case10_radial_series_reductions")
-    trf = PSY.get_component(PSY.ThreeWindingTransformer, sys, "HV-LV-MV-i_1")
+    trf = only(PSY.get_components(PSY.ThreeWindingTransformer, sys))
     star_bus = PSY.get_star_bus(trf)
-    primary_bus = PSY.get_from(PSY.get_primary_star_arc(trf))
-    secondary_bus = PSY.get_from(PSY.get_secondary_star_arc(trf))
-    tertiary_bus = PSY.get_from(PSY.get_tertiary_star_arc(trf))
+    primary_bus = PSY.get_from(PSY.get_arc(PSY.get_primary_circuit(trf)))
+    secondary_bus = PSY.get_from(PSY.get_arc(PSY.get_secondary_circuit(trf)))
+    tertiary_bus = PSY.get_from(PSY.get_arc(PSY.get_tertiary_circuit(trf)))
 
     areaA = PSY.Area(; name = "AreaA")
     areaB = PSY.Area(; name = "AreaB")
@@ -276,7 +265,7 @@ end
 
 @testset "area interchange tie unrecognized metered_end value warns and defaults from" begin
     sys = _make_two_area_system()
-    trans1 = PSY.get_component(PSY.TapTransformer, sys, "Trans1")
+    trans1 = PSY.get_component(PSY.TwoWindingTransformer, sys, "Trans1")
     PSY.get_ext(trans1)["metered_end"] = "From"   # wrong case: unrecognized, not silently coerced
 
     ctx = _tie_test_context(sys, Dict("Area1" => 1, "Area2" => 2))
@@ -295,23 +284,21 @@ end
 
 @testset "area interchange tie parallel boundary branches deduplicated" begin
     sys = _make_two_area_system()
-    trans2 = PSY.get_component(PSY.TapTransformer, sys, "Trans2")
+    trans2 = PSY.get_component(PSY.TwoWindingTransformer, sys, "Trans2")
     arc = PSY.get_arc(trans2)
     # A second transformer (not a `Line`: Trans2's terminals differ enough in nominal
     # voltage that PSY rejects a `Line` on that arc) in parallel on the SAME `Arc`.
-    parallel_tx = PSY.TapTransformer(;
+    parallel_tx = PSY.TwoWindingTransformer(;
         name = "Trans2_parallel",
-        available = true,
-        active_power_flow = 0.0,
-        reactive_power_flow = 0.0,
-        arc = arc,
-        r = 0.01,
-        x = 0.10,
-        primary_shunt = 0.0 + 0.0im,
-        tap = 1.0,
-        rating = 1.0,
-        base_power = 100.0,
-        control_objective = PSY.TransformerControlObjective.UNDEFINED,
+        circuit = PSY.TransformerCircuit(;
+            available = true,
+            arc = arc,
+            r = 0.01,
+            x = 0.10,
+            tap = 1.0,
+            rating = 1.0,
+            base_power = 100.0,
+        ),
     )
     PSY.add_component!(sys, parallel_tx)
 
@@ -330,59 +317,6 @@ end
     @test A[f, t] == A.nzval[o[2]]
     @test A[t, f] == A.nzval[o[3]]
     @test A[t, t] == A.nzval[o[4]]
-end
-
-_set_slack!(sys, bus_name) =
-    PSY.set_bustype!(PSY.get_component(PSY.ACBus, sys, bus_name), PSY.ACBusTypes.SLACK)
-
-function _add_area_interchange!(
-    sys,
-    from_name::String,
-    to_name::String,
-    flow::Float64;
-    name::String = "$(from_name)_$(to_name)",
-)
-    PSY.add_component!(
-        sys,
-        PSY.AreaInterchange(;
-            name = name,
-            available = true,
-            active_power_flow = flow,
-            from_area = PSY.get_component(PSY.Area, sys, from_name),
-            to_area = PSY.get_component(PSY.Area, sys, to_name),
-            flow_limits = (from_to = 0.0, to_from = 0.0),
-        ),
-    )
-    return
-end
-
-# Shared by the rule-9 (unenforceable-schedule) and happy-path tests. Area1 owns REF,
-# never SLACK; Area2/Area3 can each
-# optionally hold SLACK (Area3's Bus 9 has a small gen so it's PV-eligible). AreaInterchange:
-# Area2->Area1 0.3, Area3->Area1 0.2 => pdes(Area1)=-0.5, pdes(Area2)=0.3, pdes(Area3)=0.2.
-function _three_area_transfer_fixture(; slack_area3::Bool = true)
-    sys = _make_three_area_system()
-    bus9 = PSY.get_component(PSY.ACBus, sys, "Bus 9")
-    gen9 = PSY.ThermalStandard(;
-        name = "Bus9Gen",
-        available = true,
-        status = true,
-        bus = bus9,
-        active_power = 0.1,
-        reactive_power = 0.0,
-        rating = 1.0,
-        active_power_limits = (min = 0.0, max = 1.0),
-        reactive_power_limits = (min = -1.0, max = 1.0),
-        ramp_limits = nothing,
-        operation_cost = PSY.ThermalGenerationCost(nothing),
-        base_power = 100.0,
-    )
-    PSY.add_component!(sys, gen9)
-    _set_slack!(sys, "Bus 6")
-    slack_area3 && _set_slack!(sys, "Bus 9")
-    _add_area_interchange!(sys, "Area2", "Area1", 0.3; name = "A2_A1")
-    _add_area_interchange!(sys, "Area3", "Area1", 0.2; name = "A3_A1")
-    return sys
 end
 
 @testset "area interchange enrollment rule 1 multiple SLACK buses" begin

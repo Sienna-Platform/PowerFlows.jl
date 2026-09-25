@@ -27,7 +27,7 @@ const PSY = PowerSystems
 const PF = PowerFlows
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Custom logger that intercepts the @info messages emitted by the solver
+# Custom logger that intercepts the @debug convergence messages emitted by the solver
 # and extracts iteration count and residual norms.
 # ─────────────────────────────────────────────────────────────────────────────
 mutable struct MetricsCapture
@@ -183,7 +183,7 @@ function run_trial(sys, solver_type, solver_settings, x_solved, n, bus_types, K;
     # Build PF object
     pf = ACPowerFlow{solver_type}(;
         correct_bustypes = true,
-        solver_settings = solver_settings,
+        solution_parameters = PF.SolutionParameters(; solver_settings...),
     )
     data = quietly(() -> PF.PowerFlowData(pf, sys))
 

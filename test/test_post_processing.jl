@@ -6,10 +6,12 @@ function _count_branches(sys)
             sys,
         ),
     )
-    three_arc_branches =
-        length(get_components(get_available_primary, ThreeWindingTransformer, sys)) +
-        length(get_components(get_available_secondary, ThreeWindingTransformer, sys)) +
-        length(get_components(get_available_tertiary, ThreeWindingTransformer, sys))
+    # Availability is per-circuit, so count available circuits.
+    three_arc_branches = sum(
+        t -> count(get_available, get_circuits(t)),
+        get_components(ThreeWindingTransformer, sys);
+        init = 0,
+    )
     return two_arc_branches + three_arc_branches
 end
 
@@ -111,9 +113,12 @@ end
     pf = PF.ACPowerFlow{PF.TrustRegionACPowerFlow}(;
         skip_redistribution = true,
         correct_bustypes = true,
-        network_reductions = PNM.NetworkReduction[PNM.DegreeTwoReduction(;
-            reduce_reactive_power_injectors = false,
-        )],
+        # Same rationale as the arc-reporting testset below: protect
+        # reactive-injector hosts so the reduced network is physics-equivalent
+        # and flow parity at MW/MVAr-scale tolerances is meaningful.
+        network_reductions = PNM.NetworkReduction[
+            PNM.DegreeTwoReduction(; reduce_reactive_power_injectors = false),
+        ],
     )
     results_unreduced = solve_power_flow(pf_unreduced, sys, PF.FlowReporting.BRANCH_FLOWS)
     results_reduced = solve_power_flow(pf, sys, PF.FlowReporting.BRANCH_FLOWS)
@@ -152,7 +157,7 @@ end
         )],
     )
     solve_and_store_power_flow!(pf2, sys2)
-    base_power = PSY.get_base_power(sys2)
+    base_power = PSY.get_base_power(sys2, PSY.NU)
 
     # For every series branch segment, verify that DataFrame flow matches system object.
     nrd = PNM.get_network_reduction_data(
@@ -175,8 +180,8 @@ end
                     df_row = filter(row -> row.flow_name == name, flow_df)
                     @test size(df_row, 1) == 1
                     sys_branch = PSY.get_component(PSY.Branch, sys2, name)
-                    sys_P = PSY.get_active_power_flow(sys_branch)
-                    sys_Q = PSY.get_reactive_power_flow(sys_branch)
+                    sys_P = PSY.get_active_power_flow(flow_holder(sys_branch), PSY.SU)
+                    sys_Q = PSY.get_reactive_power_flow(flow_holder(sys_branch), PSY.SU)
                     @test isapprox(df_row[1, :P_from_to], sys_P * base_power; atol = 1e-3)
                     @test isapprox(df_row[1, :Q_from_to], sys_Q * base_power; atol = 1e-3)
                 end
@@ -186,8 +191,8 @@ end
                 df_row = filter(row -> row.flow_name == name, flow_df)
                 @test size(df_row, 1) == 1
                 sys_branch = PSY.get_component(PSY.Branch, sys2, name)
-                sys_P = PSY.get_active_power_flow(sys_branch)
-                sys_Q = PSY.get_reactive_power_flow(sys_branch)
+                sys_P = PSY.get_active_power_flow(flow_holder(sys_branch), PSY.SU)
+                sys_Q = PSY.get_reactive_power_flow(flow_holder(sys_branch), PSY.SU)
                 # DataFrame is in MW/MVAr, system is in p.u.
                 @test isapprox(df_row[1, :P_from_to], sys_P * base_power; atol = 1e-3)
                 @test isapprox(df_row[1, :Q_from_to], sys_Q * base_power; atol = 1e-3)
@@ -318,4 +323,72 @@ end
             atol = 1e-3,
         )
     end
+end
+
+@testset "update_system! after correct_bustypes demotes a source-less PV bus to PQ" begin
+    # Bus 2 is declared PV but has no available generator, so `correct_bustypes` demotes it
+    # to PQ in `data.bus_type` without touching `bus.bustype`. `update_system!` must not try
+    # to redistribute reactive power onto a device that doesn't exist.
+    sys = System(100.0)
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.0, 0.0)
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.PV, 230, 1.0, 0.0)
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    _add_simple_load!(sys, b2, 10.0, 2.0)
+    _add_simple_line!(sys, b1, b2, 0.01, 0.1, 0.0)
+
+    pf = PF.ACPowerFlow{PF.NewtonRaphsonACPowerFlow}(; correct_bustypes = true)
+    data = PF.PowerFlowData(pf, sys)
+    @test PF.solve_power_flow!(data)
+    @test isnothing(PF.update_system!(sys, data))
+    @test get_bustype(get_component(ACBus, sys, "bus_2")) == ACBusTypes.PV
+end
+
+@testset "REF redistribution errors loudly on zero-sum slack participation factors" begin
+    sys = System(100.0)
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.0, 0.0)
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.PQ, 230, 1.0, 0.0)
+    _add_simple_line!(sys, b1, b2, 0.01, 0.1, 0.0)
+    _add_simple_load!(sys, b2, 10.0, 2.0)
+    g1 = _add_simple_thermal_standard!(sys, b1, 0.05, 0.01)
+    g2 = _add_simple_thermal_standard!(sys, b1, 0.05, 0.01)
+    gspf = Dict{Tuple{DataType, String}, Float64}(
+        (typeof(g1), get_name(g1)) => 0.0,
+        (typeof(g2), get_name(g2)) => 0.0,
+    )
+    @test_throws ErrorException PF._power_redistribution_ref(
+        sys, 0.12, 0.02, b1, PF.DEFAULT_MAX_REDISTRIBUTION_ITERATIONS,
+        PF._build_bus_injector_map(sys), gspf,
+    )
+    # No generator's active power was corrupted to NaN before the error.
+    @test !isnan(get_active_power(g1, PSY.SU))
+    @test !isnan(get_active_power(g2, PSY.SU))
+end
+
+@testset "AC write_results: Q_load includes switched-shunt withdrawal" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14")
+    pq_buses = sort(
+        collect(get_components(x -> get_bustype(x) == ACBusTypes.PQ, ACBus, sys));
+        by = get_number,
+    )
+    b = last(pq_buses)
+    add_component!(
+        sys,
+        SwitchedAdmittance(; name = "sa_test", available = true, bus = b,
+            number_engaged = [1], number_of_steps = [1], Y_increase = [0.0 + 0.2im]),
+    )
+
+    res = solve_power_flow(ACPowerFlow(), sys)
+    bus_df = res["bus_results"]
+    fl = res["flow_results"]
+    row = only(eachrow(filter(:bus_number => ==(get_number(b)), bus_df)))
+    p_br =
+        sum(fl.P_from_to[fl.bus_from .== get_number(b)]; init = 0.0) +
+        sum(fl.P_to_from[fl.bus_to .== get_number(b)]; init = 0.0)
+    q_br =
+        sum(fl.Q_from_to[fl.bus_from .== get_number(b)]; init = 0.0) +
+        sum(fl.Q_to_from[fl.bus_to .== get_number(b)]; init = 0.0)
+    # Q_net must balance against the branch flows leaving the bus; before the fix, Q_load
+    # omitted the shunt's withdrawal and this residual was off by ~-B*Vm^2*base_power.
+    @test isapprox(row.P_net, p_br; atol = 1e-3)
+    @test isapprox(row.Q_net, q_br; atol = 1e-3)
 end

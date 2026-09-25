@@ -13,7 +13,8 @@ const _ZERO_SP_FORMULATIONS = (
 
 # Build case5_2_lcc with the first LCC forced to a 0-MW transfer setpoint.
 function _zero_setpoint_lcc_system()
-    sys = System(joinpath(TEST_DATA_DIR, "case5_2_lcc.raw"))
+    raw_path = joinpath(TEST_DATA_DIR, "case5_2_lcc.raw")
+    sys = make_system(PFP.PowerModelsData(raw_path); runchecks = false)
     set_transfer_setpoint!(first(get_components(TwoTerminalLCCLine, sys)), 0.0)
     return sys
 end

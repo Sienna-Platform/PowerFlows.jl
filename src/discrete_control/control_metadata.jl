@@ -3,13 +3,12 @@ it locked at its current setting (the safe posture for bad control data)."""
 function _validate_shunt(
     name::String,
     b_min::Float64,
-    b0::Float64,
     b_max::Float64,
     steps::Vector{Int},
     dB::Vector{Float64},
 )::Bool
-    if !(b_min <= b0 <= b_max)
-        @warn "ControlledSwitchedShunt \"$name\": b0=$b0 is outside \
+    if !(b_min <= 0.0 <= b_max)
+        @warn "ControlledSwitchedShunt \"$name\": the all-off susceptance 0.0 is outside \
             [b_min=$b_min, b_max=$b_max]; leaving the shunt locked at its current setting."
         return false
     end
@@ -76,62 +75,91 @@ _resolve_bus_ix(
     n::Int,
 ) = get(bus_lookup, get(reverse_bus_search_map, n, n), nothing)
 
-"""Tap-control metadata for one `TapTransformer`, read from its first-class PSY fields.
-`get_tap_limits` is already in tap-ratio units (the PSS/E parser scales RMI1/RMA1 by WINDV2);
+_regulates_voltage(circuit::PSY.TransformerCircuit) =
+    PSY.get_control_objective(circuit) == PSY.TransformerControlObjective.VOLTAGE
+
+"""
+Voltage-regulating tap changers in the system, one candidate per controlling circuit.
+
+The control objective lives on `PSY.TransformerCircuit`, so a regulating tap can sit on
+either arity — a three-winding transformer may regulate on one circuit while the other two
+are fixed. Phase-shifting objectives (the active-power ones) are excluded by construction:
+they are a different control law, handled as an angle rather than a ratio.
+"""
+function _voltage_controlled_tap_candidates(sys)
+    candidates =
+        Tuple{String, PSY.ACTransmission, PSY.TransformerCircuit, String, Int}[]
+    for tx in PSY.get_available_components(PSY.TwoWindingTransformer, sys)
+        circuit = PSY.get_circuit(tx)
+        _regulates_voltage(circuit) || continue
+        name = PSY.get_name(tx)
+        push!(candidates, (name, tx, circuit, name, 1))
+    end
+    for tx in PSY.get_available_components(PSY.ThreeWindingTransformer, sys)
+        for (i, circuit) in enumerate(PSY.get_circuits(tx))
+            PSY.get_available(circuit) || continue
+            _regulates_voltage(circuit) || continue
+            winding = PNM.ThreeWindingTransformerCircuit(tx, i)
+            push!(
+                candidates,
+                (PNM.get_name(winding), winding, circuit, PSY.get_name(tx), i),
+            )
+        end
+    end
+    return candidates
+end
+
+"""Tap-control metadata for one regulating `PSY.TransformerCircuit`, of either arity.
+`control_limits` is already in tap-ratio units (the PSS/E parser scales RMI1/RMA1 by WINDV2);
 `get_regulated_bus_number` is 0 for local (to-bus) control."""
-function _tap_metadata(tx, to_bus::Int)
-    lims = PSY.get_tap_limits(tx)
-    reg = PSY.get_regulated_bus_number(tx)
+function _tap_metadata(circuit::PSY.TransformerCircuit, to_bus::Int)
+    lims = PSY.get_control_limits(circuit)
+    reg = PSY.get_regulated_bus_number(circuit)
     cbus = to_bus
     if !iszero(reg)
         cbus = reg
     end
+    # The tap is held anywhere inside the VMA/VMI band and regulates toward its midpoint on
+    # an excursion — the same posture as a switched shunt's VSWLO/VSWHI.
+    vlims = PSY.get_controlled_quantity_limits(circuit)
     return (
         cbus = cbus,
         pmin = lims.min,
         pmax = lims.max,
-        ntp = PSY.get_number_of_tap_positions(tx),
-        vset = PSY.get_voltage_setpoint(tx),
+        ntp = PSY.get_number_of_tap_positions(circuit),
+        vset = (vlims.min + vlims.max) / 2,
+        vlo = vlims.min,
+        vhi = vlims.max,
     )
 end
 
-# Susceptance model of a switched shunt. The PSS/E parser (MODSW 0/1/2) stores
-# `Y = BINIT` (the TOTAL in-service admittance) and ZEROES `initial_status` to avoid
-# double counting, so the reachable set is spanned by the blocks alone (base 0) with the
-# current point at BINIT. API-built components follow the PSY docstring instead: `Y` is
-# the fixed N=0 base and `initial_status` is meaningful. The presence of the parser's
-# MODSW key distinguishes the two conventions.
-# BINIT convention ⇔ the PSS/E parser produced this shunt: it stores the TOTAL in-service
-# admittance in `Y` and zeroes a full-length `initial_status` (see pm_io/psse.jl). API-built
-# shunts carry the switched part in a nonzero (or empty) `initial_status`. This is the write-back
-# convention too (see `ControlledSwitchedShunt.psse_convention`).
-function _is_binit_shunt(init_status::Vector{Int})
-    return !isempty(init_status) && all(iszero, init_status)
-end
+# Susceptance model of a switched shunt. `SwitchedAdmittance` has no fixed base admittance:
+# total is `number_engaged .* Y_increase`, unless `solved_admittance` is set, in which case
+# that value is the effective admittance directly (PSS/E BINIT, a case read in as solved).
+_solved_flag(::Nothing) = false
+_solved_flag(::Float64) = true
+
+_shunt_baseline(solved::Float64, ::Vector{Int}, ::Vector{Float64}) = solved
+_shunt_baseline(::Nothing, engaged::Vector{Int}, dB::Vector{Float64}) =
+    sum(engaged .* dB; init = 0.0)
 
 function _shunt_susceptance_model(
     name::String,
-    Y0::Complex{Float64},
+    solved::Union{Nothing, Float64},
     steps::Vector{Int},
     dB::Vector{Float64},
-    init_status::Vector{Int},
+    engaged::Vector{Int},
 )
-    if _is_binit_shunt(init_status)   # PSS/E parser (BINIT) convention
-        b_fixed = 0.0
-        current = imag(Y0)
-    else                              # PSY API convention
-        b_fixed = imag(Y0)
-        current = imag(Y0) + sum(init_status .* dB; init = 0.0)
-    end
-    b_min = b_fixed + sum(min.(steps .* dB, 0.0); init = 0.0)
-    b_max = b_fixed + sum(max.(steps .* dB, 0.0); init = 0.0)
+    current = _shunt_baseline(solved, engaged, dB)
+    b_min = sum(min.(steps .* dB, 0.0); init = 0.0)
+    b_max = sum(max.(steps .* dB, 0.0); init = 0.0)
     if !(b_min - BOUNDS_TOLERANCE <= current <= b_max + BOUNDS_TOLERANCE)
         @warn "ControlledSwitchedShunt \"$name\": initial susceptance $current p.u. lies \
             outside the block-reachable range [$b_min, $b_max]; clamping the control \
             baseline into the range."
         current = clamp(current, b_min, b_max)
     end
-    return b_fixed, current, b_min, b_max
+    return current, b_min, b_max
 end
 
 """Build the type-stable device set from a `PSY.System`.
@@ -152,14 +180,12 @@ function build_controlled_device_set(
     n_time_steps::Int = 1,
 )
     taps = ControlledTap[]
-    for tx in PSY.get_available_components(PSY.TapTransformer, sys)
-        PSY.get_control_objective(tx) == PSY.TransformerControlObjective.VOLTAGE ||
-            continue
-        name = PSY.get_name(tx)
-        arc = PSY.get_arc(tx)
+    for (name, branch, circuit, device_name, circuit_index) in
+        _voltage_controlled_tap_candidates(sys)
+        arc = PSY.get_arc(circuit)
         fb = PSY.get_number(PSY.get_from(arc))
         tb = PSY.get_number(PSY.get_to(arc))
-        md = _tap_metadata(tx, tb)
+        md = _tap_metadata(circuit, tb)
         fix = _resolve_bus_ix(bus_lookup, reverse_bus_search_map, fb)
         tix = _resolve_bus_ix(bus_lookup, reverse_bus_search_map, tb)
         cix = _resolve_bus_ix(bus_lookup, reverse_bus_search_map, md.cbus)
@@ -184,8 +210,11 @@ function build_controlled_device_set(
         end
         _validate_tap(name, md.pmin, md.pmax, md.ntp) || continue
         _validate_vset("ControlledTap", name, md.vset) || continue
-        yt = 1.0 / (PSY.get_r(tx) + PSY.get_x(tx) * im)
-        tap0 = PSY.get_tap(tx)
+        # PNM owns the π-model, including the r == x == 0 floor that a hand-built
+        # `1/(r + jx)` would miss (a jumper under tap control would yield `Inf`).
+        adm = PNM.branch_admittance(branch)
+        yt = complex(adm.g, adm.b)
+        tap0 = adm.tap
         if !(md.pmin - BOUNDS_TOLERANCE <= tap0 <= md.pmax + BOUNDS_TOLERANCE)
             @warn "ControlledTap \"$name\": initial tap ratio $tap0 lies \
                 outside the tap-ratio band [$(md.pmin), $(md.pmax)]; leaving the tap \
@@ -200,8 +229,10 @@ function build_controlled_device_set(
                 tix,
                 cix,
                 md.vset,
+                md.vlo,
+                md.vhi,
                 yt,
-                PSY.get_α(tx),   # −(π/6)·winding_group_number: PNM stamps t = p·e^{iα}
+                adm.shift,  # PNM stamps t = p·e^{iα}
                 md.pmin,
                 md.pmax,
                 collect(range(md.pmin, md.pmax; length = md.ntp)),
@@ -209,6 +240,8 @@ function build_controlled_device_set(
                 tap0,   # initial (reporting)
                 tap0,   # synced (arc-admittance rows reflect this tap)
                 tap0,   # current
+                device_name,
+                circuit_index,
             ),
         )
     end
@@ -254,13 +287,13 @@ function build_controlled_device_set(
         lims = PSY.get_admittance_limits(sa)
         vset = (lims.min + lims.max) / 2.0
         _validate_vset("ControlledSwitchedShunt", name, vset) || continue
-        Y0 = PSY.get_Y(sa)
+        solved = PSY.get_solved_admittance(sa)
         steps = PSY.get_number_of_steps(sa)
         dB = imag.(PSY.get_Y_increase(sa))
-        init_status = PSY.get_initial_status(sa)
-        b_fixed, current_b, bmin, bmax = _shunt_susceptance_model(
-            name, Y0, steps, dB, init_status)
-        _validate_shunt(name, bmin, b_fixed, bmax, steps, dB) || continue
+        engaged = PSY.get_number_engaged(sa)
+        current_b, bmin, bmax = _shunt_susceptance_model(
+            name, solved, steps, dB, engaged)
+        _validate_shunt(name, bmin, bmax, steps, dB) || continue
         push!(
             shunts,
             ControlledSwitchedShunt(
@@ -270,8 +303,6 @@ function build_controlled_device_set(
                 vset,
                 lims.min,   # VSWLO: deadband lower edge
                 lims.max,   # VSWHI: deadband upper edge
-                real(Y0),
-                b_fixed,
                 steps,
                 dB,
                 bmin,
@@ -280,7 +311,7 @@ function build_controlled_device_set(
                 continuous,
                 current_b,   # initial (reporting)
                 current_b,   # current
-                _is_binit_shunt(init_status),   # psse_convention: true ⇒ parser/BINIT
+                _solved_flag(solved),   # psse_convention: true ⇒ case read in as solved
             ),
         )
     end
@@ -330,8 +361,8 @@ function _enroll_facts!(
         end
         # `rating` (SHMX) is MVA at unity voltage ⇒ the SVC susceptance-at-unity bound or
         # the STATCOM current limit, on system base. `q_cap` is an independent MVA ceiling.
-        rating = PSY.get_max_shunt_current(fd) / base_mva
-        q_cap = PSY.get_max_reactive_power(fd) / base_mva
+        rating = PSY.get_max_shunt_current(fd, PSY.SU)
+        q_cap = PSY.get_max_reactive_power(fd, PSY.SU)
         svc = PSY.get_shunt_control_type(fd) == PSY.FACTSShuntControlType.SVC
         if rating <= 0.0
             @warn "ControlledFACTS \"$name\": max_shunt_current must be positive \

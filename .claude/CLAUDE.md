@@ -1,15 +1,24 @@
-# PowerFlows.jl — Claude Guide
+# PowerFlows.jl — Claude Guide (psy6 branch)
 
 Platform-wide Sienna conventions (performance, type stability, formatter, environments, code style) live in `.claude/Sienna.md` — read it too. This file is repo-specific and does not restate them.
 
 ## Purpose & place in the stack
 
-PowerFlows.jl provides AC and DC power-flow solution methods for large-scale systems (tens of thousands of buses), built on PowerSystems.jl. It is the steady-state network-solution layer of the Sienna stack: PowerSimulations.jl (PSI) consumes it for dynamic-init, network validation, and OPF post-processing (`src/psi_utils.jl`). Design priorities: sparse-first (SparseArrays), specialized sparse direct solvers via PowerNetworkMatrices (PNM) backends, factorization reuse, in-place/`!` hot paths. It also exports results in PSS/E `.raw` format (PSLF not supported).
+PowerFlows.jl provides AC and DC power-flow solution methods for large-scale systems (tens of thousands of buses), built on PowerSystems.jl. It is the steady-state network-solution layer of the psy6 stack. **The consumer in this line is PowerOperationsModels (POM)** — via POM's `ext/PowerFlowsExt` extension, which wraps PF models in `PowerFlowEvaluator <: IOM.AbstractEvaluator` so IOM stays PF-agnostic — for dynamic-init, network validation, and OPF post-processing. (The old PowerSimulations does not exist in this line; interfaces labeled "PSI-stable" below are the same protected surface, now consumed by POM.) Design priorities: sparse-first (SparseArrays), specialized sparse direct solvers via PowerNetworkMatrices (PNM) backends, factorization reuse, in-place/`!` hot paths. It also exports results in PSS/E `.raw` format (PSLF not supported).
 
-Coupling:
-- **PowerSystems.jl** (`PSY`, compat `^5.10`): `System` and component model; input to all solvers (`src/powersystems_utils.jl`).
-- **PowerNetworkMatrices.jl** (`PNM`, compat `^0.24`, pinned `=0.24.0` in `test/Project.toml`): Y-bus, PTDF, incidence, network reductions, AND the linear-solver caches/factorization backends (see below). PNM owns network-reduction logic; PowerFlows must pass reduced tuples through it.
-- **InfrastructureSystems.jl** (`IS`, compat `3`): shared infra, `@assert_op`, serialization.
+Coupling (all wired via the psy6 shared env / `[sources]` — compat numbers stay unbumped until release):
+- **PowerSystems.jl** (`PSY`, psy6 branch): `System` and component model; input to all solvers (`src/powersystems_utils.jl`).
+- **PowerNetworkMatrices.jl** (`PNM`, psy6 branch): Y-bus, PTDF, incidence, network reductions, AND the linear-solver caches/factorization backends (see below). PNM owns network-reduction logic; PowerFlows must pass reduced tuples through it.
+- **InfrastructureSystems.jl** (`IS`, IS4 branch): shared infra, `@assert_op`, serialization.
+
+## Explicit units (psy6 — check every PSY read)
+
+Under psy6, PSY getters on convertible fields take an explicit unit-system argument and the
+power-flow layer works in **system base**: `PSY.get_x(br, PSY.SU)`. PNM aggregators already
+return system base. A bare `PSY.get_*` on a convertible field in this repo is a defect; the
+POM/PNM/PF consumer sweep for such bare getters is a known open work item — when touching a
+file, fix the bare getters you see. Angle limits are radians (no base conversion). Wrong
+flow/limit magnitudes after a refactor → suspect units first.
 
 ## Architecture & `src/` layout
 
@@ -34,7 +43,7 @@ Exported solver-model types and functions (see `src/PowerFlows.jl`):
 - Solve: `solve_power_flow`, `solve_power_flow!` (in-place; not exported but PSI-stable), `solve_and_store_power_flow!`.
 - DC models: `DCPowerFlow`, `PTDFDCPowerFlow`, `vPTDFDCPowerFlow` (all `<: AbstractDCPowerFlow`).
 - AC formulation/solver types — **two-axis design**: a *formulation* type parameterized by an `S <: ACPowerFlowSolverType`:
-  - Formulations: `ACPolarPowerFlow{S}`, `ACRectangularPowerFlow{S}`, `ACMixedPowerFlow{S}`, all `<: AbstractACPowerFlow{S}`. `const ACPowerFlow = ACPolarPowerFlow` (back-compat alias; PSI uses it).
+  - Formulations: `ACPolarPowerFlow{S}`, `ACRectangularPowerFlow{S}`, `ACMixedPowerFlow{S}`, all `<: AbstractACPowerFlow{S}`. `const ACPowerFlow = ACPolarPowerFlow` (back-compat alias; POM uses it).
   - Solver types `S`: `NewtonRaphsonACPowerFlow`, `TrustRegionACPowerFlow`, `LevenbergMarquardtACPowerFlow`, `RobustHomotopyPowerFlow`, `GradientDescentACPowerFlow`, and `FastDecoupledACPowerFlow{V<:FDVariant,S<:FDScheme}` (the one *parametric* solver — variant/scheme are type params, not settings: `FDDecoupled`/`FDFixedJacobian` × `FDSchemeXB`/`FDSchemeBX`; bare `FastDecoupledACPowerFlow` picks per-formulation defaults).
   - Example: `ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}`. The solver is the type parameter — there is no `:step_strategy`/`:formulation` settings flag.
 - Export: `PSSEExportPowerFlow`, `PSSEExporter`, `update_exporter!`, `write_export`, `get_psse_export_paths`, `FlowReporting`.
@@ -43,6 +52,12 @@ Exported solver-model types and functions (see `src/PowerFlows.jl`):
 `PowerFlowData` is constructed per `AbstractACPowerFlow`/`AbstractDCPowerFlow` and holds pre-allocated state, the PNM network matrix, and cached factorization slots.
 
 ## Key conventions, invariants & gotchas
+
+**Transformers are two types, and everything electrical lives on the circuit.** PSY exposes exactly `TwoWindingTransformer` and `ThreeWindingTransformer`, holding one or three `PSY.TransformerCircuit` objects that carry the arc, tap, α, `r`/`x`, ratings, control objective, and per-circuit `available`. There is no tap type, no phase-shifter type, and no 2W/3W split in the electrical model — reach the circuit with `PSY.get_circuit(tx)` (2W) or `PSY.get_circuits(tx)` (both arities; a 2W returns a 1-tuple) and read the same getters either way. Four rules:
+- **Never reintroduce a per-behavior transformer type.** Tap and phase shift are not type-encoded. Read `PSY.get_tap(circuit)` and `PSY.get_α(circuit)` unconditionally, and use `PSY.is_phase_shifting(circuit)` where a predicate is needed — never a type check. That predicate is true when α ≠ 0 **or** the control objective is one of four active-power objectives, so it is broader than a plain α test.
+- **Report at the circuit level, uniformly across arities.** A 3W may regulate on one circuit while the others are fixed, so the circuit — not the transformer — is the unit of control and of results. `get_controlled_device_results` reports family `"TransformerCircuit"` with `device_name` + `circuit_index` identifying the owning circuit for both arities (`circuit_index == 1` for a 2W).
+- `PNM.ThreeWindingTransformerCircuit` wraps a `TransformerCircuit` directly and is not parameterized on a PSY transformer type.
+- `get_series_susceptance`/`get_series_admittance` live in **PNM**, not PSY. Call them as `PNM.` — there is no PSY fallback.
 
 **Formulation vs solver split (design law).** Formulation = concrete type; solver = type param `S`. Seams are dispatched, not branched: `initialize_power_flow_variables` (formulation-dispatched), `_finalize_formulation!` hook (polar no-op; rect = `rect_finalize_bus_injections!`). NR and TR share one `_newton_power_flow(::AbstractACPowerFlow{S})`. LM/Homotopy/GD `_newton_power_flow` are pinned to `ACPolarPowerFlow` (and LM also to rectangular/mixed); illegal formulation×solver pairs are rejected at construction, not at runtime. Never branch on formulation with `isa`/`<:` — add a dispatch method.
 
@@ -65,11 +80,15 @@ Exported solver-model types and functions (see `src/PowerFlows.jl`):
 
 **Benchmark measurement trap.** Repeated `_ac_power_flow`/`solve_power_flow!` on the same `data` warm-starts to 0-iteration convergence (lazy early-return). Perturb injections per rep or you measure nothing. Use iteration count (not wall-clock) as the robust metric; the wall-clock timer is noisy. Background heavy compute (10k benchmark, full perf suite) — never block synchronously in a subagent.
 
-**Known unfixed issue.** `write_results` is non-idempotent (it `+=` withdrawals). Flag before any results-layer work.
+**Known unfixed issues (flag before touching the results layer).**
+- `write_results` is non-idempotent (it `+=` withdrawals).
+- **NaN poisoning on non-convergence** (`solve_ac_power_flow.jl`, `OVERWRITE_NON_CONVERGED` path): a failed solve overwrites `PowerFlowData` with NaNs, so retries are non-idempotent and downstream consumers see poisoned state instead of an error. This is one of the platform's named silent-failure patterns — never extend it; new failure paths must error loudly with context.
+- `PowerFlowData` is bare-field accessed across ~40 files (audit-flagged porous encapsulation) — prefer getters when touching these sites; don't add new direct reaches.
+- No REF-bus-per-island pre-check before post-processing (`post_processing.jl`) — islanding surfaces late.
 
 ## Commands (verified against this clone)
 
-This package uses **ReTest** and a `test/Project.toml` env (deps incl. PowerSystemCaseBuilder, ReTest, Pardiso, Aqua). Read the `sienna-test-environment` skill for the shared rules; PowerFlows specifics:
+This package uses **ParallelTestRunner** and a `test/Project.toml` env (deps incl. PowerSystemCaseBuilder, ParallelTestRunner, Pardiso, Aqua) — one worker process per `test_*.jl` file, sharing nothing but `test/includes.jl`'s preamble. Read the `sienna-test-environment` skill for the shared rules; PowerFlows specifics:
 
 ```sh
 # Compile-check between edits (package env, fast):
@@ -77,7 +96,7 @@ julia --project -e 'using PowerFlows'
 
 # One-time per clone: make --project=test resolve PowerFlows to the WORKING TREE
 # (else it can resolve the registered copy in ~/.julia/packages and run stale source,
-#  and new test/test_*.jl files are invisible to the glob in test/PowerFlowsTests.jl):
+#  and new test/test_*.jl files are invisible to the glob in test/runtests.jl):
 julia --project=test -e 'using Pkg; Pkg.develop(PackageSpec(path=pwd()))'
 # Verify (must print the working-tree path, not ~/.julia/packages/...):
 julia --project=test -e 'import Pkg; println(Base.find_package("PowerFlows"))'
@@ -85,8 +104,10 @@ julia --project=test -e 'import Pkg; println(Base.find_package("PowerFlows"))'
 # Run full suite:
 julia --project=test test/runtests.jl
 
-# Run a filtered subset via ReTest:
-julia --project=test -e 'using PowerFlows; include("test/PowerFlowsTests.jl"); using .PowerFlowsTests, ReTest; retest(PowerFlowsTests, r"<regex>")'
+# Run a subset filtered by FILE name (startswith), cap parallelism, or list discoverable tests:
+julia --project=test test/runtests.jl test_dc_power_flow
+julia --project=test test/runtests.jl --jobs=4
+julia --project=test test/runtests.jl --list
 
 # Docs:
 julia --project=docs docs/make.jl
@@ -95,7 +116,7 @@ julia --project=docs docs/make.jl
 julia --project=scripts/formatter -e 'include("scripts/formatter/formatter_code.jl")'
 ```
 
-ReTest runs the whole suite and reports failures at the end (does not abort on first failure). Note `runtests.jl` aborts the whole run at the first exception outside a `@test`; "suite green" means the run REACHED the final `Main.PowerFlowsTests | <N>` summary with no Error column. Under recent PSY/IS, `PSY.System("file.raw")` may not parse PSS/E raw — use the PowerSystemCaseBuilder `PowerFlowFileParser` path for raw inputs in tests.
+Each test file runs as its own testset in its own worker process; the runner reports pass/fail per file and does not abort the whole run on one file's failure. Under recent PSY/IS, `PSY.System("file.raw")` may not parse PSS/E raw — use the PowerSystemCaseBuilder `PowerFlowFileParser` path for raw inputs in tests.
 
 ## Auto-generated files / do-not-edit
 

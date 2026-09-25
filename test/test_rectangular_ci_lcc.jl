@@ -1,14 +1,14 @@
 function _rect_lcc_settings()
-    return Dict{Symbol, Any}(:validate_voltage_magnitudes => false)
+    return SolutionParameters(; validate_voltage_magnitudes = false)
 end
 
 @testset "Rectangular CI LCC: residual zero at polar-converged state" begin
     raw_path = joinpath(TEST_DATA_DIR, "case5_2_lcc.raw")
-    sys = System(raw_path)
+    sys = make_system(PFP.PowerModelsData(raw_path); runchecks = false)
     pf_p = ACPowerFlow{NewtonRaphsonACPowerFlow}()
     @test PF.solve_and_store_power_flow!(pf_p, sys)
     pf_r = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
-        solver_settings = _rect_lcc_settings())
+        solution_parameters = _rect_lcc_settings())
     data = PF.PowerFlowData(pf_r, sys)
     R = PF.ACRectangularCIResidual(data, 1)
     x = Vector{Float64}(undef, length(R.Rv))
@@ -19,7 +19,7 @@ end
 
 function _rect_lcc_verify(sys::System; label::String, perturbation::Float64 = 0.02)
     pf_r = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
-        correct_bustypes = true, solver_settings = _rect_lcc_settings())
+        correct_bustypes = true, solution_parameters = _rect_lcc_settings())
     data = PF.PowerFlowData(pf_r, sys)
     R = PF.ACRectangularCIResidual(data, 1)
     J = PF.ACRectangularCIJacobian(R, 1)
@@ -68,7 +68,7 @@ end
     _add_simple_source!(sys, b1, 0.0, 0.0)
     lcc = _add_simple_lcc!(sys, b2, b3, 0.05, 0.05, 0.08)
     PSY.set_inverter_extinction_angle!(lcc, 1.0)   # interior, off the ϕ clamp
-    PSY.set_transfer_setpoint!(lcc, -50.0)          # setpoint at inverter
+    PSY.set_transfer_setpoint!(lcc, -0.5)          # setpoint at inverter
     _rect_lcc_verify(sys; label = "rect CI LCC inverter-side setpoint")
 end
 
@@ -94,11 +94,11 @@ end
 
 @testset "Rectangular CI LCC: asymptotic Jacobian verification on case5_2_lcc" begin
     raw_path = joinpath(TEST_DATA_DIR, "case5_2_lcc.raw")
-    sys = System(raw_path)
+    sys = make_system(PFP.PowerModelsData(raw_path); runchecks = false)
     pf_p = ACPowerFlow{NewtonRaphsonACPowerFlow}()
     PF.solve_and_store_power_flow!(pf_p, sys)
     pf_r = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
-        solver_settings = _rect_lcc_settings())
+        solution_parameters = _rect_lcc_settings())
     data = PF.PowerFlowData(pf_r, sys)
     R = PF.ACRectangularCIResidual(data, 1)
     J = PF.ACRectangularCIJacobian(R, 1)
@@ -118,11 +118,12 @@ end
 
 @testset "Rectangular CI LCC: solve parity with polar" begin
     raw_path = joinpath(TEST_DATA_DIR, "case5_2_lcc.raw")
-    sys_p = System(raw_path)
-    sys_r = System(raw_path)
+    sys = make_system(PFP.PowerModelsData(raw_path); runchecks = false)
+    sys_p = deepcopy(sys)
+    sys_r = deepcopy(sys)
     pf_p = ACPowerFlow{NewtonRaphsonACPowerFlow}()
     pf_r = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
-        solver_settings = _rect_lcc_settings())
+        solution_parameters = _rect_lcc_settings())
     res_p = solve_power_flow(pf_p, sys_p)
     res_r = solve_power_flow(pf_r, sys_r)
     @test res_p !== missing
@@ -133,8 +134,9 @@ end
 
 @testset "Rectangular CI LCC: step strategy variants" begin
     raw_path = joinpath(TEST_DATA_DIR, "case5_2_lcc.raw")
+    sys = make_system(PFP.PowerModelsData(raw_path); runchecks = false)
     pf_p = ACPowerFlow{NewtonRaphsonACPowerFlow}()
-    res_p = solve_power_flow(pf_p, System(raw_path))
+    res_p = solve_power_flow(pf_p, deepcopy(sys))
     for (label, solver, extra_settings) in [
         ("plain NR", NewtonRaphsonACPowerFlow, Dict{Symbol, Any}()),
         ("NR + Iwamoto", NewtonRaphsonACPowerFlow,
@@ -144,10 +146,10 @@ end
             Dict{Symbol, Any}(:iwamoto_fallback => true)),
     ]
         @testset "$label" begin
-            settings = merge(extra_settings, _rect_lcc_settings())
+            settings = PF._override(_rect_lcc_settings(), extra_settings)
             pf_r = ACRectangularPowerFlow{solver}(;
-                solver_settings = settings)
-            res_r = solve_power_flow(pf_r, System(raw_path))
+                solution_parameters = settings)
+            res_r = solve_power_flow(pf_r, deepcopy(sys))
             @test res_r !== missing
             @test maximum(abs.(res_p["bus_results"].Vm - res_r["bus_results"].Vm)) < 1e-7
             @test maximum(abs.(res_p["bus_results"].θ - res_r["bus_results"].θ)) < 1e-7

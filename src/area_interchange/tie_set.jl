@@ -1,9 +1,8 @@
 # Pure tie-enumeration for PSS/E-style area interchange control (see `area_types.jl`).
 # AC-branch loop: `TwoTerminalHVDC` (LCC/VSC) is a Y-bus-less `ACBranch` subtype and is
 # excluded via `PSY.ACTransmission`; DC-line ties are enumerated separately (`build_dc_ties`).
-# `ThreeWindingTransformer` (abstract; concrete `Transformer3W`/`PhaseShiftingTransformer3W`)
-# has no `get_arc` and is handled by decomposing it into its three star-node windings —
-# see `_tie_arcs`.
+# `ThreeWindingTransformer` has no single `get_arc` and is handled by decomposing it into
+# its per-circuit star-node arcs — see `_tie_arcs`.
 
 function _area_name(bus)
     area = PSY.get_area(bus)
@@ -44,28 +43,23 @@ _tie_in_service(br::PSY.DiscreteControlledACBranch) =
 # three star-node windings instead.
 _tie_arcs(branch::PSY.ACTransmission) = ((PSY.get_arc(branch), branch),)
 
-"""Decompose a three-winding transformer into its three star-node windings — the same
-per-winding `Arc`s and availability gating PNM uses when stamping the Y-bus. The star bus
-is a real network node assigned the primary terminal's area, so each winding is a normal
-two-terminal tie candidate; KCL at the star bus makes the boundary-crossing windings sum
+"""Decompose a three-winding transformer into its three star-node circuits — the same
+per-circuit `Arc`s and availability gating PNM uses when stamping the Y-bus. The star bus
+is a real network node assigned the primary terminal's area, so each circuit is a normal
+two-terminal tie candidate; KCL at the star bus makes the boundary-crossing circuits sum
 to the transformer's true net export from each area."""
 function _tie_arcs(branch::PSY.ThreeWindingTransformer)
-    arcs = Tuple{PSY.Arc, PNM.ThreeWindingTransformerWinding}[]
-    PSY.get_available_primary(branch) && push!(
-        arcs,
-        (PSY.get_primary_star_arc(branch), PNM.ThreeWindingTransformerWinding(branch, 1)),
-    )
-    PSY.get_available_secondary(branch) && push!(
-        arcs,
-        (
-            PSY.get_secondary_star_arc(branch),
-            PNM.ThreeWindingTransformerWinding(branch, 2),
-        ),
-    )
-    PSY.get_available_tertiary(branch) && push!(
-        arcs,
-        (PSY.get_tertiary_star_arc(branch), PNM.ThreeWindingTransformerWinding(branch, 3)),
-    )
+    arcs = Tuple{PSY.Arc, PNM.ThreeWindingTransformerCircuit}[]
+    for (i, circuit) in enumerate(PSY.get_circuits(branch))
+        PSY.get_available(circuit) || continue
+        push!(
+            arcs,
+            (
+                PSY.get_arc(circuit),
+                PNM.ThreeWindingTransformerCircuit(branch, circuit, i),
+            ),
+        )
+    end
     return arcs
 end
 
@@ -73,8 +67,8 @@ end
 # from/to — i.e. the SAME orientation `build_area_ties` resolves `fix`/`tix` from (both read
 # `PSY.get_from(arc)`/`PSY.get_to(arc)`), so `y11` lands at `fix` and `y22` at `tix` with no
 # separate bookkeeping. This is the corridor member's contribution to `AreaTie.diag_pollution`.
-function _primitive_diag(entry)
-    (y11, _, _, y22) = PNM.ybus_branch_entries(entry)
+function _primitive_diag(entry, nrd)
+    (y11, _, _, y22) = PNM.ybus_branch_entries(entry, nrd)
     return (ComplexF64(y11), ComplexF64(y22))
 end
 
@@ -226,7 +220,7 @@ end
 `dcn`, so converter pair `(2i-1, 2i)` here matches line `i` there (from-side, to-side; see
 `DCNetwork`/`_lower_vsc_lines!`). `dcn.converter_ac_bus_ix` is already the reduced-network AC
 bus index. `iszero(n_vsc_converters(dcn))` with nonempty VSC lines means DC-network joint
-modeling was turned off (`solver_settings[:model_dc_network] = false`) — no `P_c` state
+modeling was turned off (`SolutionParameters(; model_dc_network = false)`) — no `P_c` state
 exists to feed `NI_a` then, so no DC ties are enumerated (silent, mirrors "DC network off"
 already meaning "VSC ignored by the AC solve" elsewhere)."""
 function _vsc_dc_ties(
@@ -362,7 +356,7 @@ function build_area_ties(
             tail_from = get(bus_area_map, fix, 0)
             tail_to = get(bus_area_map, tix, 0)
             tail_from == tail_to && continue
-            (y11, y22) = _primitive_diag(primitive_entry)
+            (y11, y22) = _primitive_diag(primitive_entry, nrd)
             push!(
                 candidates,
                 _TieCandidate(

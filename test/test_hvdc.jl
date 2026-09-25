@@ -51,34 +51,62 @@
     end
 end
 
+@testset "Test DC power flow with a quadratic VSC converter loss curve" begin
+    for DC_type in (PF.DCPowerFlow, PF.PTDFDCPowerFlow, PF.vPTDFDCPowerFlow)
+        @testset "DC Solver: $(DC_type)" begin
+            sys = System(100.0)
+            b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.0, 0.0)
+            b2 = _add_simple_bus!(sys, 2, ACBusTypes.PQ, 230, 1.0, 0.0)
+            b3 = _add_simple_bus!(sys, 3, ACBusTypes.PQ, 230, 1.0, 0.0)
+
+            _add_simple_source!(sys, b1, 1.0, 0.0)
+            _add_simple_load!(sys, b2, 0.3, 0.1)
+            _add_simple_load!(sys, b3, 0.4, 0.1)
+
+            _add_simple_line!(sys, b1, b2, 0.01, 0.05, 0.02)
+            _add_simple_line!(sys, b1, b3, 0.01, 0.05, 0.02)
+
+            vsc = _add_simple_vsc!(sys, b2, b3; active_power_flow = 0.2)
+            quad_loss = LossCurve(QuadraticCurve(0.01, 0.02, 0.005), NaturalUnit())
+            set_converter_loss_from!(vsc, quad_loss)
+            set_converter_loss_to!(vsc, quad_loss)
+
+            pf = DC_type()
+            data = PF.PowerFlowData(pf, sys)
+            solve_power_flow!(data)
+            @test all(data.converged)
+        end
+    end
+end
+
 @testset "Test HVDC injections helper function" begin
     sys = build_system(MatpowerTestSystems, "matpower_case5_dc_sys")
     hvdc = only(get_components(TwoTerminalHVDC, sys))
-    set_units_base_system!(sys, UnitSystem.NATURAL_UNITS)
+    sys_base = PSY.get_base_power(sys)
 
     P_dc = 10.0
-    set_active_power_flow!(hvdc, P_dc)
+    set_active_power_flow!(hvdc, P_dc * u"MW")
 
     # fixed slope loss function: 1% loss
     loss_coeff = 0.01
-    set_loss!(hvdc, LinearCurve(loss_coeff))
-    (P_from, P_to) = PF.hvdc_injections_natural_units(hvdc)
+    set_loss!(hvdc, LossCurve(LinearCurve(loss_coeff), NaturalUnit()))
+    (P_from, P_to) = PF.hvdc_injections_natural_units(hvdc, sys_base)
     @test isapprox(-P_from, P_dc)
     @test isapprox(P_to, P_dc * (1 - loss_coeff))
 
     # constant loss: 0.5 MW loss
     loss_const = 0.5
-    set_loss!(hvdc, LinearCurve(0.0, loss_const))
-    (P_from, P_to) = PF.hvdc_injections_natural_units(hvdc)
+    set_loss!(hvdc, LossCurve(LinearCurve(0.0, loss_const), NaturalUnit()))
+    (P_from, P_to) = PF.hvdc_injections_natural_units(hvdc, sys_base)
     @test isapprox(-P_from, P_dc)
     @test isapprox(P_to, P_dc - loss_const)
 
     # piecewise linear loss: 1% loss up to 20 MW, then 2% marginal loss above that
     loss_curve = PiecewiseIncrementalCurve(0.0, 0.0, [0.0, 20.0, 100.0], [0.01, 0.02])
-    set_loss!(hvdc, loss_curve)
+    set_loss!(hvdc, LossCurve(loss_curve, NaturalUnit()))
     for P_dc_setpoint in (10.0, 30.0)
-        set_active_power_flow!(hvdc, P_dc_setpoint)
-        (P_from, P_to) = PF.hvdc_injections_natural_units(hvdc)
+        set_active_power_flow!(hvdc, P_dc_setpoint * u"MW")
+        (P_from, P_to) = PF.hvdc_injections_natural_units(hvdc, sys_base)
         expected_loss =
             0.01 * min(P_dc_setpoint, 20.0) + 0.02 * max(0.0, P_dc_setpoint - 20.0)
         @test isapprox(-P_from, P_dc_setpoint)
@@ -86,9 +114,12 @@ end
     end
 
     # test reversed flow error
-    _, lcc = simple_lcc_system()
-    set_active_power_flow!(lcc, -15.0)
-    @test_throws ArgumentError PF.hvdc_injections_natural_units(lcc)
+    sys2, lcc = simple_lcc_system()
+    set_active_power_flow!(lcc, -15.0 * u"MW")
+    @test_throws ArgumentError PF.hvdc_injections_natural_units(
+        lcc,
+        PSY.get_base_power(sys2),
+    )
 end
 
 @testset "Test AC on generic HVDC" begin
@@ -121,7 +152,7 @@ function add_component_with_power!(sys::PSY.System, bus::PSY.ACBus, P::Float64)
         gen = ThermalStandard(;
             name = "gen_$(PSY.get_number(bus))_thermal_hvdc_$P",
             available = true,
-            status = true,
+            status = OperationalStates.ONLINE,
             bus = bus,
             active_power = P, # TODO check units
             reactive_power = 0.0,
@@ -140,8 +171,7 @@ function add_component_with_power!(sys::PSY.System, bus::PSY.ACBus, P::Float64)
             ext = Dict{String, Any}(),
         )
         add_component!(sys, gen)
-        @assert get_active_power(gen) == P
-        @assert PSY.get_units_setting(gen).unit_system == PSY.UnitSystem.SYSTEM_BASE
+        @assert get_active_power(gen, PSY.SU) == P
     else
         load = PowerLoad(;
             name = "load_$(PSY.get_number(bus))_hvdc_$(-P)",
@@ -154,21 +184,19 @@ function add_component_with_power!(sys::PSY.System, bus::PSY.ACBus, P::Float64)
             max_reactive_power = 0.0,
         )
         add_component!(sys, load)
-        @assert get_active_power(load) == -P
-        @assert PSY.get_units_setting(load).unit_system == PSY.UnitSystem.SYSTEM_BASE
+        @assert get_active_power(load, PSY.SU) == -P
     end
 end
 
 function replace_generic_hvdcs!(sys)
     for hvdc in get_components(PSY.TwoTerminalGenericHVDCLine, sys)
-        if PSY.get_active_power_flow(hvdc) == 0.0
-            @assert PSY.get_units_setting(hvdc).unit_system ==
-                    PSY.UnitSystem.SYSTEM_BASE
-            set_active_power_flow!(hvdc, 0.1)
+        if PSY.get_active_power_flow(hvdc, PSY.SU) == 0.0
+            set_active_power_flow!(hvdc, 0.1 * PSY.SU)
         end
-        (P_from, P_to) = PF.hvdc_injections_natural_units(hvdc)
-        P_from /= PSY.get_base_power(sys)
-        P_to /= PSY.get_base_power(sys)
+        (P_from, P_to) =
+            PF.hvdc_injections_natural_units(hvdc, PSY.get_base_power(sys, PSY.NU))
+        P_from /= PSY.get_base_power(sys, PSY.NU)
+        P_to /= PSY.get_base_power(sys, PSY.NU)
         arc = get_arc(hvdc)
         bus_from = arc.from
         bus_to = arc.to
@@ -181,12 +209,9 @@ end
 
 function test_generic_hvdc_on_big_system(pf_type::Type{<:PF.PowerFlowEvaluationModel})
     sys_original = build_system(PSISystems, "HVDC_TWO_RTO_RTS_1Hr_sys")
-    set_units_base_system!(sys_original, "SYSTEM_BASE")
 
     for hvdc in get_components(PSY.TwoTerminalGenericHVDCLine, sys_original)
-        @assert PSY.get_units_setting(hvdc).unit_system ==
-                PSY.UnitSystem.SYSTEM_BASE
-        set_active_power_flow!(hvdc, 0.1)
+        set_active_power_flow!(hvdc, 0.1 * PSY.SU)
     end
 
     pf = pf_type(; correct_bustypes = true)
@@ -196,7 +221,6 @@ function test_generic_hvdc_on_big_system(pf_type::Type{<:PF.PowerFlowEvaluationM
     @test all(data_original.bus_angles[ref_bus_inds] .== 0.0)
 
     sys_modified = deepcopy(sys_original)
-    set_units_base_system!(sys_modified, "SYSTEM_BASE")
     replace_generic_hvdcs!(sys_modified)
 
     data_modified = PF.PowerFlowData(pf, sys_modified)
@@ -274,7 +298,7 @@ end
     # where [time_step, i] was incorrectly used instead of [i, time_step]
     # The bug only manifested when there were multiple LCC lines.
     raw_path = joinpath(TEST_DATA_DIR, "case5_2_lcc.raw")
-    sys = System(raw_path)
+    sys = make_system(PFP.PowerModelsData(raw_path); runchecks = false)
 
     # Verify we have multiple LCC lines
     lcc_components = collect(get_components(TwoTerminalLCCLine, sys))
@@ -297,4 +321,28 @@ end
     bus_results = pf_results["bus_results"]
     @test all(bus_results.Vm .> 0.9)
     @test all(bus_results.Vm .< 1.1)
+end
+
+@testset "Test DC LCC arc flow sign (rectifier/inverter, with loss)" begin
+    # 30 MW with a 10% loss curve (3 MW lost): P_to_from is the received power, negated (-27), not the loss (+3).
+    for DC_type in (PF.DCPowerFlow, PF.PTDFDCPowerFlow, PF.vPTDFDCPowerFlow)
+        @testset "DC Solver: $(DC_type)" begin
+            sys, lcc = simple_lcc_system()
+            set_active_power_flow!(lcc, 30.0 * u"MW")
+            set_loss!(lcc, LossCurve(LinearCurve(0.1), NaturalUnit()))
+            pf = DC_type(; correct_bustypes = true)
+            data = PowerFlowData(pf, sys)
+            @test isapprox(data.lcc.arc_active_power_flow_from_to[1, 1], 0.3; atol = 1e-6)
+            @test isapprox(
+                data.lcc.arc_active_power_flow_to_from[1, 1],
+                -0.27;
+                atol = 1e-6,
+            )
+
+            results = solve_power_flow(pf, sys, PF.FlowReporting.ARC_FLOWS)
+            lcc_df = results["1"]["lcc_results"]
+            @test isapprox(lcc_df[1, :P_from_to], 30.0; atol = 1e-6)
+            @test isapprox(lcc_df[1, :P_to_from], -27.0; atol = 1e-6)
+        end
+    end
 end

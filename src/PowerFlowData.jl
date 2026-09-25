@@ -21,18 +21,18 @@ get_system(container::SystemPowerFlowContainer) = container.system
 Structure containing all the data required for the evaluation of the power
 flows and angles, as well as these ones.
 
-All fields starting with `bus_` are ordered according to `bus_lookup`, and all fields 
-starting with `arc_` are ordered according to `arc_lookup`: one row per bus/arc, 
-one column per time period. Here, buses should be understood as \"buses remaining, after 
-the network reduction.\" Similarly, we use \"arcs\" instead of \"branches\" to distinguish 
+All fields starting with `bus_` are ordered according to `bus_lookup`, and all fields
+starting with `arc_` are ordered according to `arc_lookup`: one row per bus/arc,
+one column per time period. Here, buses should be understood as \"buses remaining, after
+the network reduction.\" Similarly, we use \"arcs\" instead of \"branches\" to distinguish
 between network elements (post-reduction) and system objects (pre-reduction).
 
-Generally, do not construct this directly. Instead, use one of the later constructors to 
-pass in a [`PowerFlowEvaluationModel`](@ref) and a [`PowerSystems.System`](@extref). 
-`aux\\_network\\_matrix` and `power\\_network\\_matrix` will then be set to the appropriate 
+Generally, do not construct this directly. Instead, use one of the later constructors to
+pass in a [`PowerFlowEvaluationModel`](@ref) and a [`PowerSystems.System`](@extref).
+`aux\\_network\\_matrix` and `power\\_network\\_matrix` will then be set to the appropriate
 matrices that are needed for computing that type of power flow. See also [`ACPowerFlowData`](@ref),
-[`ABAPowerFlowData`](@ref), [`PTDFPowerFlowData`](@ref), and [`vPTDFPowerFlowData`](@ref): 
-these are all aliases for [`PowerFlowData`](@ref)`{N, M}` with specific `N`,`M`, that are used for 
+[`ABAPowerFlowData`](@ref), [`PTDFPowerFlowData`](@ref), and [`vPTDFPowerFlowData`](@ref):
+these are all aliases for [`PowerFlowData`](@ref)`{N, M}` with specific `N`,`M`, that are used for
 the respective type of power flow evaluations.
 
 # Fields:
@@ -53,13 +53,13 @@ the respective type of power flow evaluations.
 - `bus_active_power_constant_impedance_withdrawals::Matrix{Float64}`:
         matrix containing the bus active power constant impedance
         withdrawals.
-- `bus_reactive_power_constant_impedance_withdrawals::Matrix{Float64}`:  
+- `bus_reactive_power_constant_impedance_withdrawals::Matrix{Float64}`:
         matrix containing the bus reactive power constant impedance
         withdrawals.
 - `bus_reactive_power_bounds::Matrix{Float64}`:
         matrix containing upper and lower bounds for the reactive supply at each
         bus at each time period.
-- `bus_type::Matrix{PSY.ACBusTypes}`:
+- `bus_type::Matrix{PSY.ACBusTypes.Value}`:
         matrix containing type of buses present in the system.
 - `bus_magnitude::Matrix{Float64}`:
         matrix containing the bus voltage magnitudes.
@@ -82,6 +82,12 @@ the respective type of power flow evaluations.
         "(b, t)" matrix containing the net power injections from all HVDC lines at each bus.
         b: number of buses, t: number of time period. Only contains HVDCs handled as
         separate injection/withdrawal pairs: LCCs and generic for DC, or just generic for AC.
+- `bus_phase_shift_injections::Vector{Float64}`:
+        length-`b` vector of DC phase-shifter injections (`+b·α` at the from bus, `−b·α`
+        at the to bus of each shifted arc); time-invariant, zero on α-free systems.
+- `arc_phase_shift_flow_offsets::Vector{Float64}`:
+        length-`n_arcs` vector of `b_eq·α_eq` per arc, subtracted from the DC flow;
+        time-invariant, zero for non-shifted arcs.
 - `time_step_map::Dict{Int, S}`:
         dictionary mapping the number of the time periods (corresponding to the
         column number of the previously mentioned matrices) and their names.
@@ -113,7 +119,7 @@ struct PowerFlowData{
     computed_generator_slack_participation_factors::Vector{
         Dict{Tuple{DataType, String}, Float64},
     }
-    bus_type::Matrix{PSY.ACBusTypes}
+    bus_type::Matrix{PSY.ACBusTypes.Value}
     bus_magnitude::Matrix{Float64}
     bus_angles::Matrix{Float64}
     arc_active_power_flow_from_to::Matrix{Float64}
@@ -123,6 +129,13 @@ struct PowerFlowData{
     arc_angle_differences::Matrix{Float64}
     generic_hvdc_flows::Dict{Tuple{Int, Int}, Tuple{Float64, Float64}}
     bus_hvdc_net_power::Matrix{Float64}
+    # DC phase-shifter terms (time-invariant: α is a stored circuit angle, not a per-step
+    # control variable). `+b·α` at the from bus / `−b·α` at the to bus of each shifted arc;
+    # zero on α-free systems. See `_populate_phase_shift_terms!`.
+    bus_phase_shift_injections::Vector{Float64}
+    # `b_eq·α_eq` per arc, subtracted from the DC flow (`f = b·Δθ − b·α`); zero for
+    # non-shifted arcs.
+    arc_phase_shift_flow_offsets::Vector{Float64}
     time_step_map::Dict{Int, String}
     power_network_matrix::M
     aux_network_matrix::N
@@ -165,9 +178,14 @@ struct PowerFlowData{
     # AC Jacobian and a `solver_cache` entry can both be live in one solve (FastDecoupled handing
     # off to NR), so they must not contend. Lazily populated; see `_get_or_build_jacobian_structure`.
     ac_jacobian_structure_cache::Base.RefValue{Union{Nothing, ACJacobianStructureCache}}
-    # Persisted NR/TR symbolic-factorization cache (a `PolarNRCache`, defined in
-    # `power_flow_method.jl`); its own slot so it never contends with a DC/FD `solver_cache`.
-    polar_nr_cache::Base.RefValue{Union{Nothing, SolverCache}}
+    # Persistent polar NR/TR reuse cache (a `PolarNRCache`, defined in `power_flow_method.jl`).
+    # Holds the residual, Jacobian, linear-solver cache (with its symbolic factorization), and
+    # state-vector buffers so the Q-limit retry loop and the multi-period time-step loop skip
+    # reconstructing these structure-invariant objects on every `_newton_power_flow` call. Its own
+    # slot so it never contends with a DC/FD `solver_cache`. Typed as the `AbstractNRCache` forward
+    # supertype because the concrete `PolarNRCache` cannot be referenced here (construction cycle
+    # through `ACPowerFlowResidual`).
+    polar_nr_cache::Base.RefValue{Union{Nothing, AbstractNRCache}}
 end
 
 # aliases for specific type parameter combinations.
@@ -227,6 +245,8 @@ get_bus_reactive_power_constant_impedance_withdrawals(pfd::PowerFlowData) =
     pfd.bus_reactive_power_constant_impedance_withdrawals
 get_bus_reactive_power_bounds(pfd::PowerFlowData) = pfd.bus_reactive_power_bounds
 get_bus_hvdc_net_power(pfd::PowerFlowData) = pfd.bus_hvdc_net_power
+get_bus_phase_shift_injections(pfd::PowerFlowData) = pfd.bus_phase_shift_injections
+get_arc_phase_shift_flow_offsets(pfd::PowerFlowData) = pfd.arc_phase_shift_flow_offsets
 get_generic_hvdc_flows(pfd::PowerFlowData) = pfd.generic_hvdc_flows
 get_bus_slack_participation_factors(pfd::PowerFlowData) =
     pfd.bus_slack_participation_factors
@@ -421,6 +441,8 @@ function PowerFlowData(
         zeros(n_arcs, n_time_steps), # arc_angle_differences
         Dict{Tuple{Int, Int}, Tuple{Float64, Float64}}(), # generic_hvdc_flows
         zeros(n_buses, n_time_steps), # bus_hvdc_net_power
+        zeros(n_buses), # bus_phase_shift_injections
+        zeros(n_arcs), # arc_phase_shift_flow_offsets
         time_step_map,
         power_network_matrix,
         aux_network_matrix,
@@ -450,10 +472,15 @@ function PowerFlowData(
         Base.RefValue{Union{Nothing, SolverCache}}(nothing), # solver_cache (lazily populated)
         controlled_devices,
         Base.RefValue{Union{Nothing, ACJacobianStructureCache}}(nothing), # ac_jacobian_structure_cache
-        Base.RefValue{Union{Nothing, SolverCache}}(nothing), # polar_nr_cache (lazily populated)
+        Base.RefValue{Union{Nothing, AbstractNRCache}}(nothing), # polar_nr_cache (lazily populated)
     )
 end
 
+"""Total active power withdrawn at a bus, including the ZIP terms: the constant-power
+withdrawal plus the constant-current and constant-impedance withdrawals evaluated at the
+bus's current voltage magnitude. This is the `P_load_total` that `ACPowerFlowResidual`
+forms `P_net` from, so state and data must both be built from it rather than from
+`bus_active_power_withdrawals` alone."""
 function get_bus_active_power_total_withdrawals(pfd::PowerFlowData, ix::Int, time_step::Int)
     return pfd.bus_active_power_withdrawals[ix, time_step] +
            pfd.bus_active_power_constant_current_withdrawals[ix, time_step] *
@@ -462,6 +489,8 @@ function get_bus_active_power_total_withdrawals(pfd::PowerFlowData, ix::Int, tim
            pfd.bus_magnitude[ix, time_step]^2
 end
 
+"""Total reactive power withdrawn at a bus, including the ZIP terms. The reactive
+counterpart of [`get_bus_active_power_total_withdrawals`](@ref)."""
 function get_bus_reactive_power_total_withdrawals(
     pfd::PowerFlowData,
     ix::Int,
@@ -472,6 +501,28 @@ function get_bus_reactive_power_total_withdrawals(
            pfd.bus_magnitude[ix, time_step] +
            pfd.bus_reactive_power_constant_impedance_withdrawals[ix, time_step] *
            pfd.bus_magnitude[ix, time_step]^2
+end
+
+"""Withdrawals excluding the constant-impedance term, which rectangular/mixed fold into
+`Y_bus_eff` (`fold_zip_constant_z!`) instead of carrying in the state."""
+function get_bus_active_power_non_impedance_withdrawals(
+    pfd::PowerFlowData,
+    ix::Int,
+    time_step::Int,
+)
+    return pfd.bus_active_power_withdrawals[ix, time_step] +
+           pfd.bus_active_power_constant_current_withdrawals[ix, time_step] *
+           pfd.bus_magnitude[ix, time_step]
+end
+
+function get_bus_reactive_power_non_impedance_withdrawals(
+    pfd::PowerFlowData,
+    ix::Int,
+    time_step::Int,
+)
+    return pfd.bus_reactive_power_withdrawals[ix, time_step] +
+           pfd.bus_reactive_power_constant_current_withdrawals[ix, time_step] *
+           pfd.bus_magnitude[ix, time_step]
 end
 
 function clear_injection_data!(pfd::PowerFlowData)
@@ -560,7 +611,6 @@ function make_and_initialize_power_flow_data(
     arc_bus_incidence::Union{SparseMatrixCSC{Int8, Int}, Nothing} = nothing,
     controlled_devices::Union{Nothing, ControlledDeviceSet} = nothing,
 ) where {M <: PNM.PowerNetworkMatrix, N <: Union{PNM.PowerNetworkMatrix, Nothing}}
-    check_unit_setting(sys)
     if isnothing(controlled_devices) && get_control_discrete_devices(pf)
         @warn "control_discrete_devices=true, but no controlled_devices were supplied \
             to make_and_initialize_power_flow_data — discrete device control will NOT \
@@ -602,28 +652,8 @@ function _signed_arc_bus_incidence(ybus::PNM.Ybus, metadata_matrix::PNM.PowerNet
     return inc.data[arc_perm, bus_perm]
 end
 
-# PNM applies the zero-impedance branch reduction through a dedicated `zero_impedance_reduction`
-# kwarg (and rejects one passed in `network_reductions`). A `ZeroImpedanceBranchReduction` is still a
-# `NetworkReduction`, so PowerFlows lets users put it in the usual `network_reductions` field and
-# routes it to that kwarg here. Dispatch (not `isa`) classifies the entry.
-_is_zero_impedance_reduction(::PNM.ZeroImpedanceBranchReduction) = true
-_is_zero_impedance_reduction(::PNM.NetworkReduction) = false
-
-# Split the user's reductions into (everything else, the zero-impedance reduction). When the user
-# supplied none, return PNM's default `ZeroImpedanceBranchReduction()` so the always-applied
-# zero-impedance step keeps its default parameters.
-function _route_zero_impedance_reduction(reductions::Vector{PNM.NetworkReduction})
-    idx = findfirst(_is_zero_impedance_reduction, reductions)
-    isnothing(idx) && return reductions, PNM.ZeroImpedanceBranchReduction()
-    others = PNM.NetworkReduction[
-        r for r in reductions if !_is_zero_impedance_reduction(r)
-    ]
-    return others, reductions[idx]
-end
-
 # Build the controlled-device set for a solve, or `nothing` when discrete control is off or the
-# system has no enrollable devices. LCC HVDC is rejected: the continuation's rollback does not yet
-# cover the per-time-step LCC state. Taps support time_steps>1 via reset-to-baseline
+# system has no enrollable devices. Taps support time_steps>1 via reset-to-baseline
 # (`load_device_state!` resets the shared Y-bus to `d.initial` before each step).
 function _build_controlled_devices(
     pf::AbstractACPowerFlow,
@@ -632,15 +662,6 @@ function _build_controlled_devices(
 )
     if !get_control_discrete_devices(pf)
         return nothing
-    end
-    if !isempty(PSY.get_available_components(PSY.TwoTerminalLCCLine, sys))
-        throw(
-            ArgumentError(
-                "control_discrete_devices=true is not supported on systems with " *
-                "LCC HVDC lines: the continuation's rollback does not yet cover " *
-                "the per-time-step LCC state.",
-            ),
-        )
     end
     n_time_steps = get_time_steps(pf)
     nrd = PNM.get_network_reduction_data(power_network_matrix)
@@ -688,19 +709,16 @@ function PowerFlowData(
 )
     network_reductions = get_network_reductions(pf)
     network_reduction_message(network_reductions, pf)
-    reductions, zero_impedance_reduction =
-        _route_zero_impedance_reduction(network_reductions)
     # Converter AC terminals are ALWAYS irreducible — independent of `model_dc_network`. Reducing a
     # VSC/IC bus away would lose the converter (silently drop it from the joint model, or mishandle
     # its injection when DC modeling is off), so the protection must not depend on the solve mode.
     irreducible_buses = _dc_converter_ac_buses(sys)
     power_network_matrix = PNM.Ybus(
         sys;
-        network_reductions = reductions,
+        network_reductions = network_reductions,
         irreducible_buses = irreducible_buses,
         make_arc_admittance_matrices = true,
         include_constant_impedance_loads = false,
-        zero_impedance_reduction = zero_impedance_reduction,
     )
     neighbors = _calculate_neighbors(power_network_matrix)
 
@@ -753,14 +771,11 @@ function PowerFlowData(
 )
     network_reductions = get_network_reductions(pf)
     network_reduction_message(network_reductions, pf)
-    reductions, zero_impedance_reduction =
-        _route_zero_impedance_reduction(network_reductions)
     ybus = PNM.Ybus(
         sys;
-        network_reductions = reductions,
+        network_reductions = network_reductions,
         irreducible_buses = _dc_converter_ac_buses(sys),
         make_arc_admittance_matrices = pf.lossy_flows,
-        zero_impedance_reduction = zero_impedance_reduction,
     )
     power_network_matrix = PNM.ABA_Matrix(ybus; factorize = true)
     aux_network_matrix = PNM.BA_Matrix(ybus)
@@ -824,13 +839,10 @@ function PowerFlowData(
 )
     network_reductions = get_network_reductions(pf)
     network_reduction_message(network_reductions, pf)
-    reductions, zero_impedance_reduction =
-        _route_zero_impedance_reduction(network_reductions)
     # get the network matrices
     ybus = PNM.Ybus(sys;
-        network_reductions = reductions,
-        irreducible_buses = _dc_converter_ac_buses(sys),
-        zero_impedance_reduction = zero_impedance_reduction)
+        network_reductions = network_reductions,
+        irreducible_buses = _dc_converter_ac_buses(sys))
     power_network_matrix = PNM.PTDF(ybus)
     aux_network_matrix = PNM.ABA_Matrix(ybus; factorize = true)
     # `get_arc_axis(data)`/`get_bus_lookup(data)` read the PTDF (metadata) matrix for this method.
@@ -877,14 +889,11 @@ function PowerFlowData(
 )
     network_reductions = get_network_reductions(pf)
     network_reduction_message(network_reductions, pf)
-    reductions, zero_impedance_reduction =
-        _route_zero_impedance_reduction(network_reductions)
 
     # get the network matrices
     ybus = PNM.Ybus(sys;
-        network_reductions = reductions,
-        irreducible_buses = _dc_converter_ac_buses(sys),
-        zero_impedance_reduction = zero_impedance_reduction)
+        network_reductions = network_reductions,
+        irreducible_buses = _dc_converter_ac_buses(sys))
     power_network_matrix = PNM.VirtualPTDF(ybus) # evaluates an empty virtual PTDF
     aux_network_matrix = PNM.ABA_Matrix(ybus; factorize = true)
 

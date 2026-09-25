@@ -2,7 +2,7 @@
 # start, validated on the mixed (e, f) 2-slot layout.
 
 const MIXED_FS_PARITY_ATOL = 1e-7
-_mixed_fs_settings() = Dict{Symbol, Any}(:validate_voltage_magnitudes => false)
+_mixed_fs_settings() = SolutionParameters(; validate_voltage_magnitudes = false)
 
 # Perturb the stored bus voltages of `sys` far from a flat 1∠0 start. Only the
 # *initial guess* changes: PQ |V|/θ and PV θ are not physical unknowns'
@@ -30,7 +30,7 @@ end
 
     pf_h = ACMixedPowerFlow{NewtonRaphsonACPowerFlow}(;
         enhanced_flat_start = true,
-        solver_settings = _mixed_fs_settings(),
+        solution_parameters = _mixed_fs_settings(),
     )
     pf_ref = ACPowerFlow{NewtonRaphsonACPowerFlow}()
 
@@ -52,7 +52,7 @@ end
 @testset "Mixed CPB flat start: modified-flat-start construction" begin
     sys = _mixed_perturb!(PSB.build_system(PSB.PSITestSystems, "c_sys5"))
     pf = ACMixedPowerFlow{NewtonRaphsonACPowerFlow}(;
-        enhanced_flat_start = true, solver_settings = _mixed_fs_settings())
+        enhanced_flat_start = true, solution_parameters = _mixed_fs_settings())
     data = PowerFlowData(pf, sys)
     residual = PF.ACMixedCPBResidual(data, 1)
 
@@ -115,7 +115,7 @@ end
 @testset "Mixed CPB flat start: multi-period warm start" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
     pf = ACMixedPowerFlow{NewtonRaphsonACPowerFlow}(;
-        time_steps = 2, solver_settings = _mixed_fs_settings())
+        time_steps = 2, solution_parameters = _mixed_fs_settings())
     data = PowerFlowData(pf, sys)
 
     # Converge step 1 in a single-step copy and inject its solution into the
@@ -124,7 +124,7 @@ end
     # same loads, so step-1's converged state IS step-2's solution.
     d1 = PowerFlowData(
         ACMixedPowerFlow{NewtonRaphsonACPowerFlow}(;
-            solver_settings = _mixed_fs_settings()), sys)
+            solution_parameters = _mixed_fs_settings()), sys)
     @test PowerFlows.solve_power_flow!(d1)
     data.bus_magnitude[:, 1] .= d1.bus_magnitude[:, 1]
     data.bus_angles[:, 1] .= d1.bus_angles[:, 1]

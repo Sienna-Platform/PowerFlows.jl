@@ -91,6 +91,37 @@ function _describe_lcc_residual_entry(data::ACPowerFlowData, tail_ix::Int)
     return "LCC $(from_no)→$(to_no) ($(_LCC_RESIDUAL_ROW_NAMES[row]))"
 end
 
+"""Describe a residual entry that falls in the VSC tail: two control rows per converter
+(`r1` active-power/V_dc, `r2` reactive-power/|V_ac|) followed by one DC-node KCL row per DC
+node -- the layout [`_set_vsc_tail_residuals!`](@ref) writes."""
+function _describe_vsc_residual_entry(
+    data::ACPowerFlowData,
+    dcn::DCNetwork,
+    tail_ix::Int,
+)
+    nconv = n_vsc_converters(dcn)
+    if tail_ix <= 2 * nconv
+        c = div(tail_ix - 1, 2) + 1
+        row = isodd(tail_ix) ? "P/V_dc control" : "Q/|V_ac| control"
+        bus_no = _diag_bus_number(data, dcn.converter_ac_bus_ix[c])
+        return "VSC converter $c at bus $bus_no ($row)"
+    end
+    return "DC node $(tail_ix - 2 * nconv) (DC KCL)"
+end
+
+"""Describe a residual entry in the non-bus tail, `tail_ix` being 1-based within the tail.
+Bands are `[LCC][VSC][area]`, sized from the same terms as
+[`state_tail_length`](@ref); every index in `1:state_tail_length(...)` lands in exactly one."""
+function _describe_tail_residual_entry(data::ACPowerFlowData, tail_ix::Int)
+    n_lcc_rows = 4 * size(data.lcc.p_set, 1)
+    tail_ix <= n_lcc_rows && return _describe_lcc_residual_entry(data, tail_ix)
+    dcn = get_dc_network(data)
+    n_vsc_rows = vsc_tail_length(dcn)
+    tail_ix <= n_lcc_rows + n_vsc_rows &&
+        return _describe_vsc_residual_entry(data, dcn, tail_ix - n_lcc_rows)
+    return _describe_area_residual_entry(data, tail_ix - n_lcc_rows - n_vsc_rows)
+end
+
 """Describe a residual entry that falls in the area-interchange tail (1 row per
 controlled area, keyed by `tail_ix` rather than vector position so a mid-solve
 de-enrollment renumbering can't desync this from `_set_area_tail_residuals!`)."""
@@ -126,13 +157,7 @@ function _describe_residual_entry(
         bus_ix = div(ix - 1, 2) + 1
         return "bus $(_diag_bus_number(data, bus_ix)) ($(isodd(ix) ? "P" : "Q"))"
     end
-    if n_controlled_areas(data) > 0
-        area_off = area_tail_offset(data, get_dc_network(data))
-        if ix > area_off
-            return _describe_area_residual_entry(data, ix - area_off)
-        end
-    end
-    return _describe_lcc_residual_entry(data, ix - n_bus_eqs)
+    return _describe_tail_residual_entry(data, ix - n_bus_eqs)
 end
 
 function _describe_residual_entry(
@@ -146,7 +171,7 @@ function _describe_residual_entry(
         labels = ("ΔI_re", "ΔI_im", "|V|²−V_set²")   # PV uses the 3rd row
         return "bus $(_diag_bus_number(data, b)) ($(labels[row]))"
     end
-    return _describe_lcc_residual_entry(data, ix - r.total_bus_state)
+    return _describe_tail_residual_entry(data, ix - r.total_bus_state)
 end
 
 function _describe_residual_entry(
@@ -167,28 +192,190 @@ function _describe_residual_entry(
         end
         return "bus $(_diag_bus_number(data, b)) ($(labels[row]))"
     end
-    return _describe_lcc_residual_entry(data, ix - r.total_bus_state)
+    return _describe_tail_residual_entry(data, ix - r.total_bus_state)
 end
 
 # ---------------------------------------------------------------------------
 # Fold / voltage-collapse bail-out state and the shared per-iteration hook.
 # ---------------------------------------------------------------------------
 
-# UNSEEN = pre-first-observation. A non-finite/non-converged λ_min is deliberately
-# not a sign here; the bail decision treats it as a conservative abort.
-IS.@scoped_enum(EigvalSign, UNSEEN = 0, NEGATIVE = -1, POSITIVE = 1)
+"""Deterministic pseudo-random unit vector indexed by `k`. Any generic direction
+works; `Random` is avoided because its streams are not version-stable and the logged
+monitor values should reproduce across runs and Julia versions."""
+_fill_border_vector!(v::Vector{Float64}, k::Int) =
+    normalize!(v .= sin.((1:length(v)) .* (k * FOLD_BORDER_STRIDE)))
+
+"""
+    BorderedFoldMonitor(n_state)
+
+Fold monitor tracking `sign(det J)` through bordered systems. For fixed vectors
+`b`, `c` and scalar `d`, border `J` as
+
+    M = [ J   b
+          cᵀ  d ]
+
+The Schur complement gives `det(M) = det(J) · (d − cᵀJ⁻¹b)`, so with
+
+    s = d − cᵀJ⁻¹b        g = 1/s = det(J) / det(M)
+
+`g` is smooth along the continuation and vanishes exactly when `J` is singular:
+`det M` is a fixed smooth function, nonzero near a simple fold for generic `b`, `c`,
+so `sign(g)` differs from `sign(det J)` only by the constant factor `sign(det M)`.
+Therefore **flips of `g` are flips of `det J`**.
+
+`g` can also flip through a **pole**, where `det M` — not `det J` — crossed zero: the
+bordering degenerated and `g` says nothing about `J`. Two independent borderings
+separate the cases, since a zero of `det J` flips both on the same step while a pole
+flips only the bordering that degenerated. A lone flip re-picks that bordering, up to
+`FOLD_MAX_BORDER_REPICKS` times before the monitor disables itself.
+
+Cost per iteration: `FOLD_N_BORDERINGS` back-solves against the *existing*
+factorization plus a dot product each."""
+mutable struct BorderedFoldMonitor
+    b::Vector{Vector{Float64}}
+    c::Vector{Vector{Float64}}
+    y::Vector{Float64}          # work buffer: holds J⁻¹b after `solve!`
+    gs::Vector{Float64}         # this iteration's g per bordering
+    signs::Vector{Int8}         # sign(g) last seen per bordering; 0 = nothing yet
+    attempts::Vector{Int}       # re-pick count per slot; also indexes its vectors
+    enabled::Bool               # false once a bordering has degenerated too often
+end
+
+function BorderedFoldMonitor(n_state::Int)
+    mon = BorderedFoldMonitor(
+        [Vector{Float64}(undef, n_state) for _ in 1:FOLD_N_BORDERINGS],
+        [Vector{Float64}(undef, n_state) for _ in 1:FOLD_N_BORDERINGS],
+        Vector{Float64}(undef, n_state), Vector{Float64}(undef, FOLD_N_BORDERINGS),
+        zeros(Int8, FOLD_N_BORDERINGS), zeros(Int, FOLD_N_BORDERINGS), true,
+    )
+    for k in 1:FOLD_N_BORDERINGS
+        _repick_bordering!(mon, k)
+    end
+    return mon
+end
+
+"""Draw a fresh bordering into slot `k` and forget its sign: after a re-pick
+`sign(det M)` is a different constant, so old signs are not comparable."""
+function _repick_bordering!(mon::BorderedFoldMonitor, k::Int)
+    mon.attempts[k] += 1
+    # A distinct index per (slot, attempt), so no two borderings are ever the same
+    # vector: their independence is what separates a zero from a pole.
+    _fill_border_vector!(mon.b[k], 2 * (k + FOLD_N_BORDERINGS * mon.attempts[k]))
+    _fill_border_vector!(mon.c[k], 2 * (k + FOLD_N_BORDERINGS * mon.attempts[k]) + 1)
+    mon.signs[k] = Int8(0)
+    return mon
+end
+
+"""`g = 1/(d − cᵀJ⁻¹b)` for bordering `k` at the current iterate, via one back-solve
+against `cache`'s existing factorization. Non-finite (`±Inf`/`NaN`) means the
+bordering is degenerate or the back-solve failed."""
+function _fold_monitor_value!(
+    mon::BorderedFoldMonitor,
+    cache::PFLinearSolverCache,
+    k::Int = 1,
+)
+    copyto!(mon.y, mon.b[k])
+    solve!(cache, mon.y)
+    return inv(FOLD_BORDER_D - dot(mon.c[k], mon.y))
+end
+
+"""Update the monitor with this iteration's `g` values and decide the bail-out.
+Returns `true` to abort the search. Every bordering flipping sign is a singular `J`
+— the fold; a lone flip, or a non-finite `g`, is that bordering degenerating and
+re-picks it. With `bail = false` the same classification is logged but never
+aborts."""
+function _decide_det_sign_switch!(
+    mon::BorderedFoldMonitor,
+    label::AbstractString,
+    gs::AbstractVector{Float64},
+    bail::Bool,
+)::Bool
+    mon.enabled || return false
+
+    n_finite, n_voting, n_flipped = 0, 0, 0
+    for k in eachindex(gs)
+        g = gs[k]
+        if !isfinite(g)
+            # s == 0 (|g| = Inf) or a failed back-solve: this bordering says nothing
+            # about J. The others still cover this iteration.
+            _handle_border_pole!(mon, label, k)
+            mon.enabled || return false
+            continue
+        end
+        n_finite += 1
+        vote = _bordering_flipped(mon, g, k)
+        isnothing(vote) && continue
+        n_voting += 1
+        n_flipped += vote
+    end
+
+    if n_finite == 0
+        @warn "$label: every fold-monitor bordering is degenerate; read as a " *
+              "fold$(bail ? ", aborting." : ".")"
+        return bail
+    end
+    # A bordering re-picked last iteration has no previous sign to vote with, so the
+    # verdict is taken over the ones that do. A split vote means det(J) did not cross
+    # zero, and the borderings that flipped hit a pole of their own det(M).
+    split = 0 < n_flipped < n_voting
+
+    # Re-pick those (`_repick_bordering!` blanks their sign) and record this
+    # iteration's sign for the rest.
+    for k in eachindex(gs)
+        g = gs[k]
+        isfinite(g) || continue
+        if split && _bordering_flipped(mon, g, k) === true
+            _handle_border_pole!(mon, label, k)
+        elseif !iszero(sign(g))
+            mon.signs[k] = Int8(sign(g))
+        end
+    end
+
+    (split || n_flipped == 0) && return false
+
+    @warn "$label: sign(det J) flipped on all $(n_voting) borderings. Fold / " *
+          "voltage-collapse signature$(bail ? ", aborting." : ".")"
+    return bail
+end
+
+"""Did bordering `k` flip sign this iteration? `nothing` when it has no vote to cast:
+no previous sign yet (fresh or just re-picked), or an exactly zero `g`, which holds
+the previous sign rather than replacing it. Reads `mon.signs` without writing, so it
+answers the same before and after the verdict — which is why the signs are committed
+in a second pass."""
+function _bordering_flipped(mon::BorderedFoldMonitor, g::Float64, k::Int)
+    current = Int8(sign(g))
+    (iszero(current) || iszero(mon.signs[k])) && return nothing
+    return current != mon.signs[k]
+end
+
+"""Handle a degenerate bordering: `det M` — not `J` — went singular. Re-pick slot `k`;
+after `FOLD_MAX_BORDER_REPICKS` failures disable the monitor rather than report a
+fold that was never observed."""
+function _handle_border_pole!(mon::BorderedFoldMonitor, label::AbstractString, k::Int)
+    if mon.attempts[k] > FOLD_MAX_BORDER_REPICKS
+        mon.enabled = false
+        @warn "$label: bordering $k degenerated $(mon.attempts[k])×; disabling fold " *
+              "detection — solve continues with NO fold bail-out."
+        return
+    end
+    @debug "$label: bordering $k passed through a pole of det(M) — degenerate " *
+           "bordering, not a property of J. Re-picking it."
+    _repick_bordering!(mon, k)
+    return
+end
 
 """Per-solve scratch for [`run_solver_diagnostics!`](@ref): previous ‖F‖∞ (`prev_F`),
-last-seen sign of `real(λ_min)` (`eig_sign`), and a reusable padded RHS (`buffer`) so
-the Schur operator allocates nothing per iteration."""
+the bordered `sign(det J)` fold monitor (`fold`), and a reusable padded RHS
+(`buffer`) so the Schur operator allocates nothing per iteration."""
 mutable struct SolverDiagnosticsState
     prev_F::Float64
-    eig_sign::EigvalSign
+    fold::BorderedFoldMonitor
     buffer::Vector{Float64}
 end
 
-SolverDiagnosticsState(n_state::Int) =
-    SolverDiagnosticsState(NaN, EigvalSign.UNSEEN, Vector{Float64}(undef, n_state))
+SolverDiagnosticsState(n_state::Int) = SolverDiagnosticsState(
+    NaN, BorderedFoldMonitor(n_state), Vector{Float64}(undef, n_state))
 
 """Set up a solver loop's diagnostics: returns `(monitor, diag_state)`, allocating
 the scratch only when a diagnostic or the bail-out is on so the default solve path
@@ -202,45 +389,13 @@ function setup_solver_diagnostics(
     return monitor, diag_state
 end
 
-"""Update `state.eig_sign` from `λ_min` and decide the fold bail-out. A non-converged
-or non-finite `real(λ_min)` is a conservative bail (warn + abort), never a silent
-no-op. An exact-zero real part keeps the prior sign. Returns `true` to abort."""
-function _decide_eig_sign_switch!(
-    state::SolverDiagnosticsState,
-    label::AbstractString,
-    λ_min::ComplexF64,
-    converged::Bool,
-)::Bool
-    s = real(λ_min)
-    if !converged || !isfinite(s)
-        @warn "$label: λ_min(S) is indeterminate " *
-              "(converged = $converged, λ_min = $(_fmt_eig(λ_min))); treating it as " *
-              "a fold / voltage-collapse signature and aborting the search."
-        return true
-    end
-    prev = state.eig_sign
-    current = s > 0 ? EigvalSign.POSITIVE : (s < 0 ? EigvalSign.NEGATIVE : prev)
-    state.eig_sign = current
-
-    # A switch needs a real, previously-seen sign that differs from the new one.
-    switched = prev != EigvalSign.UNSEEN && current != prev
-    switched || return false
-
-    @warn "$label: λ_min(S) real part switched sign " *
-          "($(prev == EigvalSign.POSITIVE ? "+" : "−") → " *
-          "$(current == EigvalSign.POSITIVE ? "+" : "−")), " *
-          "λ_min = $(_fmt_eig(λ_min)). This is a fold / voltage-collapse " *
-          "signature; aborting the search."
-    return true
-end
-
 """Run one iteration's diagnostics against the current `J`/residual. Does the
 *single* per-iteration refactor of `cache` on `J.Jv` (NR/TR pass `linSolveCache`, LM
-its own KLU `diag_cache`) and, on success, the *single* eigensolve shared by the
-monitor line (`monitor`) and the fold bail-out (`bail`). Returns `true` iff the
-caller should abort. A `SingularException` is itself a fold signature: under `bail`
-it aborts, under monitor-only it reports `singular` and continues; any other
-exception is rethrown."""
+its own KLU `diag_cache`), then the bordered `sign(det J)` monitor (one back-solve
+per bordering) and, when the log line is on, the Schur eigensolve behind `λ_min(S)`.
+Returns `true` iff the caller should abort. A `SingularException` is itself a fold
+signature: under `bail` it aborts, under monitor-only it reports `singular` and
+continues; any other exception is rethrown."""
 function run_solver_diagnostics!(
     state::SolverDiagnosticsState,
     label::AbstractString,
@@ -273,21 +428,33 @@ function run_solver_diagnostics!(
         abs_max, ix = findmax(abs, residual.Rv)
         @info "$label: ‖F‖_∞ = $(_sf4(abs_max)) at " *
               "$(_describe_residual_entry(residual, data, time_step, ix)), " *
-              "κ̂(J) = singular, λ_min(S) = singular"
+              "κ̂(J) = singular, λ_min(S) = singular, sign(det J) = singular"
         return false
     end
 
-    n_state = size(J.Jv, 1)
-    # Trailing block is the FULL non-bus tail (LCC + VSC + area interchange), not just
-    # LCC: n_state on a VSC/area-interchange system is larger than 2*nbuses + 4*n_lcc.
-    n_bus = n_state - state_tail_length(data, get_dc_network(data))
-    op = SchurInverseOperator(cache, n_bus, state.buffer)
-    λ_min, converged = _schur_min_eigenvalue(op)
+    # The bordered monitor is a back-solve per bordering, so it runs whenever
+    # diagnostics are on; only `bail` decides whether a fold signature aborts.
+    fold = state.fold
+    if fold.enabled
+        for k in eachindex(fold.gs)
+            fold.gs[k] = _fold_monitor_value!(fold, cache, k)
+        end
+    else
+        fill!(fold.gs, NaN)
+    end
 
     if monitor
+        # Trailing block is the FULL non-bus tail (LCC + VSC + area interchange), not
+        # just LCC: n_state on a VSC/area-interchange system is larger than
+        # 2*nbuses + 4*n_lcc.
+        n_state = size(J.Jv, 1)
+        n_bus = n_state - state_tail_length(data, get_dc_network(data))
+        op = SchurInverseOperator(cache, n_bus, state.buffer)
+        λ_min, eig_converged = _schur_min_eigenvalue(op)
+
         abs_max, ix = findmax(abs, residual.Rv)
         κ = _diag_condest(cache)
-        λ_str = if converged
+        λ_str = if eig_converged
             "$(_fmt_eig(λ_min)) (|λ_min| = $(_sf4(abs(λ_min))))"
         else
             "not-converged"
@@ -297,6 +464,9 @@ function run_solver_diagnostics!(
             "$(_describe_residual_entry(residual, data, time_step, ix))",
             "κ̂(J) = $(isnan(κ) ? "n/a (KLU-only)" : string(_sf4(κ)))",
             "λ_min(S) = $λ_str",
+            # sign(g) = sign(det J)·sign(det M); det M is a fixed constant, so only
+            # FLIPS of this sign are meaningful, not the sign itself.
+            "sign(det J) = $(_fmt_det_sign(first(fold.gs)))",
         ]
         if !isnan(state.prev_F) && state.prev_F > 0
             push!(parts, "contraction = $(_sf4(abs_max / state.prev_F))")
@@ -305,11 +475,11 @@ function run_solver_diagnostics!(
         state.prev_F = abs_max
     end
 
-    if bail
-        return _decide_eig_sign_switch!(state, label, λ_min, converged)
-    end
-    return false
+    return _decide_det_sign_switch!(fold, label, fold.gs, bail)
 end
+
+"""`+`/`−` for the monitor's sign, or `n/a` when `g` is unavailable."""
+_fmt_det_sign(g::Float64) = !isfinite(g) ? "n/a" : (g > 0 ? "+" : (g < 0 ? "−" : "0"))
 
 """
     _report_area_interchange_failure(data, time_step)

@@ -161,14 +161,12 @@ end
 
 @testset "Iwamoto on larger system (RTS_GMLC)" begin
     sys = PSB.build_system(PSB.PSISystems, "RTS_GMLC_DA_sys")
-    PSY.set_units_base_system!(sys, PSY.UnitSystem.SYSTEM_BASE)
     nr_pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(; correct_bustypes = true)
     iwamoto_pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
         correct_bustypes = true,
         solver_settings = Dict{Symbol, Any}(:iwamoto => true))
     nr_result = PF.solve_power_flow(nr_pf, sys)
     sys2 = PSB.build_system(PSB.PSISystems, "RTS_GMLC_DA_sys")
-    PSY.set_units_base_system!(sys2, PSY.UnitSystem.SYSTEM_BASE)
     iwamoto_result = PF.solve_power_flow(iwamoto_pf, sys2)
     for (key, nr_df) in nr_result
         iw_df = iwamoto_result[key]
@@ -217,10 +215,25 @@ end
     data.bus_magnitude .= 0.0
     # Solver should fail to converge, and terminate early (not exhaust maxIterations).
     @test_logs(
-        (:error, r".*solver failed to converge"),
+        (:error, r"did not converge in 1 of 1"),
         match_mode = :any,
         @test !solve_power_flow!(data)
     )
+end
+
+@testset "terminal non-convergence is logged once, naming every failed time step" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
+    pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+        enhanced_flat_start = false, time_steps = 2,
+        solver_settings = Dict{Symbol, Any}(:maxIterations => 2))
+    data = PowerFlowData(pf, sys)
+    data.bus_magnitude .= 0.0
+    @test_logs(
+        (:error, r"did not converge in 2 of 2 time step\(s\): \[1, 2\]"),
+        match_mode = :any,
+        @test !solve_power_flow!(data)
+    )
+    @test !any(data.converged)
 end
 
 @testset "Iwamoto multiplier root-finding" begin
@@ -347,7 +360,6 @@ end
 @testset "large residual warning" begin
     # a system where bus numbers aren't 1, 2,...is there a smaller one with this property?
     sys = PSB.build_system(PSB.PSISystems, "RTS_GMLC_DA_sys")
-    PSY.set_units_base_system!(sys, PSY.UnitSystem.SYSTEM_BASE)
     for i in [1, 35, 52, 57, 43, 66, 49, 68, 71, 25, 69, 58, 3, 73]
         pf = ACPowerFlow(; enhanced_flat_start = false, correct_bustypes = true)
         data = PowerFlowData(pf, sys)

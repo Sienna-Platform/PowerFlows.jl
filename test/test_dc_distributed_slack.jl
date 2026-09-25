@@ -95,7 +95,7 @@ end
         bus_gen = 0.0
         for g in generators
             if get_number(get_bus(g)) == row.bus_number
-                bus_gen += get_active_power(g) * get_base_power(sys)
+                bus_gen += get_active_power(g, PSY.SU) * get_base_power(sys)
             end
         end
         if !iszero(bus_gen)

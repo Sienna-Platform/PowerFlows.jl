@@ -1,5 +1,5 @@
 function _mixed_lcc_settings()
-    return Dict{Symbol, Any}(:validate_voltage_magnitudes => false)
+    return SolutionParameters(; validate_voltage_magnitudes = false)
 end
 
 # Map the polar-converged solution stored in `sys` into the MCPB state vector
@@ -13,12 +13,12 @@ function _mixed_lcc_residual_norm(
 )
     pf_polar = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
         correct_bustypes = correct_bustypes,
-        solver_settings = _mixed_lcc_settings(),
+        solution_parameters = _mixed_lcc_settings(),
     )
     @test PF.solve_and_store_power_flow!(pf_polar, sys)
     pf_mixed = ACMixedPowerFlow{NewtonRaphsonACPowerFlow}(;
         correct_bustypes = correct_bustypes,
-        solver_settings = _mixed_lcc_settings(),
+        solution_parameters = _mixed_lcc_settings(),
     )
     data = PF.PowerFlowData(pf_mixed, sys)
     R = PF.ACMixedCPBResidual(data, 1)
@@ -35,7 +35,7 @@ end
     # 4 LCC tail residual rows are satisfied at the polar-converged state.
     @testset "case5_2_lcc (PQ terminals)" begin
         raw_path = joinpath(TEST_DATA_DIR, "case5_2_lcc.raw")
-        sys = System(raw_path)
+        sys = make_system(PFP.PowerModelsData(raw_path); runchecks = false)
         nrm = _mixed_lcc_residual_norm(sys)
         @test nrm < 1e-6
     end

@@ -63,7 +63,7 @@
 
     # check results
     # CSVs are in p.u., line flows are in natural units: convert back to p.u.
-    basepower = PSY.get_base_power(sys)
+    basepower = PSY.get_base_power(sys, PSY.NU)
 
     # case 1
     for i in 1:length(data_1.time_step_map)
@@ -107,7 +107,7 @@ end
 
 @testset "MULTI-PERIOD DC branch losses estimation" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
-    base_power = PSY.get_base_power(sys)
+    base_power = PSY.get_base_power(sys, PSY.NU)
     time_steps = 24
 
     data = PowerFlowData(
@@ -130,7 +130,7 @@ end
 
 @testset "MULTI-PERIOD DC branch losses estimation" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
-    base_power = PSY.get_base_power(sys)
+    base_power = PSY.get_base_power(sys, PSY.NU)
     time_steps = 24
 
     data = PowerFlowData(
@@ -153,7 +153,7 @@ end
 
 @testset "MULTI-PERIOD DC branch losses estimation" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
-    base_power = PSY.get_base_power(sys)
+    base_power = PSY.get_base_power(sys, PSY.NU)
     time_steps = 24
 
     data = PowerFlowData(

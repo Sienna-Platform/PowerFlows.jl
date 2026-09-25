@@ -31,13 +31,11 @@ function improve_x0(pf::ACPolarPowerFlow,
     residual(x0, time_step)  # re-calculate residual for new x0: might have changed.
 
     if sum(abs, residual.Rv) > LARGE_RESIDUAL * length(residual.Rv)
-        lg_res, ix = findmax(residual.Rv)
+        # Tail rows (LCC/VSC/area) are not bus quantities: let the resolver label the index.
+        lg_res, ix = findmax(abs, residual.Rv)
         lg_res_rounded = round(lg_res; sigdigits = 3)
-        pow_type = ix % 2 == 1 ? "active" : "reactive"
-        bus_ix = div(ix + 1, 2)
-        bus_no = axes(data.power_network_matrix, 1)[bus_ix]
         @warn "Initial guess provided results in a large initial residual of $lg_res_rounded. " *
-              "Largest residual at bus $bus_no ($bus_ix by matrix indexing; $pow_type power)"
+              "Largest residual at $(_describe_residual_entry(residual, data, time_step, ix))"
     end
 
     return x0

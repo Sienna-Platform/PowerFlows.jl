@@ -5,12 +5,33 @@ DocStringExtensions = "ffbed154-4ef7-542d-bbb7-c09d3a79fcae"
 Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
 DocumenterInterLinks = "d12716ef-a0f6-4df4-a9f1-a5a34e75c656"
 DocumenterTools = "35a29f4d-8980-5a13-9543-d66fff28ecb8"
+InfrastructureSystems = "2cd47ed4-ca9b-11e9-27f2-ab636a7671f1"
 Literate = "98b081ad-f1c9-55d3-8b20-4c87d4299306"
 Plots = "91a5bcdd-55d7-5caf-9e0b-520d859cae80"
+PowerFlowFileParser = "bed98974-b02e-5e2f-9ee0-a103f5c450dd"
 PowerFlows = "94fada2c-fd9a-4e89-8d82-81405f5cb4f6"
+PowerNetworkMatrices = "bed98974-b02a-5e2f-9fe0-a103f5c450dd"
 PowerSystemCaseBuilder = "f00506e0-b84f-492a-93c2-c0a9afc4364e"
 PowerSystems = "bcd98974-b02a-5e2f-9ee0-a103f5c450dd"
+PowerTableDataParser = "2b750c0e-0bff-11f1-9200-1befd75df6be"
 PrettyTables = "08abe8d2-0d0c-5749-adfa-8a2ac140af0d"
+
+# Mirrors the pins in the root and `test/` environments. Only the ACTIVE project's
+# `[sources]` are honored, so the docs env must repeat them — without these it resolves the
+# registry PowerSystems against the infrastore InfrastructureSystems and fails to precompile.
+# Remove before registering a release.
+[sources]
+PowerFlows = {path = ".."}
+InfrastructureSystems = {rev = "IS4", url = "https://github.com/Sienna-Platform/InfrastructureSystems.jl.git"}
+# Pinned to the branch rather than the registry: registry PNM v0.24 requires PowerSystems
+# 5.11, which this line (5.10.0) does not satisfy.
+PowerNetworkMatrices = {url = "https://github.com/Sienna-Platform/PowerNetworkMatrices.jl.git", rev = "jd/psy6_correctness"}
+PowerSystemCaseBuilder = {url = "https://github.com/Sienna-Platform/PowerSystemCaseBuilder.jl.git", rev = "psy6"}
+PowerSystems = {rev = "psy6", url = "https://github.com/Sienna-Platform/PowerSystems.jl.git"}
+# PSCB's own [sources] pin for this is ignored once PSCB is a dependency rather than the root
+# project; the docs env needs its own pin so Pkg can resolve PSCB's unregistered parser dep.
+PowerTableDataParser = {url = "https://github.com/NLR-Sienna/PowerTableDataParser.jl.git", rev = "psy6"}
+PowerFlowFileParser = {url = "https://github.com/Sienna-Platform/PowerFlowFileParser.jl.git", rev = "psy6"}
 
 [compat]
 Documenter = "^1.0"

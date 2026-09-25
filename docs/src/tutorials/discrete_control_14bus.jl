@@ -33,10 +33,9 @@ using PowerFlows
 
 function build_stressed_system(load_scale::Float64)
     sys = build_system(PSITestSystems, "c_sys14"; force_build = true, add_forecasts = false)
-    set_units_base_system!(sys, "SYSTEM_BASE")
     for load in get_components(PowerLoad, sys)
-        set_active_power!(load, get_active_power(load) * load_scale)
-        set_reactive_power!(load, get_reactive_power(load) * load_scale)
+        set_active_power!(load, get_active_power(load, SU) * load_scale * SU)
+        set_reactive_power!(load, get_reactive_power(load, SU) * load_scale * SU)
     end
     return sys
 end
@@ -131,8 +130,7 @@ sa = SwitchedAdmittance(;
     name = "shunt_$(get_number(weak_bus2))",
     available = true,
     bus = weak_bus2,
-    Y = 0.0 + 0.0im,
-    initial_status = [0],
+    number_engaged = [0],
     number_of_steps = [60],
     Y_increase = [0.0 + (1.0 / get_base_power(sys2)) * im],
     admittance_limits = (min = 0.98, max = 1.02),

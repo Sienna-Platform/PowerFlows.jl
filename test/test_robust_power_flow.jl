@@ -19,7 +19,8 @@ end
 # (`setpoint_at_rectifier = false`). The inverter case exercises the
 # side-aware branch of both the LCC Jacobian and the homotopy Hessian.
 function _case5_lcc_system(; setpoint_at_inverter::Bool = false)
-    sys = System(joinpath(TEST_DATA_DIR, "case5_2_lcc.raw"))
+    raw_path = joinpath(TEST_DATA_DIR, "case5_2_lcc.raw")
+    sys = make_system(PFP.PowerModelsData(raw_path); runchecks = false)
     if setpoint_at_inverter
         for lcc in get_components(PSY.TwoTerminalLCCLine, sys)
             set_transfer_setpoint!(lcc, -abs(get_transfer_setpoint(lcc)))
