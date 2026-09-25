@@ -16,7 +16,7 @@ function build_ieee14_facts_system(;
     stress::Float64 = 1.0,
     shunt9_off::Bool = false,
 )
-    sys = make_system(PFP.PowerModelsData(IEEE14_FACTS_RAW); runchecks = false)
+    sys = system_from_openapi(PFP.PowerModelsData(IEEE14_FACTS_RAW); runchecks = false)
     if !isone(stress)
         for load in get_components(StandardLoad, sys)
             set_constant_active_power!(

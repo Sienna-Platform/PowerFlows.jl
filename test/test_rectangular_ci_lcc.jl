@@ -4,7 +4,7 @@ end
 
 @testset "Rectangular CI LCC: residual zero at polar-converged state" begin
     raw_path = joinpath(TEST_DATA_DIR, "case5_2_lcc.raw")
-    sys = make_system(PFP.PowerModelsData(raw_path); runchecks = false)
+    sys = system_from_openapi(PFP.PowerModelsData(raw_path); runchecks = false)
     pf_p = ACPowerFlow{NewtonRaphsonACPowerFlow}()
     @test PF.solve_and_store_power_flow!(pf_p, sys)
     pf_r = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
@@ -94,7 +94,7 @@ end
 
 @testset "Rectangular CI LCC: asymptotic Jacobian verification on case5_2_lcc" begin
     raw_path = joinpath(TEST_DATA_DIR, "case5_2_lcc.raw")
-    sys = make_system(PFP.PowerModelsData(raw_path); runchecks = false)
+    sys = system_from_openapi(PFP.PowerModelsData(raw_path); runchecks = false)
     pf_p = ACPowerFlow{NewtonRaphsonACPowerFlow}()
     PF.solve_and_store_power_flow!(pf_p, sys)
     pf_r = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
@@ -118,7 +118,7 @@ end
 
 @testset "Rectangular CI LCC: solve parity with polar" begin
     raw_path = joinpath(TEST_DATA_DIR, "case5_2_lcc.raw")
-    sys = make_system(PFP.PowerModelsData(raw_path); runchecks = false)
+    sys = system_from_openapi(PFP.PowerModelsData(raw_path); runchecks = false)
     sys_p = deepcopy(sys)
     sys_r = deepcopy(sys)
     pf_p = ACPowerFlow{NewtonRaphsonACPowerFlow}()
@@ -134,7 +134,7 @@ end
 
 @testset "Rectangular CI LCC: step strategy variants" begin
     raw_path = joinpath(TEST_DATA_DIR, "case5_2_lcc.raw")
-    sys = make_system(PFP.PowerModelsData(raw_path); runchecks = false)
+    sys = system_from_openapi(PFP.PowerModelsData(raw_path); runchecks = false)
     pf_p = ACPowerFlow{NewtonRaphsonACPowerFlow}()
     res_p = solve_power_flow(pf_p, deepcopy(sys))
     for (label, solver, extra_settings) in [

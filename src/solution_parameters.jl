@@ -76,7 +76,6 @@ take effect.
 
 Per-call data (`x0`) is not a parameter and is not carried here — pass it at the call site.
 """
-
 Base.@kwdef struct SolutionParameters
     tol::Float64 = DEFAULT_NR_TOL
     # `UNSET_MAX_ITERATIONS` keeps each solver's own default: 50 for Newton-type solvers,

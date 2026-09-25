@@ -73,7 +73,7 @@ const MIXED_PARITY_SOLVERS =
 
     @testset "LCC HVDC (case5_2_lcc, PQ terminals)" begin
         raw_path = joinpath(TEST_DATA_DIR, "case5_2_lcc.raw")
-        sys = make_system(PFP.PowerModelsData(raw_path); runchecks = false)
+        sys = system_from_openapi(PFP.PowerModelsData(raw_path); runchecks = false)
         sys_p = deepcopy(sys)
         sys_h = deepcopy(sys)
         sys_r = use_rect ? deepcopy(sys) : nothing

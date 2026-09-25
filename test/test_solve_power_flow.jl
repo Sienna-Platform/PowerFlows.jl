@@ -158,7 +158,7 @@ end
         TEST_DATA_DIR,
         "WECC240_v04_DPV_RE20_v33_6302_xfmr_DPbuscode_PFadjusted_V32_noRemoteVctrl.raw",
     )
-    system = make_system(
+    system = system_from_openapi(
         PFP.PowerModelsData(
             file;
             bus_name_formatter = x ->

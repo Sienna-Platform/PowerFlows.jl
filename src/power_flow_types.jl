@@ -312,7 +312,7 @@ See also: [`ACPowerFlow`](@ref), [`NewtonRaphsonACPowerFlow`](@ref).
 struct FastDecoupledACPowerFlow{V <: FDVariant, S <: FDScheme} <: ACPowerFlowSolverType end
 
 """The `SolutionParameters` `maxIterations` default for `ACSolver`, resolved by the
-formulation constructors when the caller leaves it at [`UNSET_MAX_ITERATIONS`](@ref)."""
+formulation constructors when the caller leaves it at `UNSET_MAX_ITERATIONS`."""
 _default_max_iterations(::Type{<:ACPowerFlowSolverType}) = DEFAULT_NR_MAX_ITER
 _default_max_iterations(::Type{<:FastDecoupledACPowerFlow}) = DEFAULT_FD_MAX_ITER
 

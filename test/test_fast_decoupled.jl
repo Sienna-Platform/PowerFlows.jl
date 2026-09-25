@@ -192,7 +192,7 @@ end
         TEST_DATA_DIR,
         "WECC240_v04_DPV_RE20_v33_6302_xfmr_DPbuscode_PFadjusted_V32_noRemoteVctrl.raw",
     )
-    system = make_system(
+    system = system_from_openapi(
         PFP.PowerModelsData(
             file;
             bus_name_formatter = x ->
@@ -1025,7 +1025,7 @@ end
     let data_probe =
             PF.PowerFlowData(
                 ACPowerFlow{NewtonRaphsonACPowerFlow}(),
-                make_system(PFP.PowerModelsData(lcc_raw); runchecks = false),
+                system_from_openapi(PFP.PowerModelsData(lcc_raw); runchecks = false),
             )
         @test PF.get_lcc_count(data_probe) > 0
     end
@@ -1035,7 +1035,7 @@ end
             solution_parameters = SolutionParameters(; validate_voltage_magnitudes = false))
         data_nr = PF.PowerFlowData(
             pf_nr,
-            make_system(PFP.PowerModelsData(lcc_raw); runchecks = false),
+            system_from_openapi(PFP.PowerModelsData(lcc_raw); runchecks = false),
         )
         @test solve_power_flow!(data_nr)
 
@@ -1044,7 +1044,7 @@ end
                 validate_voltage_magnitudes = false))
         data_fd = PF.PowerFlowData(
             pf_fd,
-            make_system(PFP.PowerModelsData(lcc_raw); runchecks = false),
+            system_from_openapi(PFP.PowerModelsData(lcc_raw); runchecks = false),
         )
         @test PF.get_lcc_count(data_fd) > 0
         @test solve_power_flow!(data_fd)
@@ -1059,7 +1059,7 @@ end
             solution_parameters = SolutionParameters(; validate_voltage_magnitudes = false))
         data_nr = PF.PowerFlowData(
             pf_nr,
-            make_system(PFP.PowerModelsData(lcc_raw); runchecks = false),
+            system_from_openapi(PFP.PowerModelsData(lcc_raw); runchecks = false),
         )
         @test solve_power_flow!(data_nr)
 
@@ -1068,7 +1068,7 @@ end
                 validate_voltage_magnitudes = false))
         data_fd = PF.PowerFlowData(
             pf_fd,
-            make_system(PFP.PowerModelsData(lcc_raw); runchecks = false),
+            system_from_openapi(PFP.PowerModelsData(lcc_raw); runchecks = false),
         )
         @test PF.get_lcc_count(data_fd) > 0
         @test solve_power_flow!(data_fd)
@@ -1082,14 +1082,14 @@ end
         pf_nr = ACPowerFlow{NewtonRaphsonACPowerFlow}()
         data_nr = PF.PowerFlowData(
             pf_nr,
-            make_system(PFP.PowerModelsData(lcc_raw); runchecks = false),
+            system_from_openapi(PFP.PowerModelsData(lcc_raw); runchecks = false),
         )
         @test solve_power_flow!(data_nr)
 
         pf_fd = ACPowerFlow{_fd_solver(:fixed_jacobian)}()
         data_fd = PF.PowerFlowData(
             pf_fd,
-            make_system(PFP.PowerModelsData(lcc_raw); runchecks = false),
+            system_from_openapi(PFP.PowerModelsData(lcc_raw); runchecks = false),
         )
         @test PF.get_lcc_count(data_fd) > 0
         @test solve_power_flow!(data_fd)
@@ -1189,13 +1189,13 @@ end
 
     data_nr = PF.PowerFlowData(
         ACPowerFlow{NewtonRaphsonACPowerFlow}(),
-        make_system(PFP.PowerModelsData(lcc_raw); runchecks = false),
+        system_from_openapi(PFP.PowerModelsData(lcc_raw); runchecks = false),
     )
     @test solve_power_flow!(data_nr)
 
     data_fj = PF.PowerFlowData(
         ACPowerFlow{_fd_solver(:fixed_jacobian)}(),
-        make_system(PFP.PowerModelsData(lcc_raw); runchecks = false),
+        system_from_openapi(PFP.PowerModelsData(lcc_raw); runchecks = false),
     )
     @test solve_power_flow!(data_fj)
 
@@ -1209,7 +1209,7 @@ end
         ))
     data_fd = PF.PowerFlowData(
         pf_fd,
-        make_system(PFP.PowerModelsData(lcc_raw); runchecks = false),
+        system_from_openapi(PFP.PowerModelsData(lcc_raw); runchecks = false),
     )
     @test PF.get_lcc_count(data_fd) > 0
     @test solve_power_flow!(data_fd)

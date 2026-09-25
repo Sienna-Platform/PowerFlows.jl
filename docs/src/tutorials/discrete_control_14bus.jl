@@ -81,6 +81,7 @@ facts = FACTSControlDevice(;
     voltage_setpoint = 1.0,
     max_shunt_current = 100.0,
     shunt_control_type = FACTSShuntControlType.STATCOM,
+    input_basis = CU,
 )
 add_component!(sys, facts)
 
@@ -176,6 +177,7 @@ facts_tight = FACTSControlDevice(;
     voltage_setpoint = 1.0,
     max_shunt_current = 5.0,
     shunt_control_type = FACTSShuntControlType.STATCOM,
+    input_basis = CU,
 )
 add_component!(sys3, facts_tight)
 
