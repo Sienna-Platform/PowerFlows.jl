@@ -29,27 +29,28 @@ function _sensitivity_context(
         e isa LinearAlgebra.SingularException || rethrow()
         return FiniteDifferenceProbes()
     end
-    _singular_base_solve(lin_cache, J) && return FiniteDifferenceProbes()
+    n = length(residual.Rv)
+    probe = StateVectorCache(ones(n), ones(n))
+    _singular_base_solve!(probe, lin_cache, J) && return FiniteDifferenceProbes()
     # One registration per continuation — `_refresh_sensitivity_context!` reuses this
     # topology-invariant factorization on every batched pass without counting again.
     _count_symbolic_factor!(data)
-    n = length(residual.Rv)
     return _SensitivityContext(
-        lin_cache, residual, J, zeros(n), zeros(n), copy(view(data.bus_type, :, ts)))
+        lin_cache, residual, J, zeros(n), zeros(n), copy(view(data.bus_type, :, ts)), probe,
+    )
 end
 
 # KLU throws on a singular matrix (caught above); AppleAccelerate/MKLPardiso silently return
 # finite garbage instead. Reuse `_set_Δx_nr!`/`_do_refinement!`'s backend-agnostic
 # relative-residual guard here on a synthetic probe solve rather than trusting only
 # `SingularException`.
-function _singular_base_solve(lin_cache::PFLinearSolverCache, J)
-    n = size(J.Jv, 1)
-    probe = ones(n)
-    sol = copy(probe)
-    solve!(lin_cache, sol)
-    sv = StateVectorCache(sol, probe)
+# `probe` is reused across calls: `r` holds the all-ones right-hand side, `Δx_nr` its solve.
+function _singular_base_solve!(probe, lin_cache::PFLinearSolverCache, J)
+    fill!(probe.r, 1.0)
+    fill!(probe.Δx_nr, 1.0)
+    solve!(lin_cache, probe.Δx_nr)
     residual = _do_refinement!(
-        sv, J.Jv, lin_cache, DEFAULT_REFINEMENT_THRESHOLD, DEFAULT_REFINEMENT_EPS)
+        probe, J.Jv, lin_cache, DEFAULT_REFINEMENT_THRESHOLD, DEFAULT_REFINEMENT_EPS)
     return !isfinite(residual) || residual > DEFAULT_REFINEMENT_THRESHOLD
 end
 
@@ -86,7 +87,7 @@ function _refresh_sensitivity_context!(ctx::_SensitivityContext, data, ts::Int):
         e isa LinearAlgebra.SingularException || rethrow()
         return false
     end
-    return !_singular_base_solve(ctx.lin_cache, ctx.J)
+    return !_singular_base_solve!(ctx.probe, ctx.lin_cache, ctx.J)
 end
 
 # `_refresh_sensitivity_context!` refuses in-place reuse across a PV/PQ Q-limit flip (its

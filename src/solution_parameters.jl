@@ -146,52 +146,20 @@ const _SOLUTION_PARAMETER_CONTROL_FIELDS = (
     :model_dc_network,
 )
 
+const _SOLUTION_PARAMETER_SOLVER_FIELDS = Tuple(
+    name for name in fieldnames(SolutionParameters) if
+    !(name in _SOLUTION_PARAMETER_CONTROL_FIELDS)
+)
+
 """
     solver_kwargs(params::SolutionParameters) -> NamedTuple
 
 The solver-facing parameters as a `NamedTuple`, ready to splat into a solver call.
 Network-control fields are excluded — those are read through their accessors.
-
-Field access is written out literally (not `map(getfield, names)`) so the return type
-infers as a concrete `NamedTuple` rather than `Any`.
 """
-function solver_kwargs(params::SolutionParameters)
-    return (;
-        tol = params.tol,
-        maxIterations = params.maxIterations,
-        validate_voltage_magnitudes = params.validate_voltage_magnitudes,
-        vm_validation_range = params.vm_validation_range,
-        refinement_threshold = params.refinement_threshold,
-        refinement_eps = params.refinement_eps,
-        iwamoto = params.iwamoto,
-        stop_at_fold = params.stop_at_fold,
-        factor = params.factor,
-        eta = params.eta,
-        autoscale = params.autoscale,
-        iwamoto_fallback = params.iwamoto_fallback,
-        λ_0 = params.λ_0,
-        marquardt_scaling = params.marquardt_scaling,
-        handoff_solver = params.handoff_solver,
-        handoff_tol = params.handoff_tol,
-        refreeze_on_stall = params.refreeze_on_stall,
-        fd_non_divergent = params.fd_non_divergent,
-        fd_blowup = params.fd_blowup,
-        fd_dvlim = params.fd_dvlim,
-        fd_vm_abort = params.fd_vm_abort,
-        fd_ndvfct = params.fd_ndvfct,
-        fd_max_step_halvings = params.fd_max_step_halvings,
-        Δt_k = params.Δt_k,
-        learning_rate = params.learning_rate,
-        beta1 = params.beta1,
-        beta2 = params.beta2,
-        epsilon = params.epsilon,
-        linear_solver = params.linear_solver,
-    )
-end
-
-# Guards against a new SolutionParameters field silently missing from the literal list above.
-@assert Set(keys(solver_kwargs(SolutionParameters()))) ==
-        Set(setdiff(fieldnames(SolutionParameters), _SOLUTION_PARAMETER_CONTROL_FIELDS))
+solver_kwargs(params::SolutionParameters) = NamedTuple{_SOLUTION_PARAMETER_SOLVER_FIELDS}(
+    map(name -> getfield(params, name), _SOLUTION_PARAMETER_SOLVER_FIELDS),
+)
 
 """
     _override(x, overrides::AbstractDict) -> typeof(x)

@@ -326,6 +326,21 @@ function _resolved_max_iterations(
     return _default_max_iterations(ACSolver)
 end
 
+"""`params` with `marquardt_scaling` and `maxIterations` resolved to the defaults of formulation
+`F` and solver `ACSolver`; an explicit `marquardt_scaling` is kept."""
+function _resolve_solver_defaults(
+    params::SolutionParameters,
+    ::Type{F},
+    ::Type{ACSolver},
+    marquardt_scaling::Union{Nothing, Bool},
+) where {F <: AbstractACPowerFlow, ACSolver <: ACPowerFlowSolverType}
+    return _override(
+        params;
+        marquardt_scaling = something(marquardt_scaling, _default_marquardt_scaling(F)),
+        maxIterations = _resolved_max_iterations(params, ACSolver),
+    )
+end
+
 """Alias for the classic decoupled fast power flow with the XB scheme,
 [`FastDecoupledACPowerFlow`](@ref)`{`[`FDDecoupled`](@ref)`, `[`FDSchemeXB`](@ref)`}`. Use as a
 solver type parameter, e.g. `ACPowerFlow{FastDecoupledXB}()`."""
@@ -498,11 +513,8 @@ function ACPolarPowerFlow{ACSolver}(;
             params.interchange_tolerance,
             params.tie_definition,
         ),
-        marquardt_scaling = something(
-            marquardt_scaling, _default_marquardt_scaling(ACPolarPowerFlow),
-        ),
-        maxIterations = _resolved_max_iterations(params, ACSolver),
     )
+    params = _resolve_solver_defaults(params, ACPolarPowerFlow, ACSolver, marquardt_scaling)
     return ACPolarPowerFlow{ACSolver}(
         exporter,
         calculate_loss_factors,
@@ -693,12 +705,11 @@ function ACRectangularPowerFlow{ACSolver}(;
         time_steps,
     )
     _validate_discrete_control_settings(params.control_discrete_devices, ACSolver)
-    params = _override(
-        params;
-        marquardt_scaling = something(
-            marquardt_scaling, _default_marquardt_scaling(ACRectangularPowerFlow),
-        ),
-        maxIterations = _resolved_max_iterations(params, ACSolver),
+    params = _resolve_solver_defaults(
+        params,
+        ACRectangularPowerFlow,
+        ACSolver,
+        marquardt_scaling,
     )
     return ACRectangularPowerFlow{ACSolver}(
         exporter,
@@ -834,13 +845,7 @@ function ACMixedPowerFlow{ACSolver}(;
         time_steps,
     )
     _validate_discrete_control_settings(params.control_discrete_devices, ACSolver)
-    params = _override(
-        params;
-        marquardt_scaling = something(
-            marquardt_scaling, _default_marquardt_scaling(ACMixedPowerFlow),
-        ),
-        maxIterations = _resolved_max_iterations(params, ACSolver),
-    )
+    params = _resolve_solver_defaults(params, ACMixedPowerFlow, ACSolver, marquardt_scaling)
     return ACMixedPowerFlow{ACSolver}(
         exporter,
         generator_slack_participation_factors,

@@ -170,7 +170,7 @@ end
 # `_SensitivityContext` rather than testing for absence.
 struct FiniteDifferenceProbes end
 
-struct _SensitivityContext{C, R, JT}
+struct _SensitivityContext{C, R, JT, P}
     lin_cache::C
     residual::R             # persisted; re-evaluated in place by _refresh_sensitivity_context!
     J::JT                   # persisted; re-evaluated in place by _refresh_sensitivity_context!
@@ -180,6 +180,7 @@ struct _SensitivityContext{C, R, JT}
     # `ACPowerFlowResidual`'s cached subnetwork/slack structure; `_refresh_sensitivity_context!`
     # checks this snapshot and forces a rebuild instead of reusing stale structure.
     bus_type::Vector{PSY.ACBusTypes.Value}
+    probe::P                # StateVectorCache scratch for `_singular_base_solve!`
 end
 
 # Values-only refresh at a new converged base state: sparsity is topology-invariant, so a

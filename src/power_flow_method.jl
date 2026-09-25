@@ -47,6 +47,15 @@ function StateVectorCache(x0::Vector{Float64}, f0::Vector{Float64})
     )
 end
 
+# Reset the buffers a fresh StateVectorCache starts with, so a reused solve is bit-identical:
+# `d` (TR autoscale recomputes it; NR leaves it untouched) and the singular-Jacobian fallback.
+function _reset_for_reuse!(stateVector::StateVectorCache)
+    fill!(stateVector.d, 1.0)
+    stateVector.fallback_cache[] = nothing
+    stateVector.fallback_matrix[] = nothing
+    return
+end
+
 """Persistent reuse cache for the polar NR/TR `_newton_power_flow` path, stored in
 `data.polar_nr_cache` and shared by the Q-limit retry loop and the multi-period time-step loop.
 Residual, Jacobian, and state-vector buffers are structure-invariant across both loops, so they
@@ -248,7 +257,7 @@ function _refresh_singular_J_fallback!(M::SparseMatrixCSC{Float64, J_INDEX_TYPE}
     Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
     x::Vector{Float64})
     fjac2 = Jv' * Jv
-    (fjac2.colptr == M.colptr && fjac2.rowval == M.rowval) || return false
+    _same_sparsity(M, fjac2) || return false
     _fill_singular_J_fallback!(M, fjac2, x)
     return true
 end
@@ -1189,14 +1198,9 @@ function _build_rect_mixed_cache!(
     return linSolveCache, stateVector
 end
 
-# No cache yet.
-_get_or_build_rect_mixed_cache!(::Nothing, data, backend, Jv, x0, r0) =
-    _build_rect_mixed_cache!(data, backend, Jv, x0, r0)
-
-# The slot holds a different SolverCache subtype (e.g. FastDecoupled ran on this `data` first).
-# Rect/mixed share the slot with FD across an ordinary solver switch, so this rebuilds rather
-# than erroring like `FDFixedJacobianCache`'s two-arm dispatch.
-_get_or_build_rect_mixed_cache!(::SolverCache, data, backend, Jv, x0, r0) =
+# No cache yet, or another solver's cache (e.g. FastDecoupled ran on this `data` first): rect/mixed
+# share the slot with FD across an ordinary solver switch, so rebuild rather than error.
+_get_or_build_rect_mixed_cache!(::Union{Nothing, SolverCache}, data, backend, Jv, x0, r0) =
     _build_rect_mixed_cache!(data, backend, Jv, x0, r0)
 
 function _get_or_build_rect_mixed_cache!(
@@ -1211,9 +1215,7 @@ function _get_or_build_rect_mixed_cache!(
         stateVector = cache.stateVector
         copyto!(stateVector.x, x0)
         copyto!(stateVector.r, r0)
-        fill!(stateVector.d, 1.0)
-        stateVector.fallback_cache[] = nothing
-        stateVector.fallback_matrix[] = nothing
+        _reset_for_reuse!(stateVector)
         return cache.linSolveCache, stateVector
     end
     return _build_rect_mixed_cache!(data, backend, Jv, x0, r0)
@@ -1344,12 +1346,7 @@ function _polar_newton_workspace!(
     stateVector = entry.stateVector
     copyto!(stateVector.x, x0_init)
     copyto!(stateVector.r, residual.Rv)
-    # Reset buffers a fresh StateVectorCache would start at, so the reused solve is bit-identical:
-    # `d` (TR autoscale recomputes it, but NR leaves it untouched) and the singular-Jacobian
-    # fallback (rebuilt on demand otherwise, but starts empty on a fresh cache).
-    fill!(stateVector.d, 1.0)
-    stateVector.fallback_cache[] = nothing
-    stateVector.fallback_matrix[] = nothing
+    _reset_for_reuse!(stateVector)
     return residual, J, x0_init, linSolveCache, stateVector, false
 end
 
