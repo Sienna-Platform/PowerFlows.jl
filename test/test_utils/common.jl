@@ -252,7 +252,7 @@ function _add_simple_load!(
         reactive_power = Float64(reactive_power), # Per-unitized by device base_power
         base_power = 1.0, # MVA
         max_active_power = 100.0, # 10 MW per-unitized by device base_power
-        max_reactive_power = 100.0,
+        max_reactive_power = 100.0, input_basis = PSY.CU,
     )
 
     add_component!(sys, load)
@@ -276,7 +276,7 @@ function _add_simple_source!(
         active_power = Float64(active_power),
         reactive_power = Float64(reactive_power),
         R_th = 1e-5,
-        X_th = 1e-5,
+        X_th = 1e-5, input_basis = PSY.CU,
     )
     add_component!(sys, source)
     return source
@@ -310,7 +310,7 @@ function _add_simple_thermal_standard!(
         fuel = ThermalFuels.OTHER,
         services = Device[],
         dynamic_injector = nothing,
-        ext = Dict{String, Any}(),
+        ext = Dict{String, Any}(), input_basis = PSY.CU,
     )
     add_component!(sys, gen)
     return gen
@@ -338,7 +338,7 @@ function _add_simple_line!(
         x = x,
         b = (from = b / 2, to = b / 2),
         rating = 1.0,
-        angle_limits = (min = -pi / 2, max = pi / 2),
+        angle_limits = (min = -pi / 2, max = pi / 2), input_basis = PSY.CU,
     )
     add_component!(sys, line)
     return line
@@ -372,7 +372,7 @@ function _add_simple_transformer_3w!(
             r = r,
             x = x,
             rating = 1.0,
-            base_power = 100.0,
+            base_power = 100.0, input_basis = PSY.CU,
         )
     end
     xfmr = ThreeWindingTransformer(;
@@ -383,7 +383,7 @@ function _add_simple_transformer_3w!(
         primary_circuit = _star_circuit(bus_p, r_primary, x_primary, true),
         secondary_circuit = _star_circuit(bus_s, r_secondary, x_secondary, true),
         tertiary_circuit = _star_circuit(bus_t, r_tertiary, x_tertiary, available_tertiary),
-        star_bus = star_bus,
+        star_bus = star_bus, input_basis = PSY.CU,
     )
     add_component!(sys, xfmr)
     return xfmr
@@ -418,7 +418,7 @@ function _add_simple_zip_load!(
         max_impedance_active_power = 0.0,
         max_impedance_reactive_power = 0.0,
         max_current_active_power = 0.0,
-        max_current_reactive_power = 0.0,
+        max_current_reactive_power = 0.0, input_basis = PSY.CU,
     )
     add_component!(sys, zip_load)
     return zip_load
@@ -466,7 +466,7 @@ function _add_simple_vsc!(
         rating_to = 1.0,
         reactive_power_limits_to = (min = -1.0, max = 1.0),
         power_factor_weighting_fraction_to = 0.0,
-        voltage_limits_to = (min = 0.9, max = 1.1),
+        voltage_limits_to = (min = 0.9, max = 1.1), input_basis = PSY.CU,
     )
     add_component!(sys, vsc)
     return vsc
@@ -518,7 +518,7 @@ function _add_simple_lcc!(
         active_power_limits_from = (min = 0.0, max = 0.0),
         active_power_limits_to = (min = 0.0, max = 0.0),
         reactive_power_limits_from = (min = 0.0, max = 0.0),
-        reactive_power_limits_to = (min = 0.0, max = 0.0),
+        reactive_power_limits_to = (min = 0.0, max = 0.0), input_basis = PSY.CU,
     )
     add_component!(sys, lcc)
     return lcc
@@ -577,8 +577,8 @@ function _make_tap_shunt_system()
             rating = 1.0,
             base_power = 100.0,
             control_objective = PSY.TransformerControlObjective.VOLTAGE,
-            controlled_quantity_limits = (min = 1.0, max = 1.0),
-        ),
+            controlled_quantity_limits = (min = 1.0, max = 1.0), input_basis = PSY.CU,
+        ), input_basis = PSY.CU,
     )
     add_component!(sys, tx)
     sa = SwitchedAdmittance(;
@@ -624,7 +624,7 @@ function _make_solvable_tap_shunt_system()
         reactive_power = 0.25,
         base_power = 100.0,
         max_active_power = 100.0,
-        max_reactive_power = 100.0,
+        max_reactive_power = 100.0, input_basis = PSY.CU,
     )
     add_component!(sys, load2)
     load3 = PowerLoad(;
@@ -635,7 +635,7 @@ function _make_solvable_tap_shunt_system()
         reactive_power = 0.025,
         base_power = 100.0,
         max_active_power = 100.0,
-        max_reactive_power = 100.0,
+        max_reactive_power = 100.0, input_basis = PSY.CU,
     )
     add_component!(sys, load3)
     # Bus 3 connected to REF bus; decoupled from bus 2.
@@ -652,8 +652,8 @@ function _make_solvable_tap_shunt_system()
             rating = 1.0,
             base_power = 100.0,
             control_objective = PSY.TransformerControlObjective.VOLTAGE,
-            controlled_quantity_limits = (min = 1.0, max = 1.0),
-        ),
+            controlled_quantity_limits = (min = 1.0, max = 1.0), input_basis = PSY.CU,
+        ), input_basis = PSY.CU,
     )
     add_component!(sys, tx)
     sa = SwitchedAdmittance(;
@@ -694,7 +694,7 @@ function _make_svc_system(;
         reactive_power = reactive_load,
         base_power = 100.0,
         max_active_power = 100.0,
-        max_reactive_power = 100.0,
+        max_reactive_power = 100.0, input_basis = PSY.CU,
     )
     add_component!(sys, load2)
     svc = FACTSControlDevice(;
@@ -703,7 +703,7 @@ function _make_svc_system(;
         bus = b2,
         control_mode = control_mode,
         voltage_setpoint = 1.0,
-        reactive_power_required = 100.0,
+        reactive_power_required = 100.0, input_basis = PSY.CU,
     )
     # `max_shunt_current` is stored in device base; the constructor kwarg takes a raw CU
     # value, so set it through the units-aware setter to honor the caller's MVA input.
@@ -727,7 +727,7 @@ function _add_mp_load!(
         reactive_power = reactive_power,
         base_power = 100.0,
         max_active_power = 100.0,
-        max_reactive_power = 100.0,
+        max_reactive_power = 100.0, input_basis = PSY.CU,
     )
     add_component!(sys, load)
     return load
@@ -889,7 +889,7 @@ function _make_multiperiod_facts_system()
         control_mode = PSY.FACTSOperationModes.NML,
         voltage_setpoint = 1.0,
         shunt_control_type = PSY.FACTSShuntControlType.SVC,
-        reactive_power_required = 100.0,
+        reactive_power_required = 100.0, input_basis = PSY.CU,
     )
     # `max_shunt_current` is stored in device base; the constructor kwarg takes a raw CU
     # value, so set it through the units-aware setter to honor the MVA input.
@@ -931,7 +931,8 @@ function _make_multiperiod_tap_system()
             regulated_bus_number = 2,
             controlled_quantity_limits = (min = 1.0, max = 1.0),
             control_objective = PSY.TransformerControlObjective.VOLTAGE,
-        ),
+            input_basis = PSY.CU,
+        ), input_basis = PSY.CU,
     )
     add_component!(sys, tx)
     return sys
@@ -973,7 +974,7 @@ function _make_shunt_snap_system()
         reactive_power = 0.28,
         base_power = 100.0,
         max_active_power = 100.0,
-        max_reactive_power = 100.0,
+        max_reactive_power = 100.0, input_basis = PSY.CU,
     )
     add_component!(sys, load2)
     sa = SwitchedAdmittance(;
@@ -1016,7 +1017,8 @@ function _make_field_controlled_tap_system()
             regulated_bus_number = 3,
             controlled_quantity_limits = (min = 1.02, max = 1.02),
             control_objective = PSY.TransformerControlObjective.VOLTAGE,
-        ),
+            input_basis = PSY.CU,
+        ), input_basis = PSY.CU,
     )
     add_component!(sys, tx)
     return sys
@@ -1049,7 +1051,7 @@ function _add_facts_shunt!(
         bus = b,
         control_mode = PSY.FACTSOperationModes.NML,
         voltage_setpoint = voltage_setpoint,
-        reactive_power_required = 100.0,
+        reactive_power_required = 100.0, input_basis = PSY.CU,
     )
     # `max_shunt_current` is stored in device base; the constructor kwarg takes a raw CU
     # value, so set it through the units-aware setter to honor the caller's MVA input.
@@ -1125,8 +1127,8 @@ function _make_primary_controlled_tap_system()
             base_power = 100.0,
             control_objective = PSY.TransformerControlObjective.VOLTAGE,
             controlled_quantity_limits = (min = 1.0, max = 1.0),
-            regulated_bus_number = 2,  # controlled bus = bus 2 (FROM) → primary
-        ),
+            regulated_bus_number = 2, input_basis = PSY.CU,  # controlled bus = bus 2 (FROM) → primary
+        ), input_basis = PSY.CU,
     )
     add_component!(sys, tx)
     return sys
@@ -1286,8 +1288,8 @@ function _add_control_tap!(sys, from_bus, to_bus; name = "tap_ctrl")
             rating = 1.0,
             base_power = 100.0,
             control_objective = PSY.TransformerControlObjective.VOLTAGE,
-            controlled_quantity_limits = (min = 1.0, max = 1.0),
-        ),
+            controlled_quantity_limits = (min = 1.0, max = 1.0), input_basis = PSY.CU,
+        ), input_basis = PSY.CU,
     )
     PSY.add_component!(sys, tx)
     return tx
@@ -1344,7 +1346,7 @@ function _build_vsc_pq_system(;
         ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
         dc_setpoint_to = p_set,
         reactive_power_to = q_set,
-        vsc_kwargs...,
+        vsc_kwargs..., input_basis = PSY.CU,
     )
     PSY.add_component!(sys, vsc)
     return sys
@@ -1396,7 +1398,7 @@ function _build_mtdc_system()
             base_power = 100.0,
             dc_control = configs[k].dc_control,
             ac_control = PSY.VSCACControlModes.AC_REACTIVE_POWER,
-            dc_setpoint = configs[k].dc_setpoint,
+            dc_setpoint = configs[k].dc_setpoint, input_basis = PSY.CU,
         )
         PSY.add_component!(sys, ic)
     end
@@ -1414,7 +1416,7 @@ function _build_mtdc_system()
             l = 0.0,
             c = 0.0,
             active_power_limits_from = (min = -5.0, max = 5.0),
-            active_power_limits_to = (min = -5.0, max = 5.0),
+            active_power_limits_to = (min = -5.0, max = 5.0), input_basis = PSY.CU,
         )
         PSY.add_component!(sys, dcl)
     end
@@ -1425,8 +1427,8 @@ end
 exactly three branches (Trans1 4-9, Trans2 5-6, Trans3 4-7) -- small and hand-checkable."""
 function _make_two_area_system()
     sys = deepcopy(PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false))
-    area1 = PSY.Area(; name = "Area1")
-    area2 = PSY.Area(; name = "Area2")
+    area1 = PSY.Area(; name = "Area1", input_basis = PSY.CU)
+    area2 = PSY.Area(; name = "Area2", input_basis = PSY.CU)
     PSY.add_component!(sys, area1)
     PSY.add_component!(sys, area2)
     area1_buses = Set(1:5)
@@ -1445,7 +1447,7 @@ Area3 (bus 9 has boundary degree 4: Trans1, Line11, Line12, Line16). Full bounda
 Trans1, Trans2, Trans3, Line11, Line12, Line16."""
 function _make_three_area_system()
     sys = _make_two_area_system()
-    area3 = PSY.Area(; name = "Area3")
+    area3 = PSY.Area(; name = "Area3", input_basis = PSY.CU)
     PSY.add_component!(sys, area3)
     bus9 = PSY.get_component(PSY.ACBus, sys, "Bus 9")
     PSY.set_area!(bus9, area3)
@@ -1458,9 +1460,9 @@ it genuinely spans both -- exercises enrollment guard 4 via the real production 
 a fabricated dict."""
 function _make_two_island_spanning_area_system()
     sys = System(100.0)
-    home1 = PSY.Area(; name = "Home1")
-    home2 = PSY.Area(; name = "Home2")
-    span = PSY.Area(; name = "Span")
+    home1 = PSY.Area(; name = "Home1", input_basis = PSY.CU)
+    home2 = PSY.Area(; name = "Home2", input_basis = PSY.CU)
+    span = PSY.Area(; name = "Span", input_basis = PSY.CU)
     PSY.add_component!(sys, home1)
     PSY.add_component!(sys, home2)
     PSY.add_component!(sys, span)
@@ -1496,9 +1498,9 @@ lcc_metered_end picks rectifier- vs inverter-metered DC tie.
 """
 function _comprehensive_area_dc_fixture(; lcc_metered_end::String = "from")
     sys = System(100.0)
-    area1 = PSY.Area(; name = "Area1")
-    area2 = PSY.Area(; name = "Area2")
-    area3 = PSY.Area(; name = "Area3")
+    area1 = PSY.Area(; name = "Area1", input_basis = PSY.CU)
+    area2 = PSY.Area(; name = "Area2", input_basis = PSY.CU)
+    area3 = PSY.Area(; name = "Area3", input_basis = PSY.CU)
     PSY.add_component!(sys, area1)
     PSY.add_component!(sys, area2)
     PSY.add_component!(sys, area3)
@@ -1573,7 +1575,7 @@ function _comprehensive_area_dc_fixture(; lcc_metered_end::String = "from")
         x = 0.05,
         rating = 1.0,
         discrete_branch_type = PSY.DiscreteControlledBranchType.BREAKER,
-        branch_status = PSY.DiscreteControlledBranchStatus.CLOSED,
+        branch_status = PSY.DiscreteControlledBranchStatus.CLOSED, input_basis = PSY.CU,
     )
     PSY.add_component!(sys, sw)
 
@@ -1612,7 +1614,7 @@ function _comprehensive_area_dc_fixture(; lcc_metered_end::String = "from")
         dc_control_to = PSY.VSCDCControlModes.DC_POWER,
         ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
         dc_setpoint_to = 0.2,
-        reactive_power_to = 0.05,
+        reactive_power_to = 0.05, input_basis = PSY.CU,
     )
     PSY.add_component!(sys, vsc)
 

@@ -185,6 +185,7 @@ end
         max_impedance_reactive_power = PSY.get_max_reactive_power(load, PSY.NU),
         max_current_active_power = PSY.get_max_active_power(load, PSY.NU),
         max_current_reactive_power = PSY.get_max_reactive_power(load, PSY.NU),
+        input_basis = PSY.CU,
     )
     add_component!(sys, new_load)
     set_zip_load_in_mva!(sys, (0.0, P, 0.0))
@@ -330,4 +331,67 @@ end
         solve_power_flow!(data)
         @test isapprox(data.arc_active_power_flow_from_to, flows_before; atol = 1e-10)
     end
+end
+
+# `(aba_matrix, run!)` for a DC-family `data`, dispatched on its concrete type rather than
+# an `isa`/ternary chain on `pf`.
+_dc_test_pieces(data::PF.ABAPowerFlowData) = (data.power_network_matrix, PF._run_aba_solve!)
+_dc_test_pieces(data::PF.PTDFPowerFlowData) = (data.aux_network_matrix, PF._run_ptdf_solve!)
+_dc_test_pieces(data::PF.vPTDFPowerFlowData) =
+    (data.aux_network_matrix, PF._run_vptdf_solve!)
+
+@testset "DC solver_cache slot is concrete through _dc_solve!" begin
+    # `_dc_solve!` dispatches on the solver-cache slot's concrete type instead of returning
+    # `(cache, scratch)` from the abstract `RefValue{Union{Nothing,SolverCache}}` slot.
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    for pf in (DCPowerFlow(), PTDFDCPowerFlow(), vPTDFDCPowerFlow())
+        data = PowerFlowData(pf, sys)
+        backend = PF.resolve_linear_solver_backend(nothing)
+        aba_matrix, run! = _dc_test_pieces(data)
+        rt_empty = Base.return_types(
+            PF._dc_solve!,
+            (typeof(data), typeof(data.solver_cache[]), typeof(backend),
+                typeof(aba_matrix), typeof(run!)),
+        )
+        @test rt_empty == [Nothing]
+        solve_power_flow!(data)
+        rt_built = Base.return_types(
+            PF._dc_solve!,
+            (typeof(data), typeof(data.solver_cache[]), typeof(backend),
+                typeof(aba_matrix), typeof(run!)),
+        )
+        @test rt_built == [Nothing]
+    end
+end
+
+@testset "DC construction factors ABA once on the KLU backend" begin
+    # `aba_matrix.K` is already a KLU factorization from construction; a KLU-backend solve
+    # must reuse it rather than factoring again.
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    for pf in (DCPowerFlow(), PTDFDCPowerFlow(), vPTDFDCPowerFlow())
+        data = PowerFlowData(pf, sys)
+        aba_matrix, _ = _dc_test_pieces(data)
+        solve_power_flow!(data; linear_solver = "KLU")
+        @test data.solver_cache[].cache === aba_matrix.K
+    end
+end
+
+@testset "Switching linear_solver backend on the same data errors" begin
+    # Only meaningful where a second backend exists alongside KLU (AppleAccelerate, macOS only).
+    if Sys.isapple()
+        sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+        data = PowerFlowData(DCPowerFlow(), sys)
+        solve_power_flow!(data; linear_solver = "KLU")
+        @test_throws ErrorException solve_power_flow!(
+            data;
+            linear_solver = "AppleAccelerateLU",
+        )
+    end
+end
+
+@testset "\"Dense\" linear_solver is rejected up front, not a MethodError mid-solve" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    @test_throws ArgumentError PF.resolve_linear_solver_backend("Dense")
+    data = PowerFlowData(DCPowerFlow(), sys)
+    @test_throws ArgumentError solve_power_flow!(data; linear_solver = "Dense")
 end

@@ -262,7 +262,8 @@ function rect_finalize_bus_injections!(
                 # REF slots are net of constant power only (cp): the residual
                 # subtracts `const_I * V_set` from them itself.
                 data.bus_active_power_injections[bus_k, time_step] =
-                    P_net_cp + data.bus_active_power_withdrawals[bus_k, time_step]
+                    P_net_cp + data.bus_active_power_withdrawals[bus_k, time_step] -
+                    data.bus_hvdc_net_power[bus_k, time_step]
                 data.bus_reactive_power_injections[bus_k, time_step] =
                     Q_net_cp + data.bus_reactive_power_withdrawals[bus_k, time_step]
             elseif bt == PSY.ACBusTypes.PV
@@ -271,13 +272,12 @@ function rect_finalize_bus_injections!(
                 P_eff = P_net_set[bus_k] + c_k * P_slack_total
                 Q_eff = x[off + 2]
                 data.bus_active_power_injections[bus_k, time_step] =
-                    P_eff + get_bus_active_power_non_impedance_withdrawals(
-                        data, bus_k, time_step,
-                    )
+                    P_eff +
+                    get_bus_active_power_non_impedance_withdrawals(data, bus_k, time_step) -
+                    data.bus_hvdc_net_power[bus_k, time_step]
                 data.bus_reactive_power_injections[bus_k, time_step] =
-                    Q_eff + get_bus_reactive_power_non_impedance_withdrawals(
-                        data, bus_k, time_step,
-                    )
+                    Q_eff +
+                    get_bus_reactive_power_non_impedance_withdrawals(data, bus_k, time_step)
             end
         end
     end

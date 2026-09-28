@@ -1427,6 +1427,7 @@ function _make_gens_from_hvdc(
             0.0, 0.0, 0.0,
         ),
         base_power = PSY.get_base_power(exporter.system, PSY.NU),
+        input_basis = PSY.CU,
     )
 end
 
@@ -1807,12 +1808,8 @@ function _write_discrete_branch_record!(
     RATEA = _value_or_default(PSY.get_rating(branch, PSY.NU), PSSE_DEFAULT)
     RATEB = 0.0
     RATEC = 0.0
-    # PFFP's switch/breaker importer stores RATE unscaled, so export divides by SBASE to
-    # round-trip.
     if RATEA >= INFINITE_BOUND
         RATEA = 0.0
-    else
-        RATEA = RATEA / PSY.get_base_power(exporter.system, PSY.NU)
     end
 
     @fastprintdelim_unroll(io, false, I, J, CKT, R, X, B,
@@ -1947,11 +1944,8 @@ function write_to_buffers!(
 
         X = PSY.get_x(branch, PSY.SU)
         RATE1 = _value_or_default(PSY.get_rating(branch, PSY.NU), PSSE_DEFAULT)
-        # See `_write_discrete_branch_record!`.
         if RATE1 >= INFINITE_BOUND
             RATE1 = 0.0
-        else
-            RATE1 = RATE1 / PSY.get_base_power(exporter.system, PSY.NU)
         end
 
         rates = [RATE1]
@@ -2265,12 +2259,13 @@ function _compute_dcline_common_fields(
     # SETVL is MW (power mode) or A (current mode).
     SETVL = PSY.get_transfer_setpoint(dcline, PSY.NU)
     VSCHD = PSY.get_scheduled_dc_voltage(dcline)
-    # RDC is a DC-circuit resistance: PSY per-unitizes it against the DC base (VSCHD^2 /
-    # baseMVA), not the rectifier AC commutating base, so the inverse conversion must use
-    # the same base or the raw round trip scales `r` by (VSCHD/EBASR)^2.
-    RDC = PSY.get_r(dcline) * VSCHD^2 / PSY.get_base_power(exporter.system, PSY.NU)
+    # RDC and RCOMP are DC-circuit resistances: PSY per-unitizes them against the DC base
+    # (VSCHD^2 / baseMVA), not the rectifier AC commutating base, so the inverse conversion
+    # must use the same base.
+    dc_zbase = VSCHD^2 / PSY.get_base_power(exporter.system, PSY.NU)
+    RDC = PSY.get_r(dcline) * dc_zbase
     VCMOD = PSY.get_switch_mode_voltage(dcline)
-    RCOMP = PSY.get_compounding_resistance(dcline)
+    RCOMP = PSY.get_compounding_resistance(dcline) * dc_zbase
     DELTI = PSSE_DEFAULT
     METER = PSSE_DEFAULT
     DCVMIN = PSY.get_min_compounding_voltage(dcline)
@@ -2557,6 +2552,19 @@ function _compute_vsc_converter_fields(
     )
 end
 
+"""Write one VSC converter sub-record. v35 places `NREG` (the regulated node, 0 for none)
+between `VSREG` and `RMPCT`; v33 has no `NREG`."""
+function _write_vsc_converter_record!(io::IO, c, psse_version::Symbol)
+    @fastprintdelim_unroll(io, false,
+        c.IBUS, c.TYPE, c.MODE, c.DCSET, c.ACSET, c.ALOSS, c.BLOSS,
+        c.MINLOSS, c.SMAX, c.IMAX, c.PWF, c.MAXQ, c.MINQ, c.REMOT)
+    if psse_version == :v35
+        fastprintdelim(io, PSSE_GEN_DEFAULT_NREG)
+    end
+    fastprintln(io, c.RMPCT)
+    return
+end
+
 # WRITTEN TO SPEC: PSS/E 33.3/35.4 POM 5.2.1 Voltage Source Converter (VSC) DC Transmission Line Data
 function write_to_buffers!(
     exporter::PSSEExporter,
@@ -2597,21 +2605,19 @@ function write_to_buffers!(
         MDC = PSY.get_available(vscline) ? 1 : 0
         from_dc_control = PSY.get_dc_control_from(vscline)
         to_dc_control = PSY.get_dc_control_to(vscline)
-        # Base (DC) voltage comes from a terminal carrying a DC-voltage reference (strict DC_VOLTAGE
-        # or droop); a pure MW (DC_POWER) terminal's setpoint is a power, not a voltage. The DC-side
-        # kV is the per-unit setpoint times `rated_dc_voltage` (kV); `rated_dc_voltage == 0` treats
-        # the setpoint as already in kV. RDC is reconstructed from `g` and Zbase (round-trips `g`).
-        vdc_scale = if iszero(PSY.get_rated_dc_voltage(vscline))
-            1.0
-        else
-            PSY.get_rated_dc_voltage(vscline)
+        # RDC is reconstructed from `g`, which PSY per-unitizes on `rated_dc_voltage`. With no
+        # rated DC voltage, the base is the DC-voltage setpoint taken as kV, from a terminal
+        # carrying a DC-voltage reference (strict DC_VOLTAGE or droop); a pure MW (DC_POWER)
+        # terminal's setpoint is a power, not a voltage.
+        g_base_voltage = PSY.get_rated_dc_voltage(vscline)
+        if iszero(g_base_voltage)
+            if _has_dc_voltage_reference(from_dc_control)
+                g_base_voltage = PSY.get_dc_setpoint_from(vscline)
+            else
+                g_base_voltage = PSY.get_dc_setpoint_to(vscline)
+            end
         end
-        if _has_dc_voltage_reference(from_dc_control)
-            base_voltage = PSY.get_dc_setpoint_from(vscline) * vdc_scale
-        else
-            base_voltage = PSY.get_dc_setpoint_to(vscline) * vdc_scale
-        end
-        Zbase = base_voltage^2 / PSY.get_base_power(exporter.system, PSY.NU)
+        Zbase = g_base_voltage^2 / PSY.get_base_power(exporter.system, PSY.NU)
         RDC = if iszero(PSY.get_g(vscline))
             0.0
         else
@@ -2637,17 +2643,8 @@ function write_to_buffers!(
         @fastprintdelim_unroll(io, false, NAME, MDC, RDC)
         fastprintln_psse_default_ownership(io)
 
-        # The converter sub-record ends in `REMOT, RMPCT` in both v33 and v35 (PSS/E's parser uses
-        # one VSC converter schema across versions), so the trailing fields are written the same.
-        @fastprintdelim_unroll(io, false,
-            c1.IBUS, c1.TYPE, c1.MODE, c1.DCSET, c1.ACSET, c1.ALOSS, c1.BLOSS,
-            c1.MINLOSS, c1.SMAX, c1.IMAX, c1.PWF, c1.MAXQ, c1.MINQ, c1.REMOT)
-        fastprintln(io, c1.RMPCT)
-
-        @fastprintdelim_unroll(io, false,
-            c2.IBUS, c2.TYPE, c2.MODE, c2.DCSET, c2.ACSET, c2.ALOSS, c2.BLOSS,
-            c2.MINLOSS, c2.SMAX, c2.IMAX, c2.PWF, c2.MAXQ, c2.MINQ, c2.REMOT)
-        fastprintln(io, c2.RMPCT)
+        _write_vsc_converter_record!(io, c1, exporter.psse_version)
+        _write_vsc_converter_record!(io, c2, exporter.psse_version)
     end
     end_group(
         io,

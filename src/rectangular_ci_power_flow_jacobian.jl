@@ -20,8 +20,8 @@ than `O((N + n_LCC) · log(nnz_per_col))` of `Jv[r, c] = v` setindex.
   `slack_bus_k` / `slack_c_k` for the corresponding per-iteration data
 - LCC tail nzval cache `lcc_nz` (24×n_lccs; the last 2 identity diagonals stay 1.0)
 """
-struct ACRectangularCIJacobian
-    data::ACPowerFlowData
+struct ACRectangularCIJacobian{D <: ACPowerFlowData}
+    data::D
     Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE}
     Y_bus_eff::SparseMatrixCSC{ComplexF64, Int}
     Y_diag::Vector{ComplexF64}     # cached Y_bus_eff diagonal; avoids O(log nnz) sparse access per iteration

@@ -52,7 +52,7 @@ function _nested_reduction_system(shape::Symbol)
                 x = x,
                 b = (from = 0.0, to = 0.0),
                 rating = 4.0,
-                angle_limits = (min = -pi, max = pi),
+                angle_limits = (min = -pi, max = pi), input_basis = PSY.CU,
             ),
         )
     end
@@ -86,7 +86,7 @@ function _nested_reduction_system(shape::Symbol)
             reactive_power = 0.2,
             base_power = 100.0,
             max_active_power = 1.0,
-            max_reactive_power = 0.2,
+            max_reactive_power = 0.2, input_basis = PSY.CU,
         ),
     )
     PSY.add_component!(
@@ -106,7 +106,7 @@ function _nested_reduction_system(shape::Symbol)
             base_power = 100.0,
             time_limits = nothing,
             prime_mover_type = PSY.PrimeMovers.OT,
-            fuel = PSY.ThermalFuels.OTHER,
+            fuel = PSY.ThermalFuels.OTHER, input_basis = PSY.CU,
         ),
     )
     return sys

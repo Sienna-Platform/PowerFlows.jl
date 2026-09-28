@@ -35,7 +35,6 @@ function _newton_power_flow(pf::ACPolarPowerFlow{<:RobustHomotopyPowerFlow},
     t_k += Δt_k
     homHess(x, t_k, time_step)
 
-    # options: KLUHessianSolver, CholeskyHessianSolver (fastest)
     hSolver = CholeskyHessianSolver(homHess.Hv)
     symbolic_factor!(hSolver, homHess.Hv)
 
@@ -80,7 +79,7 @@ function _second_order_newton(homHess::HomotopyHessian,
     t_k::Float64,
     time_step::Int,
     x::Vector{Float64},
-    hSolver::HessianSolver;
+    hSolver::CholeskyHessianSolver;
     maxIterations::Int = DEFAULT_NR_MAX_ITER,
     tol::Float64 = DEFAULT_NR_TOL,
 )
@@ -113,7 +112,7 @@ function _second_order_newton_step(homHess::HomotopyHessian,
     t_k::Float64,
     time_step::Int,
     x::Vector{Float64},
-    hSolver::HessianSolver,
+    hSolver::CholeskyHessianSolver,
     δ::Vector{Float64},
 )
     F_val = F_value(homHess, t_k, x, time_step)

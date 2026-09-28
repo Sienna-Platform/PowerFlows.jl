@@ -14,8 +14,8 @@ A struct to keep track of the residuals in the Newton-Raphson AC power flow calc
 - `P_slack_buf::Vector{Float64}`: Scratch buffer of length `n_buses` used by `_update_residual_values!` to write the per-subnetwork slack distribution in place, avoiding a per-iteration allocation when indexing `bus_slack_participation_factors` by `subnetwork_buses`.
 - `validate_indices::Vector{Int}`: precomputed `x`-indices of PQ-bus |V| entries for the per-iteration voltage-magnitude diagnostic.
 """
-struct ACPowerFlowResidual
-    data::ACPowerFlowData
+struct ACPowerFlowResidual{D <: ACPowerFlowData}
+    data::D
     Rv::Vector{Float64}
     P_net::Vector{Float64}
     Q_net::Vector{Float64}
@@ -45,57 +45,64 @@ Create an instance of `ACPowerFlowResidual` for a given time step.
 """
 function ACPowerFlowResidual(data::ACPowerFlowData, time_step::Int64)
     n_buses = first(size(data.bus_type))
-    P_net = Vector{Float64}(undef, n_buses)
-    Q_net = Vector{Float64}(undef, n_buses)
-
-    P_net_set = zeros(Float64, n_buses)
     bus_type = view(data.bus_type, :, time_step)
 
     # ref_bus is set to the first REF bus found - will be used for the total slack power
     subnetworks =
         _find_subnetworks_for_reference_buses(data.power_network_matrix.data, bus_type)
-
-    for ix in 1:n_buses
-        P_net[ix] =
-            data.bus_active_power_injections[ix, time_step] -
-            get_bus_active_power_total_withdrawals(data, ix, time_step) +
-            data.bus_hvdc_net_power[ix, time_step]
-        Q_net[ix] =
-            data.bus_reactive_power_injections[ix, time_step] -
-            get_bus_reactive_power_total_withdrawals(data, ix, time_step)
-        P_net_set[ix] = P_net[ix]
-    end
-
     validate_indices = _pq_validate_indices(bus_type)
-
     bus_slack_participation_factors =
         _build_bus_slack_participation_factors(data, bus_type, subnetworks, time_step)
 
-    bus_active_constant_I =
-        copy(view(data.bus_active_power_constant_current_withdrawals, :, time_step))
-    bus_reactive_constant_I =
-        copy(view(data.bus_reactive_power_constant_current_withdrawals, :, time_step))
-    bus_active_constant_Z =
-        copy(view(data.bus_active_power_constant_impedance_withdrawals, :, time_step))
-    bus_reactive_constant_Z =
-        copy(view(data.bus_reactive_power_constant_impedance_withdrawals, :, time_step))
-
-    return ACPowerFlowResidual(
+    residual = ACPowerFlowResidual(
         data,
         Vector{Float64}(undef,
             2 * n_buses + state_tail_length(data, get_dc_network(data))),
-        P_net,
-        Q_net,
-        P_net_set,
+        Vector{Float64}(undef, n_buses),
+        Vector{Float64}(undef, n_buses),
+        Vector{Float64}(undef, n_buses),
         bus_slack_participation_factors,
         subnetworks,
-        bus_active_constant_I,
-        bus_reactive_constant_I,
-        bus_active_constant_Z,
-        bus_reactive_constant_Z,
+        Vector{Float64}(undef, n_buses),
+        Vector{Float64}(undef, n_buses),
+        Vector{Float64}(undef, n_buses),
+        Vector{Float64}(undef, n_buses),
         Vector{Float64}(undef, n_buses),
         validate_indices,
     )
+    _refresh_residual_setpoints!(residual, data, time_step)
+    return residual
+end
+
+# Fills `P_net`/`Q_net`/`P_net_set` and the four constant-I/Z withdrawal vectors from `data` at
+# `time_step`, in place. `P_net` is (re)set to the freshly computed value, not accumulated onto —
+# the PQ ZIP path in `_update_residual_values!` telescopes onto whatever is here, so every caller
+# (construction, `_refresh_polar_residual!`'s cache reuse, the sensitivity context's per-pass
+# refresh) must rebuild it fresh from `data`, not fold onto a stale value.
+"""Always succeeds for the polar residual; returns `true`."""
+function _refresh_residual_setpoints!(
+    residual::ACPowerFlowResidual, data::ACPowerFlowData, time_step::Int64,
+)::Bool
+    @inbounds for ix in eachindex(residual.P_net)
+        p =
+            data.bus_active_power_injections[ix, time_step] -
+            get_bus_active_power_total_withdrawals(data, ix, time_step) +
+            data.bus_hvdc_net_power[ix, time_step]
+        residual.P_net[ix] = p
+        residual.P_net_set[ix] = p
+        residual.Q_net[ix] =
+            data.bus_reactive_power_injections[ix, time_step] -
+            get_bus_reactive_power_total_withdrawals(data, ix, time_step)
+    end
+    residual.bus_active_constant_I .=
+        view(data.bus_active_power_constant_current_withdrawals, :, time_step)
+    residual.bus_reactive_constant_I .=
+        view(data.bus_reactive_power_constant_current_withdrawals, :, time_step)
+    residual.bus_active_constant_Z .=
+        view(data.bus_active_power_constant_impedance_withdrawals, :, time_step)
+    residual.bus_reactive_constant_Z .=
+        view(data.bus_reactive_power_constant_impedance_withdrawals, :, time_step)
+    return true
 end
 
 """

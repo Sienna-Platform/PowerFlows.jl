@@ -131,7 +131,7 @@ end
                 fuel = ThermalFuels.OTHER,
                 services = Device[],
                 dynamic_injector = nothing,
-                ext = Dict{String, Any}(),
+                ext = Dict{String, Any}(), input_basis = PSY.CU,
             )
             add_component!(sys, g2)
 
@@ -372,7 +372,7 @@ end
                 fuel = ThermalFuels.OTHER,
                 services = Device[],
                 dynamic_injector = nothing,
-                ext = Dict{String, Any}(),
+                ext = Dict{String, Any}(), input_basis = PSY.CU,
             )
             add_component!(sys, g2)
 
@@ -468,13 +468,12 @@ end
     end
 end
 
-# T6 (FDNR WP3): Fast-decoupled solvers under distributed slack must match the Newton-Raphson
+# T6: Fast-decoupled solvers under distributed slack must match the Newton-Raphson
 # distributed-slack solution — both the polar :decoupled variant (whose per-iteration rank-1
 # slack sync in `_sync_explicit_state!` is the novel piece) and the :fixed_jacobian variant
-# (slack lives inside the frozen Jacobian). Decision recorded in WP3: KEEP the rank-1 sync —
-# FD :decoupled matches NR to ~1e-11 on bus voltages AND on the slack redistribution
-# (bus_active_power_injections), so it is stable, not restricted.
-@testset "FastDecoupled WP3: distributed slack parity (T6)" begin
+# (slack lives inside the frozen Jacobian). FD :decoupled matches NR to ~1e-11 on bus voltages
+# AND on the slack redistribution (bus_active_power_injections).
+@testset "FastDecoupled distributed slack parity (T6)" begin
     build_c_sys14() =
         PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
 

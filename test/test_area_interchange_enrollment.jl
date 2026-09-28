@@ -161,8 +161,8 @@ end
     secondary_bus = PSY.get_from(PSY.get_arc(PSY.get_secondary_circuit(trf)))
     tertiary_bus = PSY.get_from(PSY.get_arc(PSY.get_tertiary_circuit(trf)))
 
-    areaA = PSY.Area(; name = "AreaA")
-    areaB = PSY.Area(; name = "AreaB")
+    areaA = PSY.Area(; name = "AreaA", input_basis = PSY.CU)
+    areaB = PSY.Area(; name = "AreaB", input_basis = PSY.CU)
     PSY.add_component!(sys, areaA)
     PSY.add_component!(sys, areaB)
     PSY.set_area!(primary_bus, areaA)
@@ -213,7 +213,7 @@ end
         x = 0.01,
         rating = 1.0,
         discrete_branch_type = PSY.DiscreteControlledBranchType.BREAKER,
-        branch_status = PSY.DiscreteControlledBranchStatus.CLOSED,
+        branch_status = PSY.DiscreteControlledBranchStatus.CLOSED, input_basis = PSY.CU,
     )
     open_sw = PSY.DiscreteControlledACBranch(;
         name = "sw_open",
@@ -225,7 +225,7 @@ end
         x = 0.01,
         rating = 1.0,
         discrete_branch_type = PSY.DiscreteControlledBranchType.BREAKER,
-        branch_status = PSY.DiscreteControlledBranchStatus.OPEN,
+        branch_status = PSY.DiscreteControlledBranchStatus.OPEN, input_basis = PSY.CU,
     )
     @test PF._tie_in_service(closed_sw) == true
     @test PF._tie_in_service(open_sw) == false
@@ -247,7 +247,7 @@ end
         x = 0.01,
         rating = 1.0,
         discrete_branch_type = PSY.DiscreteControlledBranchType.BREAKER,
-        branch_status = PSY.DiscreteControlledBranchStatus.OPEN,
+        branch_status = PSY.DiscreteControlledBranchStatus.OPEN, input_basis = PSY.CU,
     )
     PSY.add_component!(sys, sw)
 
@@ -297,8 +297,8 @@ end
             x = 0.10,
             tap = 1.0,
             rating = 1.0,
-            base_power = 100.0,
-        ),
+            base_power = 100.0, input_basis = PSY.CU,
+        ), input_basis = PSY.CU,
     )
     PSY.add_component!(sys, parallel_tx)
 
@@ -453,8 +453,8 @@ AC-disconnected system returns an empty `ac_ties` and a `dc_ties` that touches A
 entirely by a real `PowerFlowData`/`LCCParameters`/reduced-network build."""
 function _dc_tie_only_fixture()
     sys = System(100.0)
-    area1 = PSY.Area(; name = "Area1")
-    area3 = PSY.Area(; name = "Area3")
+    area1 = PSY.Area(; name = "Area1", input_basis = PSY.CU)
+    area3 = PSY.Area(; name = "Area3", input_basis = PSY.CU)
     PSY.add_component!(sys, area1)
     PSY.add_component!(sys, area3)
 

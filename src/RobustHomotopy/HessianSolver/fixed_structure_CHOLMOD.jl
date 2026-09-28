@@ -53,4 +53,3 @@ end
 Base.size(mat::FixedStructureCHOLMOD) = size(mat._mat)
 Base.getindex(mat::FixedStructureCHOLMOD, I...) = getindex(mat._mat, I...)
 Base.setindex!(mat::FixedStructureCHOLMOD, v, I...) = setindex!(mat._mat, v, I...)
-Base.eltype(mat::FixedStructureCHOLMOD) = eltype(mat._mat)

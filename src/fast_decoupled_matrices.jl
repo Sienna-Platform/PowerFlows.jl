@@ -1,4 +1,4 @@
-# Fast/Fixed Decoupled Newton-Raphson (FDNR) — B′/B″ matrix machinery (WP1).
+# Fast/Fixed Decoupled Newton-Raphson (FDNR) — B′/B″ matrix machinery.
 #
 # Builds the constant fast-decoupled Jacobian approximations B′ (active-power/angle) and
 # B″ (reactive-power/voltage) from the PowerFlowData network matrices. Everything here is a
@@ -31,10 +31,10 @@
 #   * Sign convention for B′/B″: they approximate the codebase's OWN Jacobian sub-blocks. On a
 #     lossless, shunt-free, nominal-tap network at flat start, B′ = (P-θ block)/V over pvpq and
 #     B″ = (Q-V block)/V over pq EXACTLY, which equals −imag(Ybus) restricted to those rows/cols.
-#     T1 (`test/test_fast_decoupled.jl`, "FastDecoupled WP1: B′/B″ vs exact Jacobian") is the
-#     arbiter — it compares against the real `ACPowerFlowJacobian.Jv`, never against this code.
+#     `test/test_fast_decoupled.jl`'s "FastDecoupled B′/B″ vs exact Jacobian" is the arbiter — it
+#     compares against the real `ACPowerFlowJacobian.Jv`, never against this code.
 #
-# See also `src/fast_decoupled_method.jl` (WP2/WP3 drivers) which consume these matrices.
+# See also `src/fast_decoupled_method.jl`, which consumes these matrices.
 
 # 1/x cap for the resistance-neglecting B′/B″ stamp (sign preserved for series capacitors), locked
 # to PowerNetworkMatrices' reactance floor: PNM substitutes x = ZERO_IMPEDANCE_X_EPSILON for an
@@ -134,6 +134,11 @@ Read per-branch π-model parameters from PowerNetworkMatrices and take the per-b
 residual against the reconstructed arc self-terms. See the file header for the stamp convention.
 The near-zero-reactance cap lives in `_fd_series`, applied only on the resistance-drop stamp
 path, so these parameters and the restamp stay at their true values.
+
+An arc with no single-π equivalent (`|Yft| ≠ |Ytf|`, e.g. a degree-two chain over a mixed
+phase-shift/impedance parallel group) gets a symmetrized fallback branch (`ys = -(Yft+Ytf)/2`,
+unit tap) instead of throwing. B′/B″ only accelerate the Newton step, so this approximation
+cannot corrupt the converged solution, only (rarely) the FD convergence rate on that arc.
 """
 function _arc_params(data::ACPowerFlowData)
     ybus = get_power_network_matrix(data)
@@ -142,6 +147,12 @@ function _arc_params(data::ACPowerFlowData)
     bus_lookup = get_bus_lookup(data)
     arcs = PNM.get_arc_axis(nrd)
     nbus = size(Yb, 1)
+
+    Yft = ybus.arc_admittance_from_to
+    Ytf = ybus.arc_admittance_to_from
+    Yft_d = Yft.data
+    Ytf_d = Ytf.data
+    yft_arc_lookup = PNM.get_arc_lookup(Yft)
 
     # One π branch per arc is the rule; only a parallel group that mixes phase-shift angles with
     # impedance angles emits more, so `length(arcs)` sizes these exactly on every ordinary
@@ -164,23 +175,46 @@ function _arc_params(data::ACPowerFlowData)
     for arc in arcs
         f = bus_lookup[first(arc)]
         t = bus_lookup[last(arc)]
-        for eb in PNM.arc_equivalent_branches(nrd, arc)
-            x_b = PNM.get_equivalent_x(eb)
-            ys_b = 1 / complex(PNM.get_equivalent_r(eb), x_b)
-            τ = PNM.get_equivalent_tap(eb) * cis(PNM.get_equivalent_shift(eb))
-            yfr_b =
-                complex(PNM.get_equivalent_g_from(eb), PNM.get_equivalent_b_from(eb))
-            yto_b = complex(PNM.get_equivalent_g_to(eb), PNM.get_equivalent_b_to(eb))
+        if PNM.has_single_pi_equivalent(nrd, arc)
+            for eb in PNM.arc_equivalent_branches(nrd, arc)
+                x_b = PNM.get_equivalent_x(eb)
+                ys_b = 1 / complex(PNM.get_equivalent_r(eb), x_b)
+                τ = PNM.get_equivalent_tap(eb) * cis(PNM.get_equivalent_shift(eb))
+                yfr_b =
+                    complex(PNM.get_equivalent_g_from(eb), PNM.get_equivalent_b_from(eb))
+                yto_b = complex(PNM.get_equivalent_g_to(eb), PNM.get_equivalent_b_to(eb))
+
+                push!(from, f)
+                push!(to, t)
+                push!(tau, τ)
+                push!(ys, ys_b)
+                push!(xs, x_b)
+                push!(y_fr, yfr_b)
+                push!(y_to, yto_b)
+
+                self_acc[f] += ys_b / abs2(τ) + yfr_b
+                self_acc[t] += ys_b + yto_b
+            end
+        else
+            a = yft_arc_lookup[arc]
+            yft = ComplexF64(Yft_d[a, t])
+            ytf = ComplexF64(Ytf_d[a, f])
+            yff = ComplexF64(Yft_d[a, f])
+            ytt = ComplexF64(Ytf_d[a, t])
+            ys_b = -(yft + ytf) / 2
+            x_b = imag(1 / ys_b)
+            yfr_b = yff - ys_b
+            yto_b = ytt - ys_b
 
             push!(from, f)
             push!(to, t)
-            push!(tau, τ)
+            push!(tau, one(ComplexF64))
             push!(ys, ys_b)
             push!(xs, x_b)
             push!(y_fr, yfr_b)
             push!(y_to, yto_b)
 
-            self_acc[f] += ys_b / abs2(τ) + yfr_b
+            self_acc[f] += ys_b + yfr_b
             self_acc[t] += ys_b + yto_b
         end
     end
@@ -200,7 +234,7 @@ end
 """
     _restamp_ybus(p::FDArcParams) -> SparseMatrixCSC{ComplexF64, Int}
 
-Rebuild the full Ybus from the π-model parameters plus per-bus shunts. Used by the WP1
+Rebuild the full Ybus from the π-model parameters plus per-bus shunts. Used by the
 restamp-reconstruction tests; should match the original Ybus within ComplexF32 noise.
 """
 function _restamp_ybus(p::FDArcParams)

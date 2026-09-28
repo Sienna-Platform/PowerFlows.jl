@@ -13,8 +13,8 @@ and can be called as a function at the same time. Calling the instance as a func
 - `subnetworks::Dict{Int64, Vector{Int64}}`: Subnetwork mapping from REF bus to bus list (from the `ACPowerFlowResidual`). Used for the distributed slack Jacobian entries.
 - `independent_ref::Set{Int}`: Multi-swing REF bus indices, from `_multi_swing_ref_indices`. Computed once at construction because the Q-limit loop only flips PV↔PQ, never REF.
 """
-struct ACPowerFlowJacobian
-    data::ACPowerFlowData
+struct ACPowerFlowJacobian{D <: ACPowerFlowData}
+    data::D
     Jv::SparseArrays.SparseMatrixCSC{Float64, J_INDEX_TYPE}  # This is the Jacobian matrix, updated in place by `_update_jacobian_matrix_values!`
     bus_slack_participation_factors::SparseVector{Float64, Int}
     subnetworks::Dict{Int64, Vector{Int64}}
@@ -666,10 +666,11 @@ function _set_entries_for_vsc(
     # Pre-zero the shared ∂KCL/∂|V_ac| slots before accumulating: two converters can share BOTH
     # the DC node and the AC bus (parallel converters), in which case `sparse` merged their
     # structural slots into one — an `=` write would clobber the first converter's contribution.
+    # Unconditional (not gated on the bus currently being PQ): the slot is always structurally
+    # allocated (see below), and a bus that was PQ on a previous call but is PV now must have its
+    # stale contribution cleared here, since the accumulation loop below only writes it for PQ.
     for c in 1:nconv
-        if data.bus_type[dcn.converter_ac_bus_ix[c], time_step] == PSY.ACBusTypes.PQ
-            Jv[base + dcn.converter_dc_node_ix[c], 2 * dcn.converter_ac_bus_ix[c] - 1] = 0.0
-        end
+        Jv[base + dcn.converter_dc_node_ix[c], 2 * dcn.converter_ac_bus_ix[c] - 1] = 0.0
     end
     for c in 1:nconv
         ix = dcn.converter_ac_bus_ix[c]

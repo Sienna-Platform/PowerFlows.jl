@@ -11,8 +11,8 @@ function _sensitivity_residual_jacobian(::ACPolarPowerFlow, data, ts::Int)
     return residual, J
 end
 
-# No analytic form here ⇒ caller falls back to FD probes.
-_sensitivity_context(::AbstractACPowerFlow, data, ts::Int; kwargs...) = nothing
+# `pf` is always one of the three formulations below — every `AbstractACPowerFlow` subtype
+# is one of them — so there is no broader fallback method here.
 function _sensitivity_context(
     pf::Union{ACPolarPowerFlow, ACRectangularPowerFlow, ACMixedPowerFlow},
     data,
@@ -27,67 +27,56 @@ function _sensitivity_context(
         numeric_refactor!(lin_cache, J.Jv)
     catch e
         e isa LinearAlgebra.SingularException || rethrow()
-        return                    # singular base Jacobian ⇒ fall back to FD probes
+        return FiniteDifferenceProbes()
     end
+    n = length(residual.Rv)
+    probe = StateVectorCache(ones(n), ones(n))
+    _singular_base_solve!(probe, lin_cache, J) && return FiniteDifferenceProbes()
     # One registration per continuation — `_refresh_sensitivity_context!` reuses this
     # topology-invariant factorization on every batched pass without counting again.
     _count_symbolic_factor!(data)
-    n = length(residual.Rv)
     return _SensitivityContext(
-        lin_cache, residual, J, zeros(n), zeros(n), copy(view(data.bus_type, :, ts)))
+        lin_cache, residual, J, zeros(n), zeros(n), copy(view(data.bus_type, :, ts)), probe,
+    )
 end
 
-# Gates `use_batched`: a formulation with analytic sensitivities but no refresh stays
-# sequential — batching it would read a stale Jacobian after the first device move.
-_supports_batched_refresh(::Nothing) = false
-_supports_batched_refresh(ctx::_SensitivityContext) = _refreshable(ctx.residual)
-# Default false: opting into batching needs a `_refresh_sensitivity_context!` method AND
-# flipping this explicitly.
-_refreshable(::Any) = false
-_refreshable(::ACPowerFlowResidual) = true
-
-# `_update_residual_values!`'s PQ case telescopes `P_net` from the residual's LAST evaluation, so
-# these must be rebuilt fresh from `data` before every evaluation or the correction drifts.
-function _refresh_residual_inputs!(residual::ACPowerFlowResidual, data, ts::Int)::Bool
-    copyto!(
-        residual.bus_active_constant_I,
-        view(data.bus_active_power_constant_current_withdrawals, :, ts),
-    )
-    copyto!(
-        residual.bus_reactive_constant_I,
-        view(data.bus_reactive_power_constant_current_withdrawals, :, ts),
-    )
-    copyto!(
-        residual.bus_active_constant_Z,
-        view(data.bus_active_power_constant_impedance_withdrawals, :, ts),
-    )
-    copyto!(
-        residual.bus_reactive_constant_Z,
-        view(data.bus_reactive_power_constant_impedance_withdrawals, :, ts),
-    )
-    @inbounds for ix in eachindex(residual.P_net)
-        residual.P_net[ix] =
-            data.bus_active_power_injections[ix, ts] -
-            get_bus_active_power_total_withdrawals(data, ix, ts) +
-            data.bus_hvdc_net_power[ix, ts]
-        residual.Q_net[ix] =
-            data.bus_reactive_power_injections[ix, ts] -
-            get_bus_reactive_power_total_withdrawals(data, ix, ts)
-        residual.P_net_set[ix] = residual.P_net[ix]
-    end
-    return true
+# KLU throws on a singular matrix (caught above); AppleAccelerate/MKLPardiso silently return
+# finite garbage instead. Reuse `_set_Δx_nr!`/`_do_refinement!`'s backend-agnostic
+# relative-residual guard here on a synthetic probe solve rather than trusting only
+# `SingularException`.
+# `probe` is reused across calls: `r` holds the all-ones right-hand side, `Δx_nr` its solve.
+function _singular_base_solve!(probe, lin_cache::PFLinearSolverCache, J)
+    fill!(probe.r, 1.0)
+    fill!(probe.Δx_nr, 1.0)
+    solve!(lin_cache, probe.Δx_nr)
+    residual = _do_refinement!(
+        probe, J.Jv, lin_cache, DEFAULT_REFINEMENT_THRESHOLD, DEFAULT_REFINEMENT_EPS)
+    return !isfinite(residual) || residual > DEFAULT_REFINEMENT_THRESHOLD
 end
+
+# Gates `use_batched`: only a live context (every formulation has a `_refresh_sensitivity_context!`
+# method) supports the batched per-pass refresh; the FD-probe fallback does not.
+_supports_batched_refresh(::FiniteDifferenceProbes) = false
+_supports_batched_refresh(::_SensitivityContext) = true
+
+# Retry promotion out of the FD-probe fallback once per continuation stage: the base Jacobian
+# that was singular at an earlier converged state may factor cleanly at a later one, and
+# without a retry a single singular stage locks the continuation into sequential passes
+# forever. A live context is already promoted; no-op.
+_maybe_repromote(ctx::_SensitivityContext, pf, data, ts::Int; kwargs...) = ctx
+_maybe_repromote(::FiniteDifferenceProbes, pf, data, ts::Int; kwargs...) =
+    _sensitivity_context(pf, data, ts; kwargs...)
 
 _sensitivity_x0(::ACPowerFlowResidual, data, ts::Int) = calculate_x0(data, ts)
 
 # `ACPowerFlowJacobian`'s p-dependent fields are the SAME vectors as the residual's (passed by
-# reference at construction), already current after `_refresh_residual_inputs!`: nothing to do.
+# reference at construction), already current after `_refresh_residual_setpoints!`: nothing to do.
 _refresh_jacobian_yb_caches!(J, ::ACPowerFlowResidual, ts::Int) = return
 
 function _refresh_sensitivity_context!(ctx::_SensitivityContext, data, ts::Int)::Bool
     view(data.bus_type, :, ts) == ctx.bus_type || return false
     residual = ctx.residual
-    _refresh_residual_inputs!(residual, data, ts) || return false
+    _refresh_residual_setpoints!(residual, data, ts) || return false
     _refresh_jacobian_yb_caches!(ctx.J, residual, ts)
     x = _sensitivity_x0(residual, data, ts)
     ctx.residual(x, ts)
@@ -98,7 +87,19 @@ function _refresh_sensitivity_context!(ctx::_SensitivityContext, data, ts::Int):
         e isa LinearAlgebra.SingularException || rethrow()
         return false
     end
-    return true
+    return !_singular_base_solve!(ctx.probe, ctx.lin_cache, ctx.J)
+end
+
+# `_refresh_sensitivity_context!` refuses in-place reuse across a PV/PQ Q-limit flip (its
+# baked-in subnetwork/slack layout goes stale) or a numeric refactor that turns singular.
+# Rebuild fresh (a new base-state factorization, counted like any other) instead of leaving
+# batching disabled for the rest of the continuation, as a stale `ctx` never replaced would.
+# Only takes a live `ctx`; a `FiniteDifferenceProbes` fallback is retried by `_maybe_repromote`.
+function _refresh_or_rebuild_context(
+    ctx::_SensitivityContext, pf, data, ts::Int; kwargs...,
+)
+    _refresh_sensitivity_context!(ctx, data, ts) && return ctx
+    return _sensitivity_context(pf, data, ts; kwargs...)
 end
 
 # ∂Y/∂p of the from-side terms (t_c = p·cis(α)); Y_tt = yt is p-independent (see `_branch_terms`).
@@ -175,13 +176,11 @@ end
 
 const _RectOrMixedResidual = Union{ACRectangularCIResidual, ACMixedCPBResidual}
 
-_refreshable(::_RectOrMixedResidual) = true
-
 # `Y_bus_eff` must be rebuilt fresh from `data` each refresh, not re-folded onto the old copy —
 # tap/shunt moves edit the source Y-bus and withdrawals in place. The structure check catches a
 # `fold_zip_constant_z!`-inserted diagonal a plain `nonzeros` copy would silently misalign; on
 # mismatch, fall back to FD probes.
-function _refresh_residual_inputs!(r::_RectOrMixedResidual, data, ts::Int)::Bool
+function _refresh_residual_setpoints!(r::_RectOrMixedResidual, data, ts::Int)::Bool
     Y = data.power_network_matrix.data
     if SparseArrays.getcolptr(r.Y_bus_eff) != SparseArrays.getcolptr(Y) ||
        SparseArrays.rowvals(r.Y_bus_eff) != SparseArrays.rowvals(Y)
