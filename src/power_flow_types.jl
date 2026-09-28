@@ -353,6 +353,44 @@ e.g. `ACRectangularPowerFlow{FastDecoupledFixed}()`."""
 const FastDecoupledFixed = FastDecoupledACPowerFlow{FDFixedJacobian, FDSchemeXB}
 
 """
+    GeneralizedAdmittanceACPowerFlow <: ACPowerFlowSolverType
+
+Sparse generalized-admittance (PFPD) AC power flow: loads and generators are fixed shunts in the
+non-slack admittance block and corrective nodal currents restore the exact power and PV
+constraints by fixed-point iteration, reusing KLU factorizations of `Yℓℓ` and its PQ block.
+Polar only. Supports `handoff_solver` ([`NewtonRaphsonACPowerFlow`](@ref),
+[`TrustRegionACPowerFlow`](@ref), [`LevenbergMarquardtACPowerFlow`](@ref)) and `handoff_tol`.
+Does not support reactive-power limits, distributed slack, discrete control, or area interchange.
+
+Based on: Artoisenet & Verstraete, arXiv:2609.14132, 2026.
+"""
+struct GeneralizedAdmittanceACPowerFlow <: ACPowerFlowSolverType end
+
+_validate_solver_specific_settings(::Type{<:ACPowerFlowSolverType}, ::SolutionParameters,
+    ::Any, ::Bool) = nothing
+
+function _validate_solver_specific_settings(::Type{GeneralizedAdmittanceACPowerFlow},
+    params::SolutionParameters, generator_slack_participation_factors,
+    distribute_slack_proportional_to_headroom::Bool)
+    if params.check_reactive_power_limits
+        throw(
+            ArgumentError(
+                "GeneralizedAdmittanceACPowerFlow does not support check_reactive_power_limits=true " *
+                "yet."),
+        )
+    end
+    if !isnothing(generator_slack_participation_factors) ||
+       distribute_slack_proportional_to_headroom
+        throw(
+            ArgumentError(
+                "GeneralizedAdmittanceACPowerFlow does not support distributed slack yet.",
+            ),
+        )
+    end
+    return
+end
+
+"""
     ACPowerFlow{ACSolver}(; kwargs...) where {ACSolver <: ACPowerFlowSolverType}
     ACPowerFlow(; kwargs...)
 
@@ -503,6 +541,12 @@ function ACPolarPowerFlow{ACSolver}(;
         time_steps,
     )
     _validate_discrete_control_settings(params.control_discrete_devices, ACSolver)
+    _validate_solver_specific_settings(
+        ACSolver,
+        params,
+        generator_slack_participation_factors,
+        distribute_slack_proportional_to_headroom,
+    )
     # Returns the possibly-floored tolerance, so the stored parameters carry the value the
     # solve will actually use rather than the one the caller asked for.
     params = _override(
@@ -603,8 +647,9 @@ and are constant across iterations.
 
 `ACSolver` defaults to [`NewtonRaphsonACPowerFlow`](@ref). Supported solvers:
 [`NewtonRaphsonACPowerFlow`](@ref), [`TrustRegionACPowerFlow`](@ref), and
-[`LevenbergMarquardtACPowerFlow`](@ref). Robust Homotopy and Gradient Descent
-operate on the polar formulation only and are rejected at construction.
+[`LevenbergMarquardtACPowerFlow`](@ref). Robust Homotopy, Gradient Descent, and
+Generalized Admittance operate on the polar formulation only and are rejected at
+construction.
 
 Unlike [`ACPolarPowerFlow`](@ref), this model has no
 `calculate_voltage_stability_factors`, `calculate_loss_factors`, or
@@ -674,12 +719,13 @@ function ACRectangularPowerFlow{ACSolver}(;
     if ACSolver <: Union{
         RobustHomotopyPowerFlow,
         GradientDescentACPowerFlow,
+        GeneralizedAdmittanceACPowerFlow,
     }
         throw(
             ArgumentError(
                 "$(ACSolver) is not supported by ACRectangularPowerFlow. " *
-                "Robust Homotopy and Gradient Descent operate on the polar " *
-                "formulation only. Use ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}, " *
+                "Robust Homotopy, Gradient Descent, and Generalized Admittance operate " *
+                "on the polar formulation only. Use ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}, " *
                 "{TrustRegionACPowerFlow}, or {LevenbergMarquardtACPowerFlow}, " *
                 "or run the solver on ACPolarPowerFlow.",
             ),
@@ -742,8 +788,9 @@ There are 2 variables per bus, so the system size is `2n`.
 
 `ACSolver` defaults to [`NewtonRaphsonACPowerFlow`](@ref). Supported solvers:
 [`NewtonRaphsonACPowerFlow`](@ref), [`TrustRegionACPowerFlow`](@ref), and
-[`LevenbergMarquardtACPowerFlow`](@ref). Robust Homotopy and Gradient Descent
-are rejected at construction — they operate on the polar formulation only.
+[`LevenbergMarquardtACPowerFlow`](@ref). Robust Homotopy, Gradient Descent, and
+Generalized Admittance are rejected at construction — they operate on the polar
+formulation only.
 
 Unlike [`ACPolarPowerFlow`](@ref), this model has no
 `calculate_voltage_stability_factors`, `calculate_loss_factors`, or
@@ -813,12 +860,13 @@ function ACMixedPowerFlow{ACSolver}(;
     if ACSolver <: Union{
         RobustHomotopyPowerFlow,
         GradientDescentACPowerFlow,
+        GeneralizedAdmittanceACPowerFlow,
     }
         throw(
             ArgumentError(
                 "$(ACSolver) is not supported by ACMixedPowerFlow. " *
-                "Robust Homotopy and Gradient Descent do not operate on the " *
-                "mixed current-power formulation. Use " *
+                "Robust Homotopy, Gradient Descent, and Generalized Admittance do not " *
+                "operate on the mixed current-power formulation. Use " *
                 "ACMixedPowerFlow{NewtonRaphsonACPowerFlow}, " *
                 "{TrustRegionACPowerFlow}, or {LevenbergMarquardtACPowerFlow}, " *
                 "or run the solver on ACPolarPowerFlow.",
