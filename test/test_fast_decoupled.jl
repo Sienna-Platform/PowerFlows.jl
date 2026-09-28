@@ -46,8 +46,12 @@ end
     @test PF._validate_handoff_solver(PF.NoHandoff, "FastDecoupled") === nothing
     @test PF._validate_handoff_solver(NewtonRaphsonACPowerFlow, "FastDecoupled") === nothing
     @test PF._validate_handoff_solver(TrustRegionACPowerFlow, "FastDecoupled") === nothing
-    @test PF._validate_handoff_solver(LevenbergMarquardtACPowerFlow, "FastDecoupled") === nothing
-    @test_throws ArgumentError PF._validate_handoff_solver(RobustHomotopyPowerFlow, "FastDecoupled")
+    @test PF._validate_handoff_solver(LevenbergMarquardtACPowerFlow, "FastDecoupled") ===
+          nothing
+    @test_throws ArgumentError PF._validate_handoff_solver(
+        RobustHomotopyPowerFlow,
+        "FastDecoupled",
+    )
 
     # FDDecoupled is polar-only: requesting it on rectangular/mixed is rejected at construction.
     @test_throws ArgumentError ACRectangularPowerFlow{
