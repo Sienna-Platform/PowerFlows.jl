@@ -149,13 +149,13 @@ function _newton_power_flow(
             adam_step!(x0, state, cfg)
 
             # 4. Backtracking line search on ½‖F‖²
-            residual(x0, time_step)
+            residual(data, x0, time_step)
             new_loss = dot(residual.Rv, residual.Rv)
 
             for _ in 1:ADAM_MAX_BACKTRACKS
                 new_loss <= old_loss && break
                 _interpolate_x!(x0, x_save, ADAM_BACKTRACK_FACTOR)
-                residual(x0, time_step)
+                residual(data, x0, time_step)
                 new_loss = dot(residual.Rv, residual.Rv)
             end
 
@@ -164,7 +164,7 @@ function _newton_power_flow(
             if !converged
                 i += 1
                 # Re-evaluate Jacobian for next iteration
-                J(time_step)
+                J(data, time_step)
             end
         end
     end
@@ -172,7 +172,7 @@ function _newton_power_flow(
     # Recompute Jacobian at the solution for post-processing (loss/stability factors)
     if converged &&
        (get_calculate_loss_factors(data) || get_calculate_voltage_stability_factors(data))
-        J(time_step)
+        J(data, time_step)
     end
 
     return _finalize_power_flow(

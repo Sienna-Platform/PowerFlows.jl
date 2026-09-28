@@ -1,5 +1,5 @@
 """
-    verify_jacobian_asymptotic(residual, Jv, x0, time_step; Δx_mags, rtol, label)
+    verify_jacobian_asymptotic(residual, data, Jv, x0, time_step; Δx_mags, rtol, label)
 
 Verify the analytic Jacobian `Jv` against `residual` by checking that the
 first-order Taylor remainder
@@ -11,9 +11,9 @@ For a correct Jacobian, `e(Δx) / Δx²` is constant across a geometric
 `Δx`-sweep (the second-derivative contribution along `u_j`); this routine
 asserts those normalized ratios agree within `rtol`.
 
-`residual` must be callable as `residual(x, time_step)` and expose the
-current residual vector as `residual.Rv`. Both `ACPowerFlowResidual` and
-`ACRectangularCIResidual` satisfy this. `Jv::AbstractMatrix` so we can
+`residual` is called via `residual(data, x, time_step)` — `data` is threaded explicitly for
+every residual type (`ACPowerFlowResidual`, `ACRectangularCIResidual`, `ACMixedCPBResidual`),
+none of which store it. Exposes the current residual vector as `residual.Rv`. `Jv::AbstractMatrix` so we can
 both compute `Jv * u` (asymptotic check) and `Jv[row, j]` (failure
 diagnostic). Methodology mirrors `test_homotopy_hessian.jl`'s
 asymptotic checks for the Hessian/gradient.
@@ -39,6 +39,7 @@ are skipped (cannot distinguish a correct from an incorrect entry there).
 """
 function verify_jacobian_asymptotic(
     residual,
+    data,
     Jv::AbstractMatrix,
     x0::Vector{Float64},
     time_step::Int;
@@ -47,7 +48,7 @@ function verify_jacobian_asymptotic(
     label::String = "",
 )
     n = length(x0)
-    residual(x0, time_step)
+    residual(data, x0, time_step)
     F0 = copy(residual.Rv)
     F0_scale = max(LinearAlgebra.norm(F0), 1.0)
     # Raw-remainder noise floor: below this, `F(x+Δx) - F(x) - Δx·J·u` is
@@ -68,10 +69,10 @@ function verify_jacobian_asymptotic(
         errors = Vector{Float64}(undef, length(Δx_mags))
         for (k, Δx) in enumerate(Δx_mags)
             x1 = x0 .+ Δx .* u
-            residual(x1, time_step)
+            residual(data, x1, time_step)
             errors[k] = LinearAlgebra.norm(residual.Rv .- F0 .- Δx .* Ju) / Δx
         end
-        residual(x0, time_step)  # restore in case caller relies on it
+        residual(data, x0, time_step)  # restore in case caller relies on it
 
         # Filter Δx points whose raw remainder is at FP noise. If every
         # point is at noise, F is locally linear in x_j within machine
@@ -96,11 +97,11 @@ function verify_jacobian_asymptotic(
             # Worst-row diagnostic: row whose remainder is largest at a
             # mid-range Δx — most likely the row whose `Jv[row, j]` is wrong.
             Δx_probe = Δx_mags[end - 1]
-            residual(x0 .+ Δx_probe .* u, time_step)
+            residual(data, x0 .+ Δx_probe .* u, time_step)
             Fp = copy(residual.Rv)
-            residual(x0 .- Δx_probe .* u, time_step)
+            residual(data, x0 .- Δx_probe .* u, time_step)
             Fm = copy(residual.Rv)
-            residual(x0, time_step)
+            residual(data, x0, time_step)
             remainder_probe = Fp .- F0 .- Δx_probe .* Ju
             row_worst = argmax(abs.(remainder_probe))
             symbolic_entry = Jv[row_worst, j]

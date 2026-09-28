@@ -10,8 +10,7 @@ MCPB and rewritten each iteration. PQ off-diagonals are constant `±Y`
 `nonzeros(Jv)` through nzval-index caches built once at construction, so the
 hot path is `O(N + n_LCC)`. Field roles are in the inline comments below.
 """
-struct ACMixedCPBJacobian{D <: ACPowerFlowData}
-    data::D
+struct ACMixedCPBJacobian
     Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE}
     Y_bus_eff::SparseMatrixCSC{ComplexF64, Int}
     Y_diag::Vector{ComplexF64}     # cached Y_bus_eff diagonal; avoids O(log nnz) sparse access per iteration
@@ -43,11 +42,12 @@ struct ACMixedCPBJacobian{D <: ACPowerFlowData}
 end
 
 function ACMixedCPBJacobian(
+    data::ACPowerFlowData,
     residual::ACMixedCPBResidual,
     time_step::Int64,
 )
     Jv0 = _create_mixed_cpb_jacobian_structure(
-        residual.data,
+        data,
         residual.Y_bus_eff,
         residual.bus_slack_participation_factors,
         residual.subnetworks,
@@ -63,9 +63,9 @@ function ACMixedCPBJacobian(
         Jv0,
         residual.Y_bus_eff,
         residual.bus_state_offset,
-        view(residual.data.bus_type, :, time_step),
+        view(data.bus_type, :, time_step),
     )
-    n_buses = first(size(residual.data.bus_type))
+    n_buses = first(size(data.bus_type))
     Y_diag = Vector{ComplexF64}(undef, n_buses)
     @inbounds for i in 1:n_buses
         Y_diag[i] = residual.Y_bus_eff[i, i]
@@ -76,7 +76,7 @@ function ACMixedCPBJacobian(
     offdiag_pv_nz, offdiag_pv_i, offdiag_pv_k, offdiag_pv_y =
         _build_offdiag_pv_nz_cache(
             Jv0, residual.Y_bus_eff, residual.bus_state_offset,
-            view(residual.data.bus_type, :, time_step),
+            view(data.bus_type, :, time_step),
         )
     # REF status is fixed for the life of a solve; reuse the residual's
     # already-computed set instead of reallocating it here.
@@ -85,17 +85,16 @@ function ACMixedCPBJacobian(
             Jv0, residual.bus_state_offset, residual.subnetworks,
             residual.bus_slack_participation_factors, residual.independent_ref,
         )
-    n_lccs = size(residual.data.lcc.p_set, 1)
+    n_lccs = size(data.lcc.p_set, 1)
     lcc_nz = _build_lcc_nz_cache(
-        Jv0, residual.data, residual.bus_state_offset,
+        Jv0, data, residual.bus_state_offset,
         residual.total_bus_state, n_lccs,
     )
     vsc_nz = _build_vsc_nz_cache(
-        Jv0, get_dc_network(residual.data), residual.bus_state_offset,
+        Jv0, get_dc_network(data), residual.bus_state_offset,
         residual.total_bus_state, n_lccs,
     )
     J = ACMixedCPBJacobian(
-        residual.data,
         Jv0,
         residual.Y_bus_eff,
         Y_diag,
@@ -124,12 +123,12 @@ function ACMixedCPBJacobian(
         lcc_nz,
         vsc_nz,
     )
-    J(time_step)  # populate state-dependent entries (diagonals, PV off-diag, slack, LCC tail)
+    J(data, time_step)  # populate state-dependent entries (diagonals, PV off-diag, slack, LCC tail)
     return J
 end
 
-function (J::ACMixedCPBJacobian)(time_step::Int64)
-    _update_mixed_cpb_jacobian_values!(J.Jv, J.data, J.Y_diag,
+function (J::ACMixedCPBJacobian)(data::ACPowerFlowData, time_step::Int64)
+    _update_mixed_cpb_jacobian_values!(J.Jv, data, J.Y_diag,
         J.e_state, J.f_state, J.P_eff_cache, J.Q_eff_cache,
         J.const_I_P, J.const_I_Q, J.Ir_acc, J.Ii_acc,
         J.bus_slack_participation_factors, J.independent_ref,
@@ -141,10 +140,11 @@ function (J::ACMixedCPBJacobian)(time_step::Int64)
 end
 
 function (J::ACMixedCPBJacobian)(
+    data::ACPowerFlowData,
     Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
     time_step::Int64,
 )
-    _update_mixed_cpb_jacobian_values!(J.Jv, J.data, J.Y_diag,
+    _update_mixed_cpb_jacobian_values!(J.Jv, data, J.Y_diag,
         J.e_state, J.f_state, J.P_eff_cache, J.Q_eff_cache,
         J.const_I_P, J.const_I_Q, J.Ir_acc, J.Ii_acc,
         J.bus_slack_participation_factors, J.independent_ref,

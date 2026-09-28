@@ -57,10 +57,11 @@ function _reset_for_reuse!(stateVector::StateVectorCache)
 end
 
 """Polar NR/TR workspace stored in `data.polar_nr_cache`, reused across Q-limit retries and time
-steps. `bus_type_snapshot` holds the bus types it was built for."""
-struct PolarNRCache{C <: PFLinearSolverCache, D <: ACPowerFlowData} <: AbstractNRCache
-    residual::ACPowerFlowResidual{D}
-    J::ACPowerFlowJacobian{D}
+steps. `bus_type_snapshot` holds the bus types it was built for. `residual` and `J` do not store
+`data`: this cache hangs off `data`, so a back-reference would form a cycle."""
+struct PolarNRCache{C <: PFLinearSolverCache} <: AbstractNRCache
+    residual::ACPowerFlowResidual
+    J::ACPowerFlowJacobian
     linSolveCache::C
     stateVector::StateVectorCache
     backend::PNM.LinearSolverType
@@ -69,9 +70,10 @@ end
 
 """Refresh `entry.residual` in place for `time_step`. Returns `false` when the subnetwork
 partition, slack-participating buses, or REF buses changed and the caller must rebuild."""
-function _refresh_polar_residual!(entry::PolarNRCache, time_step::Int64)
+function _refresh_polar_residual!(
+    entry::PolarNRCache, data::ACPowerFlowData, time_step::Int64,
+)
     residual = entry.residual
-    data = residual.data
     bus_type = view(data.bus_type, :, time_step)
 
     if bus_type == entry.bus_type_snapshot
@@ -147,12 +149,13 @@ end
 `J.Jv` might be singular."""
 function _set_Δx_nr!(stateVector::StateVectorCache,
     J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
+    data::ACPowerFlowData,
     linSolveCache::PFLinearSolverCache,
     solver::ACPowerFlowSolverType,
     refinement_threshold::Float64,
     refinement_eps::Float64)
     use_fallback = false
-    _count_numeric_refactor!(J.data)
+    _count_numeric_refactor!(data)
     try
         numeric_refactor!(linSolveCache, J.Jv)
     catch e
@@ -309,7 +312,7 @@ function _dogleg!(Δx_proposed::Vector{Float64},
 end
 
 """Accept a trust region step: update cached residual and autoscale vector `d`.
-The caller is responsible for recomputing the Jacobian via `J(time_step)` before
+The caller is responsible for recomputing the Jacobian via `J(data, time_step)` before
 calling this, so that `Jv` reflects the new state."""
 function _accept_trust_region_step!(
     stateVector::StateVectorCache,
@@ -335,6 +338,7 @@ function _iwamoto_fallback!(
     stateVector::StateVectorCache,
     residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
     J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
+    data::ACPowerFlowData,
     old_residual::Vector{Float64},
     old_residual_norm::Float64,
     autoscale::Bool,
@@ -347,12 +351,12 @@ function _iwamoto_fallback!(
     μ = _iwamoto_multiplier(2.0 * c_fb, c_bb + 2.0 * c_fa, 2.0 * c_ba, c_aa)
     # Revert full step, apply damped step in a single fused pass.
     @. stateVector.x += (μ - 1.0) * stateVector.Δx_proposed
-    residual(stateVector.x, time_step)
+    residual(data, stateVector.x, time_step)
     g_damped = dot(residual.Rv, residual.Rv)
     if g_damped < g0
         @debug "Iwamoto fallback accepted: μ = $(siground(μ)), " *
                "g_damped/g₀ = $(siground(g_damped / g0))"
-        J(time_step)
+        J(data, time_step)
         _accept_trust_region_step!(stateVector, residual, J.Jv, autoscale)
         return true
     else
@@ -374,6 +378,7 @@ function _trust_region_step(time_step::Int,
     linSolveCache::PFLinearSolverCache,
     residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
     J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
+    data::ACPowerFlowData,
     delta::Float64,
     delta_max::Float64,
     eta::Float64,
@@ -384,6 +389,7 @@ function _trust_region_step(time_step::Int,
     _set_Δx_nr!(
         stateVector,
         J,
+        data,
         linSolveCache,
         TrustRegionACPowerFlow(),
         DEFAULT_REFINEMENT_THRESHOLD,
@@ -407,7 +413,7 @@ function _trust_region_step(time_step::Int,
     oldResidual = stateVector.Δx_nr
     copyto!(oldResidual, residual.Rv)
     old_residual_norm = sum(abs2, stateVector.r)
-    residual(stateVector.x, time_step)
+    residual(data, stateVector.x, time_step)
     new_residual_norm = sum(abs2, residual.Rv)
 
     # Ratio of actual to predicted reduction
@@ -431,14 +437,14 @@ function _trust_region_step(time_step::Int,
     if rho > eta
         # Successful iteration
         @debug "Step accepted: sum of squares $(siground(dot(residual.Rv, residual.Rv))), L ∞ norm $(siground(norm(residual.Rv, Inf))), Δ = $(siground(delta)), ||Δx|| = $(siground(norm(stateVector.Δx_proposed)))"
-        J(time_step)
+        J(data, time_step)
         _accept_trust_region_step!(stateVector, residual, J.Jv, autoscale)
         step_accepted = true
     else
         # Unsuccessful step — try Iwamoto damping before reverting.
         if iwamoto_fallback
             iwamoto_accepted = _iwamoto_fallback!(
-                time_step, stateVector, residual, J,
+                time_step, stateVector, residual, J, data,
                 oldResidual, old_residual_norm, autoscale)
             if iwamoto_accepted
                 # Iwamoto accepted a damped step — shrink trust region since the
@@ -616,6 +622,7 @@ function _simple_step(time_step::Int,
     linSolveCache::PFLinearSolverCache,
     residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
     J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
+    data::ACPowerFlowData,
     refinement_threshold::Float64 = DEFAULT_REFINEMENT_THRESHOLD,
     refinement_eps::Float64 = DEFAULT_REFINEMENT_EPS,
 )
@@ -623,6 +630,7 @@ function _simple_step(time_step::Int,
     _set_Δx_nr!(
         stateVector,
         J,
+        data,
         linSolveCache,
         NewtonRaphsonACPowerFlow(),
         refinement_threshold,
@@ -632,9 +640,9 @@ function _simple_step(time_step::Int,
     stateVector.x .+= stateVector.Δx_nr
     # update data's fields (the bus angles/voltages) to match x, and update the residual.
     # do this BEFORE updating the Jacobian. The Jacobian computation uses data's fields, not x.
-    residual(stateVector.x, time_step)
+    residual(data, stateVector.x, time_step)
     # update jacobian.
-    J(time_step)
+    J(data, time_step)
     return
 end
 
@@ -652,6 +660,7 @@ function _iwamoto_step(time_step::Int,
     linSolveCache::PFLinearSolverCache,
     residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
     J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
+    data::ACPowerFlowData,
     refinement_threshold::Float64 = DEFAULT_REFINEMENT_THRESHOLD,
     refinement_eps::Float64 = DEFAULT_REFINEMENT_EPS,
 )::Bool
@@ -661,6 +670,7 @@ function _iwamoto_step(time_step::Int,
     _set_Δx_nr!(
         stateVector,
         J,
+        data,
         linSolveCache,
         NewtonRaphsonACPowerFlow(),
         refinement_threshold,
@@ -669,7 +679,7 @@ function _iwamoto_step(time_step::Int,
     # Take full trial step: x += Δx_nr
     stateVector.x .+= stateVector.Δx_nr
     # Evaluate trial residual b = F(x + Δx)
-    residual(stateVector.x, time_step)
+    residual(data, stateVector.x, time_step)
 
     # Compute gram scalars for Iwamoto criterion
     g0 = dot(stateVector.r, stateVector.r)
@@ -679,7 +689,7 @@ function _iwamoto_step(time_step::Int,
     if g2 < g0
         # Full step reduced residual — accept it (μ = 1).
         @debug "Iwamoto: full step accepted (g₂/g₀ = $(g2/g0))"
-        J(time_step)
+        J(data, time_step)
         return true
     end
 
@@ -690,7 +700,7 @@ function _iwamoto_step(time_step::Int,
     stateVector.x .-= stateVector.Δx_nr
     stateVector.x .+= μ .* stateVector.Δx_nr
     # Re-evaluate residual at damped point.
-    residual(stateVector.x, time_step)
+    residual(data, stateVector.x, time_step)
     # Check whether the damped step actually improved the residual.
     g_damped = dot(residual.Rv, residual.Rv)
     if g_damped >= g0
@@ -698,11 +708,11 @@ function _iwamoto_step(time_step::Int,
         @debug "Iwamoto: damped step did not reduce residual " *
                "(g_damped/g₀ = $(g_damped/g0), μ = $μ); reverting"
         stateVector.x .-= μ .* stateVector.Δx_nr
-        residual(stateVector.x, time_step)
+        residual(data, stateVector.x, time_step)
         return false
     end
     # Damped step improved — accept it.
-    J(time_step)
+    J(data, time_step)
     return true
 end
 
@@ -757,6 +767,7 @@ function _run_power_flow_method(time_step::Int,
     linSolveCache::PFLinearSolverCache,
     residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
     J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
+    data::ACPowerFlowData,
     ::Type{NewtonRaphsonACPowerFlow};
     maxIterations::Int = DEFAULT_NR_MAX_ITER,
     tol::Float64 = DEFAULT_NR_TOL,
@@ -771,7 +782,7 @@ function _run_power_flow_method(time_step::Int,
     validate_vms = validate_voltage_magnitudes
     i, converged = 1, false
     consecutive_reverts = 0
-    monitor, diag_state = setup_solver_diagnostics(J, stop_at_fold)
+    monitor, diag_state = setup_solver_diagnostics(J, data, stop_at_fold)
     while i < maxIterations && !converged
         if iwamoto
             made_progress = _iwamoto_step(
@@ -780,6 +791,7 @@ function _run_power_flow_method(time_step::Int,
                 linSolveCache,
                 residual,
                 J,
+                data,
                 refinement_threshold,
                 refinement_eps,
             )
@@ -799,6 +811,7 @@ function _run_power_flow_method(time_step::Int,
                 linSolveCache,
                 residual,
                 J,
+                data,
                 refinement_threshold,
                 refinement_eps,
             )
@@ -813,7 +826,7 @@ function _run_power_flow_method(time_step::Int,
             # After `_simple_step`, J.Jv and residual.Rv are at the same iterate, so
             # one refactor feeds both the log line and the bail-out.
             run_solver_diagnostics!(
-                diag_state, "NR iter $i", residual, J, time_step,
+                diag_state, "NR iter $i", residual, J, data, time_step,
                 linSolveCache, monitor, stop_at_fold) &&
                 return false, i
         end
@@ -842,6 +855,7 @@ function _run_power_flow_method(time_step::Int,
     linSolveCache::PFLinearSolverCache,
     residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
     J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
+    data::ACPowerFlowData,
     ::Type{TrustRegionACPowerFlow};
     maxIterations::Int = DEFAULT_NR_MAX_ITER,
     tol::Float64 = DEFAULT_NR_TOL,
@@ -876,7 +890,7 @@ function _run_power_flow_method(time_step::Int,
     linf = norm(residual.Rv, Inf)
     @debug "initially: sum of squares $(siground(residualSize)), L ∞ norm $(siground(linf)), Δ $(siground(delta))"
 
-    monitor, diag_state = setup_solver_diagnostics(J, stop_at_fold)
+    monitor, diag_state = setup_solver_diagnostics(J, data, stop_at_fold)
     while i < maxIterations && !converged
         delta = _trust_region_step(
             time_step,
@@ -884,6 +898,7 @@ function _run_power_flow_method(time_step::Int,
             linSolveCache,
             residual,
             J,
+            data,
             delta,
             delta_max,
             eta,
@@ -900,7 +915,7 @@ function _run_power_flow_method(time_step::Int,
             # After `_trust_region_step` (incl. reject and iwamoto-fallback), J.Jv and
             # residual.Rv are at the same iterate, so one refactor feeds both.
             run_solver_diagnostics!(
-                diag_state, "TR iter $i", residual, J, time_step,
+                diag_state, "TR iter $i", residual, J, data, time_step,
                 linSolveCache, monitor, stop_at_fold) &&
                 return false, i
         end
@@ -1074,7 +1089,7 @@ function _nr_initialize_with_jacobian_deferred(
 end
 
 # Rectangular/mixed: J is structure-only (no value evaluation), cheap enough to build eagerly.
-# These formulations do not call J(time_step) in their setup, so the cost is just the
+# These formulations do not call J(data, time_step) in their setup, so the cost is just the
 # sparse-structure allocation (~1-2 MB), not the full evaluation.
 function _nr_initialize_with_jacobian_deferred(
     pf::ACRectangularPowerFlow{T},
@@ -1091,10 +1106,10 @@ function _nr_initialize_with_jacobian_deferred(
     else
         x0_computed = copy(x0)
         @warn "Using caller-provided x0; skipping improve_x0."
-        residual(x0_computed, time_step)
+        residual(data, x0_computed, time_step)
     end
     _log_initial_residual(residual)
-    J = ACRectangularCIJacobian(residual, time_step)
+    J = ACRectangularCIJacobian(data, residual, time_step)
     return residual, J, x0_computed
 end
 
@@ -1113,23 +1128,30 @@ function _nr_initialize_with_jacobian_deferred(
     else
         x0_computed = copy(x0)
         @warn "Using caller-provided x0; skipping improve_x0."
-        residual(x0_computed, time_step)
+        residual(data, x0_computed, time_step)
     end
     _log_initial_residual(residual)
-    J = ACMixedCPBJacobian(residual, time_step)
+    J = ACMixedCPBJacobian(data, residual, time_step)
     return residual, J, x0_computed
 end
 
 # Build the Jacobian when the deferred path (polar) needs it after a failed convergence check.
 # Rectangular/mixed already have J from setup.
 function _nr_build_jacobian(
-    ::ACPolarPowerFlow, residual::ACPowerFlowResidual, ::Nothing, time_step::Int64,
+    ::ACPolarPowerFlow, data::ACPowerFlowData, residual::ACPowerFlowResidual, ::Nothing,
+    time_step::Int64,
 )
-    J = ACPowerFlowJacobian(residual, time_step)
-    J(time_step)
+    J = ACPowerFlowJacobian(data, residual, time_step)
+    J(data, time_step)
     return J
 end
-_nr_build_jacobian(::AbstractACPowerFlow, residual, J, time_step::Int64) = J
+_nr_build_jacobian(
+    ::AbstractACPowerFlow,
+    ::ACPowerFlowData,
+    residual,
+    J,
+    time_step::Int64,
+) = J
 
 """Shared fresh-build body for `_newton_workspace!`: initialize the residual (deferring the
 Jacobian per `_nr_initialize_with_jacobian_deferred`), return early on a 0-iteration warm start,
@@ -1148,7 +1170,7 @@ function _fresh_newton_workspace(
         _nr_initialize_with_jacobian_deferred(pf, data, time_step; init_kwargs...)
     converged = norm(residual.Rv, Inf) < tol
     converged && return residual, J_deferred, x0_init, nothing, nothing, true
-    J = _nr_build_jacobian(pf, residual, J_deferred, time_step)
+    J = _nr_build_jacobian(pf, data, residual, J_deferred, time_step)
     linSolveCache = make_linear_solver_cache(backend, J.Jv)
     symbolic_factor!(linSolveCache, J.Jv)
     _count_symbolic_factor!(data)
@@ -1235,7 +1257,7 @@ function _newton_workspace!(
         _nr_initialize_with_jacobian_deferred(pf, data, time_step; init_kwargs...)
     converged = norm(residual.Rv, Inf) < tol
     converged && return residual, J_deferred, x0_init, nothing, nothing, true
-    J = _nr_build_jacobian(pf, residual, J_deferred, time_step)
+    J = _nr_build_jacobian(pf, data, residual, J_deferred, time_step)
     linSolveCache, stateVector = _get_or_build_rect_mixed_cache!(
         data.solver_cache[], data, backend, J.Jv, x0_init, residual.Rv)
     return residual, J, x0_init, linSolveCache, stateVector, false
@@ -1294,7 +1316,7 @@ function _polar_newton_workspace!(
         # The reuse path always recomputes the start point via `improve_x0`, so it can't honor
         # a caller-provided `x0`; excluding it here keeps that path from being silently ignored.
         !haskey(init_kwargs, :x0) &&
-        _refresh_polar_residual!(entry, time_step)
+        _refresh_polar_residual!(entry, data, time_step)
     can_reuse ||
         return _polar_newton_workspace!(
             nothing,
@@ -1324,7 +1346,7 @@ function _polar_newton_workspace!(
     # Defer the Jacobian fill past the convergence check: a 0-iteration warm start must not
     # pay for it. `nothing` lets the caller rebuild only if it actually needs J.
     converged && return residual, nothing, x0_init, nothing, nothing, true
-    J(time_step)
+    J(data, time_step)
     # Reuse the linear-solver cache (symbolic factorization holds: pattern is bus-type-agnostic)
     # and the state-vector buffers; refresh only the per-solve values.
     linSolveCache = entry.linSolveCache
@@ -1386,6 +1408,7 @@ function _newton_power_flow(
             linSolveCache,
             residual,
             J,
+            data,
             T;
             tol,
             maxIterations,
@@ -1410,7 +1433,7 @@ function _newton_power_flow(
     # opted into loss / voltage-stability factors — those need J even at 0 iterations, or a
     # first solve that lands within tol would leave them at their zero-initialized values.
     if get_calculate_loss_factors(data) || get_calculate_voltage_stability_factors(data)
-        J = _nr_build_jacobian(pf, residual, J_or_nothing, time_step)
+        J = _nr_build_jacobian(pf, data, residual, J_or_nothing, time_step)
         return _finalize_power_flow(
             converged, i, string(T), residual, data, J.Jv, time_step)
     end

@@ -209,10 +209,10 @@ function run_trial(sys, solver_type, solver_settings, x_solved, n, bus_types, K;
     # consistently across all methods (including homotopy).
     residual_obj = PF.ACPowerFlowResidual(data, 1)
     if haskey(kwargs, :x0)
-        residual_obj(kwargs[:x0], 1)
+        residual_obj(data, kwargs[:x0], 1)
     else
         x0_default = PF.calculate_x0(data, 1)
-        residual_obj(x0_default, 1)
+        residual_obj(data, x0_default, 1)
     end
     init_res_L2 = norm(residual_obj.Rv, 2)
     init_res_Linf = norm(residual_obj.Rv, Inf)
@@ -237,7 +237,7 @@ function run_trial(sys, solver_type, solver_settings, x_solved, n, bus_types, K;
 
     # Compute final power flow residual directly — don't rely on log capture,
     # which may be missing (homotopy) or absent on non-convergence.
-    residual_obj(x_final, 1)
+    residual_obj(data, x_final, 1)
     final_res_L2 = norm(residual_obj.Rv, 2)
     final_res_Linf = norm(residual_obj.Rv, Inf)
 

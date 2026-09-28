@@ -25,7 +25,7 @@ function _mixed_lcc_residual_norm(
     x = Vector{Float64}(undef, length(R.Rv))
     PF.mixed_initial_state!(x, data, R.bus_state_offset, R.bus_block_size, 1)
     Rv = similar(x)
-    R(Rv, x, 1)
+    R(data, Rv, x, 1)
     return LinearAlgebra.norm(Rv, Inf)
 end
 
