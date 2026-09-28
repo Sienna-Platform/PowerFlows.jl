@@ -338,10 +338,8 @@ function _decide_det_sign_switch!(
     return bail
 end
 
-"""Does bordering `k` have a previous sign to vote with this iteration? `false` when it has none
-yet (fresh or just re-picked), or `g` is exactly zero, which holds the previous sign rather than
-casting a vote. Reads `mon.signs` without writing, so it answers the same before and after the
-verdict — which is why the signs are committed in a second pass."""
+"""Whether bordering `k` votes this iteration: `false` when it has no previous sign or `g` is
+exactly zero. Does not modify `mon.signs`."""
 function _bordering_has_vote(mon::BorderedFoldMonitor, g::Float64, k::Int)::Bool
     return !iszero(sign(g)) && !iszero(mon.signs[k])
 end

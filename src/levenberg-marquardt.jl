@@ -100,8 +100,8 @@ function update_lambda!(
 end
 
 """Solve one LM trial step `(JᵀJ + λ·D²)Δx = -Jᵀ·Rv`. Falls back to a fresh
-sparse QR of the augmented system `[J; √λ·D]` (uncached; not meant to be hot)
-if the normal-equations factorization is not positive definite."""
+sparse QR of the augmented system `[J; √λ·D]` if the normal-equations factorization is not
+positive definite."""
 function _lm_solve_step!(
     ws::LMWorkspace,
     Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
@@ -142,12 +142,8 @@ function _lm_qr_fallback(
     return LinearAlgebra.qr(A) \ b
 end
 
-"""Marquardt column scaling default per formulation, dispatched on the formulation TYPE (so
-it can be resolved at evaluation-model construction time, before an instance exists — see the
-`marquardt_scaling` keyword on [`ACPolarPowerFlow`](@ref)/[`ACRectangularPowerFlow`](@ref)/
-[`ACMixedPowerFlow`](@ref)). The rectangular CI state columns `(e, f, Q, P_gen)` differ in
-natural scale, so identity damping is ill-conditioned there — default it on. The polar and
-mixed states are well-scaled, so it defaults off."""
+"""Default `marquardt_scaling` per formulation type: on for rectangular, whose state columns
+`(e, f, Q, P_gen)` differ in scale; off for polar and mixed."""
 _default_marquardt_scaling(::Type{<:AbstractACPowerFlow}) = false
 _default_marquardt_scaling(::Type{<:ACRectangularPowerFlow}) = true
 

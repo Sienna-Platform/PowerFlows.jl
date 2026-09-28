@@ -54,12 +54,9 @@ function _refresh_JtJ!(
     return
 end
 
-"""Build the once-per-construction row-pair cache for [`_refresh_JtJ!`](@ref): for
-each nzval index of `Hv` (whose pattern is the fixed pattern of `J' * J`), the
-`Jv.nzval` offset pairs `(a, b)` with the same row, one from column `i` and one from
-column `j`, so that `Hv[i,j] = sum(Jv.nzval[a] * Jv.nzval[b] for (a,b) in pairs)`.
-Both `Jv.rowval` ranges are sorted, so this is a merge, mirroring how sparse
-matrix-matrix multiplication derives its numeric phase from a fixed symbolic pattern."""
+"""Row-pair cache for [`_refresh_JtJ!`](@ref): for each nzval index of `Hv` (pattern of
+`J' * J`), the `Jv.nzval` offset pairs `(a, b)` such that
+`Hv[i,j] = sum(Jv.nzval[a] * Jv.nzval[b] for (a,b) in pairs)`."""
 function _build_jtj_nz_cache(
     Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
     Hv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
@@ -294,14 +291,8 @@ end
 
 _has_theta(bt::PSY.ACBusTypes.Value) = bt == PSY.ACBusTypes.PQ || bt == PSY.ACBusTypes.PV
 
-"""Build the once-per-construction nzval-offset caches that drive
-[`_update_hessian_matrix_values!`](@ref): for every ordered neighbor pair
-`(i, k)` (i != k) and for every bus `i`, the `Hv.nzval` index of each term the
-fill loop writes, or `0` when that term's bus-type combination means the write
-is skipped (matching the loop's own conditionals exactly). Bus types are fixed
-for the life of a `HomotopyHessian`, so this is safe to compute once and reuse
-every call, replacing a sparse `setindex!` (binary search) with a direct
-`Hvnz[idx] += val` per write."""
+"""`Hv.nzval` indices written by [`_update_hessian_matrix_values!`](@ref), per ordered neighbor
+pair `(i, k)` and per bus `i`; `0` where the bus types skip the write."""
 function _build_hessian_edge_nz_cache(
     Hv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
     data::ACPowerFlowData,

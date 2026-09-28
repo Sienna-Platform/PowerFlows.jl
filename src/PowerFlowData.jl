@@ -158,13 +158,8 @@ struct PowerFlowData{
     dc_network::Base.RefValue{DCNetwork}
     arc_lossy_admittance_from_to::Union{SparseMatrixCSC{YBUS_ELTYPE, Int}, Nothing}
     arc_lossy_admittance_to_from::Union{SparseMatrixCSC{YBUS_ELTYPE, Int}, Nothing}
-    # Persistent solver cache, reused across repeated solves on the same `data` so factorizations
-    # aren't recomputed. Lazily populated on first solve. Holds a [`SolverCache`](@ref);
-    # TYPE-DISJOINT subtypes share this slot:
-    #   * DC (`ABA`/PTDF/vPTDF): [`DCSolverCache`](@ref).
-    #   * FastDecoupled: `FastDecoupledCache` (`:decoupled`) or `FDFixedJacobianCache` (`:fixed_jacobian`).
-    #   * rect/mixed NR/TR: `RectMixedNRCache`; a cross-use from another AC subtype rebuilds instead of erroring.
-    # A getter on the wrong subtype otherwise fails loudly (`MethodError`), not a silent mis-read.
+    # Filled on first solve: `DCSolverCache`, `FastDecoupledCache`, `FDFixedJacobianCache`, or
+    # `RectMixedNRCache`.
     solver_cache::Base.RefValue{Union{Nothing, SolverCache}}
     controlled_devices::Union{Nothing, ControlledDeviceSet}
     # Memoized NR/TR AC-Jacobian sparse structure. Its OWN slot (not `solver_cache`) because the

@@ -380,12 +380,8 @@ function _solve_with_q_limits!(
     return _newton_power_flow(pf, data, time_step; kwargs...)
 end
 
-"""Dispatches on `data.controlled_devices`'s concrete type rather than branching on
-`isnothing`/`isempty` in one method body, so the discrete-control continuation
-(`_control_continuation!` and everything it pulls in) is only ever type-inferred and compiled
-for a call that actually carries a `ControlledDeviceSet` — never for the plain (no discrete
-control) solve, which is the common case and would otherwise pay 36-55% of first-solve compile
-time for a code path it never takes."""
+"""Dispatch on `data.controlled_devices` so the discrete-control continuation is compiled only
+for solves that carry a `ControlledDeviceSet`."""
 function _ac_power_flow(
     data::ACPowerFlowData,
     pf::AbstractACPowerFlow{<:ACPowerFlowSolverType},

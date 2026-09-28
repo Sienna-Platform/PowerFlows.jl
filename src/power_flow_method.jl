@@ -56,11 +56,8 @@ function _reset_for_reuse!(stateVector::StateVectorCache)
     return
 end
 
-"""Persistent reuse cache for the polar NR/TR `_newton_power_flow` path, stored in
-`data.polar_nr_cache` and shared by the Q-limit retry loop and the multi-period time-step loop.
-Residual, Jacobian, and state-vector buffers are structure-invariant across both loops, so they
-are built once and reused; only value paths re-run. `bus_type_snapshot` lets
-`_refresh_polar_residual!` skip the structural rebuild when bus types have not moved."""
+"""Polar NR/TR workspace stored in `data.polar_nr_cache`, reused across Q-limit retries and time
+steps. `bus_type_snapshot` holds the bus types it was built for."""
 struct PolarNRCache{C <: PFLinearSolverCache, D <: ACPowerFlowData} <: AbstractNRCache
     residual::ACPowerFlowResidual{D}
     J::ACPowerFlowJacobian{D}
@@ -70,14 +67,8 @@ struct PolarNRCache{C <: PFLinearSolverCache, D <: ACPowerFlowData} <: AbstractN
     bus_type_snapshot::Vector{PSY.ACBusTypes.Value}
 end
 
-"""Refresh `entry.residual` in place for `time_step`, matching a fresh
-`ACPowerFlowResidual(data, time_step)`.
-
-Reuses the subnetwork partition and PQ index list when `bus_type` matches
-`entry.bus_type_snapshot`; slack weights and setpoints are always recomputed.
-
-Returns `false` (caller rebuilds) if the subnetwork partition, slack-participating bus set, or
-REF-bus set changed; `true` otherwise."""
+"""Refresh `entry.residual` in place for `time_step`. Returns `false` when the subnetwork
+partition, slack-participating buses, or REF buses changed and the caller must rebuild."""
 function _refresh_polar_residual!(entry::PolarNRCache, time_step::Int64)
     residual = entry.residual
     data = residual.data
@@ -1165,11 +1156,8 @@ function _fresh_newton_workspace(
     return residual, J, x0_init, linSolveCache, stateVector, false
 end
 
-"""Persistent reuse cache for the rectangular-CI/mixed-CPB Newton workspace, stored in the shared
-`data.solver_cache` slot. Unlike `PolarNRCache`, the residual and Jacobian are rebuilt each call
-(bus-type flips change the state dimension). This cache instead skips the linear-solver symbolic
-factorization when the rebuilt `J.Jv`'s sparsity fingerprint (`colptr`/`rowval`/size`) matches via
-`_same_sparsity`, reusing `linSolveCache` and the `StateVectorCache` buffers as-is."""
+"""Rectangular/mixed NR/TR linear-solver cache stored in `data.solver_cache`. Reused when the
+rebuilt Jacobian has the recorded sparsity pattern (`colptr`, `rowval`, `m`, `n`)."""
 mutable struct RectMixedNRCache{C <: PFLinearSolverCache} <: SolverCache
     colptr::Vector{J_INDEX_TYPE}
     rowval::Vector{J_INDEX_TYPE}
@@ -1221,12 +1209,9 @@ function _get_or_build_rect_mixed_cache!(
     return _build_rect_mixed_cache!(data, backend, Jv, x0, r0)
 end
 
-"""Build (or, for the polar formulation, reuse) the Newton workspace for one `_newton_power_flow`
-call. Returns `(residual, J, x0_init, linSolveCache, stateVector, converged)`; the solver cache
-and state-vector buffers are `nothing` when the initial point already converged. Non-polar
-formulations (rectangular CI, mixed CPB) always rebuild the residual and Jacobian, since their
-state dimension depends on the bus-type partition, but reuse the `RectMixedNRCache` factorization
-when the rebuilt Jacobian's sparsity pattern matches (see `_get_or_build_rect_mixed_cache!`)."""
+"""Newton workspace for one `_newton_power_flow` call. Returns
+`(residual, J, x0_init, linSolveCache, stateVector, converged)`; `linSolveCache` and
+`stateVector` are `nothing` when the initial point already converged."""
 function _newton_workspace!(
     pf::AbstractACPowerFlow,
     data::ACPowerFlowData,

@@ -461,7 +461,6 @@ Losses are estimated differently depending on whether lossy flows are enabled
   formulation: `Sft = V_f * conj(Y_ft * V)`, `Stf = V_t * conj(Y_tf * V)`. Losses are
   then `Pft + Ptf` (the exact real-power balance across each arc).
 """
-# DC flow: ABA and BA case
 function solve_power_flow!(
     data::ABAPowerFlowData;
     linear_solver::Union{Nothing, AbstractString} = nothing,

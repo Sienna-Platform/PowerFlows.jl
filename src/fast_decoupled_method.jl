@@ -34,11 +34,8 @@ _fd_scheme_from_solver(::Type{FastDecoupledACPowerFlow}) = FDSchemeXB()
 """
     _validate_fd_handoff_solver(handoff_solver)
 
-Validate the [`FastDecoupledACPowerFlow`](@ref) `handoff_solver` setting. Throws a descriptive
-`ArgumentError` on an unsupported value. The `fd_variant`/`fd_scheme` choices are now carried as
-[`FastDecoupledACPowerFlow`](@ref) type parameters, so invalid values are unrepresentable (the type
-system rejects them) and the `FDDecoupled`-is-polar-only constraint is enforced at construction
-(see `_reject_fd_decoupled_on_nonpolar`). Returns `nothing` when valid.
+Throw an `ArgumentError` unless `handoff_solver` is `Nothing`, `NewtonRaphsonACPowerFlow`,
+`TrustRegionACPowerFlow`, or `LevenbergMarquardtACPowerFlow`.
 """
 function _validate_fd_handoff_solver(handoff_solver)
     if !(
@@ -300,17 +297,9 @@ _default_marquardt_scaling(pf::AbstractACPowerFlow) = _default_marquardt_scaling
     _fd_maybe_handoff!(handoff_solver, pf, sv, residual, J, time_step, tol, linear_solver,
                        solver_name, fd_iters) -> (converged::Bool, handoff_iters::Int)
 
-Run the opt-in handoff solver (`NewtonRaphsonACPowerFlow` / `TrustRegionACPowerFlow` /
-`LevenbergMarquardtACPowerFlow`) from the current FD state `sv.x` for final refinement to the
-real `tol`. Dispatches on `handoff_solver` (a `Type`): the `::Type{Nothing}` method is a no-op
-(returns the current convergence status and `0` handoff iterations); the general
-`ACPowerFlowSolverType` method also no-ops when the FD state already meets `tol`, else refreshes
-the formulation Jacobian VALUES at the current FD state and calls the matching inner method:
-NR/TR via the shared `_run_power_flow_method(::StateVectorCache, ::PFLinearSolverCache, ...)`;
-LM via its workspace-based `_run_power_flow_method(x0::Vector, ::LMWorkspace, ...)` adapter.
-All paths mutate `sv.x` / `residual` / `J` in place (the SAME objects the FD loop used), so the
-caller's subsequent `J(time_step)` / `_finalize_*` see the refined solution. `fd_iters` and
-`solver_name` are used only for the `@info` handoff log line.
+Refine the FD solution to `tol` with `handoff_solver` (NR, TR, or LM), starting from `sv.x`.
+A no-op for `Nothing` or when the FD state already meets `tol`. Updates `sv.x`, `residual`,
+and `J` in place.
 """
 function _fd_maybe_handoff!(
     ::Type{Nothing},
