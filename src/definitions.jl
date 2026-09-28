@@ -64,7 +64,10 @@ const LCC_sinϕ_TOLERANCE = 1e-8 # if sin(ϕ) < this, treat dQ/dV as zero to avo
 const LCC_SMALL_ANGLE_THRESHOLD = deg2rad(5) # warn if converged LCC thyristor angle α_r/α_i falls outside (this, π/2 − this)
 
 const DEFAULT_NR_MAX_ITER = 50 # default maxIterations for the NR power flow
-const UNSET_MAX_ITERATIONS = -1 # -1 = unset; formulation constructors replace it with the solver default (see _resolved_max_iterations).
+"""`SolutionParameters.maxIterations` sentinel: when left unset, the formulation
+constructor resolves it to the solver's own default at model construction.
+Never a legitimate iteration count."""
+const UNSET_MAX_ITERATIONS = -1
 const DEFAULT_NR_TOL = 1e-9 # default tolerance for the NR power flow
 const DEFAULT_REFINEMENT_THRESHOLD = 5e-2 # do refinement if relative error > 5%.
 const DEFAULT_REFINEMENT_MAX_ITER = 10 # how many times to try iterative refinement
@@ -137,6 +140,16 @@ const REC_INDEX_TYPE = INDEX_TYPE
 # `ac_power_flow_residual.jl`, `ac_power_flow_jacobian.jl`, and the rectangular
 # CI counterparts.
 const SQRT6_DIV_PI = sqrt(6) / π
+# Feasibility tolerance for the GA LCC closed form: |S| = (V·t)·K·I must be ≥ |P|
+# up to this slack; below it, `cos φ` would exceed 1 and the operating point is infeasible.
+const GA_LCC_FEASIBILITY_TOL = 1e-12
+# Newton cap for the GA per-iteration VSC DC substep (spec §3.8).
+const GA_DC_MAX_ITER = 3
+const DEFAULT_GA_MAX_ITER = 500 # generalized-admittance fixed-point iteration cap
+const GA_DIVERGENCE_FACTOR = 1e3 # stage diverged when gap > factor × best gap
+const GA_STAGNATION_WINDOW = 20 # iterations per stagnation check (only with a handoff)
+const GA_STAGNATION_RATIO = 0.1 # minimum relative best-gap improvement per window
+const GA_CONSISTENCY_FACTOR = 10.0 # no-DC case: gap ≤ tol but residual > factor·tol ⇒ bug
 
 # voltage validation
 const DEFAULT_VALIDATE_VOLTAGES = true
