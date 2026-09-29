@@ -40,7 +40,7 @@ function _calculate_fixed_admittance_powers(
             if get_bus_type(data)[bus_ix, time_step] == PSY.ACBusTypes.PQ
                 get_bus_magnitude(data)[bus_ix, time_step]^2
             else # PV/REF bus, so V is known.
-                PSY.get_magnitude(b)^2
+                PSY.get_magnitude(b, PSY.CU)^2
             end
         sumSoFar = get(busIxToFAPower, bus_ix, (0.0, 0.0))
         y1, y2 = real(PSY.get_Y(l)), imag(PSY.get_Y(l))
@@ -978,7 +978,7 @@ function write_power_flow_solution!(
             elseif bustype == PSY.ACBusTypes.PQ
                 Vm = data.bus_magnitude[ix, time_step]
                 θ = data.bus_angles[ix, time_step]
-                PSY.set_magnitude!(bus, Vm)
+                PSY.set_magnitude!(bus, Vm * PSY.CU)
                 PSY.set_angle!(bus, θ)
             end
         else
@@ -1112,7 +1112,7 @@ function write_power_flow_solution!(
             PSY.set_bustype!(bus, bustype)
         end
         PSY.set_angle!(bus, data.bus_angles[ix, time_step])
-        PSY.set_magnitude!(bus, 1.0)
+        PSY.set_magnitude!(bus, 1.0 * PSY.CU)
         participates = !iszero(data.bus_slack_participation_factors[ix, time_step])
         redistribute =
             !pf.skip_redistribution &&
@@ -2191,7 +2191,7 @@ function update_system!(sys::PSY.System, data::PowerFlowData; time_step = 1)
         elseif bus_type == PSY.ACBusTypes.PQ
             # For PQ bus, active and reactive are fixed; update voltage and angle
             Vm = data.bus_magnitude[bus_index, time_step]
-            PSY.set_magnitude!(bus, Vm)
+            PSY.set_magnitude!(bus, Vm * PSY.CU)
             PSY.set_angle!(bus, data.bus_angles[bus_index, time_step])
             # if it used to be a PV bus, also set the Q value -- unless correct_bustypes
             # demoted it to PQ for having no available source, in which case there is no

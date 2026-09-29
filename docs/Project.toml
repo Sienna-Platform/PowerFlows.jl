@@ -26,8 +26,9 @@ InfrastructureSystems = {rev = "IS4", url = "https://github.com/Sienna-Platform/
 # Pinned to the branch rather than the registry: registry PNM v0.24 requires PowerSystems
 # 5.11, which this line (5.10.0) does not satisfy.
 PowerNetworkMatrices = {url = "https://github.com/Sienna-Platform/PowerNetworkMatrices.jl.git", rev = "psy6"}
-PowerSystemCaseBuilder = {url = "https://github.com/Sienna-Platform/PowerSystemCaseBuilder.jl.git", rev = "psy6"}
-PowerSystems = {rev = "psy6", url = "https://github.com/Sienna-Platform/PowerSystems.jl.git"}
+# TODO: revert to rev = "psy6" once PowerSystems.jl#1823 (and its PowerSystemCaseBuilder companion) merge.
+PowerSystemCaseBuilder = {url = "https://github.com/Sienna-Platform/PowerSystemCaseBuilder.jl.git", rev = "lk/voltage-units-1821"}
+PowerSystems = {rev = "lk/voltage-units-1821", url = "https://github.com/Sienna-Platform/PowerSystems.jl.git"}
 # PSCB's own [sources] pin for this is ignored once PSCB is a dependency rather than the root
 # project; the docs env needs its own pin so Pkg can resolve PSCB's unregistered parser dep.
 PowerTableDataParser = {url = "https://github.com/NLR-Sienna/PowerTableDataParser.jl.git", rev = "psy6"}
