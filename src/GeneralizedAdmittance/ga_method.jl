@@ -2,12 +2,7 @@
 # stage with its exit singletons, best-iterate write-back, the polar residual check
 # through the shared explicit-state sync, and the opt-in NR/TR/LM handoff.
 
-abstract type GAStageExit end
-struct GAConverged <: GAStageExit end
-struct GAMaxIter <: GAStageExit end
-struct GANonFinite <: GAStageExit end
-struct GADiverged <: GAStageExit end
-struct GAStagnated <: GAStageExit end
+@enum GAStageExit::Int8 GAConverged GAMaxIter GANonFinite GADiverged GAStagnated
 
 struct GASolveReport
     converged::Bool
@@ -15,74 +10,139 @@ struct GASolveReport
     stage_iterations::Int
     handoff_iterations::Int
     best_gap::Float64
+    refreshes::Int
 end
 
 # Stagnation only matters when a handoff can rescue; without one, let slow runs finish.
 _ga_stagnation_enabled(::Type{NoHandoff}) = false
 _ga_stagnation_enabled(::Type{<:ACPowerFlowSolverType}) = true
 
-# The polar residual's single-swing REF P row after the explicit sync is the negated sum
-# of the island's other P rows (§4.3), so it can reach n_l × the gap while the gap (a
-# per-bus max) sits at tol. With no handoff to polish, the stage must therefore hold the
-# gap to tol / n_l for the residual ∞-norm check at tol to pass reliably.
-_ga_stage_tol(::Type{NoHandoff}, tol::Float64, ::Float64, n_l::Int) = tol / n_l
-_ga_stage_tol(handoff_solver::Type{<:ACPowerFlowSolverType}, tol::Float64,
-    handoff_tol::Float64, ::Int) = _fd_stage_tol(handoff_solver, tol, handoff_tol)
+# Without a handoff the exit gap also bounds each island's signed P sum, which is the REF P
+# row of the polar residual after the explicit sync; a handoff solver closes that row itself.
+function _ga_exit_gap(::Type{NoHandoff}, bus_gap::Float64, ws::GAWorkspace)
+    return max(bus_gap, maximum(abs, ws.psum; init = 0.0))
+end
+_ga_exit_gap(::Type{<:ACPowerFlowSolverType}, bus_gap::Float64, ::GAWorkspace) = bus_gap
 
-function _ga_run_stage!(
-    ws::GAWorkspace,
+# Shunts from the current iterate; moving the currents by Δy ⊙ u offsets the change of Yℓℓ
+# at that iterate, so the next voltages stay close.
+function _ga_refresh_shunts!(
     cache::GeneralizedAdmittanceCache,
     np::GANodalPower,
     y::Vector{ComplexF64},
     part::GAPartition,
-    dc,
+    κ::Float64,
+    u_s::Vector{ComplexF64},
+    bus_lookup::Dict{Int, Int},
+)
+    ws = cache.ws
+    _ga_ideal_shunts!(ws.y_new, ws, np, part)
+    _ga_stiffen_pv!(ws.y_new, cache.blocks, n_v(part), κ)
+    @inbounds for k in eachindex(y)
+        ws.i[k] += (ws.y_new[k] - y[k]) * ws.u[k]
+        y[k] = ws.y_new[k]
+    end
+    _ga_factor!(cache, y, part, bus_lookup)
+    _ga_u0!(ws, cache, u_s)
+    _ga_anderson_reset!(cache.aa, ws.i)
+    return
+end
+
+function _ga_run_stage!(
+    cache::GeneralizedAdmittanceCache,
+    np::GANodalPower,
+    y::Vector{ComplexF64},
+    part::GAPartition,
+    dc::GADCContext,
     conv::GAConverterTerms,
+    u_s::Vector{ComplexF64},
+    bus_lookup::Dict{Int, Int},
     time_step::Int,
     max_iter::Int,
     stage_tol::Float64,
-    stagnation::Bool,
-)
+    handoff_solver::Type{H},
+) where {H}
+    stagnation = _ga_stagnation_enabled(handoff_solver)
+    ws = cache.ws
+    aa = cache.aa
+    _ga_anderson_reset!(aa, ws.i)
     best_gap = Inf
     window_best = Inf
+    refresh_gap = 0.0
+    segment_best = Inf
+    stall_best = Inf
+    stall = 0
+    κ = GA_PV_STIFFNESS_FRACTION
+    refreshes = 0
     for k in 1:max_iter
         dc_change = 0.0
         if k > 1
             dc_change = _ga_dc_substep!(dc, ws, np, part, conv, time_step)
         end
-        gap = max(_ga_iterate!(ws, cache, np, y, part.Vset, n_v(part)), dc_change)
-        if !isfinite(gap)
-            return (GANonFinite(), k, best_gap)
+        copyto!(ws.i, aa.x)
+        gap = max(_ga_iterate!(cache, np, y, part), dc_change)
+        exit_gap = _ga_exit_gap(handoff_solver, gap, ws)
+        if !isfinite(exit_gap)
+            return (GANonFinite, k, best_gap, refreshes)
         end
-        if gap < best_gap
-            best_gap = gap
+        if exit_gap < best_gap
+            best_gap = exit_gap
             copyto!(ws.u_best, ws.u)
         end
-        if gap <= stage_tol
-            return (GAConverged(), k, best_gap)
+        if exit_gap <= stage_tol
+            return (GAConverged, k, best_gap, refreshes)
         end
-        if gap > GA_DIVERGENCE_FACTOR * best_gap
-            return (GADiverged(), k, best_gap)
+        segment_best = min(segment_best, gap)
+        if gap > GA_DIVERGENCE_FACTOR * segment_best
+            return (GADiverged, k, best_gap, refreshes)
         end
+        # With a handoff the exit gap is the per-bus gap, so best_gap tracks it.
         if stagnation && iszero(k % GA_STAGNATION_WINDOW)
             if best_gap > (1.0 - GA_STAGNATION_RATIO) * window_best
-                return (GAStagnated(), k, best_gap)
+                return (GAStagnated, k, best_gap, refreshes)
             end
             window_best = best_gap
         end
+        if k == 1
+            refresh_gap = gap
+        end
+        if gap < (1.0 - GA_STALL_GAIN) * stall_best
+            stall_best = gap
+            stall = 0
+        else
+            stall += 1
+        end
+        dropped = GA_REFRESH_DROP * gap <= refresh_gap
+        if dropped || stall >= GA_STALL_ITERATIONS
+            if dropped
+                κ = 0.0
+            else
+                κ = max(GA_RESTIFFEN_GROWTH * κ,
+                    GA_RESTIFFEN_FLOOR * GA_PV_STIFFNESS_FRACTION)
+            end
+            _ga_refresh_shunts!(cache, np, y, part, κ, u_s, bus_lookup)
+            refreshes += 1
+            refresh_gap = gap
+            segment_best = Inf
+            stall_best = Inf
+            stall = 0
+        else
+            _ga_anderson_step!(aa, ws.i)
+        end
     end
-    return (GAMaxIter(), max_iter, best_gap)
+    return (GAMaxIter, max_iter, best_gap, refreshes)
 end
 
 function _ga_write_back!(
     data::ACPowerFlowData,
     part::GAPartition,
     u_l::Vector{ComplexF64},
-    dc,
+    dc::GADCContext,
     time_step::Int,
 )
     for (j, ix) in enumerate(part.l_ix)
-        data.bus_magnitude[ix, time_step] = abs(u_l[j])
-        data.bus_angles[ix, time_step] = angle(u_l[j])
+        get_bus_magnitude(data)[ix, time_step] = abs(u_l[j])
+        get_bus_angles(data)[ix, time_step] = angle(u_l[j])
     end
     _fd_converter_substep!(data, time_step)
     _ga_dc_finalize!(dc, data, time_step)
@@ -94,9 +154,7 @@ end
 # those converge. The sync plus one re-evaluation makes the polar residual the true
 # residual of the best state.
 function _ga_polar_state(data::ACPowerFlowData, time_step::Int64)
-    x = calculate_x0(data, time_step)
-    residual = ACPowerFlowResidual(data, time_step)
-    residual(data, x, time_step)
+    residual, x = _ga_eval_polar_residual(data, time_step)
     sv = StateVectorCache(x, residual.Rv)
     _sync_explicit_state!(sv, residual, data, time_step)
     residual(data, sv.x, time_step)
@@ -104,9 +162,12 @@ function _ga_polar_state(data::ACPowerFlowData, time_step::Int64)
 end
 
 function _ga_check_consistency(
-    ::GAConverged, ::Type{NoHandoff}, ::GANoDC, residual::ACPowerFlowResidual,
+    exit::GAStageExit, ::Type{NoHandoff}, ::GANoDC, residual::ACPowerFlowResidual,
     tol::Float64,
 )
+    if exit != GAConverged
+        return
+    end
     r = norm(residual.Rv, Inf)
     if r > GA_CONSISTENCY_FACTOR * tol
         row = argmax(abs.(residual.Rv))
@@ -122,6 +183,39 @@ _ga_check_consistency(
     ::GAStageExit, ::Any, ::Any, ::ACPowerFlowResidual, ::Float64,
 ) = nothing
 
+_ga_partition(data::ACPowerFlowData, time_step::Int) =
+    GAPartition(data, time_step, _ga_vsc_ac_voltage_targets(data, time_step))
+
+# Builds the converter terms and shunts for `time_step` and runs the stage on `cache`.
+function _ga_stage!(
+    data::ACPowerFlowData,
+    part::GAPartition,
+    cache::GeneralizedAdmittanceCache,
+    time_step::Int,
+    max_iter::Int,
+    stage_tol::Float64,
+    handoff_solver::Type{H},
+) where {H}
+    conv = GAConverterTerms(size(get_bus_type(data), 1))
+    _ga_add_lcc_terms!(conv, data, time_step)
+    dc = _ga_dc_context(data, part, conv, time_step)
+    np = GANodalPower(data, part, conv, time_step)
+    y = _ga_initial_shunts(cache.blocks, np, part, data, time_step)
+    _ga_stiffen_pv!(y, cache.blocks, n_v(part), GA_PV_STIFFNESS_FRACTION)
+    bus_lookup = get_bus_lookup(data)
+    _ga_factor!(cache, y, part, bus_lookup)
+    ws = cache.ws
+    u_s = _ga_slack_voltages(data, part, time_step)
+    _ga_u0!(ws, cache, u_s)
+    fill!(ws.i, zero(ComplexF64))
+    exit, iters, best_gap, refreshes = _ga_run_stage!(
+        cache, np, y, part, dc, conv, u_s, bus_lookup, time_step,
+        max_iter, stage_tol, handoff_solver,
+    )
+    @debug "GeneralizedAdmittance stage" exit iters best_gap refreshes
+    return (; dc, ws, exit, iters, best_gap, refreshes)
+end
+
 function _ga_solve(
     pf::ACPolarPowerFlow{GeneralizedAdmittanceACPowerFlow},
     data::ACPowerFlowData,
@@ -135,23 +229,11 @@ function _ga_solve(
 )
     name = "GeneralizedAdmittanceACPowerFlow"
     _validate_handoff_solver(handoff_solver, name)
-    part = GAPartition(data, time_step, _ga_vsc_ac_voltage_targets(data, time_step))
-    conv = GAConverterTerms(size(data.bus_type, 1))
-    _ga_add_lcc_terms!(conv, data, time_step)
-    dc = _ga_dc_context(data, part, conv, time_step)
-    np = GANodalPower(data, part, conv, time_step)
-    cache = _get_or_build_ga_cache!(data, part)
-    y = _ga_initial_shunts(cache.blocks, np, part, data, time_step)
-    _ga_factor!(cache, y, part)
-    ws = cache.ws
-    _ga_u0!(ws, cache, _ga_slack_voltages(data, part, time_step))
-    fill!(ws.i, zero(ComplexF64))
-    exit, iters, best_gap = _ga_run_stage!(
-        ws, cache, np, y, part, dc, conv, time_step,
-        maxIterations, _ga_stage_tol(handoff_solver, tol, handoff_tol, n_l(part)),
-        _ga_stagnation_enabled(handoff_solver),
+    part = _ga_partition(data, time_step)
+    (; dc, ws, exit, iters, best_gap, refreshes) = _ga_stage!(
+        data, part, _get_or_build_ga_cache!(data, part), time_step, maxIterations,
+        _stage_tol(handoff_solver, tol, handoff_tol), handoff_solver,
     )
-    @debug "GeneralizedAdmittance stage" exit iters best_gap
     if isfinite(best_gap)
         _ga_write_back!(data, part, ws.u_best, dc, time_step)
     end
@@ -171,10 +253,10 @@ function _ga_solve(
         J(data, time_step)
     end
     converged = _finalize_power_flow(
-        converged, iters + handoff_iters, name, residual, data, _fd_finalize_jv(J),
+        converged, iters + handoff_iters, name, residual, data, _finalize_jv(J),
         time_step,
     )
-    return GASolveReport(converged, exit, iters, handoff_iters, best_gap)
+    return GASolveReport(converged, exit, iters, handoff_iters, best_gap, refreshes)
 end
 
 function _newton_power_flow(
@@ -184,4 +266,42 @@ function _newton_power_flow(
     kwargs...,
 )
     return _ga_solve(pf, data, time_step; kwargs...).converged
+end
+
+# NR start from a GA stage run to `handoff_tol`: bus states from the best iterate, REF/PV
+# slots closed by the explicit sync. The stage runs on a private cache and the VSC state is
+# restored, so a rejected candidate leaves only the residual's own injection writes behind.
+function _ga_flat_start(
+    x0::Vector{Float64},
+    data::ACPowerFlowData,
+    residual::ACPowerFlowResidual,
+    time_step::Int64,
+    handoff_tol::Float64,
+)
+    dcn = get_dc_network(data)
+    saved_dc = (copy(dcn.p_c), copy(dcn.q_c), copy(dcn.node_vdc))
+    part = _ga_partition(data, time_step)
+    (; ws, exit, iters, best_gap) = _ga_stage!(
+        data, part, _build_ga_cache(data, part), time_step, DEFAULT_GA_MAX_ITER,
+        handoff_tol, NewtonRaphsonACPowerFlow)
+    copyto!(dcn.p_c, saved_dc[1])
+    copyto!(dcn.q_c, saved_dc[2])
+    copyto!(dcn.node_vdc, saved_dc[3])
+    @info "Generalized-admittance flat start: $exit after $iters " *
+          "iterations, gap $best_gap."
+    newx0 = copy(x0)
+    if !isfinite(best_gap)
+        return newx0
+    end
+    bus_types = view(get_bus_type(data), :, time_step)
+    for (j, ix) in enumerate(part.l_ix)
+        if bus_types[ix] == PSY.ACBusTypes.PQ
+            newx0[2 * ix - 1] = abs(ws.u_best[j])
+        end
+        newx0[2 * ix] = angle(ws.u_best[j])
+    end
+    residual(data, newx0, time_step)
+    sv = StateVectorCache(newx0, residual.Rv)
+    _sync_explicit_state!(sv, residual, data, time_step)
+    return sv.x
 end

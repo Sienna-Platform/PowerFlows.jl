@@ -26,22 +26,25 @@ function _ga_lcc_q(vt::Float64, I::Float64, P::Float64, l::Int, side::String)
 end
 
 function _ga_add_lcc_terms!(conv::GAConverterTerms, data::ACPowerFlowData, time_step::Int)
-    lcc = data.lcc
-    for l in eachindex(lcc.bus_indices)
-        I = lcc.i_dc[l, time_step]
+    for l in eachindex(data.lcc.bus_indices)
+        I = get_lcc_i_dc(data)[l, time_step]
         if iszero(I)
             continue
         end
-        P_r, P_i = _ga_lcc_powers(lcc.setpoint_at_rectifier[l], lcc.p_set[l, time_step],
-            lcc.dc_line_resistance[l], I)
+        P_r, P_i = _ga_lcc_powers(
+            get_lcc_setpoint_at_rectifier(data)[l],
+            get_lcc_p_set(data)[l, time_step],
+            get_lcc_dc_line_resistance(data)[l],
+            I,
+        )
         KI = SQRT6_DIV_PI * I
         vt_r =
-            (P_r / KI + lcc.rectifier.transformer_reactance[l] * I / sqrt(2)) /
-            cos(lcc.rectifier.min_thyristor_angle[l])
+            (P_r / KI + get_lcc_rectifier_transformer_reactance(data)[l] * I / sqrt(2)) /
+            cos(get_lcc_rectifier_min_thyristor_angle(data)[l])
         vt_i =
-            (-P_i / KI + lcc.inverter.transformer_reactance[l] * I / sqrt(2)) /
-            cos(lcc.inverter.min_thyristor_angle[l])
-        fb, tb = lcc.bus_indices[l]
+            (-P_i / KI + get_lcc_inverter_transformer_reactance(data)[l] * I / sqrt(2)) /
+            cos(get_lcc_inverter_min_thyristor_angle(data)[l])
+        fb, tb = data.lcc.bus_indices[l]
         conv.p_lcc[fb] += P_r
         conv.q_lcc[fb] += _ga_lcc_q(vt_r, I, P_r, l, "rectifier")
         conv.p_lcc[tb] += P_i

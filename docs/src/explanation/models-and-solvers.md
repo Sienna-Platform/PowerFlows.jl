@@ -92,10 +92,12 @@ at construction.
 
 [`GeneralizedAdmittanceACPowerFlow`](@ref) embeds loads and generators as fixed shunts in the
 non-slack admittance block and iterates on corrective nodal currents. Each iteration reuses two
-KLU factorizations, so it is cheap, but convergence is linear. Pair it with
-`handoff_solver = NewtonRaphsonACPowerFlow` to finish in a few Newton steps or to rescue a
-stalled stage. It supports ZIP loads and all HVDC types, but not reactive-power limits,
-distributed slack, discrete control, or area interchange.
+KLU factorizations, so it is cheap. Anderson mixing accelerates the iteration, and the shunts
+are refreshed from the current iterate as the mismatch falls, so it converges from a flat start
+in tens of iterations, including on systems where Newton-Raphson diverges from a flat start
+(e.g. ACTIVSg10k). Pair it with `handoff_solver = NewtonRaphsonACPowerFlow` to use it as a
+flat-start enhancer that finishes in a few Newton steps. It supports ZIP loads and all HVDC
+types, but not reactive-power limits, distributed slack, discrete control, or area interchange.
 
 ## 3. The user-facing call
 

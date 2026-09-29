@@ -4,7 +4,8 @@ struct GAPartition
     q_ix::Vector{Int}
     l_ix::Vector{Int}
     Vset::Vector{Float64}
-    n_pv::Int
+    island_of_l::Vector{Int}
+    n_islands::Int
 end
 
 n_v(p::GAPartition) = length(p.v_ix)
@@ -35,12 +36,31 @@ function GAPartition(data::ACPowerFlowData, time_step::Int, ac_vset::Dict{Int, F
         )
     end
     v = vcat(pv, vsc_ac)
-    Vset = vcat(data.bus_magnitude[pv, time_step], [ac_vset[ix] for ix in vsc_ac])
-    return GAPartition(ref, v, q, vcat(v, q), Vset, length(pv))
+    Vset = vcat(get_bus_magnitude(data)[pv, time_step], [ac_vset[ix] for ix in vsc_ac])
+    l = vcat(v, q)
+    island_of_l, n_islands = _ga_islands(data, l, time_step)
+    return GAPartition(ref, v, q, l, Vset, island_of_l, n_islands)
+end
+
+# Island id per ℓ-bus: the REF P row of the polar residual sums its island's P rows.
+function _ga_islands(data::ACPowerFlowData, l::Vector{Int}, time_step::Int)
+    groups = _find_subnetworks_for_reference_buses(
+        PNM.get_data(get_power_network_matrix(data)),
+        view(get_bus_type(data), :, time_step),
+    )
+    pos = Dict(ix => j for (j, ix) in enumerate(l))
+    island_of_l = zeros(Int, length(l))
+    for (island, members) in enumerate(values(groups))
+        for ix in members
+            if haskey(pos, ix)
+                island_of_l[pos[ix]] = island
+            end
+        end
+    end
+    return island_of_l, length(groups)
 end
 
 struct GABlocks
-    Ynet::SparseMatrixCSC{ComplexF64, Int64}
     Yll::SparseMatrixCSC{ComplexF64, Int64}
     Yll_net_nz::Vector{ComplexF64}
     Yll_diag::Vector{Int}
@@ -51,6 +71,9 @@ struct GABlocks
     Yvq::SparseMatrixCSC{ComplexF64, Int64}
     Yqv::SparseMatrixCSC{ComplexF64, Int64}
     Yls::SparseMatrixCSC{ComplexF64, Int64}
+    Bqq::SparseMatrixCSC{Float64, Int64}
+    Bqq_net_nz::Vector{Float64}
+    Bqq_diag::Vector{Int}
 end
 
 _ga_diag_positions(A::SparseMatrixCSC) = [_nz_index(A, k, k) for k in axes(A, 2)]
@@ -59,10 +82,12 @@ function GABlocks(data::ACPowerFlowData, part::GAPartition)
     Ynet = SparseMatrixCSC{ComplexF64, Int64}(PNM.get_data(get_power_network_matrix(data)))
     Yll = Ynet[part.l_ix, part.l_ix]
     Yqq = Ynet[part.q_ix, part.q_ix]
-    return GABlocks(Ynet, Yll, copy(SparseArrays.nonzeros(Yll)), _ga_diag_positions(Yll),
+    Bqq = imag.(Yqq)
+    return GABlocks(Yll, copy(SparseArrays.nonzeros(Yll)), _ga_diag_positions(Yll),
         Yqq, copy(SparseArrays.nonzeros(Yqq)), _ga_diag_positions(Yqq),
         Ynet[part.v_ix, part.v_ix], Ynet[part.v_ix, part.q_ix], Ynet[part.q_ix, part.v_ix],
-        Ynet[part.l_ix, part.s_ix])
+        Ynet[part.l_ix, part.s_ix],
+        Bqq, copy(SparseArrays.nonzeros(Bqq)), _ga_diag_positions(Bqq))
 end
 
 # Shunts go into stored diagonal slots so the pattern never changes (KLU refactor needs that).

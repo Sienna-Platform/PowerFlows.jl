@@ -22,6 +22,12 @@ function improve_x0(pf::ACPolarPowerFlow,
     else
         @debug "skipping enhanced flat start"
     end
+    handoff_tol = get_solution_parameters(pf).handoff_tol
+    if get_ga_flat_start(pf) && norm(residual.Rv, Inf) > handoff_tol
+        newx0 = _ga_flat_start(x0, data, residual, time_step, handoff_tol)
+        _pick_better_x0(x0, newx0, time_step, residual, data,
+            "generalized-admittance flat start")
+    end
     if norm(residual.Rv, 1) > LARGE_RESIDUAL * length(residual.Rv) &&
        get_robust_power_flow(pf)
         dc_power_flow_start!(x0, data, time_step, residual)
@@ -147,6 +153,7 @@ function _pick_better_x0(x0::Vector{Float64},
         residual(data, x0, time_step) # re-calculate for new x0.
     else
         @debug "no improvement from $improvement_method"
+        residual(data, x0, time_step)
     end
     return
 end

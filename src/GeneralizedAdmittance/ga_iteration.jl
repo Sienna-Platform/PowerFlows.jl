@@ -4,7 +4,8 @@
 # step 6. Allocation-free after warm-up: all buffers live in the GAWorkspace.
 
 _ga_slack_voltages(data::ACPowerFlowData, part::GAPartition, time_step::Int) =
-    data.bus_magnitude[part.s_ix, time_step] .* cis.(data.bus_angles[part.s_ix, time_step])
+    get_bus_magnitude(data)[part.s_ix, time_step] .*
+    cis.(get_bus_angles(data)[part.s_ix, time_step])
 
 function _ga_u0!(ws::GAWorkspace, cache::GeneralizedAdmittanceCache,
     u_s::Vector{ComplexF64})
@@ -14,8 +15,11 @@ function _ga_u0!(ws::GAWorkspace, cache::GeneralizedAdmittanceCache,
     return
 end
 
-function _ga_iterate!(ws::GAWorkspace, cache::GeneralizedAdmittanceCache,
-    np::GANodalPower, y::Vector{ComplexF64}, Vset::Vector{Float64}, nv::Int)
+function _ga_iterate!(cache::GeneralizedAdmittanceCache, np::GANodalPower,
+    y::Vector{ComplexF64}, part::GAPartition)
+    ws = cache.ws
+    Vset = part.Vset
+    nv = n_v(part)
     nl = length(ws.u)
     R = ws.R
     @inbounds for k in 1:nl                           # step 1: RHS [i, [0; i_q]]
@@ -30,7 +34,8 @@ function _ga_iterate!(ws::GAWorkspace, cache::GeneralizedAdmittanceCache,
         ws.u[k] = ws.u0[k] + R[k, 1]
     end
     @inbounds for k in 1:nv                           # steps 3-4
-        ws.u[k] = Vset[k] * ws.u[k] / abs(ws.u[k])
+        a2 = abs2(ws.u[k])
+        ws.u[k] *= Vset[k] / sqrt(a2)
         ws.ut[k] = ws.u[k] - ws.u0[k] - R[k, 2]
     end
     mul!(ws.w, cache.blocks.Yqv, ws.ut)               # step 5
@@ -45,21 +50,39 @@ function _ga_iterate!(ws::GAWorkspace, cache::GeneralizedAdmittanceCache,
         ws.u[k] = ws.u0[k] + R[k, 2] - ws.w[j]
     end
     gap = 0.0
+    island = part.island_of_l
+    fill!(ws.psum, 0.0)
     @inbounds for k in 1:nv                           # steps 8, 10, 11 (PV)
         uk = ws.u[k]
         vm2 = abs2(uk)
         α = vm2 * real(y[k]) - real(_ga_s(np, k, Vset[k]))
         z = conj(uk) * ws.iv_raw[k]
         gap = max(gap, abs(real(z) - α))
+        ws.psum[island[k]] += real(z) - α
         ws.q_v[k] = imag(z) - vm2 * imag(y[k])
-        ws.i[k] = complex(α, imag(z)) / conj(uk)
+        ws.i[k] = complex(α, imag(z)) * uk / vm2
     end
     @inbounds for k in (nv + 1):nl                    # steps 8, 9 (PQ); gap uses i_q^(k-1)
         uk = ws.u[k]
-        s = _ga_s(np, k, abs(uk))
-        g = uk * conj(ws.i[k]) - abs2(uk) * conj(y[k]) + s
+        a2 = abs2(uk)
+        s = _ga_s(np, k, sqrt(a2))
+        g = uk * conj(ws.i[k]) - a2 * conj(y[k]) + s
         gap = max(gap, abs(real(g)), abs(imag(g)))
-        ws.i[k] = (abs2(uk) * y[k] - conj(s)) / conj(uk)
+        ws.psum[island[k]] += real(g)
+        ws.i[k] = (a2 * y[k] - conj(s)) * uk / a2
     end
     return gap
+end
+
+# Shunts that make zero corrective current reproduce the current iterate (paper eq. 10).
+function _ga_ideal_shunts!(y::Vector{ComplexF64}, ws::GAWorkspace, np::GANodalPower,
+    part::GAPartition)
+    nv = n_v(part)
+    for k in 1:nv
+        y[k] = _ga_pv_shunt(np, k, part.Vset[k], ws.q_v[k])
+    end
+    for k in (nv + 1):n_l(part)
+        y[k] = _ga_pq_shunt(np, k, abs(ws.u[k]))
+    end
+    return
 end

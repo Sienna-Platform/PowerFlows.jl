@@ -23,7 +23,8 @@ end
 function ga_setup(sys::PSY.System)
     data = PowerFlowData(ACPowerFlow{GA}(), sys)
     part = PF.GAPartition(data, 1, Dict{Int, Float64}())
-    np = PF.GANodalPower(data, part, PF.GAConverterTerms(size(data.bus_type, 1)), 1)
+    np = PF.GANodalPower(
+        data, part, PF.GAConverterTerms(size(PF.get_bus_type(data), 1)), 1)
     return data, part, np
 end
 
@@ -88,11 +89,31 @@ function ga_parity(sys::PSY.System; pf_kwargs = (;), ga_solve_kwargs = (;), tol 
     return data_nr, data_ga
 end
 
+# PQ magnitudes 1.0 and every non-REF angle 0.0 at time step 1.
+function ga_true_flat_start!(data)
+    bus_type = PF.get_bus_type(data)
+    for ix in axes(bus_type, 1)
+        if bus_type[ix, 1] == PSY.ACBusTypes.PQ
+            PF.get_bus_magnitude(data)[ix, 1] = 1.0
+        end
+        if bus_type[ix, 1] != PSY.ACBusTypes.REF
+            PF.get_bus_angles(data)[ix, 1] = 0.0
+        end
+    end
+    return
+end
+
+function ga_compare(data_a, data_b; tol = 1e-6)
+    @test maximum(abs.(PF.get_bus_magnitude(data_a) .- PF.get_bus_magnitude(data_b))) < tol
+    @test maximum(abs.(PF.get_bus_angles(data_a) .- PF.get_bus_angles(data_b))) < tol
+    return
+end
+
 function ga_kernel_setup(sys)
     data, part, np = ga_setup(sys)
     cache = PF._get_or_build_ga_cache!(data, part)
     y = PF._ga_initial_shunts(cache.blocks, np, part, data, 1)
-    PF._ga_factor!(cache, y, part)
+    PF._ga_factor!(cache, y, part, PF.get_bus_lookup(data))
     PF._ga_u0!(cache.ws, cache, PF._ga_slack_voltages(data, part, 1))
     fill!(cache.ws.i, 0.0im)
     return data, part, np, cache, y
@@ -102,7 +123,7 @@ function ga_check_against_dense(sys, n_iter)
     data, part, np, cache, y = ga_kernel_setup(sys)
     steps = ga_dense_reference(ga_dense_problem(data), y; maxiter = n_iter, tol = 0.0)
     for k in 1:n_iter
-        gap = PF._ga_iterate!(cache.ws, cache, np, y, part.Vset, PF.n_v(part))
+        gap = PF._ga_iterate!(cache, np, y, part)
         @test maximum(abs.(cache.ws.u .- steps[k].u)) < 1e-9
         @test maximum(abs.(cache.ws.i .- steps[k].i_next)) < 1e-9
         @test isapprox(gap, steps[k].gap; rtol = 1e-7, atol = 1e-12)
@@ -225,6 +246,13 @@ end
         @test_throws ArgumentError ACPowerFlow{GA}(; area_interchange_control = true)
         @test_throws ArgumentError PF.ACRectangularPowerFlow{GA}()
         @test_throws ArgumentError PF.ACMixedPowerFlow{GA}()
+        @test PF.get_solver_kwargs(ACPowerFlow{GA}()).maxIterations ==
+              PF.DEFAULT_GA_MAX_ITER
+        @test PF.get_solver_kwargs(
+            ACPowerFlow{GA}(;
+                solution_parameters = SolutionParameters(; maxIterations = 7),
+            ),
+        ).maxIterations == 7
     end
 
     @testset "partition and blocks on c_sys14" begin
@@ -232,7 +260,6 @@ end
         ref, pv, pq = PF.bus_type_idx(data, 1)
         @test (part.s_ix, part.v_ix, part.q_ix) == (ref, pv, pq)
         @test part.l_ix == vcat(pv, pq)
-        @test part.n_pv == length(pv)
         @test part.Vset == data.bus_magnitude[pv, 1]
         b = PF.GABlocks(data, part)
         Y = Matrix{ComplexF64}(PNM.get_data(data.power_network_matrix))
@@ -247,6 +274,7 @@ end
             @test Matrix(b.Yll) ≈ Y[part.l_ix, part.l_ix] + Diagonal(scale .* y)
             @test Matrix(b.Yqq) ≈ Y[pq, pq] + Diagonal(scale .* y[(nv + 1):end])
         end
+        @test Matrix(b.Bqq) ≈ imag.(Y[pq, pq])
     end
 
     @testset "VSC AC-voltage buses join set v, bus types unchanged" begin
@@ -256,9 +284,10 @@ end
         targets = PF._ga_vsc_ac_voltage_targets(data, 1)
         @test length(targets) == 2
         part = PF.GAPartition(data, 1, targets)
-        extra = part.v_ix[(part.n_pv + 1):end]
+        npv = length(PF.bus_type_idx(data, 1)[2])
+        extra = part.v_ix[(npv + 1):end]
         @test sort(extra) == sort(collect(keys(targets)))
-        @test part.Vset[(part.n_pv + 1):end] == [targets[ix] for ix in extra]
+        @test part.Vset[(npv + 1):end] == [targets[ix] for ix in extra]
         @test all(data.bus_type[ix, 1] === PSY.ACBusTypes.PQ for ix in extra)
     end
 
@@ -341,7 +370,7 @@ end
             y = PF._ga_initial_shunts(cache.blocks, np, part, data, 1)
             rhs = ComplexF64.(randn(PF.n_l(part)) .+ im .* randn(PF.n_l(part)))
             for yk in (y, 1.1 .* y)
-                PF._ga_factor!(cache, yk, part)
+                PF._ga_factor!(cache, yk, part, PF.get_bus_lookup(data))
                 x = copy(rhs)
                 PNM.solve!(cache.Fl, x)
                 @test Matrix(cache.blocks.Yll) * x ≈ rhs
@@ -353,27 +382,21 @@ end
         end
 
         @testset "singular factorization error names the bus" begin
-            part = PF.GAPartition([1], [2], [3, 4], [2, 3, 4], [1.0], 1)
-            @test_throws r"bus index 4" PF._ga_factor_error(
-                LinearAlgebra.SingularException(3),
-                part,
-                "Yℓℓ",
-            )
-            @test_throws r"bus index 4" PF._ga_factor_error(
-                LinearAlgebra.SingularException(2),
-                part,
-                "Yqq",
-            )
+            part = PF.GAPartition([1], [2], [3, 4], [2, 3, 4], [1.0], [1, 1, 1], 1)
+            lookup = Dict(10 => 1, 20 => 2, 30 => 3, 40 => 4)
+            @test_throws r"Yℓℓ is singular at bus 40 \(index 4\)" PF._ga_factor_error(
+                LinearAlgebra.SingularException(3), part, lookup, PF.GABlockYll())
+            @test_throws r"Yqq is singular at bus 40 \(index 4\)" PF._ga_factor_error(
+                LinearAlgebra.SingularException(2), part, lookup, PF.GABlockYqq())
             @test_throws ArgumentError PF._ga_factor_error(
-                ArgumentError("x"), part, "Yℓℓ")
+                ArgumentError("x"), part, lookup, PF.GABlockYll())
         end
     end
 
     @testset "iteration kernel matches the dense reference" begin
         @testset "c_sys14, allocation-free after warm-up" begin
             part, np, cache, y = ga_check_against_dense(GA_SYS14, 5)
-            nv = PF.n_v(part)
-            @test (@allocated PF._ga_iterate!(cache.ws, cache, np, y, part.Vset, nv)) == 0
+            @test (@allocated PF._ga_iterate!(cache, np, y, part)) == 0
         end
 
         @testset "no PV buses" begin
@@ -384,6 +407,88 @@ end
             end
             part, _, _, _ = ga_check_against_dense(sys, 3)
             @test iszero(PF.n_v(part))
+        end
+
+        @testset "island P sum is the synced REF P row" begin
+            data, part, np, cache, y = ga_kernel_setup(GA_SYS14)
+            for _ in 1:4
+                PF._ga_iterate!(cache, np, y, part)
+            end
+            for (j, ix) in enumerate(part.l_ix)
+                data.bus_magnitude[ix, 1] = abs(cache.ws.u[j])
+                data.bus_angles[ix, 1] = angle(cache.ws.u[j])
+            end
+            residual, _ = PF._ga_polar_state(data, 1)
+            ref = only(part.s_ix)
+            @test abs(only(cache.ws.psum)) > 1e-4
+            @test residual.Rv[2 * ref - 1] ≈ -only(cache.ws.psum) atol = 1e-12
+        end
+    end
+
+    @testset "shunt schedule and Anderson mixing" begin
+        @testset "PV stiffening touches only the PV shunts" begin
+            data, part, np = ga_setup(GA_SYS14)
+            b = PF.GABlocks(data, part)
+            y = PF._ga_initial_shunts(b, np, part, data, 1)
+            ys = copy(y)
+            PF._ga_stiffen_pv!(ys, b, PF.n_v(part), 0.5)
+            Y = PNM.get_data(data.power_network_matrix)
+            for (k, ix) in enumerate(part.l_ix)
+                expected = y[k]
+                if k <= PF.n_v(part)
+                    expected -= im * 0.5 * abs(ComplexF64(Y[ix, ix]))
+                end
+                @test ys[k] ≈ expected
+            end
+        end
+
+        @testset "refresh moves the currents by Δy ⊙ u and resets the mixing" begin
+            data, part, np, cache, y = ga_kernel_setup(GA_SYS14)
+            for _ in 1:3
+                PF._ga_iterate!(cache, np, y, part)
+            end
+            ws = cache.ws
+            u = copy(ws.u)
+            i = copy(ws.i)
+            u_s = PF._ga_slack_voltages(data, part, 1)
+            y_old = copy(y)
+            PF._ga_refresh_shunts!(cache, np, y, part, 0.0, u_s, PF.get_bus_lookup(data))
+            @test maximum(abs.(y .- y_old)) > 1e-3
+            @test ws.i ≈ i .+ (y .- y_old) .* u
+            @test Matrix(cache.blocks.Yll) ≈
+                  Matrix(PNM.get_data(data.power_network_matrix))[part.l_ix, part.l_ix] +
+                  Diagonal(y)
+            @test cache.aa.x == ws.i
+            nv = PF.n_v(part)
+            for k in (nv + 1):PF.n_l(part)
+                @test y[k] ≈ conj(PF._ga_s(np, k, abs(u[k]))) / abs2(u[k])
+            end
+        end
+
+        @testset "Anderson step solves the real least-squares mixing problem" begin
+            nl, m = 7, 3
+            aa = PF.GAAnderson(nl, m)
+            G(x) = 0.5 .* conj.(x) .+ (0.1 + 0.2im) .* x .+ (1.0 - 0.5im)
+            PF._ga_anderson_reset!(aa, zeros(ComplexF64, nl))
+            xs = Vector{ComplexF64}[]
+            gs = Vector{ComplexF64}[]
+            for _ in 1:5
+                x = copy(aa.x)
+                g = G(x)
+                push!(xs, x)
+                push!(gs, g)
+                PF._ga_anderson_step!(aa, g)
+            end
+            stack(v) = vcat(real.(v), imag.(v))
+            f = [stack(gs[k] .- xs[k]) for k in eachindex(xs)]
+            DF = reduce(hcat, [f[k + 1] .- f[k] for k in 2:4])
+            DG = reduce(hcat, [stack(gs[k + 1] .- gs[k]) for k in 2:4])
+            γ = DF \ f[end]
+            x_ref = stack(gs[end]) .- DG * γ
+            @test stack(aa.x) ≈ x_ref
+            x = copy(aa.x)
+            g = G(x)
+            @test (@allocated PF._ga_anderson_step!(aa, g)) == 0
         end
     end
 
@@ -396,9 +501,10 @@ end
             pf = ACPowerFlow{GA}()
             report = PF._ga_solve(pf, PowerFlowData(pf, GA_SYS14), 1)
             @test report.converged
-            @test report.stage_exit === PF.GAConverged()
+            @test report.stage_exit === PF.GAConverged
             @test iszero(report.handoff_iterations)
-            @info "GA c_sys14" report.stage_iterations
+            @test report.stage_iterations <= 20
+            @test report.refreshes > 0
         end
 
         @testset "non-zero REF angle" begin
@@ -427,7 +533,7 @@ end
             )
         end
 
-        @testset "large ACTIVSg2000 with NR polish" begin
+        @testset "large ACTIVSg2000: plain solve and NR polish" begin
             sys = PSB.build_system(PSB.MatpowerTestSystems, "matpower_ACTIVSg2000_sys")
             data_nr = PowerFlowData(
                 ACPowerFlow{NewtonRaphsonACPowerFlow}(; correct_bustypes = true), sys)
@@ -437,10 +543,38 @@ end
             report = PF._ga_solve(
                 pf, data, 1; handoff_solver = NewtonRaphsonACPowerFlow,
                 handoff_tol = 1e-3)
-            @info "GA ACTIVSg2000 NR polish" report.stage_exit report.stage_iterations report.handoff_iterations
             @test report.converged
-            @test maximum(abs.(data_nr.bus_magnitude .- data.bus_magnitude)) < 1e-6
-            @test maximum(abs.(data_nr.bus_angles .- data.bus_angles)) < 1e-6
+            ga_compare(data_nr, data)
+            report_plain = PF._ga_solve(pf, PowerFlowData(pf, sys), 1)
+            @test report_plain.converged
+            @test report_plain.stage_exit === PF.GAConverged
+            @test report_plain.stage_iterations <= 40
+            @test iszero(report_plain.handoff_iterations)
+            data_plain = PowerFlowData(pf, sys)
+            @test solve_power_flow!(data_plain)
+            ga_compare(data_nr, data_plain)
+        end
+
+        @testset "large ACTIVSg10k: plain solve from a true flat start" begin
+            sys = PSB.build_system(PSB.MatpowerTestSystems, "matpower_ACTIVSg10k_sys")
+            data_nr = PowerFlowData(
+                ACPowerFlow{NewtonRaphsonACPowerFlow}(; correct_bustypes = true), sys)
+            @test solve_power_flow!(data_nr)
+            pf = ACPowerFlow{GA}(; correct_bustypes = true)
+            data = PowerFlowData(pf, sys)
+            ga_true_flat_start!(data)
+            report = PF._ga_solve(pf, data, 1)
+            @test report.converged
+            @test report.stage_exit === PF.GAConverged
+            @test report.stage_iterations <= 40
+            ga_compare(data_nr, data)
+
+            pf_nr = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+                correct_bustypes = true, ga_flat_start = true)
+            data_flat = PowerFlowData(pf_nr, sys)
+            ga_true_flat_start!(data_flat)
+            @test solve_power_flow!(data_flat; pf = pf_nr)
+            ga_compare(data_nr, data_flat)
         end
     end
 
@@ -484,8 +618,49 @@ end
             _add_simple_load!(sys, b102, 30.0, 10.0)
             _add_simple_load!(sys, b103, 20.0, 5.0)
             _, data_ga = ga_parity(sys)
-            @test length(PF.GAPartition(data_ga, 1, Dict{Int, Float64}()).s_ix) == 2
+            part = PF.GAPartition(data_ga, 1, Dict{Int, Float64}())
+            @test length(part.s_ix) == 2
+            @test part.n_islands == 2
+            @test sort(unique(part.island_of_l)) == [1, 2]
         end
+    end
+
+    @testset "NR flat-start option" begin
+        @test PF.get_ga_flat_start(ACPowerFlow(; ga_flat_start = true))
+        @test !PF.get_ga_flat_start(ACPowerFlow())
+        @test !PF.get_ga_flat_start(PF.ACRectangularPowerFlow())
+        @test_throws MethodError PF.ACRectangularPowerFlow(; ga_flat_start = true)
+
+        pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+            ga_flat_start = true, solution_parameters = VSC_SOLUTION_PARAMETERS)
+        data = PowerFlowData(pf, ga_vsc_ac_voltage_system())
+        dcn = PF.get_dc_network(data)
+        dc_before = (copy(dcn.p_c), copy(dcn.q_c), copy(dcn.node_vdc))
+        slot = data.solver_cache[]
+        x0 = PF.calculate_x0(data, 1)
+        residual = PF.ACPowerFlowResidual(data, 1)
+        residual(data, x0, 1)
+        r0 = norm(residual.Rv, 1)
+        x = PF._ga_flat_start(x0, data, residual, 1, 1e-3)
+        @test data.solver_cache[] === slot
+        @test (dcn.p_c, dcn.q_c, dcn.node_vdc) == dc_before
+        residual(data, x, 1)
+        @test norm(residual.Rv, 1) < r0
+        @test solve_power_flow!(data; pf = pf)
+        data_nr = PowerFlowData(
+            ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+                solution_parameters = VSC_SOLUTION_PARAMETERS),
+            ga_vsc_ac_voltage_system())
+        @test solve_power_flow!(data_nr)
+        ga_compare(data_nr, data)
+
+        pf_fd =
+            ACPowerFlow{FastDecoupledACPowerFlow}(; ga_flat_start = true, time_steps = 2)
+        data_fd = PowerFlowData(pf_fd, GA_SYS14)
+        data_fd.bus_active_power_withdrawals[:, 2] .*= 1.1
+        data_fd.bus_angles .= 0.0
+        @test solve_power_flow!(data_fd; pf = pf_fd)
+        @test typeof(data_fd.solver_cache[]) !== PF.GeneralizedAdmittanceCache
     end
 
     @testset "handoff paths on c_sys14" begin
@@ -497,15 +672,15 @@ end
         polish = PF._ga_solve(
             pf, data, 1; handoff_solver = NewtonRaphsonACPowerFlow, handoff_tol = 1e-3)
         @test polish.converged
-        @test polish.stage_exit === PF.GAConverged()
+        @test polish.stage_exit === PF.GAConverged
         @test polish.handoff_iterations <= 4
-        @test maximum(abs.(data_nr.bus_magnitude .- data.bus_magnitude)) < 1e-6
+        ga_compare(data_nr, data)
 
         rescue = PF._ga_solve(
             pf, PowerFlowData(pf, GA_SYS14), 1;
             maxIterations = 2, handoff_solver = NewtonRaphsonACPowerFlow,
             handoff_tol = 1e-12)
-        @test rescue.stage_exit === PF.GAMaxIter()
+        @test rescue.stage_exit === PF.GAMaxIter
         @test rescue.handoff_iterations > 0
         @test rescue.converged
 
@@ -519,6 +694,21 @@ end
         )
     end
 
+    @testset "consistency check errors when the polar residual exceeds 10·tol" begin
+        data = PowerFlowData(ACPowerFlow{GA}(), GA_SYS14)
+        residual, _ = PF._ga_polar_state(data, 1)
+        @test norm(residual.Rv, Inf) > 0.1
+        @test_throws r"formulation bug" PF._ga_check_consistency(
+            PF.GAConverged, PF.NoHandoff, PF.GANoDC(), residual, 1e-20)
+        @test PF._ga_check_consistency(
+            PF.GAMaxIter, PF.NoHandoff, PF.GANoDC(), residual, 1e-20) === nothing
+        @test PF._ga_check_consistency(
+            PF.GAConverged, NewtonRaphsonACPowerFlow, PF.GANoDC(), residual, 1e-20) ===
+              nothing
+        @test PF._ga_check_consistency(
+            PF.GAConverged, PF.NoHandoff, PF.GANoDC(), residual, 1.0) === nothing
+    end
+
     @testset "multi-period solve reuses the factorization cache" begin
         data_ga = PowerFlowData(ACPowerFlow{GA}(; time_steps = 3), GA_SYS14)
         data_nr = PowerFlowData(
@@ -528,14 +718,24 @@ end
         end
         @test solve_power_flow!(data_nr)
         @test solve_power_flow!(data_ga)
-        @test maximum(abs.(data_nr.bus_magnitude .- data_ga.bus_magnitude)) < 1e-6
-        @test maximum(abs.(data_nr.bus_angles .- data_ga.bus_angles)) < 1e-6
+        ga_compare(data_nr, data_ga)
         cache = data_ga.solver_cache[]
         @test typeof(cache) === PF.GeneralizedAdmittanceCache
         @test PF._get_or_build_ga_cache!(
             data_ga,
             PF.GAPartition(data_ga, 1, Dict{Int, Float64}()),
         ) === cache
+        @test cache.factored
+        part = PF.GAPartition(data_ga, 1, Dict{Int, Float64}())
+        conv = PF.GAConverterTerms(size(PF.get_bus_type(data_ga), 1))
+        y1 = PF._ga_initial_shunts(cache.blocks, PF.GANodalPower(data_ga, part, conv, 1),
+            part, data_ga, 1)
+        y2 = PF._ga_initial_shunts(cache.blocks, PF.GANodalPower(data_ga, part, conv, 2),
+            part, data_ga, 2)
+        @test maximum(abs.(y1 .- y2)) > 1e-3
+        blocks = cache.blocks
+        @test solve_power_flow!(data_ga)
+        @test data_ga.solver_cache[].blocks === blocks
     end
 
     @testset "VSC DC substep" begin
@@ -584,7 +784,7 @@ end
             data_nr = PowerFlowData(ACPowerFlow{NewtonRaphsonACPowerFlow}(), sys)
             @test solve_power_flow!(data_nr)
             data = PowerFlowData(ACPowerFlow{NewtonRaphsonACPowerFlow}(), sys)
-            n = size(data.bus_type, 1)
+            n = size(PF.get_bus_type(data), 1)
             conv = PF.GAConverterTerms(n)
             PF._ga_add_lcc_terms!(conv, data, 1)
             p_nr = zeros(n)
@@ -623,14 +823,30 @@ end
                     0.0,
                 )
             end
-            # This network's GA fixed point contracts linearly at ~0.995/iter even with all
-            # LCC terms zeroed (resistive near-short branches + large PV reactive
-            # flow-through), so reaching the no-handoff stage tolerance needs ~4300
-            # iterations, far past DEFAULT_GA_MAX_ITER.
-            data_nr, data_ga = ga_parity(sys; ga_solve_kwargs = (; maxIterations = 6000))
+            data_nr, data_ga = ga_parity(sys)
             @test maximum(abs.(data_nr.lcc.rectifier.tap .- data_ga.lcc.rectifier.tap)) <
                   1e-6
             @test maximum(abs.(data_nr.lcc.inverter.tap .- data_ga.lcc.inverter.tap)) < 1e-6
+        end
+
+        @testset "plain solve, and NR handoff rescues after the iteration cap" begin
+            pf = ACPowerFlow{GA}()
+            data_nr =
+                PowerFlowData(ACPowerFlow{NewtonRaphsonACPowerFlow}(), ga_lcc_system())
+            @test solve_power_flow!(data_nr)
+            plain = PF._ga_solve(pf, PowerFlowData(pf, ga_lcc_system()), 1)
+            @test plain.converged
+            @test plain.stage_iterations <= 60
+            data = PowerFlowData(pf, ga_lcc_system())
+            report = PF._ga_solve(
+                pf, data, 1; maxIterations = 3,
+                handoff_solver = NewtonRaphsonACPowerFlow,
+                handoff_tol = 1e-3)
+            @test report.stage_exit === PF.GAMaxIter
+            @test report.stage_iterations == 3
+            @test report.handoff_iterations > 0
+            @test report.converged
+            ga_compare(data_nr, data)
         end
     end
 end

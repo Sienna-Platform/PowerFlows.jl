@@ -302,7 +302,7 @@ ACRectangularPowerFlow{FastDecoupledACPowerFlow{FDFixedJacobian, FDSchemeXB}}()
 ```
 
 # Settings (via `solution_parameters` and/or call kwargs)
-- `handoff_solver`: `Nothing` (pure FD; default) or [`NewtonRaphsonACPowerFlow`](@ref) /
+- `handoff_solver`: [`NoHandoff`](@ref) (pure FD; default) or [`NewtonRaphsonACPowerFlow`](@ref) /
     [`TrustRegionACPowerFlow`](@ref) / [`LevenbergMarquardtACPowerFlow`](@ref) for final
     refinement to `tol`.
 - `handoff_tol::Float64`: FD-stage exit ∞-norm when a handoff solver is configured.
@@ -358,6 +358,8 @@ const FastDecoupledFixed = FastDecoupledACPowerFlow{FDFixedJacobian, FDSchemeXB}
 Sparse generalized-admittance (PFPD) AC power flow: loads and generators are fixed shunts in the
 non-slack admittance block and corrective nodal currents restore the exact power and PV
 constraints by fixed-point iteration, reusing KLU factorizations of `Yℓℓ` and its PQ block.
+The iteration is Anderson-accelerated, starts from stiffened PV shunts, and refreshes the shunts
+from the current iterate as the mismatch falls, which makes it robust from a flat start.
 Polar only. Supports `handoff_solver` ([`NewtonRaphsonACPowerFlow`](@ref),
 [`TrustRegionACPowerFlow`](@ref), [`LevenbergMarquardtACPowerFlow`](@ref)) and `handoff_tol`.
 Does not support reactive-power limits, distributed slack, discrete control, or area interchange.
@@ -365,6 +367,8 @@ Does not support reactive-power limits, distributed slack, discrete control, or 
 Based on: Artoisenet & Verstraete, arXiv:2609.14132, 2026.
 """
 struct GeneralizedAdmittanceACPowerFlow <: ACPowerFlowSolverType end
+
+_default_max_iterations(::Type{GeneralizedAdmittanceACPowerFlow}) = DEFAULT_GA_MAX_ITER
 
 _validate_solver_specific_settings(::Type{<:ACPowerFlowSolverType}, ::SolutionParameters,
     ::Any, ::Bool) = nothing
@@ -419,6 +423,9 @@ with the specified solver type.
 - `enhanced_flat_start::Bool`: Whether to use enhanced flat start initialization. Default is `true`.
 - `robust_power_flow::Bool`: Whether to use run a DC power flow as a fallback if the initial residual is large.
     Default is `false`.
+- `ga_flat_start::Bool`: Whether to improve the starting point with a
+    [`GeneralizedAdmittanceACPowerFlow`](@ref) stage run to `handoff_tol` when the initial
+    mismatch exceeds it. Recommended for large systems solved from a flat start. Default is `false`.
 - `skip_redistribution::Bool`: Whether to skip slack redistribution. Default is `false`.
 - `network_reductions::Vector{PNM.NetworkReduction}`: Network reductions to apply.
     Default is an empty vector. A `PNM.ZeroImpedanceBranchReduction` placed here is routed to
@@ -455,6 +462,7 @@ struct ACPolarPowerFlow{ACSolver <: ACPowerFlowSolverType} <: AbstractACPowerFlo
         Vector{Dict{Tuple{DataType, String}, Float64}},
     }
     robust_power_flow::Bool
+    ga_flat_start::Bool
     skip_redistribution::Bool
     distribute_slack_proportional_to_headroom::Bool
     network_reductions::Vector{PNM.NetworkReduction}
@@ -510,6 +518,7 @@ function ACPolarPowerFlow{ACSolver}(;
     } = nothing,
     enhanced_flat_start::Union{Nothing, Bool} = nothing,
     robust_power_flow::Bool = false,
+    ga_flat_start::Bool = false,
     skip_redistribution::Bool = false,
     distribute_slack_proportional_to_headroom::Bool = false,
     network_reductions::Vector{PNM.NetworkReduction} = PNM.NetworkReduction[],
@@ -566,6 +575,7 @@ function ACPolarPowerFlow{ACSolver}(;
         log_solver_diagnostics,
         generator_slack_participation_factors,
         robust_power_flow,
+        ga_flat_start,
         skip_redistribution,
         distribute_slack_proportional_to_headroom,
         network_reductions,
@@ -610,6 +620,8 @@ get_solver_kwargs(pf::PowerFlowEvaluationModel) =
 # Polar-only fields: rectangular has no equivalent, so default to false.
 get_robust_power_flow(::AbstractACPowerFlow) = false
 get_robust_power_flow(pf::ACPolarPowerFlow) = pf.robust_power_flow
+get_ga_flat_start(::AbstractACPowerFlow) = false
+get_ga_flat_start(pf::ACPolarPowerFlow) = pf.ga_flat_start
 get_calculate_loss_factors(::AbstractACPowerFlow) = false
 get_calculate_loss_factors(pf::ACPolarPowerFlow) = pf.calculate_loss_factors
 get_calculate_voltage_stability_factors(::AbstractACPowerFlow) = false

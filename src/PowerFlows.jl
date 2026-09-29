@@ -109,6 +109,7 @@ include("residual_condition_diagnostics.jl")
 include("power_flow_setup.jl")
 include("power_flow_method.jl")
 include("fast_decoupled_matrices.jl")
+include("staged_handoff.jl")
 include("fast_decoupled_method.jl")
 # RobustHomotopy's HessianSolver machinery (FixedStructureCHOLMOD, the JᵀJ nzval-pair
 # cache) precedes levenberg-marquardt.jl because LMWorkspace reuses both as a struct
