@@ -37,8 +37,7 @@ PowerFlowsPardisoExt = "Pardiso"
 [sources]
 # Branch pins until the OpenAPI packages are registered and the psy6-line branches merge.
 InfrastructureSystems = {rev = "IS4", url = "https://github.com/Sienna-Platform/InfrastructureSystems.jl.git"}
-# TODO: revert to rev = "psy6" once PowerSystems.jl#1823 (and its PowerSystemCaseBuilder companion) merge.
-PowerSystems = {url = "https://github.com/Sienna-Platform/PowerSystems.jl.git", rev = "lk/voltage-units-1821"}
+PowerSystems = {url = "https://github.com/Sienna-Platform/PowerSystems.jl.git", rev = "psy6"}
 # Pinned to the branch rather than the registry: registry PNM v0.24 requires PowerSystems
 # 5.11, which this line (5.10.0) does not satisfy.
 PowerNetworkMatrices = {url = "https://github.com/Sienna-Platform/PowerNetworkMatrices.jl.git", rev = "psy6"}
