@@ -138,15 +138,17 @@ println("  branches = ", length(PSY.get_components(PSY.ACBranch, SYS)))
 println("  backends = ", join(available_backends(), ", "))
 println()
 
-# (label, solver type, extra solver_settings merged into the pf). The FD entries exercise both
-# the polar :decoupled B′/B″ loop and the formulation-agnostic :fixed_jacobian (frozen J) loop.
+# (label, solver type, extra SolutionParameters settings merged into the pf). The FD entries
+# exercise both the polar :decoupled B′/B″ loop and the formulation-agnostic :fixed_jacobian
+# (frozen J) loop — selected via the FastDecoupledACPowerFlow variant TYPE PARAMETER, not a
+# settings key.
 const AC_SOLVERS = [
     ("AC-NewtonRaphson", PF.NewtonRaphsonACPowerFlow, Dict{Symbol, Any}()),
     ("AC-TrustRegion", PF.TrustRegionACPowerFlow, Dict{Symbol, Any}()),
-    ("AC-FastDecoupled-decoupled", PF.FastDecoupledACPowerFlow,
-        Dict{Symbol, Any}(:fd_variant => :decoupled)),
-    ("AC-FastDecoupled-fixedjac", PF.FastDecoupledACPowerFlow,
-        Dict{Symbol, Any}(:fd_variant => :fixed_jacobian)),
+    ("AC-FastDecoupled-decoupled", PF.FastDecoupledACPowerFlow{PF.FDDecoupled},
+        Dict{Symbol, Any}()),
+    ("AC-FastDecoupled-fixedjac", PF.FastDecoupledACPowerFlow{PF.FDFixedJacobian},
+        Dict{Symbol, Any}()),
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -174,7 +176,7 @@ function profile_ac(label, solver, backend, extra_settings = Dict{Symbol, Any}()
     settings = merge(Dict{Symbol, Any}(:linear_solver => backend), extra_settings)
     pf = ACPowerFlow{solver}(;
         correct_bustypes = true,
-        solver_settings = settings,
+        solution_parameters = PF.SolutionParameters(; settings...),
     )
 
     # Build data ONCE and reuse it across (re-flat-started) solves, so the full-solve
@@ -189,7 +191,7 @@ function profile_ac(label, solver, backend, extra_settings = Dict{Symbol, Any}()
     _flatstart!(data, pq_idx)
     residual = PF.ACPowerFlowResidual(data, 1)
     p_res = collect_stats(() -> PF.ACPowerFlowResidual(data, 1))
-    p_jac = collect_stats(() -> PF.ACPowerFlowJacobian(residual, 1))
+    p_jac = collect_stats(() -> PF.ACPowerFlowJacobian(data, residual, 1))
 
     # Full solve FROM A FLAT START — re-flat-start each call so it iterates fully.
     solve_from_flat = function ()
@@ -207,18 +209,18 @@ function profile_ac(label, solver, backend, extra_settings = Dict{Symbol, Any}()
     # representative and crash-free.
     cdata = PF.PowerFlowData(pf, SYS)
     cresidual = PF.ACPowerFlowResidual(cdata, 1)
-    J = PF.ACPowerFlowJacobian(cresidual, 1)
+    J = PF.ACPowerFlowJacobian(cdata, cresidual, 1)
     x = PF.calculate_x0(cdata, 1)
-    cresidual(x, 1)
-    J(1)
+    cresidual(cdata, x, 1)
+    J(cdata, 1)
     tag = PF.resolve_linear_solver_backend(backend)
     cache = PF.make_linear_solver_cache(tag, J.Jv)
     PF.symbolic_factor!(cache, J.Jv)
     PF.numeric_refactor!(cache, J.Jv)
     rbuf = copy(cresidual.Rv)
 
-    c_res = collect_stats(() -> cresidual(x, 1))
-    c_jac = collect_stats(() -> J(1))
+    c_res = collect_stats(() -> cresidual(cdata, x, 1))
+    c_jac = collect_stats(() -> J(cdata, 1))
     c_refac = collect_stats(() -> PF.numeric_refactor!(cache, J.Jv))
     c_solve = collect_stats(() -> (copyto!(rbuf, cresidual.Rv); PF.solve!(cache, rbuf)))
 

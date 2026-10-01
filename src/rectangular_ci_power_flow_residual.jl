@@ -7,7 +7,6 @@ state representation: PQ/REF blocks are 2 entries `(e,f)` or `(P_gen, Q_gen)`;
 PV blocks are 3 entries `(e, f, Q)`.
 
 # Fields
-- `data::ACPowerFlowData`
 - `Rv::Vector{Float64}` — current residual values, length `total_bus_state + 4·n_LCC`
 - `Y_bus_eff::SparseMatrixCSC{ComplexF64, Int}` — Y_bus with ZIP constant-Z folded in
 - `P_net_const::Vector{Float64}` — constant-power net injection (no |V| dependence)
@@ -27,7 +26,6 @@ PV blocks are 3 entries `(e, f, Q)`.
   the per-iteration voltage-magnitude diagnostic
 """
 struct ACRectangularCIResidual
-    data::ACPowerFlowData
     Rv::Vector{Float64}
     Y_bus_eff::SparseMatrixCSC{ComplexF64, Int}
     P_net_const::Vector{Float64}
@@ -102,7 +100,6 @@ function ACRectangularCIResidual(data::ACPowerFlowData, time_step::Int64)
     fold_zip_constant_z!(Y_bus_eff, data, time_step)
 
     return ACRectangularCIResidual(
-        data,
         Vector{Float64}(undef, total_state),
         Y_bus_eff,
         P_net_const,
@@ -126,6 +123,7 @@ function ACRectangularCIResidual(data::ACPowerFlowData, time_step::Int64)
 end
 
 function (R::ACRectangularCIResidual)(
+    data::ACPowerFlowData,
     Rv::Vector{Float64},
     x::Vector{Float64},
     time_step::Int64,
@@ -135,18 +133,22 @@ function (R::ACRectangularCIResidual)(
         R.bus_slack_participation_factors, R.subnetworks, R.independent_ref,
         R.bus_state_offset, R.bus_block_size, R.total_bus_state,
         R.e_state, R.f_state, R.Q_state, R.P_eff_cache, R.Q_eff_cache,
-        R.data, time_step)
+        data, time_step)
     copyto!(Rv, R.Rv)
     return
 end
 
-function (R::ACRectangularCIResidual)(x::Vector{Float64}, time_step::Int64)
+function (R::ACRectangularCIResidual)(
+    data::ACPowerFlowData,
+    x::Vector{Float64},
+    time_step::Int64,
+)
     _update_rect_ci_residual_values!(R.Rv, x, R.Y_bus_eff, R.P_net_const, R.Q_net_const,
         R.const_I_P, R.const_I_Q, R.P_net_set,
         R.bus_slack_participation_factors, R.subnetworks, R.independent_ref,
         R.bus_state_offset, R.bus_block_size, R.total_bus_state,
         R.e_state, R.f_state, R.Q_state, R.P_eff_cache, R.Q_eff_cache,
-        R.data, time_step)
+        data, time_step)
     return
 end
 
@@ -259,7 +261,7 @@ function _update_rect_ci_residual_values!(
     # 4) Add per-bus I_spec contributions and PV's ΔV² row.
     # NOTE on REF distributed slack: x[off] holds `P_net_set[ref] + total_slack`
     # (polar convention — the state variable carries the WHOLE subnetwork slack,
-    # not just REF's share). REF's actual P_gen is `P_net_set + c_ref · total_slack`.
+    # not just REF's share). REF's own share is `P_net_set + c_ref · total_slack`.
     # For the default case c_ref = 1, this collapses to x[off].
     @inbounds for i in 1:n_buses
         off = Int(bus_state_offset[i])
@@ -273,26 +275,26 @@ function _update_rect_ci_residual_values!(
         if bt == PSY.ACBusTypes.REF
             if i in independent_ref
                 # Multi-swing island: this swing self-balances at its own P-slot
-                # (∂P_gen/∂x[off] = 1), not the distributed c_ref share.
-                P_gen = x[off]
+                # (∂P_net_cp/∂x[off] = 1), not the distributed c_ref share.
+                P_net_cp = x[off]
             else
                 c_ref = bus_slack_participation_factors[i]
                 P_slack_total = x[off] - P_net_set[i]
-                P_gen = P_net_set[i] + c_ref * P_slack_total
+                P_net_cp = P_net_set[i] + c_ref * P_slack_total
             end
-            Q_gen = x[off + 1]
+            Q_net_cp = x[off + 1]
             # |V| at REF is fixed at V_set; subtract the ZIP constant-current draw
             # so the recovered injection matches polar's `bus_active_power_injections`
             # (which includes `const_I * V_set` via `get_bus_active_power_total_withdrawals`).
             Vm = sqrt(D)
-            P_eff = P_gen - const_I_P[i] * Vm
-            Q_eff = Q_gen - const_I_Q[i] * Vm
+            P_eff = P_net_cp - const_I_P[i] * Vm
+            Q_eff = Q_net_cp - const_I_Q[i] * Vm
             F[off] += (P_eff * e_i + Q_eff * f_i) / D
             F[off + 1] += (P_eff * f_i - Q_eff * e_i) / D
         else
             P_i = P_eff_cache[i]
             # PV: Q_state is the net injection unknown — at convergence it equals
-            # Q_gen − Q_load_total(|V_set|), so the ZIP-I term is implicit and a
+            # Q_gen − Q_load(|V_set|) net of constant Z, so the ZIP-I term is implicit and a
             # `−const_I_Q·|V|` correction here would double-count. For PQ, Q is a
             # known input, so Q_eff_cache pre-subtracts the constant-current draw.
             Q_i = bt == PSY.ACBusTypes.PV ? Q_state[i] : Q_eff_cache[i]

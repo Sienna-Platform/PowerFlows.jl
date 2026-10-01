@@ -6,16 +6,16 @@
         pf_rect = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}()
         data = PF.PowerFlowData(pf_rect, sys)
         R = PF.ACRectangularCIResidual(data, 1)
-        J = PF.ACRectangularCIJacobian(R, 1)
+        J = PF.ACRectangularCIJacobian(data, R, 1)
         x = Vector{Float64}(undef, length(R.Rv))
         PF.rect_initial_state!(x, data, R.bus_state_offset, R.bus_block_size, 1)
         # Avoid verifying at the special converged state — see note in
         # verify_jacobian (test_jacobian.jl) about hidden zeros.
         Random.seed!(42)
         x .+= 0.02 .* randn(length(x))
-        R(x, 1)
-        J(1)
-        verify_jacobian_asymptotic(R, copy(J.Jv), x, 1; label = "rect CI c_sys5")
+        R(data, x, 1)
+        J(data, 1)
+        verify_jacobian_asymptotic(R, data, copy(J.Jv), x, 1; label = "rect CI c_sys5")
     end
 
     @testset "c_sys14 at polar-converged + perturbation" begin
@@ -25,14 +25,14 @@
         pf_rect = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}()
         data = PF.PowerFlowData(pf_rect, sys)
         R = PF.ACRectangularCIResidual(data, 1)
-        J = PF.ACRectangularCIJacobian(R, 1)
+        J = PF.ACRectangularCIJacobian(data, R, 1)
         x = Vector{Float64}(undef, length(R.Rv))
         PF.rect_initial_state!(x, data, R.bus_state_offset, R.bus_block_size, 1)
         Random.seed!(42)
         x .+= 0.02 .* randn(length(x))
-        R(x, 1)
-        J(1)
-        verify_jacobian_asymptotic(R, copy(J.Jv), x, 1; label = "rect CI c_sys14")
+        R(data, x, 1)
+        J(data, 1)
+        verify_jacobian_asymptotic(R, data, copy(J.Jv), x, 1; label = "rect CI c_sys14")
     end
 
     @testset "ZIP constant-current load at perturbed state" begin
@@ -52,18 +52,25 @@
         PF.solve_and_store_power_flow!(pf_polar, sys)
         pf_rect = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
             correct_bustypes = true,
-            solver_settings = Dict{Symbol, Any}(:validate_voltage_magnitudes => false),
+            solution_parameters = SolutionParameters(; validate_voltage_magnitudes = false),
         )
         data = PF.PowerFlowData(pf_rect, sys)
         R = PF.ACRectangularCIResidual(data, 1)
-        J = PF.ACRectangularCIJacobian(R, 1)
+        J = PF.ACRectangularCIJacobian(data, R, 1)
         x = Vector{Float64}(undef, length(R.Rv))
         PF.rect_initial_state!(x, data, R.bus_state_offset, R.bus_block_size, 1)
         Random.seed!(7)
         x .+= 0.02 .* randn(length(x))
-        R(x, 1)
-        J(1)
-        verify_jacobian_asymptotic(R, copy(J.Jv), x, 1; label = "rect CI ZIP perturbed")
+        R(data, x, 1)
+        J(data, 1)
+        verify_jacobian_asymptotic(
+            R,
+            data,
+            copy(J.Jv),
+            x,
+            1;
+            label = "rect CI ZIP perturbed",
+        )
     end
 
     @testset "c_sys5 at perturbed (non-converged) state" begin
@@ -73,14 +80,21 @@
         pf_rect = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}()
         data = PF.PowerFlowData(pf_rect, sys)
         R = PF.ACRectangularCIResidual(data, 1)
-        J = PF.ACRectangularCIJacobian(R, 1)
+        J = PF.ACRectangularCIJacobian(data, R, 1)
         x = Vector{Float64}(undef, length(R.Rv))
         PF.rect_initial_state!(x, data, R.bus_state_offset, R.bus_block_size, 1)
         Random.seed!(42)
         x .+= 0.05 .* randn(length(x))
-        R(x, 1)
-        J(1)
-        verify_jacobian_asymptotic(R, copy(J.Jv), x, 1; label = "rect CI c_sys5 perturbed")
+        R(data, x, 1)
+        J(data, 1)
+        verify_jacobian_asymptotic(
+            R,
+            data,
+            copy(J.Jv),
+            x,
+            1;
+            label = "rect CI c_sys5 perturbed",
+        )
     end
 end
 
@@ -91,17 +105,17 @@ end
     pf_rect = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}()
     data = PF.PowerFlowData(pf_rect, sys)
     R = PF.ACRectangularCIResidual(data, 1)
-    J = PF.ACRectangularCIJacobian(R, 1)
+    J = PF.ACRectangularCIJacobian(data, R, 1)
     x = Vector{Float64}(undef, length(R.Rv))
     PF.rect_initial_state!(x, data, R.bus_state_offset, R.bus_block_size, 1)
-    R(x, 1)
-    J(1)
+    R(data, x, 1)
+    J(data, 1)
     J_first = copy(J.Jv)
 
     Random.seed!(123)
     x .+= 0.01 .* randn(length(x))
-    R(x, 1)
-    J(1)
+    R(data, x, 1)
+    J(data, 1)
     J_second = copy(J.Jv)
 
     # For non-REF, non-PV-Q columns at off-diagonal block positions, Y_bus entries
@@ -120,22 +134,20 @@ end
 end
 
 @testset "Rectangular CI Jacobian: two swings in one island (multi-swing)" begin
-    # `_rect_two_swing_system` is defined in test_rectangular_ci_power_flow.jl;
-    # all test_*.jl files share one module scope and are fully included before
-    # any testset body runs.
+    # `_rect_two_swing_system` / `_rect_pf_settings` live in test_utils/cross_file_fixtures.jl.
     sys = _rect_two_swing_system()
     pf_rect = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
-        solver_settings = _rect_pf_settings())
+        solution_parameters = _rect_pf_settings())
     data = PF.PowerFlowData(pf_rect, sys)
     R = PF.ACRectangularCIResidual(data, 1)
-    J = PF.ACRectangularCIJacobian(R, 1)
+    J = PF.ACRectangularCIJacobian(data, R, 1)
     x = Vector{Float64}(undef, length(R.Rv))
     PF.rect_initial_state!(x, data, R.bus_state_offset, R.bus_block_size, 1)
     # Avoid the special converged state (see verify_jacobian note in
     # test_jacobian.jl about hidden zeros).
     Random.seed!(42)
     x .+= 0.01 .* randn(length(x))
-    R(x, 1)
-    J(1)
-    verify_jacobian_asymptotic(R, copy(J.Jv), x, 1; label = "rect CI two-swing")
+    R(data, x, 1)
+    J(data, 1)
+    verify_jacobian_asymptotic(R, data, copy(J.Jv), x, 1; label = "rect CI two-swing")
 end

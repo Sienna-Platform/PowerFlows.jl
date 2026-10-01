@@ -191,6 +191,6 @@ end
     # leaves an error of exactly those withdrawals, so this fails on unfixed code.
     x = PF.calculate_x0(data, time_step)
     residual = PF.ACPowerFlowResidual(data, time_step)
-    residual(x, time_step)
+    residual(data, x, time_step)
     @test norm(residual.Rv, Inf) < 1e-8
 end

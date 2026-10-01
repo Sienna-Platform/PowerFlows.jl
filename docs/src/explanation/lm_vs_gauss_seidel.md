@@ -58,7 +58,7 @@ that regime.
 
 ## Configuring LM for Gauss-Seidel-like behaviour
 
-All settings are passed through `solver_settings`.
+All settings are passed through `solution_parameters`.
 
   - **Large `λ_0`** (default `1e-5`; try `1e-1` to `1e1`). `λ_0` is the initial
     damping factor $\mu$; the working damping is $\lambda = \mu\lVert F\rVert$.
@@ -84,11 +84,11 @@ Example — polar formulation, Gauss-Seidel-like configuration:
 
 ```julia
 pf = ACPolarPowerFlow{LevenbergMarquardtACPowerFlow}(;
-    solver_settings = Dict{Symbol, Any}(
-        :λ_0 => 1.0,                 # heavy damping → cautious first-order steps
-        :marquardt_scaling => true,  # GS-like per-bus diagonal scaling
-        :tol => 1e-6,                # engineering mismatch tolerance
-        :maxIterations => 500,       # linear convergence needs many iterations
+    solution_parameters = SolutionParameters(;
+        λ_0 = 1.0,                 # heavy damping → cautious first-order steps
+        marquardt_scaling = true,  # GS-like per-bus diagonal scaling
+        tol = 1e-6,                # engineering mismatch tolerance
+        maxIterations = 500,       # linear convergence needs many iterations
     ),
 )
 solve_power_flow(pf, sys)

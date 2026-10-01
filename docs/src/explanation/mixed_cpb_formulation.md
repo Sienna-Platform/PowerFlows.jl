@@ -149,4 +149,4 @@ results = solve_power_flow(pf, system)
 [`ACRectangularPowerFlow`](@ref) (`check_reactive_power_limits`,
 `generator_slack_participation_factors`, `enhanced_flat_start`,
 `distribute_slack_proportional_to_headroom`, `network_reductions`,
-`time_steps`, `correct_bustypes`, `solver_settings`, …).
+`time_steps`, `correct_bustypes`, `solution_parameters`, …).

@@ -18,7 +18,17 @@ Public = true
 Private = false
 Pages = [
     "power_flow_types.jl",
+    "solution_parameters.jl",
 ]
+```
+
+## Flow Reporting
+
+`FlowReporting` is bound to a module by `@scoped_enum`, which the `Public = true` filter
+over `definitions.jl` below does not collect, so it is registered here by name.
+
+```@docs
+FlowReporting
 ```
 
 ## Solving Power Flows
@@ -50,5 +60,6 @@ Public = true
 Private = false
 Pages = [
     "psse_export.jl",
+    "psse_solution_records.jl",
 ]
 ```

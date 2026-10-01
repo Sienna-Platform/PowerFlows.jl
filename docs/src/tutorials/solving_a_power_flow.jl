@@ -113,10 +113,10 @@ fd_results["bus_results"]
 # Because the fast decoupled state is a valid iterate of the exact residual, it is also a good
 # warm start for an exact-Newton solver. You can optionally run the cheap fast decoupled stage to
 # a looser tolerance, then hand off to [`NewtonRaphsonACPowerFlow`](@ref) for final refinement,
-# via `solver_settings`:
+# via `solution_parameters`:
 
 pf_handoff = ACPowerFlow{FastDecoupledACPowerFlow}(;
-    solver_settings = Dict(:handoff_solver => NewtonRaphsonACPowerFlow),
+    solution_parameters = SolutionParameters(; handoff_solver = NewtonRaphsonACPowerFlow),
 )
 handoff_results = solve_power_flow(pf_handoff, sys)
 

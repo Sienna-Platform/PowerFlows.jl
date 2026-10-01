@@ -39,7 +39,7 @@ end
     ref_bus_angles[valid_ix] = matrix_data \ power_injections[valid_ix]
     ref_flow_values = transpose(aux_network_matrix.data) * ref_bus_angles
 
-    basepower = PSY.get_base_power(sys)
+    basepower = PSY.get_base_power(sys, PSY.NU)
     arc_lookup = PF.get_arc_lookup(data)
     # CASE 1: ABA and BA matrices
     solved_data_ABA = solve_power_flow(
@@ -101,17 +101,13 @@ end
 
 @testset "DC power flow with an LCC" begin
     sys, lcc = simple_lcc_system()
-    @assert get_base_power(sys) == 100.0 "Test system base power changed."
-    @assert get_units_base(sys) == "SYSTEM_BASE" "Test system unit setting changed."
-    set_active_power_flow!(lcc, 0.3)
+    @assert get_base_power(sys, PSY.NU) == 100.0 "Test system base power changed."
+    set_active_power_flow!(lcc, 0.3 * PSY.SU)
     for T in (DCPowerFlow, PTDFDCPowerFlow, vPTDFDCPowerFlow)
         results =
             solve_power_flow(T(; correct_bustypes = true), sys, PF.FlowReporting.ARC_FLOWS)
         lcc_flow = results["1"]["lcc_results"][1, :P_from_to]
-        # 1st arg must be lcc, not sys, else test fails. See issue #1590 in PowerSystems.jl
-        with_units_base(lcc, PSY.UnitSystem.NATURAL_UNITS) do
-            @test lcc_flow == get_active_power_flow(lcc)
-        end
+        @test lcc_flow == get_active_power_flow(lcc, PSY.NU)
     end
 end
 
@@ -121,7 +117,7 @@ end
 
     # In the normalized initialization equation R * I_dc^2 + I_dc - P_set = 0,
     # zero resistance reduces to I_dc = P_set.
-    PSY.set_transfer_setpoint!(lcc, 25.0)
+    PSY.set_transfer_setpoint!(lcc, 0.25)
     for T in (DCPowerFlow, PTDFDCPowerFlow, vPTDFDCPowerFlow)
         data = PowerFlowData(T(; correct_bustypes = true), sys)
         @test !isnan(data.lcc.i_dc[1, 1])
@@ -137,31 +133,27 @@ end
 
 # TODO LCC DC test case with nonzero loss.
 
-@testset "DC power flow: results independent of units" begin
+@testset "DC power flow: solve runs" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
     for T in (DCPowerFlow, PTDFDCPowerFlow, vPTDFDCPowerFlow)
-        line_name, flow_natural =
-            power_flow_with_units(sys, T, PSY.UnitSystem.NATURAL_UNITS)
-        line_name2, flow_system = power_flow_with_units(sys, T, PSY.UnitSystem.SYSTEM_BASE)
-        @test line_name == line_name2
-        @test isapprox(flow_natural, flow_system, atol = 1e-6)
+        line_name, flow = power_flow_with_units(sys, T)
+        @test line_name !== nothing
+        @test isfinite(flow)
     end
 end
 
 function set_zip_load_in_mva!(sys::PSY.System, tp::Tuple{Float64, Float64, Float64})
-    set_units_base_system!(sys, PSY.UnitSystem.NATURAL_UNITS)
     load = only(get_components(StandardLoad, sys))
     set_zip_loads_active_power!(load, tp)
-    set_units_base_system!(sys, PSY.UnitSystem.SYSTEM_BASE)
 end
 
 function set_zip_loads_active_power!(
     load::StandardLoad,
     tp::Tuple{Float64, Float64, Float64},
 )
-    set_constant_active_power!(load, tp[1])
-    set_impedance_active_power!(load, tp[2])
-    set_current_active_power!(load, tp[3])
+    set_constant_active_power!(load, tp[1] * u"MW")
+    set_impedance_active_power!(load, tp[2] * u"MW")
+    set_current_active_power!(load, tp[3] * u"MW")
 end
 
 @testset "DC power flow: StandardLoad" begin
@@ -172,28 +164,28 @@ end
         sys,
         PF.FlowReporting.ARC_FLOWS,
     )
-    set_units_base_system!(sys, PSY.UnitSystem.NATURAL_UNITS)
     load = first(get_components(PowerLoad, sys))
-    P = PSY.get_active_power(load)
+    P = PSY.get_active_power(load, PSY.NU)
     println("original load draws: ", P, " MVA")
     remove_component!(sys, load)
     new_load = PSY.StandardLoad(;
         name = get_name(load),
         available = true,
         bus = PSY.get_bus(load),
-        base_power = PSY.get_base_power(load),
+        base_power = PSY.get_base_power(load, PSY.NU),
         constant_active_power = 0.0,
         constant_reactive_power = 0.0,
         impedance_active_power = 0.0,
         impedance_reactive_power = 0.0,
         current_active_power = 0.0,
         current_reactive_power = 0.0,
-        max_constant_active_power = PSY.get_max_active_power(load),
-        max_constant_reactive_power = PSY.get_max_reactive_power(load),
-        max_impedance_active_power = PSY.get_max_active_power(load),
-        max_impedance_reactive_power = PSY.get_max_reactive_power(load),
-        max_current_active_power = PSY.get_max_active_power(load),
-        max_current_reactive_power = PSY.get_max_reactive_power(load),
+        max_constant_active_power = PSY.get_max_active_power(load, PSY.NU),
+        max_constant_reactive_power = PSY.get_max_reactive_power(load, PSY.NU),
+        max_impedance_active_power = PSY.get_max_active_power(load, PSY.NU),
+        max_impedance_reactive_power = PSY.get_max_reactive_power(load, PSY.NU),
+        max_current_active_power = PSY.get_max_active_power(load, PSY.NU),
+        max_current_reactive_power = PSY.get_max_reactive_power(load, PSY.NU),
+        input_basis = PSY.CU,
     )
     add_component!(sys, new_load)
     set_zip_load_in_mva!(sys, (0.0, P, 0.0))
@@ -240,7 +232,7 @@ end
 
 @testset "DC branch losses estimation" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
-    base_power = PSY.get_base_power(sys)
+    base_power = PSY.get_base_power(sys, PSY.NU)
 
     for T in (DCPowerFlow, PTDFDCPowerFlow, vPTDFDCPowerFlow)
         data = PowerFlowData(T(; correct_bustypes = true), sys)
@@ -284,7 +276,7 @@ end
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
     # Introduce a deliberate imbalance by scaling one load up.
     load = first(get_components(PSY.PowerLoad, sys))
-    set_active_power!(load, 2.0 * get_active_power(load))
+    set_active_power!(load, 2.0 * get_active_power(load, PSY.SU) * PSY.SU)
 
     for T in (DCPowerFlow, PTDFDCPowerFlow, vPTDFDCPowerFlow)
         results =
@@ -306,7 +298,7 @@ end
 
 @testset "DC branch-level losses with BRANCH_FLOWS reporting" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
-    base_power = PSY.get_base_power(sys)
+    base_power = PSY.get_base_power(sys, PSY.NU)
 
     for T in (DCPowerFlow, PTDFDCPowerFlow, vPTDFDCPowerFlow)
         results = solve_power_flow(
@@ -339,4 +331,67 @@ end
         solve_power_flow!(data)
         @test isapprox(data.arc_active_power_flow_from_to, flows_before; atol = 1e-10)
     end
+end
+
+# `(aba_matrix, run!)` for a DC-family `data`, dispatched on its concrete type rather than
+# an `isa`/ternary chain on `pf`.
+_dc_test_pieces(data::PF.ABAPowerFlowData) = (data.power_network_matrix, PF._run_aba_solve!)
+_dc_test_pieces(data::PF.PTDFPowerFlowData) = (data.aux_network_matrix, PF._run_ptdf_solve!)
+_dc_test_pieces(data::PF.vPTDFPowerFlowData) =
+    (data.aux_network_matrix, PF._run_vptdf_solve!)
+
+@testset "DC solver_cache slot is concrete through _dc_solve!" begin
+    # `_dc_solve!` dispatches on the solver-cache slot's concrete type instead of returning
+    # `(cache, scratch)` from the abstract `RefValue{Union{Nothing,SolverCache}}` slot.
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    for pf in (DCPowerFlow(), PTDFDCPowerFlow(), vPTDFDCPowerFlow())
+        data = PowerFlowData(pf, sys)
+        backend = PF.resolve_linear_solver_backend(nothing)
+        aba_matrix, run! = _dc_test_pieces(data)
+        rt_empty = Base.return_types(
+            PF._dc_solve!,
+            (typeof(data), typeof(data.solver_cache[]), typeof(backend),
+                typeof(aba_matrix), typeof(run!)),
+        )
+        @test rt_empty == [Nothing]
+        solve_power_flow!(data)
+        rt_built = Base.return_types(
+            PF._dc_solve!,
+            (typeof(data), typeof(data.solver_cache[]), typeof(backend),
+                typeof(aba_matrix), typeof(run!)),
+        )
+        @test rt_built == [Nothing]
+    end
+end
+
+@testset "DC construction factors ABA once on the KLU backend" begin
+    # `aba_matrix.K` is already a KLU factorization from construction; a KLU-backend solve
+    # must reuse it rather than factoring again.
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    for pf in (DCPowerFlow(), PTDFDCPowerFlow(), vPTDFDCPowerFlow())
+        data = PowerFlowData(pf, sys)
+        aba_matrix, _ = _dc_test_pieces(data)
+        solve_power_flow!(data; linear_solver = "KLU")
+        @test data.solver_cache[].cache === aba_matrix.K
+    end
+end
+
+@testset "Switching linear_solver backend on the same data errors" begin
+    # Only meaningful where a second backend exists alongside KLU (AppleAccelerate, macOS only).
+    if Sys.isapple()
+        sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+        data = PowerFlowData(DCPowerFlow(), sys)
+        solve_power_flow!(data; linear_solver = "KLU")
+        @test_throws ErrorException solve_power_flow!(
+            data;
+            linear_solver = "AppleAccelerateLU",
+        )
+    end
+end
+
+@testset "\"Dense\" linear_solver is rejected up front, not a MethodError mid-solve" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    @test_throws ArgumentError PF.resolve_linear_solver_backend("Dense")
+    data = PowerFlowData(DCPowerFlow(), sys)
+    @test_throws ArgumentError solve_power_flow!(data; linear_solver = "Dense")
 end

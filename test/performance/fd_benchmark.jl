@@ -46,7 +46,8 @@ end
 
 # Time a single solve, after one warm-up solve to remove compilation latency.
 function bench_single(solver, settings)
-    pf = ACPowerFlow{solver}(; correct_bustypes = true, solver_settings = settings)
+    pf = ACPowerFlow{solver}(;
+        correct_bustypes = true, solution_parameters = SolutionParameters(; settings...))
     PF.solve_power_flow!(PF.PowerFlowData(pf, _build()))            # warm-up (compile)
     data = PF.PowerFlowData(pf, _build())
     return @elapsed PF.solve_power_flow!(data)
@@ -56,7 +57,8 @@ end
 # time-step loop within `solve_power_flow!`). After one warm-up.
 function bench_multiperiod(solver, settings, steps)
     pf = ACPowerFlow{solver}(;
-        correct_bustypes = true, time_steps = steps, solver_settings = settings)
+        correct_bustypes = true, time_steps = steps,
+        solution_parameters = SolutionParameters(; settings...))
     PF.solve_power_flow!(_replicate_first_step!(PF.PowerFlowData(pf, _build()), steps))  # warm-up
     data = _replicate_first_step!(PF.PowerFlowData(pf, _build()), steps)
     return @elapsed PF.solve_power_flow!(data)

@@ -27,14 +27,14 @@ import Pardiso
             sys = build_system(PSITestSystems, "c_sys14")
             res_klu = solve_power_flow(
                 ACPowerFlow{NewtonRaphsonACPowerFlow}(;
-                    solver_settings = Dict{Symbol, Any}(:linear_solver => "KLU")),
+                    solution_parameters = SolutionParameters(; linear_solver = "KLU")),
                 sys,
             )
             for solver in (NewtonRaphsonACPowerFlow, TrustRegionACPowerFlow)
                 res_par = solve_power_flow(
                     ACPowerFlow{solver}(;
-                        solver_settings = Dict{Symbol, Any}(
-                            :linear_solver => "MKLPardiso")),
+                        solution_parameters = SolutionParameters(;
+                            linear_solver = "MKLPardiso")),
                     sys,
                 )
                 @test isapprox(
@@ -55,8 +55,8 @@ import Pardiso
             pf = ACPowerFlow{NewtonRaphsonACPowerFlow}()
             data = PF.PowerFlowData(pf, sys)
             residual = PF.ACPowerFlowResidual(data, 1)
-            J = PF.ACPowerFlowJacobian(residual, 1)
-            J(1)
+            J = PF.ACPowerFlowJacobian(data, residual, 1)
+            J(data, 1)
             cache = PF.make_linear_solver_cache(PF.PNM.MKLPardisoSolver(), J.Jv)
             PF.full_factor!(cache, J.Jv)
             b = randn(size(J.Jv, 1))
@@ -77,8 +77,8 @@ import Pardiso
         pf = ACPowerFlow{NewtonRaphsonACPowerFlow}()
         data = PF.PowerFlowData(pf, sys)
         residual = PF.ACPowerFlowResidual(data, 1)
-        J = PF.ACPowerFlowJacobian(residual, 1)
-        J(1)
+        J = PF.ACPowerFlowJacobian(data, residual, 1)
+        J(data, 1)
         # Constructing the cache must fail with a clear error (never a crash/segfault)
         # when MKL is unusable — the functional guard runs before any MKL ccall.
         @test_throws ErrorException PF.make_linear_solver_cache(

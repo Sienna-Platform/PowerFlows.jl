@@ -229,17 +229,17 @@ results = solve_power_flow(pf, system)
 
 # FD stage to engineering tolerance, then Newton-Raphson to 1e-9:
 pf = ACPowerFlow{FastDecoupledACPowerFlow}(;
-    solver_settings = Dict(
-        :handoff_solver => NewtonRaphsonACPowerFlow,
-        :handoff_tol => 1e-3,
+    solution_parameters = SolutionParameters(;
+        handoff_solver = NewtonRaphsonACPowerFlow,
+        handoff_tol = 1e-3,
     ),
 )
 results = solve_power_flow(pf, system)
 
 # BX scheme (a solver type parameter), hand off to Trust Region:
 pf = ACPowerFlow{FastDecoupledACPowerFlow{FDDecoupled, FDSchemeBX}}(;
-    solver_settings = Dict(
-        :handoff_solver => TrustRegionACPowerFlow,
+    solution_parameters = SolutionParameters(;
+        handoff_solver = TrustRegionACPowerFlow,
     ),
 )
 results = solve_power_flow(pf, system)

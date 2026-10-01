@@ -128,20 +128,23 @@ for (group, name) in systems
     sys = build_system(group, name)
     for (label, solver, settings) in polar_ac_solvers
         bench_ac!(name, label,
-            () ->
-                ACPowerFlow{solver}(; correct_bustypes = true, solver_settings = settings),
+            () -> ACPowerFlow{solver}(;
+                correct_bustypes = true,
+                solution_parameters = SolutionParameters(; settings...)),
             sys)
     end
     for (label, solver, settings) in _RECT_CI_VARIANTS
         bench_ac!(name, label,
             () -> PF.ACRectangularPowerFlow{solver}(;
-                correct_bustypes = true, solver_settings = settings),
+                correct_bustypes = true,
+                solution_parameters = SolutionParameters(; settings...)),
             sys)
     end
     for (label, solver, settings) in _MIXED_CPB_VARIANTS
         bench_ac!(name, label,
             () -> PF.ACMixedPowerFlow{solver}(;
-                correct_bustypes = true, solver_settings = settings),
+                correct_bustypes = true,
+                solution_parameters = SolutionParameters(; settings...)),
             sys)
     end
     for (dc_pf, label) in dc_solvers
@@ -183,7 +186,8 @@ if get(ENV, "PF_PERF_SKIP_LARGE_SYSTEMS", "false") != "true"
         for (label, solver, settings) in large_ac_solvers
             bench_ac!(name, label,
                 () -> ACPowerFlow{solver}(;
-                    correct_bustypes = true, solver_settings = settings),
+                    correct_bustypes = true,
+                    solution_parameters = SolutionParameters(; settings...)),
                 sys)
         end
     end

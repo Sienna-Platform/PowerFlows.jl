@@ -16,7 +16,6 @@ offsets for the voltage-magnitude diagnostic. Remaining fields are named
 after their roles.
 """
 struct ACMixedCPBResidual
-    data::ACPowerFlowData
     Rv::Vector{Float64}
     Y_bus_eff::SparseMatrixCSC{ComplexF64, Int}
     P_net_const::Vector{Float64}
@@ -94,7 +93,6 @@ function ACMixedCPBResidual(data::ACPowerFlowData, time_step::Int64)
     fold_zip_constant_z!(Y_bus_eff, data, time_step)
 
     return ACMixedCPBResidual(
-        data,
         Vector{Float64}(undef, total_state),
         Y_bus_eff,
         P_net_const,
@@ -119,6 +117,7 @@ function ACMixedCPBResidual(data::ACPowerFlowData, time_step::Int64)
 end
 
 function (R::ACMixedCPBResidual)(
+    data::ACPowerFlowData,
     Rv::Vector{Float64},
     x::Vector{Float64},
     time_step::Int64,
@@ -128,18 +127,22 @@ function (R::ACMixedCPBResidual)(
         R.bus_slack_participation_factors, R.subnetworks, R.independent_ref,
         R.bus_state_offset, R.bus_block_size, R.total_bus_state,
         R.e_state, R.f_state, R.P_eff_cache, R.Q_eff_cache,
-        R.data, time_step, R.Ir_acc, R.Ii_acc)
+        data, time_step, R.Ir_acc, R.Ii_acc)
     copyto!(Rv, R.Rv)
     return
 end
 
-function (R::ACMixedCPBResidual)(x::Vector{Float64}, time_step::Int64)
+function (R::ACMixedCPBResidual)(
+    data::ACPowerFlowData,
+    x::Vector{Float64},
+    time_step::Int64,
+)
     _update_mixed_cpb_residual_values!(R.Rv, x, R.Y_bus_eff, R.P_net_const, R.Q_net_const,
         R.const_I_P, R.const_I_Q, R.P_net_set,
         R.bus_slack_participation_factors, R.subnetworks, R.independent_ref,
         R.bus_state_offset, R.bus_block_size, R.total_bus_state,
         R.e_state, R.f_state, R.P_eff_cache, R.Q_eff_cache,
-        R.data, time_step, R.Ir_acc, R.Ii_acc)
+        data, time_step, R.Ir_acc, R.Ii_acc)
     return
 end
 
@@ -272,17 +275,17 @@ function _update_mixed_cpb_residual_values!(
             # so rect's `_update_ref_diag_block!` is reusable.
             if i in independent_ref
                 # Multi-swing island: this swing self-balances at its own P-slot
-                # (∂P_gen/∂x[off] = 1), not the distributed c_ref share.
-                P_gen = x[off]
+                # (∂P_net_cp/∂x[off] = 1), not the distributed c_ref share.
+                P_net_cp = x[off]
             else
                 c_ref = bus_slack_participation_factors[i]
                 P_slack_total = x[off] - P_net_set[i]
-                P_gen = P_net_set[i] + c_ref * P_slack_total
+                P_net_cp = P_net_set[i] + c_ref * P_slack_total
             end
-            Q_gen = x[off + 1]
+            Q_net_cp = x[off + 1]
             Vm = sqrt(D)
-            P_eff = P_gen - const_I_P[i] * Vm
-            Q_eff = Q_gen - const_I_Q[i] * Vm
+            P_eff = P_net_cp - const_I_P[i] * Vm
+            Q_eff = Q_net_cp - const_I_Q[i] * Vm
             F[off] = (P_eff * e_i + Q_eff * f_i) / D - Ir_acc[i]
             F[off + 1] = (P_eff * f_i - Q_eff * e_i) / D - Ii_acc[i]
         elseif bt == PSY.ACBusTypes.PV

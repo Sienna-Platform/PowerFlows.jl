@@ -9,7 +9,7 @@
             reactive_power_limits_to = (min = -0.1, max = 0.1),
         )
         data = PowerFlowData(
-            ACPowerFlow{solver}(; solver_settings = VSC_SETTINGS),
+            ACPowerFlow{solver}(; solution_parameters = VSC_SOLUTION_PARAMETERS),
             sys,
         )
         converged = @test_logs (:warn, r"Q = .* outside") match_mode = :any begin
@@ -30,7 +30,9 @@ end
         rating_to = 0.3,
     )
     data = PowerFlowData(
-        ACPowerFlow{NewtonRaphsonACPowerFlow}(; solver_settings = VSC_SETTINGS),
+        ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+            solution_parameters = VSC_SOLUTION_PARAMETERS,
+        ),
         sys,
     )
     converged = @test_logs (:warn, r"S = .* exceeds s_max") match_mode = :any begin
@@ -46,7 +48,9 @@ end
         active_power_limits_to = (min = -0.2, max = 0.2),
     )
     data = PowerFlowData(
-        ACPowerFlow{NewtonRaphsonACPowerFlow}(; solver_settings = VSC_SETTINGS),
+        ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+            solution_parameters = VSC_SOLUTION_PARAMETERS,
+        ),
         sys,
     )
     converged = @test_logs (:warn, r"P = .* outside") match_mode = :any begin
@@ -64,7 +68,9 @@ end
         reactive_power_limits_to = (min = -0.5, max = 0.5),
     )
     data = PowerFlowData(
-        ACPowerFlow{NewtonRaphsonACPowerFlow}(; solver_settings = VSC_SETTINGS),
+        ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+            solution_parameters = VSC_SOLUTION_PARAMETERS,
+        ),
         sys,
     )
     # @test_logs with no patterns: asserts no Warn-or-above output

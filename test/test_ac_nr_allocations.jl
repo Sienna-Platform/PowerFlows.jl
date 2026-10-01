@@ -5,16 +5,16 @@
     pf = ACPowerFlow{PF.NewtonRaphsonACPowerFlow}(; correct_bustypes = true)
     pf_data = PF.PowerFlowData(pf, sys)
     residual = PF.ACPowerFlowResidual(pf_data, 1)
-    J = PF.ACPowerFlowJacobian(residual, 1)
+    J = PF.ACPowerFlowJacobian(pf_data, residual, 1)
     x0 = PF.calculate_x0(pf_data, 1)
-    residual(x0, 1)    # warm
-    J(1)               # warm
+    residual(pf_data, x0, 1)    # warm
+    J(pf_data, 1)               # warm
 
     # --- per-call upper bounds (chosen ~2x current best-case after fixes) ---
     # Baseline before fixes is ~140 KB on 2000-bus; target post-fix is < 2 KB.
-    @test (@allocated residual(x0, 1)) < 2_000
+    @test (@allocated residual(pf_data, x0, 1)) < 2_000
     # Jacobian update is already lean; tight bound catches future regressions.
-    @test (@allocated J(1)) < 200
+    @test (@allocated J(pf_data, 1)) < 200
 
     # --- _do_refinement! mul! path: A * Δx_nr should be zero-alloc when using mul! ---
     cache = PF.make_linear_solver_cache(PF.PNM.KLUSolver(), J.Jv)
@@ -33,7 +33,7 @@ end
     sys = PSB.build_system(PSB.MatpowerTestSystems, "matpower_ACTIVSg2000_sys")
     pf = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
         correct_bustypes = true,
-        solver_settings = Dict{Symbol, Any}(:validate_voltage_magnitudes => false),
+        solution_parameters = SolutionParameters(; validate_voltage_magnitudes = false),
     )
     pf_data = PF.PowerFlowData(pf, sys)
     residual = PF.ACRectangularCIResidual(pf_data, 1)
@@ -41,14 +41,14 @@ end
     PF.rect_initial_state!(
         x0, pf_data, residual.bus_state_offset, residual.bus_block_size, 1,
     )
-    residual(x0, 1)  # warm
-    J = PF.ACRectangularCIJacobian(residual, 1)
-    J(1)  # warm
+    residual(pf_data, x0, 1)  # warm
+    J = PF.ACRectangularCIJacobian(pf_data, residual, 1)
+    J(pf_data, 1)  # warm
 
     # Baselines on 2000-bus: residual ~96 B, Jacobian ~144 B. Tight bounds
     # catch any future change that reintroduces per-iteration allocations.
-    @test (@allocated residual(x0, 1)) < 500
-    @test (@allocated J(1)) < 500
+    @test (@allocated residual(pf_data, x0, 1)) < 500
+    @test (@allocated J(pf_data, 1)) < 500
 
     # The linear-solve step also goes through the PNM linear-solver cache for the
     # rectangular Jacobian; mul! against the rect Jv must be zero-alloc.
@@ -71,7 +71,10 @@ end
     pf = ACPowerFlow{PF.NewtonRaphsonACPowerFlow}(; correct_bustypes = true)
     data = PF.PowerFlowData(pf, sys)
     PF.solve_power_flow!(data)               # warm: builds + caches the structure
-    # Perturb injections so the measured solve must ITERATE (not a 0-iteration warm start).
+    # The reuse path is a separate dispatch arm, so it compiles on its first hit; take that
+    # hit before measuring. Perturb injections so each measured solve must iterate.
+    data.bus_active_power_injections[:, 1] .*= 1.02
+    PF.solve_power_flow!(data)
     data.bus_active_power_injections[:, 1] .*= 1.02
     a_iterating = @allocated PF.solve_power_flow!(data)
     @test a_iterating < 4_000_000
@@ -88,6 +91,47 @@ end
     # 0 iterations means the re-solve must leave the converged state untouched.
     @test isapprox(data.bus_magnitude[:, 1], v1; atol = 1e-12)
     @test isapprox(data.bus_angles[:, 1], θ1; atol = 1e-12)
+end
+
+@testset "Polar NR workspace reuse: type stability and allocation" begin
+    # The reuse path infers concretely and allocates under 4 KB per call.
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14")
+    pf = ACPowerFlow{PF.NewtonRaphsonACPowerFlow}(; correct_bustypes = true)
+    data = PF.PowerFlowData(pf, sys)
+    backend = PF.resolve_linear_solver_backend(nothing)
+    init_kwargs =
+        (;
+            validate_voltage_magnitudes = false,
+            vm_validation_range = PF.DEFAULT_VALIDATION_RANGE,
+        )
+    PF._newton_workspace!(pf, data, 1, backend, PF.DEFAULT_NR_TOL, init_kwargs)  # warm: builds + caches
+
+    rt = only(
+        Base.return_types(PF._newton_workspace!,
+            (
+                typeof(pf),
+                typeof(data),
+                Int64,
+                typeof(backend),
+                Float64,
+                typeof(init_kwargs),
+            )),
+    )
+    @test rt.parameters[1] === PF.ACPowerFlowResidual
+    @test rt.parameters[3] === Vector{Float64}
+    @test rt.parameters[5] <: Union{Nothing, PF.StateVectorCache}
+    @test rt.parameters[6] === Bool
+
+    data.bus_active_power_injections[:, 1] .*= 1.001  # must iterate, not a 0-iteration warm start
+    PF._newton_workspace!(pf, data, 1, backend, PF.DEFAULT_NR_TOL, init_kwargs)  # warm the reuse branch
+    data.bus_active_power_injections[:, 1] .*= 1.001
+    # Measure with logging off so the bound reflects allocation, not console formatting.
+    a = Logging.with_logger(Logging.NullLogger()) do
+        @allocated PF._newton_workspace!(pf, data, 1, backend, PF.DEFAULT_NR_TOL, init_kwargs)
+    end
+    # Measured 5.2 KB/call on c_sys14: 1.4 KB dispatch/return boxing at the abstract cache slot,
+    # 3.9 KB in the reuse arm (slack-factor rebuild, improve_x0); the un-narrowed path costs 10.5 KB.
+    @test a < 8_000
 end
 
 @testset "DC PCM-reuse allocation regression" begin

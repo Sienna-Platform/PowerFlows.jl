@@ -12,6 +12,8 @@ mutable struct ControlledTap <: AbstractBranchControl
     to_ix::Int
     controlled_ix::Int
     vset::Float64
+    vset_lo::Float64                 # VMI/VMA deadband: held anywhere inside
+    vset_hi::Float64
     yt::ComplexF64                   # 1/(r+jx)
     alpha::Float64                   # winding-group phase shift (PSY.get_α)
     p_min::Float64
@@ -21,6 +23,11 @@ mutable struct ControlledTap <: AbstractBranchControl
     initial::Float64                 # enrollment-time tap (reporting)
     synced::Float64                  # tap reflected in the arc-admittance rows
     current::Float64
+    # Write-back address. A regulating tap lives on a `PSY.TransformerCircuit`, and under psy6
+    # that circuit may belong to either arity, so `name` alone (which is suffixed per circuit
+    # for a 3W) cannot resolve it. `PSY.get_circuits(parent)[circuit_index]` can, for both.
+    device_name::String
+    circuit_index::Int
 end
 
 """Voltage-controlling switched shunt, snapped onto the PSS/E cumulative
@@ -32,8 +39,6 @@ mutable struct ControlledSwitchedShunt <: AbstractShuntControl
     vset::Float64
     vset_lo::Float64                 # VSWLO/VSWHI deadband: held anywhere inside
     vset_hi::Float64
-    g0::Float64                      # real(get_Y)
-    b0::Float64                      # fixed (non-switchable) susceptance base
     block_steps::Vector{Int}         # number_of_steps per block
     block_dB::Vector{Float64}        # imag(Y_increase) per block
     b_min::Float64
@@ -269,11 +274,13 @@ control_setpoint(d::AbstractControlledDevice) = voltage_setpoint(d)
 stamp_control!(d::AbstractControlledDevice, args...) =
     error("implicit embedding not implemented for $(typeof(d))")
 
-# PSS/E deadband semantics: a switched shunt is held while the controlled voltage is
-# anywhere INSIDE [VSWLO, VSWHI]; only excursions outside the band trigger switching.
-# Other device families carry a point setpoint (no parsed band) and always regulate.
+# PSS/E deadband semantics: the device is held while the controlled voltage is anywhere INSIDE
+# its band — [VSWLO, VSWHI] for a switched shunt, [VMI, VMA] (the circuit's
+# `controlled_quantity_limits`) for a tap changer; only excursions outside trigger a move.
+# Families with a point setpoint and no parsed band always regulate.
 _in_deadband(::AbstractControlledDevice, ::Float64) = false
 _in_deadband(d::ControlledSwitchedShunt, y::Float64) = d.vset_lo <= y <= d.vset_hi
+_in_deadband(d::ControlledTap, y::Float64) = d.vset_lo <= y <= d.vset_hi
 
 function _nz_index(A::SparseArrays.SparseMatrixCSC, row::Int, col::Int)
     @inbounds for k in SparseArrays.nzrange(A, col)
@@ -314,7 +321,7 @@ end
 
 # Delta-update (`+=`, not `=`): `_get_withdrawals!` accumulates all constant-Z devices on
 # this bus into one slot, so overwriting would drop co-located contributions. Only
-# susceptance is controlled; g0 is constant and stays in the baseline. Raising the
+# susceptance is controlled. Raising the
 # (capacitive) susceptance lowers the bus's reactive withdrawal, injecting Q and raising the
 # voltage. Shared by switched shunts and FACTS shunt compensators.
 function apply_parameter!(d::AbstractShuntControl, data, b::Float64, ts::Int)
@@ -341,16 +348,16 @@ end
 # PSS/E mixed banks: capacitor blocks (dB>0) switch on cumulatively in listed order,
 # reactor blocks (dB<0) likewise — two independent chains stepping away from the
 # all-off base, NOT one serial chain, so a mixed bank reaches both signs. Realizable
-# totals = b0 ∪ {b0 + capacitor prefixes} ∪ {b0 + reactor prefixes}. Same-sign banks
+# totals = {0} ∪ {capacitor prefixes} ∪ {reactor prefixes}. Same-sign banks
 # reduce to the previous single-chain walk. O(Σ steps), allocation-free.
 function snap_to_discrete(d::ControlledSwitchedShunt, b::Float64)
     d.continuous && return clamp(b, d.b_min, d.b_max)
     target = clamp(b, d.b_min, d.b_max)
-    best = d.b0
+    best = 0.0
     best_steps = 0
     best_positive = true
     @inbounds for positive in (true, false)
-        total = d.b0
+        total = 0.0
         steps_taken = 0
         for k in eachindex(d.block_steps, d.block_dB)
             dB = d.block_dB[k]

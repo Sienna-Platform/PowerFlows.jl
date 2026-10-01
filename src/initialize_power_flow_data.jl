@@ -7,7 +7,6 @@ function initialize_power_flow_data!(
     sys::System;
     correct_bustypes = false,
 )
-    check_unit_setting(sys)
     nrd = get_network_reduction_data(data)
     reverse_bus_search_map = PNM.get_reverse_bus_search_map(nrd)
     bus_reduction_map = PNM.get_bus_reduction_map(nrd)
@@ -29,7 +28,7 @@ function initialize_power_flow_data!(
     )
 
     # bus types, angles, magnitudes
-    bus_type = Vector{PSY.ACBusTypes}(undef, n_buses)
+    bus_type = Vector{PSY.ACBusTypes.Value}(undef, n_buses)
     bus_angles = zeros(Float64, n_buses)
     bus_magnitude = ones(Float64, n_buses)
     _initialize_bus_data!(
@@ -183,6 +182,9 @@ function initialize_power_flow_data!(
         reverse_bus_search_map,
         removed_buses,
     )
+    # DC phase-shifters, DC only: precompute the per-arc flow offsets and paired bus
+    # injections from stored circuit α.
+    _populate_phase_shift_terms!(data)
     # ZIP Loads, DC only: convert constant current and impedance components to constant
     # powers via assuming V = 1.0 p.u.
     handle_zip_loads!(data, pf)

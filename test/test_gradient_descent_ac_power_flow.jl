@@ -37,7 +37,7 @@
 
         # Solve with Gradient Descent (Adam)
         pf_gd = ACPowerFlow{GradientDescentACPowerFlow}(;
-            solver_settings = Dict{Symbol, Any}(:learning_rate => 0.01),
+            solution_parameters = SolutionParameters(; learning_rate = 0.01),
         )
         result_gd = solve_power_flow(pf_gd, sys2; maxIterations = 15000)
         @test !ismissing(result_gd)
@@ -56,9 +56,9 @@
         time_step = 1
         residual = PF.ACPowerFlowResidual(data, time_step)
         x0 = PF.calculate_x0(data, time_step)
-        residual(x0, time_step)
-        J = PF.ACPowerFlowJacobian(residual, time_step)
-        J(time_step)
+        residual(data, x0, time_step)
+        J = PF.ACPowerFlowJacobian(data, residual, time_step)
+        J(data, time_step)
         state = PF.AdamState(length(x0))
 
         # Warm up

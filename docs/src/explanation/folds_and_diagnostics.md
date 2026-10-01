@@ -69,33 +69,43 @@ enabled.
 
 A constructor keyword on the formulation. Each iteration emits an `@info` line
 with $\lVert F\rVert_\infty$ (and the bus/equation where it is attained), the
-condition estimate $\hat\kappa(J)$, $\lambda_{\min}(S)$, and the residual
-contraction ratio. Watching $\lambda_{\min}(S)$ shrink toward zero is a direct
-view of an iterate nearing a fold.
+condition estimate $\hat\kappa(J)$, $\lambda_{\min}(S)$, the monitored
+$\operatorname{sign}(\det J)$, and the residual contraction ratio. Watching
+$\lambda_{\min}(S)$ shrink toward zero is a direct view of an iterate nearing a
+fold.
 
 ```julia
 pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; log_solver_diagnostics = true)
 solve_power_flow(pf, sys)
 # [ Info: NR iter 3: ‖F‖_∞ = 0.04211 at bus 8 (Q), κ̂(J) = 1830.0,
-#         λ_min(S) = 0.5217 (|λ_min| = 0.5217), contraction = 0.231
+#         λ_min(S) = 0.5217 (|λ_min| = 0.5217), sign(det J) = +, contraction = 0.231
 ```
 
 $\hat\kappa(J)$ is available only on the KLU backend; other backends print
-`n/a`. Pin `:linear_solver => "KLU"` in `solver_settings` if you need it on
+`n/a`. Pin `linear_solver = "KLU"` in `solution_parameters` if you need it on
 platforms whose default is AppleAccelerate.
 
 ### `stop_at_fold` — abort at the fold
 
-Passed through `solver_settings`. The solver stops as soon as it sees a fold
-signature — the real part of $\lambda_{\min}(S)$ flips sign between iterations,
-the Jacobian is outright singular, or the eigenvalue is indeterminate
-(non-converged or non-finite, treated conservatively as a fold) — and returns
-*not converged* with a warning, rather than continuing toward divergence or the
-low-voltage branch.
+Passed through `solution_parameters`. The solver stops as soon as it sees a fold
+signature — $\operatorname{sign}(\det J)$ flips between iterations, or the
+Jacobian is outright singular — and returns *not converged* with a warning,
+rather than continuing toward divergence or the low-voltage branch.
+
+$\det J$ is not formed. The monitor borders $J$ as $M = \begin{pmatrix} J & b \\
+c^{\mathsf T} & d\end{pmatrix}$ for fixed generic $b$, $c$, $d$, so that
+$g = 1/(d - c^{\mathsf T}J^{-1}b) = \det J / \det M$. Since $\det M$ is a fixed
+smooth function, *flips* of $\operatorname{sign}(g)$ are flips of
+$\operatorname{sign}(\det J)$, and $g$ costs one back-solve against the
+factorization that iteration already has. A flip of $g$ can also come from
+$\det M$ crossing zero, which says nothing about $J$; two independent borderings
+separate the cases, since a genuine singularity of $J$ flips both on the same
+step while a degenerate bordering flips only its own. The degenerate one is
+re-picked and the solve continues.
 
 ```julia
 pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
-    solver_settings = Dict{Symbol, Any}(:stop_at_fold => true))
+    solution_parameters = SolutionParameters(; stop_at_fold = true))
 data = PowerFlowData(pf, sys)
 converged = solve_power_flow!(data)   # false at a fold, with a voltage-collapse warning
 ```

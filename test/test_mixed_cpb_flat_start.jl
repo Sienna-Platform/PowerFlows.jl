@@ -2,7 +2,7 @@
 # start, validated on the mixed (e, f) 2-slot layout.
 
 const MIXED_FS_PARITY_ATOL = 1e-7
-_mixed_fs_settings() = Dict{Symbol, Any}(:validate_voltage_magnitudes => false)
+_mixed_fs_settings() = SolutionParameters(; validate_voltage_magnitudes = false)
 
 # Perturb the stored bus voltages of `sys` far from a flat 1∠0 start. Only the
 # *initial guess* changes: PQ |V|/θ and PV θ are not physical unknowns'
@@ -13,7 +13,7 @@ function _mixed_perturb!(sys::PSY.System; vm = 0.7, apq = -0.7, apv = 0.6)
     for b in PSY.get_components(PSY.ACBus, sys)
         bt = PSY.get_bustype(b)
         if bt == PSY.ACBusTypes.PQ
-            PSY.set_magnitude!(b, vm)
+            PSY.set_magnitude!(b, vm * PSY.CU)
             PSY.set_angle!(b, apq)
         elseif bt == PSY.ACBusTypes.PV
             PSY.set_angle!(b, apv)
@@ -30,7 +30,7 @@ end
 
     pf_h = ACMixedPowerFlow{NewtonRaphsonACPowerFlow}(;
         enhanced_flat_start = true,
-        solver_settings = _mixed_fs_settings(),
+        solution_parameters = _mixed_fs_settings(),
     )
     pf_ref = ACPowerFlow{NewtonRaphsonACPowerFlow}()
 
@@ -52,7 +52,7 @@ end
 @testset "Mixed CPB flat start: modified-flat-start construction" begin
     sys = _mixed_perturb!(PSB.build_system(PSB.PSITestSystems, "c_sys5"))
     pf = ACMixedPowerFlow{NewtonRaphsonACPowerFlow}(;
-        enhanced_flat_start = true, solver_settings = _mixed_fs_settings())
+        enhanced_flat_start = true, solution_parameters = _mixed_fs_settings())
     data = PowerFlowData(pf, sys)
     residual = PF.ACMixedCPBResidual(data, 1)
 
@@ -60,7 +60,7 @@ end
     PF.mixed_initial_state!(
         x0, data, residual.bus_state_offset, residual.bus_block_size, 1,
     )
-    residual(x0, 1)
+    residual(data, x0, 1)
     # The hard fixture must actually trip the LARGE_RESIDUAL gate so the
     # enhanced flat start path is the one under test.
     @test norm(residual.Rv, 1) > PF.LARGE_RESIDUAL * length(residual.Rv)
@@ -115,7 +115,7 @@ end
 @testset "Mixed CPB flat start: multi-period warm start" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
     pf = ACMixedPowerFlow{NewtonRaphsonACPowerFlow}(;
-        time_steps = 2, solver_settings = _mixed_fs_settings())
+        time_steps = 2, solution_parameters = _mixed_fs_settings())
     data = PowerFlowData(pf, sys)
 
     # Converge step 1 in a single-step copy and inject its solution into the
@@ -124,7 +124,7 @@ end
     # same loads, so step-1's converged state IS step-2's solution.
     d1 = PowerFlowData(
         ACMixedPowerFlow{NewtonRaphsonACPowerFlow}(;
-            solver_settings = _mixed_fs_settings()), sys)
+            solution_parameters = _mixed_fs_settings()), sys)
     @test PowerFlows.solve_power_flow!(d1)
     data.bus_magnitude[:, 1] .= d1.bus_magnitude[:, 1]
     data.bus_angles[:, 1] .= d1.bus_angles[:, 1]
@@ -152,14 +152,14 @@ end
     PF.mixed_initial_state!(
         cold, data, residual.bus_state_offset, residual.bus_block_size, 2,
     )
-    residual(cold, 2)
+    residual(data, cold, 2)
     cold_norm = norm(residual.Rv, 1)
 
     # Warm start: step-1 converged mixed state via the type/value split
     # (_mixed_fill_state! with type_ts=2, value_ts=1).
     warm = copy(cold)
     PF._mixed_fill_state!(warm, data, residual.bus_state_offset, 2, 1)
-    residual(warm, 2)
+    residual(data, warm, 2)
     warm_norm = norm(residual.Rv, 1)
 
     @test warm_norm < 0.1 * cold_norm
@@ -185,10 +185,10 @@ end
     x0[off] = 0.0
     x0[off + 1] = 0.0
 
-    residual(x0, 1)
+    residual(data, x0, 1)
     @test all(isfinite, residual.Rv)
 
-    J = PF.ACMixedCPBJacobian(residual, 1)
-    J(1)
+    J = PF.ACMixedCPBJacobian(data, residual, 1)
+    J(data, 1)
     @test all(isfinite, SparseArrays.nonzeros(J.Jv))
 end

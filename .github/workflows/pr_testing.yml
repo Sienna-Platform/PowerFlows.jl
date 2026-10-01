@@ -26,8 +26,9 @@ jobs:
       - uses: julia-actions/julia-runtest@v1
         env:
           PYTHON: ""
-      # Report coverage from a single job; uploading all three OS legs sent
-      # duplicate reports per commit.
+      # Report coverage from a single job: uploading all three OS legs sent
+      # duplicate reports per commit, and the Windows leg carries backslash paths
+      # Codecov cannot match against the repo tree.
       - uses: julia-actions/julia-processcoverage@v1
         if: matrix.os == 'ubuntu-latest'
       # Fork PRs cannot read repository secrets, so the upload is unauthenticated

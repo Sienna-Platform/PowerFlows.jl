@@ -116,7 +116,7 @@ end
             g2 = ThermalStandard(;
                 name = "Duplicate",
                 available = true,
-                status = true,
+                status = OperationalStates.ONLINE,
                 bus = get_bus(g1),
                 active_power = 0.1,
                 reactive_power = 0.1,
@@ -131,7 +131,7 @@ end
                 fuel = ThermalFuels.OTHER,
                 services = Device[],
                 dynamic_injector = nothing,
-                ext = Dict{String, Any}(),
+                ext = Dict{String, Any}(), input_basis = PSY.CU,
             )
             add_component!(sys, g2)
 
@@ -158,9 +158,7 @@ end
                     sys,
                 ),
             )
-            with_units_base(sys, UnitSystem.NATURAL_UNITS) do
-                set_active_power!(g, 20.0)
-            end
+            set_active_power!(g, 20.0 * u"MW")
 
             pf = ACPowerFlow(; correct_bustypes = true)
             data = PowerFlowData(pf, sys)
@@ -312,9 +310,7 @@ end
                     sys,
                 ),
             )
-            with_units_base(sys, UnitSystem.NATURAL_UNITS) do
-                set_active_power!(g, 20.0)
-            end
+            set_active_power!(g, 20.0 * u"MW")
 
             pf = ACPowerFlow{ACSolver}(;
                 correct_bustypes = true,
@@ -361,7 +357,7 @@ end
             g2 = ThermalStandard(;
                 name = "HeadroomDuplicate",
                 available = true,
-                status = true,
+                status = OperationalStates.ONLINE,
                 bus = get_bus(g1),
                 active_power = 0.1,
                 reactive_power = 0.05,
@@ -376,7 +372,7 @@ end
                 fuel = ThermalFuels.OTHER,
                 services = Device[],
                 dynamic_injector = nothing,
-                ext = Dict{String, Any}(),
+                ext = Dict{String, Any}(), input_basis = PSY.CU,
             )
             add_component!(sys, g2)
 
@@ -388,25 +384,20 @@ end
                     sys,
                 ),
             )
-            with_units_base(sys, UnitSystem.NATURAL_UNITS) do
-                set_active_power!(ref_gen, 20.0)
-            end
+            set_active_power!(ref_gen, 20.0 * u"MW")
 
             # Record original generator powers and headroom (in natural units) before solving
-            original_gen_power = Float64[]
+            original_gen_power = [
+                get_active_power(g, PSY.NU) for
+                g in get_components(Union{Generator, Source}, sys)
+            ]
             original_gen_headroom = Dict{String, Float64}()
             original_gen_p = Dict{String, Float64}()
-            with_units_base(sys, UnitSystem.NATURAL_UNITS) do
-                original_gen_power = [
-                    get_active_power(g) for
-                    g in get_components(Union{Generator, Source}, sys)
-                ]
-                for g in get_components(ThermalStandard, sys)
-                    limits = get_active_power_limits(g)
-                    original_gen_headroom[get_name(g)] =
-                        limits.max - get_active_power(g)
-                    original_gen_p[get_name(g)] = get_active_power(g)
-                end
+            for g in get_components(ThermalStandard, sys)
+                limits = get_active_power_limits(g, PSY.NU)
+                original_gen_headroom[get_name(g)] =
+                    limits.max - get_active_power(g, PSY.NU)
+                original_gen_p[get_name(g)] = get_active_power(g, PSY.NU)
             end
 
             pf = ACPowerFlow{ACSolver}(;
@@ -447,17 +438,15 @@ end
 
             # The ratio (solved_P - original_P) / original_headroom should be the same
             # for all generators with positive headroom at the shared bus.
-            with_units_base(sys, UnitSystem.NATURAL_UNITS) do
-                ratios = Float64[]
-                for g in gens_at_bus
-                    h = original_gen_headroom[get_name(g)]
-                    h <= 0.0 && continue
-                    slack = get_active_power(g) - original_gen_p[get_name(g)]
-                    push!(ratios, slack / h)
-                end
-                @test length(ratios) >= 2
-                @test all(isapprox.(ratios, ratios[1]; atol = 1e-6, rtol = 0))
+            ratios = Float64[]
+            for g in gens_at_bus
+                h = original_gen_headroom[get_name(g)]
+                h <= 0.0 && continue
+                slack = get_active_power(g, PSY.NU) - original_gen_p[get_name(g)]
+                push!(ratios, slack / h)
             end
+            @test length(ratios) >= 2
+            @test all(isapprox.(ratios, ratios[1]; atol = 1e-6, rtol = 0))
 
             # --- Test 3: DataFrame P_gen matches system after solve_and_store ---
             _reset_gen_power!(sys, original_gen_power)
@@ -479,13 +468,12 @@ end
     end
 end
 
-# T6 (FDNR WP3): Fast-decoupled solvers under distributed slack must match the Newton-Raphson
+# T6: Fast-decoupled solvers under distributed slack must match the Newton-Raphson
 # distributed-slack solution — both the polar :decoupled variant (whose per-iteration rank-1
 # slack sync in `_sync_explicit_state!` is the novel piece) and the :fixed_jacobian variant
-# (slack lives inside the frozen Jacobian). Decision recorded in WP3: KEEP the rank-1 sync —
-# FD :decoupled matches NR to ~1e-11 on bus voltages AND on the slack redistribution
-# (bus_active_power_injections), so it is stable, not restricted.
-@testset "FastDecoupled WP3: distributed slack parity (T6)" begin
+# (slack lives inside the frozen Jacobian). FD :decoupled matches NR to ~1e-11 on bus voltages
+# AND on the slack redistribution (bus_active_power_injections).
+@testset "FastDecoupled distributed slack parity (T6)" begin
     build_c_sys14() =
         PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
 

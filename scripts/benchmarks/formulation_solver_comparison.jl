@@ -98,7 +98,7 @@ function run_system(group, name, build_kwargs, extra_settings)
             merge(Dict{Symbol, Any}(:validate_voltage_magnitudes => false),
                 extra_settings)
         end
-        pf = F{S}(; correct_bustypes = true, solver_settings = settings)
+        pf = F{S}(; correct_bustypes = true, solution_parameters = SolutionParameters(; settings...))
         bench(pf, sys, "$fname / $sname")
     end
     return

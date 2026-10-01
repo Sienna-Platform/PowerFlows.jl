@@ -2,11 +2,10 @@
 # validated against polar NR and rectangular CI NR within a tight 1e-7 parity
 # tolerance (Vm/θ/P_gen/Q_gen).
 #
-# The shared parity helpers (`_mixed_polar_parity`,
-# `_mixed_polar_parity_data`), the `MIXED_PARITY_ATOL` constant and
-# `_mixed_pf_settings` live in `test_mixed_cpb_polar_parity.jl` (single
-# definition site — the ReTest runner auto-includes every `test_*.jl` into one
-# module). This file only exercises the NR-specific scenario coverage.
+# The shared parity helpers (`_mixed_polar_parity`, `_mixed_polar_parity_data`), the
+# `MIXED_PARITY_ATOL` constant and `_mixed_pf_settings` live in
+# `test_utils/cross_file_fixtures.jl`. This file only exercises the NR-specific scenario
+# coverage.
 
 @testset "Mixed CPB Power Flow: NR parity with polar and rectangular" begin
     fixtures = [
@@ -112,7 +111,7 @@ end
     pf_h = ACMixedPowerFlow{NewtonRaphsonACPowerFlow}(;
         correct_bustypes = true,
         enhanced_flat_start = true,
-        solver_settings = _mixed_pf_settings(),
+        solution_parameters = _mixed_pf_settings(),
     )
     res_p = solve_power_flow(pf_p, sys_p)
     res_h = solve_power_flow(pf_h, sys_h)
@@ -130,7 +129,7 @@ end
     pf_p = ACPowerFlow{NewtonRaphsonACPowerFlow}(; time_steps = 3)
     pf_h = ACMixedPowerFlow{NewtonRaphsonACPowerFlow}(;
         time_steps = 3,
-        solver_settings = _mixed_pf_settings(),
+        solution_parameters = _mixed_pf_settings(),
     )
     _mixed_polar_parity_data(pf_p, pf_h, sys_p, sys_h)
 end
@@ -150,25 +149,8 @@ end
         time_steps = 2, generator_slack_participation_factors = spf)
     pf_h = ACMixedPowerFlow{NewtonRaphsonACPowerFlow}(;
         time_steps = 2, generator_slack_participation_factors = spf,
-        solver_settings = _mixed_pf_settings())
+        solution_parameters = _mixed_pf_settings())
     _mixed_polar_parity_data(pf_p, pf_h, sys_p, sys_h)
-end
-
-# Same topology as polar's `_two_swing_system()` (test_jacobian.jl), named distinctly
-# since ReTest merges every test_*.jl into one module. The nonzero swing-2 angle
-# exercises real off-diagonal ∂P/∂θ terms. Shared by test_mixed_cpb_jacobian.jl and
-# test_mixed_cpb_polar_parity.jl.
-function _two_swing_mixed_system()
-    sys = System(100.0)
-    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.06, 0.0)
-    b2 = _add_simple_bus!(sys, 2, ACBusTypes.REF, 230, 1.05, 0.05)
-    b3 = _add_simple_bus!(sys, 3, ACBusTypes.PQ, 230, 1.0, 0.0)
-    _add_simple_source!(sys, b1, 0.0, 0.0)
-    _add_simple_source!(sys, b2, 0.0, 0.0)
-    _add_simple_load!(sys, b3, 40, 15)
-    _add_simple_line!(sys, b1, b3, 5e-3, 5e-3, 1e-3)
-    _add_simple_line!(sys, b2, b3, 5e-3, 5e-3, 1e-3)
-    return sys
 end
 
 @testset "Mixed CPB Power Flow: multi-swing (two swings in one island each self-balance)" begin

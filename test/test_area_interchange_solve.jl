@@ -90,19 +90,17 @@ end
 _oracle_branch_windings(branch::PSY.ACTransmission) = ((PSY.get_arc(branch), branch),)
 
 function _oracle_branch_windings(branch::PSY.ThreeWindingTransformer)
-    windings = Tuple{PSY.Arc, PNM.ThreeWindingTransformerWinding}[]
-    PSY.get_available_primary(branch) && push!(
-        windings,
-        (PSY.get_primary_star_arc(branch), PNM.ThreeWindingTransformerWinding(branch, 1)),
-    )
-    PSY.get_available_secondary(branch) && push!(
-        windings,
-        (PSY.get_secondary_star_arc(branch), PNM.ThreeWindingTransformerWinding(branch, 2)),
-    )
-    PSY.get_available_tertiary(branch) && push!(
-        windings,
-        (PSY.get_tertiary_star_arc(branch), PNM.ThreeWindingTransformerWinding(branch, 3)),
-    )
+    windings = Tuple{PSY.Arc, PNM.ThreeWindingTransformerCircuit}[]
+    for (i, circuit) in enumerate(PSY.get_circuits(branch))
+        PSY.get_available(circuit) || continue
+        push!(
+            windings,
+            (
+                PSY.get_arc(circuit),
+                PNM.ThreeWindingTransformerCircuit(branch, circuit, i),
+            ),
+        )
+    end
     return windings
 end
 
@@ -110,6 +108,7 @@ function _oracle_accumulate(
     sums,
     bus_lookup,
     reverse_bus_search_map,
+    nrd,
     tie::PF.AreaTie,
     arc,
     primitive_entry,
@@ -119,7 +118,7 @@ function _oracle_accumulate(
     tix = PF._resolve_bus_ix(
         bus_lookup, reverse_bus_search_map, PSY.get_number(PSY.get_to(arc)))
     (isnothing(fix) || isnothing(tix)) && return sums
-    (y11, y12, y21, y22) = PNM.ybus_branch_entries(primitive_entry)
+    (y11, y12, y21, y22) = PNM.ybus_branch_entries(primitive_entry, nrd)
     (s11, s12, s21, s22) = sums
     fix == tie.from_bus_ix && tix == tie.to_bus_ix &&
         return (s11 + y11, s12 + y12, s21 + y21, s22 + y22)
@@ -143,6 +142,7 @@ function _oracle_tie_metered_power(sys, data, tie::PF.AreaTie, time_step::Int)
                 sums,
                 bus_lookup,
                 reverse_bus_search_map,
+                nrd,
                 tie,
                 arc,
                 primitive_entry,
@@ -188,7 +188,7 @@ end
 
     residual = PF.ACPowerFlowResidual(data, 1)
     x0 = PF.calculate_x0(data, 1)
-    residual(x0, 1)
+    residual(data, x0, 1)
     F = residual.Rv
     dcn = PF.get_dc_network(data)
     area_off = PF.area_tail_offset(data, dcn)
@@ -227,7 +227,7 @@ end
     # tie contributes +P_m to one tracked area and -P_m to the other), so it must hold at
     # ANY state, not only at a converged solution.
     x1 = x0 .+ 0.05 .* sin.(1:length(x0))
-    residual(x1, 1)
+    residual(data, x1, 1)
     F = residual.Rv
     area_off = PF.area_tail_offset(data, PF.get_dc_network(data))
 
@@ -244,13 +244,13 @@ end
     area = first(data.area_interchange.areas)
     slack_ix = area.slack_bus_ix
 
-    residual(x0, 1)
+    residual(data, x0, 1)
     F_base = copy(residual.Rv)
 
     ΔP = 0.037
     x1 = copy(x0)
     x1[area_off + area.tail_ix] = ΔP
-    residual(x1, 1)
+    residual(data, x1, 1)
     F_pert = residual.Rv
 
     # ΔP_a is added to P_net[slack_bus_ix] at the same seam as the distributed-slack
@@ -271,7 +271,7 @@ end
     data = _two_controlled_area_data()
     residual = PF.ACPowerFlowResidual(data, 1)
     x0 = PF.calculate_x0(data, 1)
-    residual(x0, 1)   # warm: populate data.bus_magnitude/bus_angles, JIT compile
+    residual(data, x0, 1)   # warm: populate data.bus_magnitude/bus_angles, JIT compile
     dcn = PF.get_dc_network(data)
     area_off = PF.area_tail_offset(data, dcn)
     F = copy(residual.Rv)
@@ -310,61 +310,21 @@ end
 @testset "area interchange Jacobian structure cache reuse" begin
     data1 = _two_controlled_area_data()
     residual1a = PF.ACPowerFlowResidual(data1, 1)
-    PF.ACPowerFlowJacobian(residual1a, 1)
+    PF.ACPowerFlowJacobian(data1, residual1a, 1)
     cache1 = data1.ac_jacobian_structure_cache[]
     @test !isnothing(cache1)
     @test cache1.area_data === data1.area_interchange
 
     residual1b = PF.ACPowerFlowResidual(data1, 1)
-    PF.ACPowerFlowJacobian(residual1b, 1)
+    PF.ACPowerFlowJacobian(data1, residual1b, 1)
     @test data1.ac_jacobian_structure_cache[] === cache1
 
     data2 = _two_controlled_area_data()
     residual2 = PF.ACPowerFlowResidual(data2, 1)
-    PF.ACPowerFlowJacobian(residual2, 1)
+    PF.ACPowerFlowJacobian(data2, residual2, 1)
     cache2 = data2.ac_jacobian_structure_cache[]
     @test cache2.area_data === data2.area_interchange
     @test cache2.area_data !== cache1.area_data
-end
-
-# A boundary-crossing 3W transformer winding whose star bus's Y-bus diagonal is polluted by
-# BOTH a sibling winding of the same transformer and an unrelated extra line -- neither is a
-# member of the boundary-crossing winding's own corridor. Tertiary winding disabled: not
-# needed here.
-function _make_3w_boundary_fixture()
-    sys = System(100.0)
-    area_a = PSY.Area(; name = "AreaA")
-    area_b = PSY.Area(; name = "AreaB")
-    PSY.add_component!(sys, area_a)
-    PSY.add_component!(sys, area_b)
-
-    bus1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230)
-    bus2 = _add_simple_bus!(sys, 2, ACBusTypes.PV, 230)
-    bus3 = _add_simple_bus!(sys, 3, ACBusTypes.PQ, 230)
-    bus4 = _add_simple_bus!(sys, 4, ACBusTypes.PQ, 230)
-    bus5 = _add_simple_bus!(sys, 5, ACBusTypes.PQ, 230)
-    PSY.set_area!(bus1, area_a)
-    PSY.set_area!(bus2, area_b)
-    PSY.set_area!(bus3, area_a)
-    PSY.set_area!(bus4, area_b)
-    PSY.set_area!(bus5, area_a)
-
-    _add_simple_source!(sys, bus1, 0.0, 0.0)
-    _add_simple_thermal_standard!(sys, bus2, 0.1, 0.0)
-    _add_simple_load!(sys, bus3, 5.0, 2.0)
-    _add_simple_load!(sys, bus4, 5.0, 2.0)
-    _add_simple_load!(sys, bus5, 2.0, 1.0)
-
-    _add_simple_line!(sys, bus1, bus3)
-    _add_simple_line!(sys, bus2, bus4)
-
-    xfmr = _add_simple_transformer_3w!(sys, bus3, bus4, bus3, 99)
-    star_bus = PSY.get_star_bus(xfmr)
-    PSY.set_area!(star_bus, area_a)
-    _add_simple_line!(sys, star_bus, bus5)
-
-    PSY.set_bustype!(bus2, ACBusTypes.SLACK)
-    return sys
 end
 
 @testset "area interchange 3W winding NI matches independent oracle (polluted star-bus diagonal)" begin
@@ -383,7 +343,7 @@ end
     x0 = PF.calculate_x0(data, 1)
     Random.seed!(7)
     x0 .+= 0.02 .* randn(length(x0))
-    residual(x0, 1)   # updates data.bus_magnitude/bus_angles in place
+    residual(data, x0, 1)   # updates data.bus_magnitude/bus_angles in place
 
     expected = _oracle_tie_metered_power(sys, data, tie, 1)
     actual = PF._tie_metered_active_power(
@@ -646,7 +606,7 @@ end
     gen6 = PSY.get_component(PSY.ThermalStandard, sys, "Bus6")
     # Natural (unconstrained) Q at Bus6 solves to about -0.0156 pu; this tightened min just
     # barely excludes it so `_check_q_limit_bounds!` flips the bus PV -> PQ mid-solve.
-    PSY.set_reactive_power_limits!(gen6, (min = -0.012, max = 0.24))
+    PSY.set_reactive_power_limits!(gen6, (min = -0.012 * PSY.SU, max = 0.24 * PSY.SU))
     pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
         area_interchange_control = true,
         check_reactive_power_limits = true,
@@ -671,8 +631,9 @@ end
     delta_p_first = copy(data.area_interchange.delta_p)
 
     @test_logs(
-        (:info, r"converged after [01] iterations"),
+        (:debug, r"converged after [01] iterations"),
         match_mode = :any,
+        min_level = Logging.Debug,
         solve_power_flow!(data)
     )
 
@@ -770,7 +731,7 @@ end
     # to hit PDES = 0.3 pu cannot be absorbed within its active_power_limits.
     sys = _three_area_transfer_fixture(; slack_area3 = true)
     gen6 = PSY.get_component(PSY.ThermalStandard, sys, "Bus6")
-    PSY.set_active_power_limits!(gen6, (min = 0.0, max = 0.001))
+    PSY.set_active_power_limits!(gen6, (min = 0.0 * PSY.SU, max = 0.001 * PSY.SU))
     pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; area_interchange_control = true)
     df_results = solve_power_flow(pf, sys)
     df = df_results["area_interchange_results"]
@@ -842,9 +803,9 @@ end
 function _weak_tie_three_area_fixture(; x_weak::Float64 = 2.0, pdes2::Float64 = 0.1,
     pdes3::Float64 = 2.0)
     sys = System(100.0)
-    area1 = PSY.Area(; name = "Area1")
-    area2 = PSY.Area(; name = "Area2")
-    area3 = PSY.Area(; name = "Area3")
+    area1 = PSY.Area(; name = "Area1", input_basis = PSY.CU)
+    area2 = PSY.Area(; name = "Area2", input_basis = PSY.CU)
+    area3 = PSY.Area(; name = "Area3", input_basis = PSY.CU)
     PSY.add_component!(sys, area1)
     PSY.add_component!(sys, area2)
     PSY.add_component!(sys, area3)
@@ -879,7 +840,6 @@ end
     @test PF.n_controlled_areas(data) == 2
 
     converged = @test_logs(
-        (:error, r"solver failed to converge"),
         (
             :error,
             r"Area interchange:.*Area3.*de-enrolling it and re-solving with the remaining 1",
@@ -901,7 +861,6 @@ end
     @test only(data.area_interchange.relaxed[1]).name == "Area3"
 
     df_results = @test_logs(
-        (:error, r"solver failed to converge"),
         (:error, r"Area interchange:.*Area3.*de-enrolling"),
         (
             :error,
@@ -941,7 +900,7 @@ end
     pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; area_interchange_control = true)
     data = PowerFlowData(pf, sys)
     converged = @test_logs(
-        (:error, r"solver failed to converge"),
+        (:error, r"did not converge in"),
         (:error, r"Area interchange:.*Newton did not converge with area"),
         (
             :warn,
@@ -965,7 +924,7 @@ end
     # ts=1: force exhaustion via maxIterations = 1 -- greedy relax drops both areas one at
     # a time, and the final 0-area plain solve still fails in a single iteration from flat.
     converged1 = @test_logs(
-        (:error, r"solver failed to converge"),
+        (:error, r"did not converge in"),
         (:error, r"Area interchange:.*Newton did not converge with area"),
         (
             :warn,
@@ -1035,7 +994,8 @@ end
 
     # Converge the reduced (1-area) working set for ts=2 for real, then persist it exactly as
     # `_ac_power_flow_with_area_relax!` would on a successful post-relax retry.
-    @test PF._ac_power_flow(data, pf, 2; PF.get_solver_kwargs(pf)...)
+    converged = PF._ac_power_flow(data, pf, 2; PF.get_solver_kwargs(pf)...)
+    @test converged
     PF._sync_pristine_delta_p!(data, 2)
 
     df1 = PF.area_interchange_results_dataframe(sys, data, 1)
@@ -1066,17 +1026,17 @@ end
     # (n_lcc == 0) is exactly the shape the OLD formula (`n_state - 4*n_lcc`) mispartitioned,
     # folding the whole VSC tail into the "bus" block.
     sys = _build_vsc_system(; g = 50.0)
-    settings = merge(VSC_SETTINGS, Dict{Symbol, Any}(:linear_solver => "KLU"))
+    params = PF._override(VSC_SOLUTION_PARAMETERS; linear_solver = "KLU")
     pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
         log_solver_diagnostics = true,
-        solver_settings = settings,
+        solution_parameters = params,
     )
     data = PowerFlowData(pf, sys)
     residual = PF.ACPowerFlowResidual(data, 1)
-    jac = PF.ACPowerFlowJacobian(residual, 1)
+    jac = PF.ACPowerFlowJacobian(data, residual, 1)
     x0 = PF.calculate_x0(data, 1)
-    residual(x0, 1)
-    jac(1)
+    residual(data, x0, 1)
+    jac(data, 1)
 
     n_state = size(jac.Jv, 1)
     dcn = PF.get_dc_network(data)
@@ -1372,7 +1332,6 @@ end
     @test PF.n_controlled_areas(data) == 2
 
     converged = @test_logs(
-        (:error, r"solver failed to converge"),
         (
             :error,
             r"Area interchange:.*Area3.*de-enrolling it and re-solving with the remaining 1",
@@ -1393,7 +1352,6 @@ end
     @test only(data.area_interchange.relaxed[1]).name == "Area3"
 
     df_results = @test_logs(
-        (:error, r"solver failed to converge"),
         (:error, r"Area interchange:.*Area3.*de-enrolling"),
         (
             :error,
@@ -1494,7 +1452,6 @@ end
     @test PF.n_controlled_areas(data_fd) == 2
 
     converged_fd = @test_logs(
-        (:error, r"solver failed to converge"),
         (
             :error,
             r"Area interchange:.*Area3.*de-enrolling it and re-solving with the remaining 1",
@@ -1515,7 +1472,6 @@ end
     @test only(data_fd.area_interchange.relaxed[1]).name == "Area3"
 
     df_results_fd = @test_logs(
-        (:error, r"solver failed to converge"),
         (:error, r"Area interchange:.*Area3.*de-enrolling"),
         (
             :error,
@@ -1544,7 +1500,6 @@ end
     @test PF.n_controlled_areas(data_fdfj) == 2
 
     converged_fdfj = @test_logs(
-        (:error, r"solver failed to converge"),
         (
             :error,
             r"Area interchange:.*Area3.*de-enrolling it and re-solving with the remaining 1",
@@ -1565,7 +1520,6 @@ end
     @test only(data_fdfj.area_interchange.relaxed[1]).name == "Area3"
 
     df_results_fdfj = @test_logs(
-        (:error, r"solver failed to converge"),
         (:error, r"Area interchange:.*Area3.*de-enrolling"),
         (
             :error,
@@ -1600,7 +1554,6 @@ end
     @test PF.n_controlled_areas(data) == 2
 
     converged = @test_logs(
-        (:error, r"solver failed to converge"),
         (
             :error,
             r"Area interchange:.*Area3.*de-enrolling it and re-solving with the remaining 1",
@@ -1717,7 +1670,7 @@ end
     @test !isempty(PSY.get_components(PSY.ThreeWindingTransformer, sys))
     @test !isempty(PSY.get_components(PSY.SwitchedAdmittance, sys))
     @test !isempty(PSY.get_components(PSY.DiscreteControlledACBranch, sys))
-    @test !isempty(PSY.get_components(PSY.TapTransformer, sys))
+    @test !isempty(PSY.get_components(PSY.TwoWindingTransformer, sys))
 
     lcc = only(PSY.get_components(PSY.TwoTerminalLCCLine, sys))
     vsc = only(PSY.get_components(PSY.TwoTerminalVSCLine, sys))
@@ -1896,7 +1849,7 @@ end
 
         residual = PF.ACPowerFlowResidual(data, 1)
         x0 = PF.calculate_x0(data, 1)
-        residual(x0, 1)
+        residual(data, x0, 1)
         F = residual.Rv
         dcn = PF.get_dc_network(data)
         area_off = PF.area_tail_offset(data, dcn)
@@ -1954,15 +1907,15 @@ end
             ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; area_interchange_control = true),
             sys)
         residual = PF.ACPowerFlowResidual(data, 1)
-        jac = PF.ACPowerFlowJacobian(residual, 1)
+        jac = PF.ACPowerFlowJacobian(data, residual, 1)
         x0 = PF.calculate_x0(data, 1)
         # Perturbed, non-solution state so bus Vm/θ AND the DC-tail columns (LCC tap/α, VSC
         # P_c) all carry nonzero sensitivity through the area-interchange NI rows.
         x = x0 .+ 0.02 .* sin.(1:length(x0))
-        residual(x, 1)
-        jac(1)
+        residual(data, x, 1)
+        jac(data, 1)
         verify_jacobian_asymptotic(
-            residual, jac.Jv, x, 1;
+            residual, data, jac.Jv, x, 1;
             label = "area interchange DC ($lcc_metered_end-metered)")
     end
 end
@@ -2233,8 +2186,8 @@ genuinely merges them (`fix == tix`) -- the self-tie merge guard case, distinct 
 "interior DC link" test (same-tail on two DIFFERENT buses, not a merge)."""
 function _lcc_self_merge_fixture()
     sys = System(100.0)
-    area_a = PSY.Area(; name = "AreaA")
-    area_b = PSY.Area(; name = "AreaB")
+    area_a = PSY.Area(; name = "AreaA", input_basis = PSY.CU)
+    area_b = PSY.Area(; name = "AreaB", input_basis = PSY.CU)
     PSY.add_component!(sys, area_a)
     PSY.add_component!(sys, area_b)
 

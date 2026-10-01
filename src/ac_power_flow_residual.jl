@@ -4,7 +4,6 @@
 A struct to keep track of the residuals in the Newton-Raphson AC power flow calculation.
 
 # Fields
-- `data::ACPowerFlowData`: The grid model data.
 - `Rv::Vector{Float64}`: A vector of the values of the residuals.
 - `P_net::Vector{Float64}`: A vector of net active power injections.
 - `Q_net::Vector{Float64}`: A vector of net reactive power injections.
@@ -15,7 +14,6 @@ A struct to keep track of the residuals in the Newton-Raphson AC power flow calc
 - `validate_indices::Vector{Int}`: precomputed `x`-indices of PQ-bus |V| entries for the per-iteration voltage-magnitude diagnostic.
 """
 struct ACPowerFlowResidual
-    data::ACPowerFlowData
     Rv::Vector{Float64}
     P_net::Vector{Float64}
     Q_net::Vector{Float64}
@@ -45,61 +43,67 @@ Create an instance of `ACPowerFlowResidual` for a given time step.
 """
 function ACPowerFlowResidual(data::ACPowerFlowData, time_step::Int64)
     n_buses = first(size(data.bus_type))
-    P_net = Vector{Float64}(undef, n_buses)
-    Q_net = Vector{Float64}(undef, n_buses)
-
-    P_net_set = zeros(Float64, n_buses)
     bus_type = view(data.bus_type, :, time_step)
 
     # ref_bus is set to the first REF bus found - will be used for the total slack power
     subnetworks =
         _find_subnetworks_for_reference_buses(data.power_network_matrix.data, bus_type)
-
-    for ix in 1:n_buses
-        P_net[ix] =
-            data.bus_active_power_injections[ix, time_step] -
-            get_bus_active_power_total_withdrawals(data, ix, time_step) +
-            data.bus_hvdc_net_power[ix, time_step]
-        Q_net[ix] =
-            data.bus_reactive_power_injections[ix, time_step] -
-            get_bus_reactive_power_total_withdrawals(data, ix, time_step)
-        P_net_set[ix] = P_net[ix]
-    end
-
     validate_indices = _pq_validate_indices(bus_type)
-
     bus_slack_participation_factors =
         _build_bus_slack_participation_factors(data, bus_type, subnetworks, time_step)
 
-    bus_active_constant_I =
-        copy(view(data.bus_active_power_constant_current_withdrawals, :, time_step))
-    bus_reactive_constant_I =
-        copy(view(data.bus_reactive_power_constant_current_withdrawals, :, time_step))
-    bus_active_constant_Z =
-        copy(view(data.bus_active_power_constant_impedance_withdrawals, :, time_step))
-    bus_reactive_constant_Z =
-        copy(view(data.bus_reactive_power_constant_impedance_withdrawals, :, time_step))
-
-    return ACPowerFlowResidual(
-        data,
+    residual = ACPowerFlowResidual(
         Vector{Float64}(undef,
             2 * n_buses + state_tail_length(data, get_dc_network(data))),
-        P_net,
-        Q_net,
-        P_net_set,
+        Vector{Float64}(undef, n_buses),
+        Vector{Float64}(undef, n_buses),
+        Vector{Float64}(undef, n_buses),
         bus_slack_participation_factors,
         subnetworks,
-        bus_active_constant_I,
-        bus_reactive_constant_I,
-        bus_active_constant_Z,
-        bus_reactive_constant_Z,
+        Vector{Float64}(undef, n_buses),
+        Vector{Float64}(undef, n_buses),
+        Vector{Float64}(undef, n_buses),
+        Vector{Float64}(undef, n_buses),
         Vector{Float64}(undef, n_buses),
         validate_indices,
     )
+    _refresh_residual_setpoints!(residual, data, time_step)
+    return residual
+end
+
+# Fills `P_net`/`Q_net`/`P_net_set` and the four constant-I/Z withdrawal vectors from `data` at
+# `time_step`, in place. `P_net` is (re)set to the freshly computed value, not accumulated onto —
+# the PQ ZIP path in `_update_residual_values!` telescopes onto whatever is here, so every caller
+# (construction, `_refresh_polar_residual!`'s cache reuse, the sensitivity context's per-pass
+# refresh) must rebuild it fresh from `data`, not fold onto a stale value.
+"""Always succeeds for the polar residual; returns `true`."""
+function _refresh_residual_setpoints!(
+    residual::ACPowerFlowResidual, data::ACPowerFlowData, time_step::Int64,
+)::Bool
+    @inbounds for ix in eachindex(residual.P_net)
+        p =
+            data.bus_active_power_injections[ix, time_step] -
+            get_bus_active_power_total_withdrawals(data, ix, time_step) +
+            data.bus_hvdc_net_power[ix, time_step]
+        residual.P_net[ix] = p
+        residual.P_net_set[ix] = p
+        residual.Q_net[ix] =
+            data.bus_reactive_power_injections[ix, time_step] -
+            get_bus_reactive_power_total_withdrawals(data, ix, time_step)
+    end
+    residual.bus_active_constant_I .=
+        view(data.bus_active_power_constant_current_withdrawals, :, time_step)
+    residual.bus_reactive_constant_I .=
+        view(data.bus_reactive_power_constant_current_withdrawals, :, time_step)
+    residual.bus_active_constant_Z .=
+        view(data.bus_active_power_constant_impedance_withdrawals, :, time_step)
+    residual.bus_reactive_constant_Z .=
+        view(data.bus_reactive_power_constant_impedance_withdrawals, :, time_step)
+    return true
 end
 
 """
-    (Residual::ACPowerFlowResidual)(Rv::Vector{Float64}, x::Vector{Float64}, time_step::Int64)
+    (Residual::ACPowerFlowResidual)(data::ACPowerFlowData, Rv::Vector{Float64}, x::Vector{Float64}, time_step::Int64)
 
 Evaluate the AC power flow residuals and store the result in `Rv` using the provided
 state vector `x` and the current time step `time_step`.
@@ -109,11 +113,13 @@ This makes the struct callable.
 Calling the `ACPowerFlowResidual` will also update the values of P, Q, V, Θ in the `data` struct.
 
 # Arguments
+- `data::ACPowerFlowData`: The grid model data.
 - `Rv::Vector{Float64}`: The vector to store the calculated residuals.
 - `x::Vector{Float64}`: The state vector.
 - `time_step::Int64`: The current time step.
 """
 function (Residual::ACPowerFlowResidual)(
+    data::ACPowerFlowData,
     Rv::Vector{Float64},
     x::Vector{Float64},
     time_step::Int64,
@@ -130,7 +136,7 @@ function (Residual::ACPowerFlowResidual)(
         Residual.bus_reactive_constant_I,
         Residual.bus_active_constant_Z,
         Residual.bus_reactive_constant_Z,
-        Residual.data,
+        data,
         time_step,
         Residual.P_slack_buf,
     )
@@ -139,7 +145,7 @@ function (Residual::ACPowerFlowResidual)(
 end
 
 """
-    (Residual::ACPowerFlowResidual)(x::Vector{Float64}, time_step::Int64)
+    (Residual::ACPowerFlowResidual)(data::ACPowerFlowData, x::Vector{Float64}, time_step::Int64)
 
 Update the AC power flow residuals inplace and store the result in the attribute `Rv` of the struct.
 The inputs are the values of state vector `x` and the current time step `time_step`.
@@ -148,10 +154,13 @@ This makes the struct callable.
 Calling the `ACPowerFlowResidual` will also update the values of P, Q, V, Θ in the `data` struct.
 
 # Arguments
+- `data::ACPowerFlowData`: The grid model data.
 - `x::Vector{Float64}`: The state vector values.
 - `time_step::Int64`: The current time step.
 """
-function (Residual::ACPowerFlowResidual)(x::Vector{Float64}, time_step::Int64)
+function (Residual::ACPowerFlowResidual)(
+    data::ACPowerFlowData, x::Vector{Float64}, time_step::Int64,
+)
     _update_residual_values!(
         Residual.Rv,
         x,
@@ -164,7 +173,7 @@ function (Residual::ACPowerFlowResidual)(x::Vector{Float64}, time_step::Int64)
         Residual.bus_reactive_constant_I,
         Residual.bus_active_constant_Z,
         Residual.bus_reactive_constant_Z,
-        Residual.data,
+        data,
         time_step,
         Residual.P_slack_buf,
     )
@@ -212,7 +221,7 @@ function _set_state_variables_at_bus!(
     data::ACPowerFlowData,
     time_step::Int64,
     ::Val{PSY.ACBusTypes.PV})
-    # When bustype == PV PSY.ACACBus, state variables are Reactive Power Generated and Voltage Angle
+    # When bustype == PV, state variables are Reactive Power Generated and Voltage Angle
     # We still update both P and Q values in case the PV bus participates in distributed slack
     P_net[ix] = P_net_set[ix] + P_slack
     Q_net[ix] = StateVector[2 * ix - 1]
@@ -443,7 +452,7 @@ end
 
 function _find_subnetworks_for_reference_buses(
     Ybus::SparseMatrixCSC,
-    bus_type::AbstractArray{PSY.ACBusTypes},
+    bus_type::AbstractArray{PSY.ACBusTypes.Value},
 )
     subnetworks = PNM.find_subnetworks(Ybus, collect(eachindex(bus_type)))
     ref_buses = findall(x -> x == PSY.ACBusTypes.REF, bus_type)
@@ -477,7 +486,7 @@ both need identical slack-distribution semantics.
 """
 function _build_bus_slack_participation_factors(
     data::ACPowerFlowData,
-    bus_type::AbstractVector{PSY.ACBusTypes},
+    bus_type::AbstractVector{PSY.ACBusTypes.Value},
     subnetworks::Dict{Int64, Vector{Int64}},
     time_step::Int64,
 )

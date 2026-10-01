@@ -78,8 +78,6 @@ Private = true
 Pages = [
     "RobustHomotopy/HessianSolver/cholesky_solver.jl",
     "RobustHomotopy/HessianSolver/fixed_structure_CHOLMOD.jl",
-    "RobustHomotopy/HessianSolver/hessian_solver.jl",
-    "RobustHomotopy/HessianSolver/KLU_hessian_solver.jl",
 ]
 ```
 
@@ -117,6 +115,7 @@ Public = false
 Private = true
 Pages = [
     "psse_export.jl",
+    "psse_solution_records.jl",
 ]
 ```
 
