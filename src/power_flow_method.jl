@@ -59,7 +59,7 @@ end
 """Polar NR/TR workspace stored in `data.polar_nr_cache`, reused across Q-limit retries and time
 steps. `bus_type_snapshot` holds the bus types it was built for. `residual` and `J` do not store
 `data`: this cache hangs off `data`, so a back-reference would form a cycle."""
-struct PolarNRCache{C <: PFLinearSolverCache} <: AbstractNRCache
+struct PolarNRCache{C <: PNM.LinearSolverCache} <: AbstractNRCache
     residual::ACPowerFlowResidual
     J::ACPowerFlowJacobian
     linSolveCache::C
@@ -107,7 +107,7 @@ end
 
 """Solve for the Newton-Raphson step, given the factorization object for `J.Jv`
 (if non-singular) or its stand-in (if singular)."""
-function _solve_Δx_nr!(stateVector::StateVectorCache, cache::PFLinearSolverCache)
+function _solve_Δx_nr!(stateVector::StateVectorCache, cache::PNM.LinearSolverCache)
     copyto!(stateVector.Δx_nr, stateVector.r)
     solve!(cache, stateVector.Δx_nr)
     return
@@ -119,7 +119,7 @@ exceeds `refinement_threshold`, run iterative refinement and recompute it. Retur
 signal (see [`_set_Δx_nr!`](@ref))."""
 function _do_refinement!(stateVector::StateVectorCache,
     A::SparseMatrixCSC{Float64, J_INDEX_TYPE},
-    cache::PFLinearSolverCache,
+    cache::PNM.LinearSolverCache,
     refinement_threshold::Float64,
     refinement_eps::Float64,
 )
@@ -150,7 +150,7 @@ end
 function _set_Δx_nr!(stateVector::StateVectorCache,
     J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
     data::ACPowerFlowData,
-    linSolveCache::PFLinearSolverCache,
+    linSolveCache::PNM.LinearSolverCache,
     solver::ACPowerFlowSolverType,
     refinement_threshold::Float64,
     refinement_eps::Float64)
@@ -375,7 +375,7 @@ the value of the Jacobian at the new `x`, if needed. Unlike
 `_simple_step`, this has a return value, the updated value of `delta``."""
 function _trust_region_step(time_step::Int,
     stateVector::StateVectorCache,
-    linSolveCache::PFLinearSolverCache,
+    linSolveCache::PNM.LinearSolverCache,
     residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
     J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
     data::ACPowerFlowData,
@@ -619,7 +619,7 @@ end
  fields of the `stateVector`, and computes the Jacobian at the new `x`."""
 function _simple_step(time_step::Int,
     stateVector::StateVectorCache,
-    linSolveCache::PFLinearSolverCache,
+    linSolveCache::PNM.LinearSolverCache,
     residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
     J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
     data::ACPowerFlowData,
@@ -657,7 +657,7 @@ the step was reverted. Consecutive reverts signal stagnation and the caller
 should terminate early."""
 function _iwamoto_step(time_step::Int,
     stateVector::StateVectorCache,
-    linSolveCache::PFLinearSolverCache,
+    linSolveCache::PNM.LinearSolverCache,
     residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
     J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
     data::ACPowerFlowData,
@@ -764,7 +764,7 @@ end
     $DEFAULT_REFINEMENT_EPS """
 function _run_power_flow_method(time_step::Int,
     stateVector::StateVectorCache,
-    linSolveCache::PFLinearSolverCache,
+    linSolveCache::PNM.LinearSolverCache,
     residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
     J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
     data::ACPowerFlowData,
@@ -852,7 +852,7 @@ end
     damping to salvage the step before reverting. Default: $DEFAULT_IWAMOTO_FALLBACK."""
 function _run_power_flow_method(time_step::Int,
     stateVector::StateVectorCache,
-    linSolveCache::PFLinearSolverCache,
+    linSolveCache::PNM.LinearSolverCache,
     residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
     J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
     data::ACPowerFlowData,
@@ -1180,7 +1180,7 @@ end
 
 """Rectangular/mixed NR/TR linear-solver cache stored in `data.solver_cache`. Reused when the
 rebuilt Jacobian has the recorded sparsity pattern (`colptr`, `rowval`, `m`, `n`)."""
-mutable struct RectMixedNRCache{C <: PFLinearSolverCache} <: SolverCache
+mutable struct RectMixedNRCache{C <: PNM.LinearSolverCache} <: SolverCache
     colptr::Vector{J_INDEX_TYPE}
     rowval::Vector{J_INDEX_TYPE}
     m::Int

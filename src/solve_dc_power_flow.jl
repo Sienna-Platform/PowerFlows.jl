@@ -158,7 +158,7 @@ end
 # let Julia specialize the body on concrete types — one dynamic dispatch at the boundary.
 function _run_ptdf_solve!(
     data::PTDFPowerFlowData,
-    solver_cache::PFLinearSolverCache,
+    solver_cache::PNM.LinearSolverCache,
     scratch::DCSolveScratch,
 )
     power_injections = scratch.power_injections
@@ -192,7 +192,7 @@ end
 
 function _run_vptdf_solve!(
     data::vPTDFPowerFlowData,
-    solver_cache::PFLinearSolverCache,
+    solver_cache::PNM.LinearSolverCache,
     scratch::DCSolveScratch,
 )
     power_injections = scratch.power_injections
@@ -229,7 +229,7 @@ end
 
 function _run_aba_solve!(
     data::ABAPowerFlowData,
-    solver_cache::PFLinearSolverCache,
+    solver_cache::PNM.LinearSolverCache,
     scratch::DCSolveScratch,
 )
     power_injections = scratch.power_injections

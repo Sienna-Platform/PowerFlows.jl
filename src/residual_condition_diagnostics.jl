@@ -22,11 +22,9 @@ struct SchurInverseOperator{C}
     buffer::Vector{Float64}   # padded RHS, length = full state
 end
 
-"""Condition estimate κ̂(J), or `NaN` when the backend exposes none. The NaN
-fallback is restricted to the non-KLU `PFLinearSolverCache` members so the concrete
-`KLULinSolveCache` doesn't shadow the KLU method onto the NaN path."""
+"""Condition estimate κ̂(J) for KLU caches; `NaN` for backends without one."""
 _diag_condest(cache::PNM.KLULinSolveCache) = condest!(cache)
-_diag_condest(::Union{PNM.AAFactorCache, PardisoLinSolveCache}) = NaN
+_diag_condest(::PNM.LinearSolverCache) = NaN
 
 function (op::SchurInverseOperator)(v::AbstractVector{Float64})
     b = op.buffer
@@ -271,7 +269,7 @@ against `cache`'s existing factorization. Non-finite (`±Inf`/`NaN`) means the
 bordering is degenerate or the back-solve failed."""
 function _fold_monitor_value!(
     mon::BorderedFoldMonitor,
-    cache::PFLinearSolverCache,
+    cache::PNM.LinearSolverCache,
     k::Int = 1,
 )
     copyto!(mon.y, mon.b[k])
@@ -405,7 +403,7 @@ function run_solver_diagnostics!(
     J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
     data::ACPowerFlowData,
     time_step::Int,
-    cache::PFLinearSolverCache,
+    cache::PNM.LinearSolverCache,
     monitor::Bool,
     bail::Bool,
 )::Bool

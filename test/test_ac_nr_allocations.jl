@@ -117,10 +117,13 @@ end
                 typeof(init_kwargs),
             )),
     )
-    @test rt.parameters[1] === PF.ACPowerFlowResidual
-    @test rt.parameters[3] === Vector{Float64}
-    @test rt.parameters[5] <: Union{Nothing, PF.StateVectorCache}
-    @test rt.parameters[6] === Bool
+    # The fresh-build and reuse branches may infer as separate tuple types; check each.
+    for t in Base.uniontypes(rt)
+        @test t.parameters[1] === PF.ACPowerFlowResidual
+        @test t.parameters[3] === Vector{Float64}
+        @test t.parameters[5] <: Union{Nothing, PF.StateVectorCache}
+        @test t.parameters[6] === Bool
+    end
 
     data.bus_active_power_injections[:, 1] .*= 1.001  # must iterate, not a 0-iteration warm start
     PF._newton_workspace!(pf, data, 1, backend, PF.DEFAULT_NR_TOL, init_kwargs)  # warm the reuse branch

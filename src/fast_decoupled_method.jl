@@ -250,7 +250,7 @@ the update is `x .+= Δx`. Does NOT refactor the cache — that is the whole poi
 fixed-Jacobian variant (cf. `_set_Δx_nr!`, which refactors every call)."""
 function _solve_Δx_nr_frozen!(
     stateVector::StateVectorCache,
-    cache::PFLinearSolverCache,
+    cache::PNM.LinearSolverCache,
 )
     _solve_Δx_nr!(stateVector, cache)
     LinearAlgebra.rmul!(stateVector.Δx_nr, -1.0)
@@ -372,18 +372,18 @@ struct FDJCacheKey
 end
 
 """
-    FDFixedJacobianCache <: SolverCache
+    FDFixedJacobianCache{C <: PNM.LinearSolverCache} <: SolverCache
 
 Holds the last frozen Jacobian's sparsity pattern (`colptr`, `rowval`, size) and its factored
-[`PFLinearSolverCache`](@ref). `factor_count` counts full factorizations, for testability.
+linear-solver cache. `factor_count` counts full factorizations, for testability.
 """
-mutable struct FDFixedJacobianCache <: SolverCache
+mutable struct FDFixedJacobianCache{C <: PNM.LinearSolverCache} <: SolverCache
     key::FDJCacheKey
     colptr::Vector{J_INDEX_TYPE}
     rowval::Vector{J_INDEX_TYPE}
     m::Int
     n::Int
-    linear_cache::PFLinearSolverCache
+    linear_cache::C
     factor_count::Int
 end
 
@@ -723,8 +723,8 @@ retries / multi-period steps that return to the same PQ set).
 - `rq::Vector{Float64}`: preallocated reactive half-step buffer (length `length(pq)`).
 - `dvlim_pos::Vector{Int}`: `1:length(pq)` (DVLIM operates on `rq` positionally).
 """
-mutable struct FDPQData
-    bpp::FDBppCache
+mutable struct FDPQData{C <: PNM.LinearSolverCache}
+    bpp::FDBppCache{C}
     pq::Vector{Int}
     v_x_idx::Vector{Int}
     q_row_idx::Vector{Int}
@@ -733,7 +733,7 @@ mutable struct FDPQData
 end
 
 """
-    FastDecoupledCache{S <: FDScheme}
+    FastDecoupledCache{S <: FDScheme, C <: PNM.LinearSolverCache}
 
 Factor-once cache for the polar :decoupled FD loop, stored in `data.solver_cache[]` (a
 [`SolverCache`](@ref) subtype, type-disjoint from the DC path's [`DCSolverCache`](@ref)). Holds the
@@ -742,12 +742,11 @@ factored B′ + assembled B″_full), the `pvpq`-invariant half-step buffers/ind
 ONCE per `(data, scheme, backend)` lifetime), and a `Dict` of per-PQ-set [`FDPQData`](@ref) keyed on
 a bus-type signature. `bp_factor_count`/`bpp_factor_count` count B′ and B″ factorizations for
 testability (factor-once verification). Parametrized on the scheme type `S` (shared with `key`/`fd`)
-so all fields are concretely typed; every field the hot half-step loop reads is `S`-independent, so
-retrieval through the abstract `solver_cache` slot stays type-stable.
+and the linear-solver cache type `C` so all fields are concretely typed.
 
 # Fields
 - `key::FDCacheKey{S}`: invalidation key (network identity, scheme, backend).
-- `fd::FDMatrices{S}`: arc π params + factored B′ + B″_full.
+- `fd::FDMatrices{S, C}`: arc π params + factored B′ + B″_full.
 - `pvpq::Vector{Int}`: non-REF bus indices (`== fd.pvpq`).
 - `theta_x_idx::Vector{Int}`: `x`-indices of the θ state at `pvpq` (`2i`).
 - `p_row_idx::Vector{Int}`: `Rv`-indices of the P-mismatch rows at `pvpq` (`2i-1`).
@@ -772,14 +771,14 @@ retrieval through the abstract `solver_cache` slot stays type-stable.
 - `area_dtheta::Vector{Float64}`: bordered-Schur scratch, the final `Δθ = u − W·ΔP_a`
   (length `length(pvpq)`).
 """
-mutable struct FastDecoupledCache{S <: FDScheme} <: SolverCache
+mutable struct FastDecoupledCache{S <: FDScheme, C <: PNM.LinearSolverCache} <: SolverCache
     key::FDCacheKey{S}
-    fd::FDMatrices{S}
+    fd::FDMatrices{S, C}
     pvpq::Vector{Int}
     theta_x_idx::Vector{Int}
     p_row_idx::Vector{Int}
     rp::Vector{Float64}
-    pq_data::Dict{Vector{PSY.ACBusTypes.Value}, FDPQData}
+    pq_data::Dict{Vector{PSY.ACBusTypes.Value}, FDPQData{C}}
     bp_factor_count::Int
     bpp_factor_count::Int
     pvpq_pos::Vector{Int}
@@ -845,7 +844,7 @@ function _get_or_build_fd_cache!(
         theta_x_idx,
         p_row_idx,
         rp,
-        Dict{Vector{PSY.ACBusTypes.Value}, FDPQData}(),
+        Dict{Vector{PSY.ACBusTypes.Value}, FDPQData{typeof(fd.bp_cache)}}(),
         1,   # bp_factor_count: build_fd_matrices factored B′ exactly once
         0,   # bpp_factor_count: bumped per distinct PQ signature in _get_pq_data!
         pvpq_pos,
