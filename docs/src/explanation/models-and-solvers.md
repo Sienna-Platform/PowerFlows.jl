@@ -85,8 +85,19 @@ ACMixedPowerFlow{LevenbergMarquardtACPowerFlow}()   # MCPB + LM (scales better t
 
 Any (formulation, solver) pair is valid except where noted:
 [`RobustHomotopyPowerFlow`](@ref) and [`GradientDescentACPowerFlow`](@ref) are
-polar-only because their continuation paths assume the polar state layout;
-[`ACMixedPowerFlow`](@ref) rejects both at construction.
+polar-only because their continuation paths assume the polar state layout, and
+[`GeneralizedAdmittanceACPowerFlow`](@ref) is polar-only as well;
+[`ACRectangularPowerFlow`](@ref) and [`ACMixedPowerFlow`](@ref) reject all three
+at construction.
+
+[`GeneralizedAdmittanceACPowerFlow`](@ref) embeds loads and generators as fixed shunts in the
+non-slack admittance block and iterates on corrective nodal currents. Each iteration reuses two
+KLU factorizations, so it is cheap. Anderson mixing accelerates the iteration, and the shunts
+are refreshed from the current iterate as the mismatch falls, so it converges from a flat start
+in tens of iterations, including on systems where Newton-Raphson diverges from a flat start
+(e.g. ACTIVSg10k). Pair it with `handoff_solver = NewtonRaphsonACPowerFlow` to use it as a
+flat-start enhancer that finishes in a few Newton steps. It supports ZIP loads and all HVDC
+types, but not reactive-power limits, distributed slack, discrete control, or area interchange.
 
 ## 3. The user-facing call
 

@@ -21,6 +21,7 @@ export ACRectangularPowerFlow
 export ACMixedPowerFlow
 export ACPowerFlow
 export GradientDescentACPowerFlow
+export GeneralizedAdmittanceACPowerFlow
 export ACPowerFlowSolverType
 export AbstractDCPowerFlow
 export PowerFlowEvaluationModel
@@ -108,6 +109,7 @@ include("residual_condition_diagnostics.jl")
 include("power_flow_setup.jl")
 include("power_flow_method.jl")
 include("fast_decoupled_matrices.jl")
+include("staged_handoff.jl")
 include("fast_decoupled_method.jl")
 # RobustHomotopy's HessianSolver machinery (FixedStructureCHOLMOD, the JᵀJ nzval-pair
 # cache) precedes levenberg-marquardt.jl because LMWorkspace reuses both as a struct
@@ -118,5 +120,12 @@ include("RobustHomotopy/homotopy_hessian.jl")
 include("RobustHomotopy/robust_homotopy_method.jl")
 include("levenberg-marquardt.jl")
 include("gradient_descent_ac_power_flow.jl")
+include("GeneralizedAdmittance/ga_partition.jl")
+include("GeneralizedAdmittance/ga_shunts.jl")
+include("GeneralizedAdmittance/ga_cache.jl")
+include("GeneralizedAdmittance/ga_iteration.jl")
+include("GeneralizedAdmittance/ga_lcc.jl")
+include("GeneralizedAdmittance/ga_dc.jl")
+include("GeneralizedAdmittance/ga_method.jl")
 include("post_processing.jl")
 end

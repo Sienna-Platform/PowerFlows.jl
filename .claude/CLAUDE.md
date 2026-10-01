@@ -30,7 +30,8 @@ Include order is authoritative — see `src/PowerFlows.jl`. New types/consts mus
 - **AC — polar:** `ac_power_flow_residual.jl`, `ac_power_flow_jacobian.jl`, `solve_ac_power_flow.jl` (unified NR/TR driver), `levenberg-marquardt.jl`, `gradient_descent_ac_power_flow.jl`.
 - **AC — rectangular current-injection:** `rectangular_ci_setup.jl`, `rectangular_ci_power_flow_residual.jl`, `rectangular_ci_power_flow_jacobian.jl`.
 - **AC — mixed current-power-balance (MCPB):** `mixed_cpb_setup.jl`, `mixed_cpb_power_flow_residual.jl`, `mixed_cpb_power_flow_jacobian.jl`.
-- **Robust homotopy:** `RobustHomotopy/robust_homotopy_method.jl`, `homotopy_hessian.jl`, `HessianSolver/{hessian_solver,KLU_hessian_solver,fixed_structure_CHOLMOD,cholesky_solver}.jl`.
+- **Robust homotopy:** `RobustHomotopy/robust_homotopy_method.jl`, `homotopy_hessian.jl`, `HessianSolver/{fixed_structure_CHOLMOD,cholesky_solver}.jl`.
+- **Generalized admittance (polar):** `GeneralizedAdmittance/ga_{partition,shunts,cache,iteration,lcc,dc,method}.jl`, included in that order after `gradient_descent_ac_power_flow.jl`. `ga_method.jl` holds `_ga_solve` (driver) and the `_newton_power_flow` seam.
 - **Linear-solver backends:** `linear_solver_backend.jl` (backend selection/dispatch over PNM caches; see invariants).
 - **Diagnostics / results:** `residual_condition_diagnostics.jl`, `post_processing.jl`, `branch_flow_results.jl`.
 - **HVDC/LCC:** `lcc_parameters.jl`, `lcc_utils.jl`.
@@ -44,7 +45,7 @@ Exported solver-model types and functions (see `src/PowerFlows.jl`):
 - DC models: `DCPowerFlow`, `PTDFDCPowerFlow`, `vPTDFDCPowerFlow` (all `<: AbstractDCPowerFlow`).
 - AC formulation/solver types — **two-axis design**: a *formulation* type parameterized by an `S <: ACPowerFlowSolverType`:
   - Formulations: `ACPolarPowerFlow{S}`, `ACRectangularPowerFlow{S}`, `ACMixedPowerFlow{S}`, all `<: AbstractACPowerFlow{S}`. `const ACPowerFlow = ACPolarPowerFlow` (back-compat alias; POM uses it).
-  - Solver types `S`: `NewtonRaphsonACPowerFlow`, `TrustRegionACPowerFlow`, `LevenbergMarquardtACPowerFlow`, `RobustHomotopyPowerFlow`, `GradientDescentACPowerFlow`, and `FastDecoupledACPowerFlow{V<:FDVariant,S<:FDScheme}` (the one *parametric* solver — variant/scheme are type params, not settings: `FDDecoupled`/`FDFixedJacobian` × `FDSchemeXB`/`FDSchemeBX`; bare `FastDecoupledACPowerFlow` picks per-formulation defaults).
+  - Solver types `S`: `NewtonRaphsonACPowerFlow`, `TrustRegionACPowerFlow`, `LevenbergMarquardtACPowerFlow`, `RobustHomotopyPowerFlow`, `GradientDescentACPowerFlow`, `GeneralizedAdmittanceACPowerFlow`, and `FastDecoupledACPowerFlow{V<:FDVariant,S<:FDScheme}` (the one *parametric* solver — variant/scheme are type params, not settings: `FDDecoupled`/`FDFixedJacobian` × `FDSchemeXB`/`FDSchemeBX`; bare `FastDecoupledACPowerFlow` picks per-formulation defaults).
   - Example: `ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}`. The solver is the type parameter — there is no `:step_strategy`/`:formulation` settings flag.
 - Export: `PSSEExportPowerFlow`, `PSSEExporter`, `update_exporter!`, `write_export`, `get_psse_export_paths`, `FlowReporting`.
 - `PowerFlowData` and aliases, plus `write_results`, are not exported but are PSI-stable; treat as protected interface.
@@ -62,6 +63,14 @@ Exported solver-model types and functions (see `src/PowerFlows.jl`):
 **Formulation vs solver split (design law).** Formulation = concrete type; solver = type param `S`. Seams are dispatched, not branched: `initialize_power_flow_variables` (formulation-dispatched), `_finalize_formulation!` hook (polar no-op; rect = `rect_finalize_bus_injections!`). NR and TR share one `_newton_power_flow(::AbstractACPowerFlow{S})`. LM/Homotopy/GD `_newton_power_flow` are pinned to `ACPolarPowerFlow` (and LM also to rectangular/mixed); illegal formulation×solver pairs are rejected at construction, not at runtime. Never branch on formulation with `isa`/`<:` — add a dispatch method.
 
 **Rectangular CI numerics.** PQ 2 vars, PV 3 vars with a `|V|²` pin row, REF 2 gen vars. Off-diagonal Jacobian blocks are constant (≡ Y_bus blocks). `V_FLOOR2 = 1e-16` floors `e²+f²` in all `1/|V|²`/`1/|V|` residual+Jacobian terms — **but the PV `|V|²−V_set²` constraint row keeps RAW `e²+f²`** (its −2e/−2f Jacobian is floor-free); residual and derivative must stay consistent. `_update_ref_diag_block!` is shared with MCPB, so flooring hardens both.
+
+**Generalized admittance (GA, `ACPolarPowerFlow{GeneralizedAdmittanceACPowerFlow}`).** Loads and generators are fixed shunts on the non-slack Y-bus block; a fixed-point loop of corrective currents restores the exact power and PV constraints. Design: `.claude/plans/2026-09-24-generalized-admittance-pf-design.md` (`../.claude/plans/` from the workspace root).
+- Polar only. Rectangular and mixed reject it; construction also rejects `check_reactive_power_limits`, distributed slack, discrete control and area interchange (`_validate_solver_specific_settings`).
+- Handoff to NR/TR/LM is opt-in. "No handoff" is the `NoHandoff` sentinel type, never `nothing`; GA and FD share `_maybe_handoff!` and `_validate_handoff_solver(solver, label)`. Without a handoff the exit gap also bounds each island's signed P sum (`ws.psum`, `_ga_exit_gap`), which equals minus the synced REF P row; the stage tolerance is plain `tol`.
+- **Convergence design (do not revert to the paper's plain fixed point).** The paper's flat-start q0 (§II-C) is off by tens of p.u. at stiffly tied PV buses on large grids, which makes the plain fixed point *repel* (ACTIVSg10k: linearized ρ ≈ 11.7). The stage therefore (1) adds an inductive `GA_PV_STIFFNESS_FRACTION·|Y_kk|` shunt at PV buses (`_ga_stiffen_pv!`), (2) Anderson-mixes the corrective currents with REAL coefficients (`GAAnderson`; the map conjugates u, so it is only ℝ-linear), and (3) refreshes the shunts to the ideal shunts of the iterate each time the per-bus gap falls `GA_REFRESH_DROP`-fold, re-stiffening on a stall (`_ga_refresh_shunts!`, `i += Δy ⊙ u`, numeric refactor). Heuristics run on the per-bus gap; the island sum only gates the exit. Measured: ACTIVSg10k from a true flat start converges in 22 iterations (NR from flat diverges); ACTIVSg2000 in 29. Diagnosis scripts: `../scratch/ga_stage6_diag/`.
+- `GeneralizedAdmittanceCache` (in `data.solver_cache`) holds two complex KLU factorizations (`Yℓℓ`, `Yqq`) via `PNM.*` (not the Float64 wrappers in `linear_solver_backend.jl`). The sparsity pattern never changes, so shunt updates use `numeric_refactor!`. Sparse path: no `\`, `inv`, `lu`.
+- LCC terminals are constant P+jQ withdrawals from a closed form; VSC converters are constant injections, with a DC substep (`ga_dc.jl`) when a DC network exists. `data.bus_type` is never mutated; AC-voltage VSC buses join the v set inside the partition only.
+- The stage ends by writing the best iterate into `PowerFlowData` and closing REF/PV/LCC/VSC state through the shared explicit-state sync. It adds no NaN-overwrite path.
 
 **MCPB (mixed current-power-balance).** PQ buses use divided current balance (imag-first row order); PV buses use real-power balance + `|V|²` constraint with **only 2 vars/bus** (no Q state — the key difference from rectangular's 3). REF = (P_gen, Q_gen). System size is exactly 2n. Status: opt-in, NOT default; do not deprecate rectangular. Validated to polar parity. Performance: for NR/TR ≈ rectangular (no net win); for **LM, Mixed decisively beats Rectangular** (rectangular-LM fails to converge at ~10k buses; Mixed-LM converges like Polar-LM with the smallest 2n state). Jacobian kernels are called as concrete top-level functions, never stored as abstract `::Function` fields (that forces dynamic dispatch on the hot path).
 
@@ -104,6 +113,9 @@ julia --project=test -e 'import Pkg; println(Base.find_package("PowerFlows"))'
 # Run full suite:
 julia --project=test test/runtests.jl
 
+# Generalized admittance (one file, ~3 min, 321 assertions incl. an ACTIVSg10k flat start; top-level @testset "GeneralizedAdmittance"):
+julia --project=test test/runtests.jl test_generalized_admittance
+
 # Run a subset filtered by FILE name (startswith), cap parallelism, or list discoverable tests:
 julia --project=test test/runtests.jl test_dc_power_flow
 julia --project=test test/runtests.jl --jobs=4
@@ -131,4 +143,4 @@ Each test file runs as its own testset in its own worker process; the runner rep
 
 ## Version
 
-Package `0.21.1`; Julia `^1.10`. Pardiso is a weakdep providing the optional MKLPardiso AC backend.
+Package `0.25.2`; Julia `^1.10`. Pardiso is a weakdep providing the optional MKLPardiso AC backend.

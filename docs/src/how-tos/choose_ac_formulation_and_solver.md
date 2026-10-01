@@ -77,6 +77,10 @@ median is the representative figure.
     multi-period solves where that fixed-matrix build amortizes; it is also a cheap initializer
     that can `handoff_solver` to NR/TR/LM for the final polish. For a single one-off solve, NR/TR
     are usually faster. Measure on your system with `test/performance/fd_benchmark.jl`.
+  - **ZIP loads and HVDC (LCC, VSC, multi-terminal):**
+    [`ACPowerFlow`](@ref)`{`[`GeneralizedAdmittanceACPowerFlow`](@ref)`}`() — the
+    generalized-admittance (PFPD) solver: cheap linear-rate fixed-point iterations, two reused
+    KLU factors each; pair with `handoff_solver` for Newton polish.
 
 See also the explanation pages
 [Mixed Current-Power Balance Formulation](@ref),

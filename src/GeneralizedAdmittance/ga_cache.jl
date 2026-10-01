@@ -1,0 +1,206 @@
+# Solver cache for the generalized-admittance loop, stored in `data.solver_cache[]`.
+#
+# Holds the fixed sparse blocks (built once per network/partition), two KLU factorizations
+# over the complex Yℓℓ and Yqq blocks (refactored, not re-ordered, whenever the shunts are
+# refreshed), the preallocated workspace, and the Anderson history.
+
+struct GAWorkspace
+    u0::Vector{ComplexF64}
+    u::Vector{ComplexF64}
+    u_best::Vector{ComplexF64}
+    i::Vector{ComplexF64}
+    R::Matrix{ComplexF64}
+    ut::Vector{ComplexF64}
+    iv_raw::Vector{ComplexF64}
+    w::Vector{ComplexF64}
+    q_v::Vector{Float64}
+    psum::Vector{Float64}
+    y_new::Vector{ComplexF64}
+end
+
+function GAWorkspace(nv::Int, nq::Int, n_islands::Int)
+    nl = nv + nq
+    c(n) = zeros(ComplexF64, n)
+    return GAWorkspace(c(nl), c(nl), c(nl), c(nl), zeros(ComplexF64, nl, 2), c(nv), c(nv),
+        c(nq), zeros(nv), zeros(n_islands), c(nl))
+end
+
+# Type-II Anderson mixing of the corrective currents, with a circular history of `m`
+# differences. `x` is the next input current.
+mutable struct GAAnderson
+    DF::Matrix{ComplexF64}
+    DG::Matrix{ComplexF64}
+    f_prev::Vector{ComplexF64}
+    g_prev::Vector{ComplexF64}
+    x::Vector{ComplexF64}
+    gram::Matrix{Float64}
+    γ::Vector{Float64}
+    n::Int
+    head::Int
+    have_prev::Bool
+end
+
+function GAAnderson(nl::Int, m::Int)
+    c() = zeros(ComplexF64, nl)
+    return GAAnderson(zeros(ComplexF64, nl, m), zeros(ComplexF64, nl, m), c(), c(), c(),
+        zeros(m, m), zeros(m), 0, 0, false)
+end
+
+function _ga_anderson_reset!(aa::GAAnderson, i::Vector{ComplexF64})
+    copyto!(aa.x, i)
+    aa.n = 0
+    aa.head = 0
+    aa.have_prev = false
+    return
+end
+
+# `g` is the map's output for input `aa.x`. The map conjugates u, so it is only ℝ-linear:
+# the mixing coefficients must be real (least squares over the stacked [Re; Im] vectors).
+function _ga_anderson_step!(aa::GAAnderson, g::Vector{ComplexF64})
+    m = size(aa.DF, 2)
+    if aa.have_prev
+        aa.head = mod1(aa.head + 1, m)
+        @inbounds for k in eachindex(g)
+            f = g[k] - aa.x[k]
+            aa.DF[k, aa.head] = f - aa.f_prev[k]
+            aa.DG[k, aa.head] = g[k] - aa.g_prev[k]
+        end
+        aa.n = min(aa.n + 1, m)
+    end
+    @inbounds for k in eachindex(g)
+        aa.f_prev[k] = g[k] - aa.x[k]
+        aa.g_prev[k] = g[k]
+    end
+    aa.have_prev = true
+    copyto!(aa.x, g)
+    n = aa.n
+    if iszero(n)
+        return
+    end
+    G = view(aa.gram, 1:n, 1:n)
+    γ = view(aa.γ, 1:n)
+    for a in 1:n
+        da = view(aa.DF, :, a)
+        γ[a] = real(dot(da, aa.f_prev))
+        for b in a:n
+            G[a, b] = real(dot(da, view(aa.DF, :, b)))
+        end
+    end
+    _, info = LinearAlgebra.LAPACK.potrf!('U', G)
+    if !iszero(info)
+        # Dependent history: drop it and keep the plain fixed-point step.
+        aa.n = 0
+        aa.head = 0
+        return
+    end
+    LinearAlgebra.LAPACK.potrs!('U', G, γ)
+    for a in 1:n
+        c = γ[a]
+        @inbounds for k in eachindex(g)
+            aa.x[k] -= c * aa.DG[k, a]
+        end
+    end
+    return
+end
+
+struct GACacheKey
+    ybus_id::UInt
+    s_ix::Vector{Int}
+    v_ix::Vector{Int}
+    q_ix::Vector{Int}
+end
+
+Base.:(==)(a::GACacheKey, b::GACacheKey) =
+    a.ybus_id == b.ybus_id && a.s_ix == b.s_ix && a.v_ix == b.v_ix && a.q_ix == b.q_ix
+
+mutable struct GeneralizedAdmittanceCache <: SolverCache
+    key::GACacheKey
+    blocks::GABlocks
+    Fl::PNM.KLULinSolveCache{ComplexF64, Int64}
+    Fq::PNM.KLULinSolveCache{ComplexF64, Int64}
+    factored::Bool
+    ws::GAWorkspace
+    aa::GAAnderson
+end
+
+_ga_cache_key(data::ACPowerFlowData, part::GAPartition) =
+    GACacheKey(
+        objectid(get_power_network_matrix(data)),
+        copy(part.s_ix),
+        copy(part.v_ix),
+        copy(part.q_ix),
+    )
+
+# Mirrors `_reuse_fd_cache`: an empty slot rebuilds; a foreign cache is a loud MethodError.
+_ga_can_reuse(::Nothing, ::GACacheKey) = false
+_ga_can_reuse(c::GeneralizedAdmittanceCache, key::GACacheKey) = c.key == key
+
+function _build_ga_cache(data::ACPowerFlowData, part::GAPartition)
+    blocks = GABlocks(data, part)
+    return GeneralizedAdmittanceCache(_ga_cache_key(data, part), blocks,
+        PNM.KLULinSolveCache(blocks.Yll), PNM.KLULinSolveCache(blocks.Yqq), false,
+        GAWorkspace(n_v(part), n_q(part), part.n_islands),
+        GAAnderson(n_l(part), GA_ANDERSON_DEPTH))
+end
+
+function _get_or_build_ga_cache!(data::ACPowerFlowData, part::GAPartition)
+    slot = data.solver_cache[]
+    if _ga_can_reuse(slot, _ga_cache_key(data, part))
+        return slot::GeneralizedAdmittanceCache
+    end
+    cache = _build_ga_cache(data, part)
+    data.solver_cache[] = cache
+    return cache
+end
+
+struct GABlockYll end
+struct GABlockYqq end
+_ga_block_name(::GABlockYll) = "Yℓℓ"
+_ga_block_name(::GABlockYqq) = "Yqq"
+_ga_block_rows(::GABlockYll, part::GAPartition) = part.l_ix
+_ga_block_rows(::GABlockYqq, part::GAPartition) = part.q_ix
+
+function _ga_bus_number(bus_lookup::Dict{Int, Int}, ix::Int)
+    for (number, index) in bus_lookup
+        if index == ix
+            return number
+        end
+    end
+    error("GeneralizedAdmittanceACPowerFlow: bus index $ix is not in the bus lookup.")
+end
+
+function _ga_factor_error(e::LinearAlgebra.SingularException, part::GAPartition,
+    bus_lookup::Dict{Int, Int}, block)
+    ix = _ga_block_rows(block, part)[e.info]
+    error(
+        "GeneralizedAdmittanceACPowerFlow: $(_ga_block_name(block)) is singular at bus " *
+        "$(_ga_bus_number(bus_lookup, ix)) (index $ix). Is there an island without a REF bus?",
+    )
+end
+
+_ga_factor_error(e, ::GAPartition, ::Dict{Int, Int}, block) = throw(e)
+
+function _ga_factor_block!(F, A::SparseMatrixCSC{ComplexF64, Int64}, factored::Bool,
+    block, part::GAPartition, bus_lookup::Dict{Int, Int})
+    try
+        if factored
+            PNM.numeric_refactor!(F, A)
+        else
+            PNM.full_factor!(F, A)
+        end
+    catch e
+        _ga_factor_error(e, part, bus_lookup, block)
+    end
+    return
+end
+
+function _ga_factor!(cache::GeneralizedAdmittanceCache, y::Vector{ComplexF64},
+    part::GAPartition, bus_lookup::Dict{Int, Int})
+    _ga_set_shunts!(cache.blocks, y, n_v(part))
+    _ga_factor_block!(cache.Fl, cache.blocks.Yll, cache.factored, GABlockYll(), part,
+        bus_lookup)
+    _ga_factor_block!(cache.Fq, cache.blocks.Yqq, cache.factored, GABlockYqq(), part,
+        bus_lookup)
+    cache.factored = true
+    return
+end
