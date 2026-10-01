@@ -199,6 +199,28 @@ end
     )
 end
 
+@testset "Singular Jacobian falls through the KLU re-pivot" begin
+    # `_repivots` is false on the default AppleAccelerate backend, so force KLU.
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
+    pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+        enhanced_flat_start = false,
+        solution_parameters = SolutionParameters(;
+            maxIterations = 3,
+            linear_solver = "KLU",
+        ),
+    )
+    data = PowerFlowData(pf, sys)
+    data.bus_magnitude .= 0.0
+    logs, _ = Test.collect_test_logs(; min_level = Logging.Debug) do
+        solve_power_flow!(data)
+    end
+    @test any(l -> occursin("stale KLU pivot order", string(l.message)), logs)
+    @test any(
+        l -> l.level == Logging.Warn && occursin("Jacobian is singular", string(l.message)),
+        logs,
+    )
+end
+
 @testset "Iwamoto early termination on stagnation" begin
     # Sabotage voltage magnitudes so that every Newton step worsens the residual,
     # triggering consecutive reverts and the early-termination break.

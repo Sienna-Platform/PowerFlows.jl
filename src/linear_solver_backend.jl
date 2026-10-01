@@ -64,6 +64,11 @@ full_factor!(c::PNM.KLULinSolveCache, A::SparseMatrixCSC{Float64}) =
 full_factor!(c::PNM.AAFactorCache, A::SparseMatrixCSC{Float64}) =
     PNM.AccelerateWrapper.full_factor!(c, A)
 
+# KLU reuses the first factorization's pivot order; AA and Pardiso refactor from scratch.
+_repivots(::PNM.KLULinSolveCache) = true
+_repivots(::PNM.AAFactorCache) = false
+_repivots(::PardisoLinSolveCache) = false
+
 solve!(c::PNM.KLULinSolveCache, b::StridedVecOrMat{Float64}) = PNM.solve!(c, b)
 solve!(c::PNM.AAFactorCache, b::StridedVecOrMat{Float64}) =
     PNM.AccelerateWrapper.solve!(c, b)
