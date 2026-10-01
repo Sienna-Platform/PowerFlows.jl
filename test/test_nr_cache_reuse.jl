@@ -239,3 +239,76 @@ end
     @test (@allocated residual(data, x0, 1)) == 0
     @test (@allocated J(data, 1)) == 0
 end
+
+function _solve_logged!(data)
+    local converged
+    logs, _ = Test.collect_test_logs(; min_level = Logging.Debug) do
+        converged = solve_power_flow!(data)
+    end
+    return converged, logs
+end
+
+_count_logs(logs, level, pattern) =
+    count(l -> l.level == level && occursin(pattern, string(l.message)), logs)
+
+# Solve with `bus_number` as PQ, then flip it back to PV on the same data and cache.
+function _stale_pivot_flip(pf, sys, bus_number)
+    data = PowerFlowData(pf, sys)
+    i = PF.get_bus_lookup(data)[bus_number]
+    setpoint = data.bus_magnitude[i, 1]
+    data.bus_type[i, 1] = PSY.ACBusTypes.PQ
+    converged_pq, _ = _solve_logged!(data)
+    cache = data.polar_nr_cache[]
+    data.bus_type[i, 1] = PSY.ACBusTypes.PV
+    data.bus_magnitude[i, 1] = setpoint
+    converged, logs = _solve_logged!(data)
+    return data, converged_pq, converged, logs, cache
+end
+
+@testset "stale KLU pivot after PQ→PV re-pivots" begin
+    cases = (
+        (
+            "c_sys14",
+            PSB.PSITestSystems,
+            "c_sys14",
+            (6, 3, 2),
+            false,
+            (; add_forecasts = false),
+        ),
+        (
+            "ACTIVSg2000",
+            PSB.MatpowerTestSystems,
+            "matpower_ACTIVSg2000_sys",
+            (5065,),
+            true,
+            (;),
+        ),
+    )
+    for (label, set, name, buses, correct, kwargs) in cases
+        sys = PSB.build_system(set, name; kwargs...)
+        for ACSolver in (NewtonRaphsonACPowerFlow, TrustRegionACPowerFlow),
+            bus_number in buses
+
+            @testset "$label bus $bus_number $ACSolver" begin
+                pf = ACPowerFlow{ACSolver}(;
+                    check_reactive_power_limits = false,
+                    correct_bustypes = correct,
+                    solution_parameters = SolutionParameters(; linear_solver = "KLU"),
+                )
+                data, converged_pq, converged, logs, c0 =
+                    _stale_pivot_flip(pf, sys, bus_number)
+                @test converged_pq
+                @test PF._repivots(c0.linSolveCache)
+                @test data.polar_nr_cache[] === c0
+                @test _count_logs(logs, Logging.Debug, "stale KLU pivot order") > 0
+                @test converged
+                @test _count_logs(logs, Logging.Warn, "Jacobian is singular") == 0
+
+                fresh = PowerFlowData(pf, sys)
+                @test solve_power_flow!(fresh)
+                @test isapprox(data.bus_magnitude, fresh.bus_magnitude; atol = 1e-8)
+                @test isapprox(data.bus_angles, fresh.bus_angles; atol = 1e-8)
+            end
+        end
+    end
+end

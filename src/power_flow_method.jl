@@ -145,6 +145,37 @@ function _do_refinement!(stateVector::StateVectorCache,
     return delta
 end
 
+"""Factor `J.Jv` with `factor!`, solve for `Δx_nr`, and refine. Returns `false` when the
+factorization is singular or the residual stays above `refinement_threshold`."""
+function _factor_solve_ok!(factor!,
+    stateVector::StateVectorCache,
+    J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
+    linSolveCache::PFLinearSolverCache,
+    refinement_threshold::Float64,
+    refinement_eps::Float64)
+    try
+        factor!(linSolveCache, J.Jv)
+    catch e
+        # KLU signals a singular factorization by throwing a `SingularException`;
+        # AppleAccelerate and MKLPardiso do not (the residual guard below catches their
+        # silent garbage solves). Any other exception is a genuine solver failure, not a
+        # singular Jacobian, so rethrow it rather than masking it.
+        e isa LinearAlgebra.SingularException || rethrow()
+        return false
+    end
+    _solve_Δx_nr!(stateVector, linSolveCache)
+    # Backend-agnostic singular-Jacobian guard: refinement returns the relative residual
+    # and rescues merely ill-conditioned solves; KLU throws above, AA/Pardiso need this.
+    residual = _do_refinement!(
+        stateVector,
+        J.Jv,
+        linSolveCache,
+        refinement_threshold,
+        refinement_eps,
+    )
+    return isfinite(residual) && residual <= refinement_threshold
+end
+
 """Sets the Newton-Raphson step. Usually, this is just `J.Jv \\ stateVector.r`, but
 `J.Jv` might be singular."""
 function _set_Δx_nr!(stateVector::StateVectorCache,
@@ -154,40 +185,21 @@ function _set_Δx_nr!(stateVector::StateVectorCache,
     solver::ACPowerFlowSolverType,
     refinement_threshold::Float64,
     refinement_eps::Float64)
-    use_fallback = false
     _count_numeric_refactor!(data)
-    try
-        numeric_refactor!(linSolveCache, J.Jv)
-    catch e
-        # KLU signals a singular factorization by throwing a `SingularException`;
-        # AppleAccelerate and MKLPardiso do not (the residual guard below catches their
-        # silent garbage solves). Only a `SingularException` routes to the regularized
-        # fallback. Any other exception (dimension mismatch, allocation failure, an MKL
-        # error) is a genuine solver failure, not a singular Jacobian — rethrow it rather
-        # than masking it behind the "Jacobian is singular" warning.
-        e isa LinearAlgebra.SingularException || rethrow()
-        use_fallback = true
-    end
-
-    if !use_fallback
-        _solve_Δx_nr!(stateVector, linSolveCache)
-        # Backend-agnostic singular-Jacobian guard. KLU throws on a singular matrix (caught
-        # above), but AppleAccelerate and MKLPardiso silently return a finite garbage
-        # solution. `_do_refinement!` returns the relative residual ‖J·Δx − r‖/‖r‖ (after
-        # attempting iterative refinement, which rescues merely ill-conditioned solves). If
-        # the linear solve still cannot be driven below `refinement_threshold`, the Jacobian
-        # is (numerically) singular regardless of backend.
-        residual = _do_refinement!(
-            stateVector,
-            J.Jv,
-            linSolveCache,
-            refinement_threshold,
-            refinement_eps,
+    ok = _factor_solve_ok!(
+        numeric_refactor!, stateVector, J, linSolveCache,
+        refinement_threshold, refinement_eps,
+    )
+    if !ok && _repivots(linSolveCache)
+        @debug "stale KLU pivot order; re-pivoting with a fresh factorization"
+        _count_symbolic_factor!(data)
+        ok = _factor_solve_ok!(
+            full_factor!, stateVector, J, linSolveCache,
+            refinement_threshold, refinement_eps,
         )
-        use_fallback = !isfinite(residual) || residual > refinement_threshold
     end
 
-    if use_fallback
+    if !ok
         @warn("$solver hit a point where the Jacobian is singular.")
         # KLU is used because the fallback must reliably solve the regularized system. Refresh
         # values in place while the pattern holds (reusing the factorization); rebuild if it shifts.
