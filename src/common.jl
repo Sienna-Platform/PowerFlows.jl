@@ -253,7 +253,7 @@ function _set_bus_angles_and_magnitudes!(
         if bus_no in subnetwork_keys && bus_no != main_ref_bus
             bus_angles[ix] = 0.0
         end
-        bus_vm = PSY.get_magnitude(bus)
+        bus_vm = PSY.get_magnitude(bus, PSY.CU)
         # prevent unfeasible starting values for voltage magnitude at PQ buses (for PV and REF buses we cannot do this):
         if bus_type[ix] == PSY.ACBusTypes.PQ &&
            bus_vm < BUS_VOLTAGE_MAGNITUDE_CUTOFF_MIN

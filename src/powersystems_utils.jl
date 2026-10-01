@@ -105,7 +105,7 @@ set_power_flow!(winding::PNM.ThreeWindingTransformerCircuit, flow::Complex) =
     _set_circuit_power_flow!(PSY.get_circuit(winding), flow)
 
 function set_voltage!(bus::PSY.ACBus, V::Complex)
-    PSY.set_magnitude!(bus, abs(V))
+    PSY.set_magnitude!(bus, abs(V) * PSY.CU)
     PSY.set_angle!(bus, angle(V))
     return
 end

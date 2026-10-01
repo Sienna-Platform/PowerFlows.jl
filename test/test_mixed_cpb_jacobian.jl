@@ -151,7 +151,7 @@ end
         sys, _ = simple_lcc_system()
         b2 = PSY.get_component(ACBus, sys, "bus_2")
         PSY.set_bustype!(b2, ACBusTypes.PV)
-        PSY.set_magnitude!(b2, 1.05)
+        PSY.set_magnitude!(b2, 1.05 * PSY.CU)
         _add_simple_thermal_standard!(sys, b2, 0.3, 0.0)
         R, data, x = _build_mixed_lcc_x(sys)
         Random.seed!(2024)

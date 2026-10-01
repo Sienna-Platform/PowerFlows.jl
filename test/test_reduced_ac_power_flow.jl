@@ -173,7 +173,7 @@ function compare_voltages(
     unreduced_Va = unreduced.bus_angles[bus_lookup[bus_no], 1]
     bus_name = temp_bus_map[bus_no]
     bus = PSY.get_component(PSY.ACBus, sys, bus_name)
-    reduced_Vm = PSY.get_magnitude(bus)
+    reduced_Vm = PSY.get_magnitude(bus, PSY.CU)
     reduced_Va = PSY.get_angle(bus)
     @test isapprox(unreduced_Vm, reduced_Vm; atol = 1e-6)
     @test isapprox(unreduced_Va, reduced_Va; atol = 1e-6)
@@ -417,7 +417,11 @@ end
     for bus_number in 1:6
         expected = get_component(ACBus, sys_unreduced, "bus_$bus_number")
         actual = get_component(ACBus, sys_reduced, "bus_$bus_number")
-        @test isapprox(get_magnitude(actual), get_magnitude(expected); atol = 1e-5)
+        @test isapprox(
+            get_magnitude(actual, PSY.CU),
+            get_magnitude(expected, PSY.CU);
+            atol = 1e-5,
+        )
         @test isapprox(get_angle(actual), get_angle(expected); atol = 1e-5)
     end
 end
@@ -431,7 +435,7 @@ function _zir_merge_test_sys(lines, nbus)
     sys = System(100.0)
     buses = Dict{Int, ACBus}()
     for n in 1:nbus
-        b = ACBus(; number = n, name = "zbus_$n", available = true,
+        b = ACBus(; input_basis = PSY.CU, number = n, name = "zbus_$n", available = true,
             bustype = n == 1 ? ACBusTypes.REF : ACBusTypes.PQ,
             angle = 0.0, magnitude = 1.0, voltage_limits = (min = 0.9, max = 1.1),
             base_voltage = 230.0)

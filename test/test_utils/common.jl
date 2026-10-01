@@ -65,7 +65,7 @@ function modify_rts_system!(sys::System)
     # For PQ bus, active and reactive are fixed; update voltage and angle
     pq_bus = get_bus(sys, 117)  # "Aston"
     @assert get_bustype(pq_bus) == ACBusTypes.PQ
-    set_magnitude!(pq_bus, 0.84783)
+    set_magnitude!(pq_bus, 0.84783 * PSY.CU)
     set_angle!(pq_bus, 0.14956)
 end
 
@@ -220,14 +220,14 @@ function _add_simple_bus!(
     voltage_magnitude::Float64 = 1.0,
     voltage_angle::Float64 = 0.0,
 )
-    bus = ACBus(;
+    bus = ACBus(; input_basis = PSY.CU,
         number = number,
         name = _check_name(sys, "bus_$number", ACBus),
         available = true,
         bustype = bus_type,
         angle = voltage_angle,
         magnitude = voltage_magnitude,
-        voltage_limits = (0.0, 2.0),
+        voltage_limits = (min = 0.0, max = 2.0),
         base_voltage = Float64(base_voltage),
     )
     add_component!(sys, bus)
@@ -1370,7 +1370,7 @@ function _build_mtdc_system()
     ac = pq[1:3]
     dcbuses = PSY.DCBus[]
     for k in 1:3
-        dcb = PSY.DCBus(;
+        dcb = PSY.DCBus(; input_basis = PSY.CU,
             number = 100 + k,
             name = "dc$k",
             available = true,
