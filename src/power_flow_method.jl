@@ -1381,7 +1381,7 @@ function _newton_power_flow(
     x0::Union{Vector{Float64}, Nothing} = nothing,
     # linear solver backend, resolved by `PNM.resolve_linear_solver`. Canonical names:
     # "KLU" | "AppleAccelerateLU" | "MKLPardiso" (PNM is the source of truth for any
-    # aliases); `nothing` uses PNM's platform default.
+    # aliases), or PowerFlows' own "LeanKLU"; `nothing` uses PNM's platform default.
     linear_solver::Union{Nothing, AbstractString} = nothing,
     _ignored...,
 ) where {T <: Union{TrustRegionACPowerFlow, NewtonRaphsonACPowerFlow}}

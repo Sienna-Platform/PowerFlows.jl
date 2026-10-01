@@ -6,6 +6,7 @@
 #   - AppleAccelerate (libSparse, macOS only; Int64-indexed matrices only)
 #   - MKLPardiso (Intel MKL, x86_64 only; lives in the `PowerFlowsPardisoExt`
 #     extension, loaded on `import Pardiso`)
+#   - LeanKLU (opt-in; see `PNM.LeanLUCache`)
 #
 # PNM exposes KLU ops as PNM.solve!/full_factor!/... and AppleAccelerate ops as
 # PNM.AccelerateWrapper.solve!/full_factor!/...; the MKLPardiso ops live in the
@@ -33,22 +34,25 @@ abstract type AbstractNRCache end
 
 # --- Backend-agnostic operations (forward to the owning PNM namespace) ---
 
-symbolic_factor!(c::PNM.KLULinSolveCache, A::SparseMatrixCSC{Float64}) =
+# Caches whose operations live in PNM's top-level namespace.
+const _KLUFamilyCache = Union{PNM.KLULinSolveCache, PNM.LeanLUCache}
+
+symbolic_factor!(c::_KLUFamilyCache, A::SparseMatrixCSC{Float64}) =
     PNM.symbolic_factor!(c, A)
 symbolic_factor!(c::PNM.AAFactorCache, A::SparseMatrixCSC{Float64}) =
     PNM.AccelerateWrapper.symbolic_factor!(c, A)
 
-numeric_refactor!(c::PNM.KLULinSolveCache, A::SparseMatrixCSC{Float64}) =
+numeric_refactor!(c::_KLUFamilyCache, A::SparseMatrixCSC{Float64}) =
     PNM.numeric_refactor!(c, A)
 numeric_refactor!(c::PNM.AAFactorCache, A::SparseMatrixCSC{Float64}) =
     PNM.AccelerateWrapper.numeric_refactor!(c, A)
 
-full_factor!(c::PNM.KLULinSolveCache, A::SparseMatrixCSC{Float64}) =
+full_factor!(c::_KLUFamilyCache, A::SparseMatrixCSC{Float64}) =
     PNM.full_factor!(c, A)
 full_factor!(c::PNM.AAFactorCache, A::SparseMatrixCSC{Float64}) =
     PNM.AccelerateWrapper.full_factor!(c, A)
 
-solve!(c::PNM.KLULinSolveCache, b::StridedVecOrMat{Float64}) = PNM.solve!(c, b)
+solve!(c::_KLUFamilyCache, b::StridedVecOrMat{Float64}) = PNM.solve!(c, b)
 solve!(c::PNM.AAFactorCache, b::StridedVecOrMat{Float64}) =
     PNM.AccelerateWrapper.solve!(c, b)
 
@@ -65,12 +69,12 @@ condest!(c::PNM.KLULinSolveCache) = PNM.condest!(c)
 
 """Resolve the active linear-solver backend tag.
 
-Returns a PNM backend singleton: `PNM.KLUSolver()`, `PNM.AppleAccelerateLUSolver()`,
-or `PNM.MKLPardisoSolver()`. When `override === nothing`, the platform default from
-PNM's preference logic is used. Throws if AppleAccelerate is requested off an Apple
-platform, if MKLPardiso is requested on a non-x86_64 architecture or without the
-`PowerFlowsPardisoExt` extension loaded (`import Pardiso`), or if `"Dense"` is
-requested (PNM resolves it to a real backend tag, but PowerFlows has no DC linear
+Returns a backend singleton: `PNM.KLUSolver()`, `PNM.AppleAccelerateLUSolver()`,
+`PNM.MKLPardisoSolver()`, or `PNM.LeanKLUSolver()` for `"LeanKLU"`. When
+`override === nothing`, the platform default from PNM's preference logic is used. Throws if
+AppleAccelerate is requested off an Apple platform, if MKLPardiso is requested on a non-x86_64
+architecture or without the `PowerFlowsPardisoExt` extension loaded (`import Pardiso`), or if
+`"Dense"` is requested (PNM resolves it to a real backend tag, but PowerFlows has no DC linear
 solver cache for it)."""
 function resolve_linear_solver_backend(override::Union{Nothing, AbstractString})
     name = if isnothing(override)
@@ -78,6 +82,7 @@ function resolve_linear_solver_backend(override::Union{Nothing, AbstractString})
     else
         String(override)
     end
+    name == "LeanKLU" && return PNM.LeanKLUSolver()
     return _validate_linear_solver_backend(PNM.resolve_linear_solver(name))
 end
 
@@ -112,8 +117,9 @@ function _validate_linear_solver_backend(::PNM.DenseSolver)
     throw(
         ArgumentError(
             "linear_solver=\"Dense\" is not supported: PowerFlows has no DC linear " *
-            "solver cache for it. Accepted backends are \"KLU\", \"AppleAccelerateLU\" " *
-            "(macOS only), and \"MKLPardiso\" (x86_64 only, needs `import Pardiso`).",
+            "solver cache for it. Accepted backends are \"KLU\", \"LeanKLU\", " *
+            "\"AppleAccelerateLU\" (macOS only), and \"MKLPardiso\" (x86_64 only, needs " *
+            "`import Pardiso`).",
         ),
     )
 end
@@ -123,6 +129,8 @@ make_linear_solver_cache(::PNM.KLUSolver, A::SparseMatrixCSC{Float64}) =
     PNM.KLULinSolveCache(A)
 make_linear_solver_cache(::PNM.AppleAccelerateLUSolver, A::SparseMatrixCSC{Float64}) =
     PNM.AAFactorCache(A)
+make_linear_solver_cache(::PNM.LeanKLUSolver, A::SparseMatrixCSC{Float64}) =
+    PNM.LeanLUCache(A)
 
 """Adapter: PowerFlows historically calls `solve_w_refinement(cache, A, b, eps)`
 with a step-tolerance `eps`. Map onto PNM's residual-based refined solve."""
