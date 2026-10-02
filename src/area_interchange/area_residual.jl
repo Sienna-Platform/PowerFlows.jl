@@ -250,9 +250,9 @@ end
 Write the WORKING `delta_p[:, time_step]` (one row per CURRENTLY enrolled area, keyed by its
 renumbered working `tail_ix`) back into `pristine_delta_p[:, time_step]` (keyed by the area's
 never-changing PRISTINE `tail_ix`, looked up by name), once a time step's solve converges.
-The persistent mirror is what the NEXT time step's `_ensure_pristine_area_set!` reseeds from,
-so a later time step's warm start recovers THIS time step's converged `ΔP_a` for every area
-that survived. A relaxed area's row is left untouched — it has no converged `ΔP_a` to record;
+The mirror's row layout survives de-enrollment renumbering, so `_ensure_pristine_area_set!`
+can restore the working `delta_p` after a relax and post-processing can read `ΔP_a` by
+pristine `tail_ix`. Each time step only ever reads and writes its own column. A relaxed area's row is left untouched — it has no converged `ΔP_a` to record;
 the results table reports `delta_p = 0.0` for it directly, not from this mirror.
 """
 function _sync_pristine_delta_p!(data::ACPowerFlowData, time_step::Int)

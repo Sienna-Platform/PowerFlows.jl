@@ -22,9 +22,9 @@ accepts, so a parameter may also be overridden per call — `solve_power_flow!(d
 1e-8)` wins over the stored value for that solve only. The network-control fields
 (`check_reactive_power_limits`, `enhanced_flat_start`, `control_discrete_devices`,
 `area_interchange_control`, `interchange_tolerance`, `tie_definition`,
-`model_dc_network`) are read from the stored parameters, not from a per-call keyword,
-because most of them shape `PowerFlowData` at construction time — a keyword passed to
-`solve_power_flow!` after that has nothing left to change. `check_reactive_power_limits`
+`model_dc_network`, `n_threads`) are read from the stored parameters, not from a per-call
+keyword, because most of them shape `PowerFlowData` at construction time — a keyword passed
+to `solve_power_flow!` after that has nothing left to change. `check_reactive_power_limits`
 is the one exception: it is re-read on every Q-limit retry, so a per-call override does
 take effect.
 
@@ -73,6 +73,13 @@ take effect.
 # Backend
 - `linear_solver::String`: name of the sparse linear-solver backend. Defaults to the
   `PowerNetworkMatrices` preference default, resolved once at construction.
+
+# Threading
+- `n_threads::Int`: number of tasks a multi-period AC solve spreads its time steps over.
+  `1` (the default) solves them in order on the calling thread. Above `1`, each time step
+  starts from the system setpoints rather than from an earlier step's solution. Requires a
+  polar Newton-Raphson or trust-region solver and `linear_solver = "LeanKLU"`. Julia needs
+  at least that many threads (`--threads`) to see a speedup.
 
 Per-call data (`x0`) is not a parameter and is not carried here — pass it at the call site.
 """
@@ -131,6 +138,8 @@ Base.@kwdef struct SolutionParameters
     epsilon::Float64 = 1e-8
 
     linear_solver::String = PNM._default_linear_solver()
+
+    n_threads::Int = 1
 end
 
 # Excluded from `get_solver_kwargs` so the kwargs surface a solver sees matches what it saw
@@ -143,6 +152,7 @@ const _SOLUTION_PARAMETER_CONTROL_FIELDS = (
     :interchange_tolerance,
     :tie_definition,
     :model_dc_network,
+    :n_threads,
 )
 
 const _SOLUTION_PARAMETER_SOLVER_FIELDS = Tuple(

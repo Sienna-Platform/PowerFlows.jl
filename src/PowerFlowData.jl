@@ -143,7 +143,7 @@ struct PowerFlowData{
     # `PNM.IncidenceMatrix`. Used by DC solves for Δθ = A·θ; `nothing` for AC/vPTDF.
     arc_bus_incidence::Union{SparseMatrixCSC{Int8, Int}, Nothing}
     neighbors::Vector{Set{Int}}
-    converged::BitVector
+    converged::Vector{Bool}
     loss_factors::Union{Matrix{Float64}, Nothing}
     voltage_stability_factors::Union{Matrix{Float64}, Nothing}
     arc_active_power_losses::Union{Matrix{Float64}, Nothing}
@@ -435,7 +435,7 @@ function PowerFlowData(
         aux_network_matrix,
         arc_bus_incidence,
         neighbors,
-        falses(n_time_steps), # converged
+        fill(false, n_time_steps), # converged
         calculate_loss_factors ? zeros(n_buses, n_time_steps) : nothing, # loss_factors
         calculate_voltage_stability_factors ? zeros(n_buses, n_time_steps) : nothing, # voltage_stability_factors
         _make_arc_active_power_losses(pf, n_arcs, n_time_steps), # arc_active_power_losses

@@ -141,8 +141,8 @@ Always present on [`PowerFlowData`](@ref) — empty vectors when control is off,
   area's achieved net interchange in the results table, since its tail is translated to `0`
   out of the WORKING `ties` the moment it is de-enrolled.
 - `pristine_delta_p::Matrix{Float64}`: persistent, PRISTINE-`tail_ix`-indexed mirror of
-  `delta_p` — its row layout never changes under de-enrollment renumbering, so it survives
-  across time steps. `_ensure_pristine_area_set!` reseeds the working `delta_p` from it;
+  `delta_p` — its row layout never changes under de-enrollment renumbering. Column
+  `time_step` is only touched by that time step's solve. `_ensure_pristine_area_set!` reseeds the working `delta_p` from it;
   `_sync_pristine_delta_p!` writes back into it once a time step's solve converges.
 - `relaxed::Dict{Int, Vector{RelaxedAreaRecord}}`: per-time-step record of areas relaxed
   away that time step (absent/empty = none), keyed by `time_step` so a multi-period

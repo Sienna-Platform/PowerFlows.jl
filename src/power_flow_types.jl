@@ -112,6 +112,37 @@ function _validate_discrete_control_settings(
     return
 end
 
+# Threading is validated only for polar NR/TR on LeanKLU. KLU serializes every libklu call
+# behind PNM's process-wide lock (no speedup); AppleAccelerate and MKLPardiso are untested under
+# concurrent use; the other formulations/solvers keep per-solve state not yet audited for sharing.
+function _validate_threading_settings(
+    params::SolutionParameters,
+    ::Type{F},
+    ::Type{ACSolver},
+) where {F <: AbstractACPowerFlow, ACSolver <: ACPowerFlowSolverType}
+    params.n_threads >= 1 ||
+        throw(ArgumentError("n_threads must be >= 1, got $(params.n_threads)."))
+    params.n_threads == 1 && return
+    if !(F <: ACPolarPowerFlow) ||
+       !(ACSolver <: Union{NewtonRaphsonACPowerFlow, TrustRegionACPowerFlow})
+        throw(
+            ArgumentError(
+                "n_threads > 1 requires ACPolarPowerFlow with a NewtonRaphsonACPowerFlow " *
+                "or TrustRegionACPowerFlow solver; got $(F){$(ACSolver)}.",
+            ),
+        )
+    end
+    if params.linear_solver != "LeanKLU"
+        throw(
+            ArgumentError(
+                "n_threads > 1 requires linear_solver = \"LeanKLU\"; got " *
+                "\"$(params.linear_solver)\".",
+            ),
+        )
+    end
+    return
+end
+
 # Validated for NR/TR/LM/FastDecoupled: LM feeds the augmented rows through its
 # normal-equations residual; FDFixedJacobian carries the border in the frozen augmented
 # Jacobian; FDDecoupled corrects the tail via the bordered-Schur substep
@@ -503,6 +534,7 @@ function ACPolarPowerFlow{ACSolver}(;
         time_steps,
     )
     _validate_discrete_control_settings(params.control_discrete_devices, ACSolver)
+    _validate_threading_settings(params, ACPolarPowerFlow, ACSolver)
     # Returns the possibly-floored tolerance, so the stored parameters carry the value the
     # solve will actually use rather than the one the caller asked for.
     params = _override(
@@ -588,6 +620,7 @@ get_interchange_tolerance(::PowerFlowEvaluationModel) = DEFAULT_INTERCHANGE_TOLE
 get_tie_definition(pf::AbstractACPowerFlow) =
     get_solution_parameters(pf).tie_definition
 get_tie_definition(::PowerFlowEvaluationModel) = :lines_only
+get_n_threads(pf::AbstractACPowerFlow) = get_solution_parameters(pf).n_threads
 
 """
     ACRectangularPowerFlow{ACSolver}(; kwargs...) where {ACSolver <: ACPowerFlowSolverType}
@@ -705,6 +738,7 @@ function ACRectangularPowerFlow{ACSolver}(;
         time_steps,
     )
     _validate_discrete_control_settings(params.control_discrete_devices, ACSolver)
+    _validate_threading_settings(params, ACRectangularPowerFlow, ACSolver)
     params = _resolve_solver_defaults(
         params,
         ACRectangularPowerFlow,
@@ -845,6 +879,7 @@ function ACMixedPowerFlow{ACSolver}(;
         time_steps,
     )
     _validate_discrete_control_settings(params.control_discrete_devices, ACSolver)
+    _validate_threading_settings(params, ACMixedPowerFlow, ACSolver)
     params = _resolve_solver_defaults(params, ACMixedPowerFlow, ACSolver, marquardt_scaling)
     return ACMixedPowerFlow{ACSolver}(
         exporter,
