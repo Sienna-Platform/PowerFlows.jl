@@ -33,6 +33,10 @@ const WORKER_ENV = [
     "VECLIB_MAXIMUM_THREADS" => "1",
 ]
 
+# test_threaded_ac_power_flow needs >1 thread. ParallelTestRunner pins every worker's
+# `JULIA_NUM_THREADS` to 1; the command-line flag takes precedence over that env var.
+const WORKER_EXEFLAGS = ["--threads=2"]
+
 # A cold PSB cache means every worker misses `is_serialized` and they race to write the same
 # bundle directory, which `PSY.to_file` does not do atomically. Running serially populates it
 # safely; once warm this costs nothing. An explicit `--jobs` wins, because a second `--jobs`
@@ -49,4 +53,11 @@ if _psb_cache_is_cold() && !any(startswith("--jobs"), ARGS)
     push!(ARGS, "--jobs=1")
 end
 
-runtests(PowerFlows, ARGS; testsuite, init_code = INIT_CODE, env = WORKER_ENV)
+runtests(
+    PowerFlows,
+    ARGS;
+    testsuite,
+    init_code = INIT_CODE,
+    env = WORKER_ENV,
+    exeflags = WORKER_EXEFLAGS,
+)
