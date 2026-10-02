@@ -221,12 +221,9 @@ The power flow solver settings are taken from the `ACPowerFlow` object stored in
 
 # Keyword Arguments
 - `time_steps`: Specifies the time steps to solve. Defaults to sorting and collecting the keys of `get_time_step_map(data)`.
-- `threads::Int = 1`: number of tasks solving contiguous chunks of `time_steps` concurrently, each
-    with its own Newton workspace and KLU factorization. A first solve gives the same result for
-    any `threads`; on a re-solve a chunk's first step may warm-start differently, because steps
-    owned by other tasks are not used as warm starts. Errors for discrete device control, area
-    interchange control, LCC HVDC lines, or a non-KLU linear solver. `solve_power_flow` and
-    `solve_and_store_power_flow!` pass it through.
+
+The number of tasks solving contiguous chunks of `time_steps` concurrently is the stored
+`n_threads` of the model's [`SolutionParameters`](@ref).
 
 # Description
 This function solves the AC power flow problem for each time step specified in `data`.
@@ -245,15 +242,22 @@ solve_power_flow!(data)
 """
 function solve_power_flow!(
     data::ACPowerFlowData;
-    threads::Int = 1,
     kwargs...,
 )
     pf = get_pf(data)
+    # The solvers swallow unknown keywords, so a per-call thread count would run serially unnoticed.
+    for k in (:threads, :n_threads)
+        haskey(kwargs, k) && throw(
+            ArgumentError(
+                "solve_power_flow! takes no `$k` keyword; set the worker count with " *
+                "`SolutionParameters(; n_threads)` on the power flow model.",
+            ),
+        )
+    end
     merged_kwargs = merge(get_solver_kwargs(pf), NamedTuple(kwargs))
     merged_kwargs.maxIterations < 1 && error(
         "maxIterations must be >= 1, got $(merged_kwargs.maxIterations) for $(typeof(pf)).",
     )
-    threads < 1 && error("threads must be >= 1, got $threads.")
     sorted_time_steps =
         get(merged_kwargs, :time_steps, sort(collect(keys(get_time_step_map(data)))))
     # This can be done from PSI by directly writing to `data`'s fields; we just don't
@@ -268,7 +272,7 @@ function solve_power_flow!(
     end
     ts_converged = fill(false, length(sorted_time_steps))
     validate_device_store_width(get_controlled_devices(data), get_time_steps(data))
-    n_work = min(threads, length(sorted_time_steps))
+    n_work = min(get_n_threads(pf), length(sorted_time_steps))
     if n_work > 1
         _solve_columns_threaded!(
             ts_converged, data, pf, sorted_time_steps, n_work, merged_kwargs)
@@ -408,14 +412,19 @@ function _solve_columns_threaded!(
     n_work::Int,
     merged_kwargs::NamedTuple,
 )
-    backend = _check_threadable(data, merged_kwargs)
+    backend = _check_threadable(merged_kwargs)
     # Built here, before any task can race to build it, so every worker shares one pivot order.
     _prepare_lean_plan!(pf, data, first(steps), backend)
-    chunks = Iterators.partition(1:length(steps), cld(length(steps), n_work))
-    @sync for positions in chunks
+    chunks = collect(Iterators.partition(1:length(steps), cld(length(steps), n_work)))
+    workers = Vector{typeof(data)}(undef, length(chunks))
+    @sync for (i, positions) in enumerate(chunks)
         worker = _column_worker(data, steps, positions)
+        workers[i] = worker
         Threads.@spawn _solve_columns!(
             ts_converged, worker, pf, steps, positions, merged_kwargs)
+    end
+    for (worker, positions) in zip(workers, chunks)
+        _merge_worker_area!(data, worker, steps, positions)
     end
     return ts_converged
 end
@@ -448,12 +457,16 @@ function _lean_plan_tried(memo::ACJacobianStructureCache, data::ACPowerFlowData)
            memo.area_data === data.area_interchange
 end
 
-"""A `PowerFlowData` sharing every array of `data` (each task writes only its own columns) with
-fresh solver caches and a private `converged`. The Jacobian-structure memo is shared too: it is
-read-only once built, and it carries the lean-LU plan. `improve_x0` warm-starts from the last step
-converged at entry; steps owned by other tasks are cleared there, since their columns are being
-rewritten concurrently. So a first solve matches the serial one exactly, while a re-solve may pick
-a different warm start at a chunk's first step."""
+"""A `PowerFlowData` sharing every time-indexed array of `data` (each task writes only its own
+columns) with fresh solver caches, a private `converged`, and private copies of the state a solve
+mutates outside its column: the controlled-device scratch and counters, the network matrix when
+taps are controlled, the LCC branch admittances, and the area-interchange data when it is active.
+The Jacobian-structure memo is shared too: it is read-only once built, and it carries the lean-LU
+plan. A worker with its own network matrix or area data misses that memo and plans itself.
+`improve_x0` warm-starts from the last step converged at entry; steps owned by other tasks are
+cleared there, since their columns are being rewritten concurrently. So a first solve matches the
+serial one exactly (controlled taps aside: the serial Y-bus accumulates ComplexF32 round-off
+across steps), while a re-solve may pick a different warm start at a chunk's first step."""
 function _column_worker(
     data::ACPowerFlowData,
     steps::AbstractVector{Int},
@@ -465,8 +478,13 @@ function _column_worker(
             converged[t] = false
         end
     end
+    cd = get_controlled_devices(data)
     fresh = (
         converged = converged,
+        power_network_matrix = _worker_network_matrix(cd, data.power_network_matrix),
+        lcc = _override(data.lcc; branch_admittances = copy(data.lcc.branch_admittances)),
+        area_interchange = _worker_area_data(data.area_interchange),
+        controlled_devices = _worker_devices(cd),
         solver_cache = Base.RefValue{Union{Nothing, SolverCache}}(nothing),
         ac_jacobian_structure_cache = Base.RefValue{
             Union{Nothing, ACJacobianStructureCache},
@@ -479,39 +497,83 @@ function _column_worker(
     return typeof(data)(args...)
 end
 
-# Anything holding per-solve state outside the time-step columns cannot be split across tasks.
-function _check_threadable(data::ACPowerFlowData, merged_kwargs::NamedTuple)
-    _check_threadable(get_controlled_devices(data))
-    isempty(data.area_interchange.pristine_areas) || error(
-        "threads > 1 is not supported with area interchange control: the enrolled-area set " *
-        "is shared across time steps. Solve with threads = 1.",
+_worker_devices(::Nothing) = nothing
+# The per-step stores stay shared: each step reads and writes only its own column.
+function _worker_devices(cd::ControlledDeviceSet)
+    return _override(cd;
+        taps = deepcopy(cd.taps),
+        shunts = deepcopy(cd.shunts),
+        facts = deepcopy(cd.facts),
+        inner_solves = Ref(0),
+        symbolic_factors = Ref(0),
+        numeric_refactors = Ref(0),
     )
-    iszero(get_lcc_count(data)) || error(
-        "threads > 1 is not supported with LCC HVDC lines: their branch admittances are " *
-        "shared across time steps. Solve with threads = 1.",
-    )
-    backend = resolve_linear_solver_backend(
-        get(merged_kwargs, :linear_solver, nothing))
-    _concurrent_factorization_safe(backend) || error(
-        "threads > 1 requires the KLU linear solver; $(nameof(typeof(backend))) is not " *
-        "verified safe under concurrent factorization. Pass linear_solver = \"KLU\" or " *
-        "threads = 1.",
-    )
-    return backend
 end
 
-_check_threadable(::Nothing) = nothing
-
-function _check_threadable(cd::ControlledDeviceSet)
-    isempty(cd) || error(
-        "threads > 1 is not supported with discrete device control: tap, shunt and FACTS " *
-        "settings carry across time steps. Solve with threads = 1.",
+# Controlled taps write only the Y-bus, `Yft` and `Ytf` values. Axes, lookups and the branch
+# catalog stay shared: the catalog reaches the System's components, so a deepcopy would copy it.
+_worker_network_matrix(::Nothing, matrix) = matrix
+function _worker_network_matrix(cd::ControlledDeviceSet, matrix)
+    if isempty(cd.taps)
+        return matrix
+    end
+    return _override(matrix;
+        data = copy(matrix.data),
+        arc_admittance_from_to = _copy_values(matrix.arc_admittance_from_to),
+        arc_admittance_to_from = _copy_values(matrix.arc_admittance_to_from),
     )
+end
+
+_copy_values(::Nothing) = nothing
+_copy_values(m::PNM.ArcAdmittanceMatrix) = _override(m; data = copy(m.data))
+
+# A relax renumbers the working area set across all columns. Shared while inactive, so the
+# workers keep hitting the memo, which keys on this object's identity.
+function _worker_area_data(aid::AreaInterchangeData)
+    if isempty(aid.pristine_areas)
+        return aid
+    end
+    return deepcopy(aid)
+end
+
+"""Copy what post-processing reads for the worker's own steps back into `data`: the
+`pristine_delta_p` columns and the `relaxed` records."""
+function _merge_worker_area!(
+    data::ACPowerFlowData,
+    worker::ACPowerFlowData,
+    steps::AbstractVector{Int},
+    positions::UnitRange{Int},
+)
+    aid = data.area_interchange
+    isempty(aid.pristine_areas) && return
+    worker_aid = worker.area_interchange
+    for pos in positions
+        t = steps[pos]
+        @views aid.pristine_delta_p[:, t] .= worker_aid.pristine_delta_p[:, t]
+        if haskey(worker_aid.relaxed, t)
+            aid.relaxed[t] = worker_aid.relaxed[t]
+        end
+    end
     return
 end
 
-_concurrent_factorization_safe(::PNM.LinearSolverType) = false
-_concurrent_factorization_safe(::PNM.KLUSolver) = true
+# Resolved again here: a per-call `linear_solver` overrides the one checked at construction.
+function _check_threadable(merged_kwargs::NamedTuple)
+    backend = resolve_linear_solver_backend(get(merged_kwargs, :linear_solver, nothing))
+    _check_concurrent_factorization(backend)
+    return backend
+end
+
+_check_concurrent_factorization(::PNM.KLUSolver) = nothing
+function _check_concurrent_factorization(backend::PNM.LinearSolverType)
+    throw(
+        ArgumentError(
+            "n_threads > 1 requires the KLU linear solver; $(nameof(typeof(backend))) is not " *
+            "verified safe under concurrent factorization. Pass linear_solver = \"KLU\" or " *
+            "n_threads = 1.",
+        ),
+    )
+end
 
 _bus_voltage_phasor(data::ACPowerFlowData, ix::Int, time_step::Int) =
     data.bus_magnitude[ix, time_step] * exp(1im * data.bus_angles[ix, time_step])
