@@ -56,3 +56,15 @@ PF_PROFILE_SYSTEM=c_sys14 julia --project=test \
 - `PF_PROFILE_SYSTEM` overrides the system name (group is inferred: `matpower`/
   `ACTIVSg` names load from `MatpowerTestSystems`, others from `PSITestSystems`).
 - The 10k run is multi-minute; prefer running it in the background.
+
+## Threaded multi-period speedup
+
+`benchmark_threaded_time_steps.jl` times a 24-step AC solve (loads varied per step) at
+`n_threads` = 1, 2, 4, 8 on LeanKLU, against serial KLU, on ACTIVSg2000 and ACTIVSg10k:
+
+```
+julia --project=test --threads=8 scripts/profiling/benchmark_threaded_time_steps.jl
+```
+
+`PF_BENCH_SYSTEMS`, `PF_BENCH_TIME_STEPS`, `PF_BENCH_THREADS` and `PF_BENCH_REPS` override
+the defaults.
