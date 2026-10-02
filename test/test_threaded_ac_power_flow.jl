@@ -35,6 +35,25 @@ _threaded_params(n_threads; kwargs...) =
     @test PF.get_n_threads(ACPolarPowerFlow()) == 1
 end
 
+@testset "_copy_for_task shares read-only state only" begin
+    @test PF._copy_for_task(nothing) === nothing
+    pf = ACPolarPowerFlow(; solution_parameters = _threaded_params(1))
+    data = PowerFlowData(pf,
+        PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false))
+    @test solve_power_flow!(data)
+    entry = data.polar_nr_cache[]
+    c = PF._copy_for_task(entry)
+    @test c.linSolveCache.plan === entry.linSolveCache.plan
+    @test c.linSolveCache !== entry.linSolveCache
+    @test c.J.od_jnz === entry.J.od_jnz
+    @test c.J.Jv !== entry.J.Jv
+    @test c.residual.Rv !== entry.residual.Rv
+    @test c.stateVector.x !== entry.stateVector.x
+    @test isnothing(c.stateVector.fallback_cache[])
+    @test c.J.bus_slack_participation_factors ===
+          c.residual.bus_slack_participation_factors
+end
+
 """Solve `build_sys()` sequentially and with `n_threads` tasks; return both datas. `setup!`
 fills the per-step inputs of a fresh `data`."""
 function _solve_sequential_and_threaded(

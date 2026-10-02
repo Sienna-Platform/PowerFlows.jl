@@ -68,6 +68,25 @@ struct PolarNRCache{C <: PNM.LinearSolverCache} <: AbstractNRCache
     bus_type_snapshot::Vector{PSY.ACBusTypes.Value}
 end
 
+"""Copy of a polar NR cache for another worker. It shares the read-only parts (the LeanLU plan
+and the Jacobian's index maps) and owns everything a solve writes. Returns `nothing` when
+there is nothing to share, and the worker builds its own cache."""
+_copy_for_task(::Any) = nothing
+function _copy_for_task(entry::PolarNRCache{<:PNM.LeanLUCache})
+    J, sv = entry.J, entry.stateVector
+    substitutes = IdDict{Any, Any}(
+        entry.linSolveCache => PNM.copy_for_task(entry.linSolveCache),
+        # Built lazily by the singular-Jacobian fallback. A KLU cache can't be deepcopied.
+        sv.fallback_cache => typeof(sv.fallback_cache)(nothing),
+        sv.fallback_matrix => typeof(sv.fallback_matrix)(nothing),
+    )
+    for a in (J.od_from, J.od_to, J.od_ybus_nz, J.od_jnz, J.diag_jnz, J.diag_ybus_nz)
+        substitutes[a] = a
+    end
+    # One deepcopy of the whole entry keeps J's alias of the residual's slack factors.
+    return Base.deepcopy_internal(entry, substitutes)
+end
+
 """Refresh `entry.residual` in place for `time_step`. Returns `false` when the subnetwork
 partition, slack-participating buses, or REF buses changed and the caller must rebuild."""
 function _refresh_polar_residual!(

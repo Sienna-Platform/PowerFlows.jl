@@ -391,7 +391,8 @@ end
 A `PowerFlowData` for one task of a threaded solve. It shares `data`'s time-indexed arrays
 (each step touches only its own column) and read-only network data, and owns its own copy of
 everything else a solve mutates:
-- the solver caches;
+- the solver caches (the polar NR cache is then seeded from the first worker's; see
+  [`_copy_for_task`](@ref));
 - `converged`, all `false`, so no step warm-starts from another step's solution;
 - `lcc.branch_admittances`;
 - the area-interchange data: a relax renumbers it across all columns, so only each step's
@@ -465,12 +466,22 @@ function _solve_time_steps_threaded!(
         Iterators.partition(eachindex(time_steps), cld(length(time_steps), n_tasks)),
     )
     workers = [_make_time_step_worker(data) for _ in blocks]
+    # Solve one step first, so its NR cache can seed the other workers. Sharing its
+    # read-only parts keeps each worker's working set small enough to stay in cache.
+    first_ws = _BranchFlowWorkspace(workers[1])
+    pos1 = first(blocks[1])
+    ts_converged[pos1] =
+        _solve_time_step!(workers[1], pf, time_steps[pos1], first_ws; kwargs...)
+    _merge_worker_area_step!(data, workers[1], time_steps[pos1])
+    for worker in workers[2:end]
+        worker.polar_nr_cache[] = _copy_for_task(workers[1].polar_nr_cache[])
+    end
     # `@sync` waits for every task before rethrowing a failure (as a `CompositeException`),
     # so no task is still writing into `data` when control returns to the caller.
-    @sync for (block, worker) in zip(blocks, workers)
+    @sync for (i, (block, worker)) in enumerate(zip(blocks, workers))
         Threads.@spawn begin
-            ws = _BranchFlowWorkspace(worker)
-            for pos in block
+            ws = i == 1 ? first_ws : _BranchFlowWorkspace(worker)
+            for pos in (i == 1 ? block[2:end] : block)
                 time_step = time_steps[pos]
                 ts_converged[pos] =
                     _solve_time_step!(worker, pf, time_step, ws; kwargs...)
