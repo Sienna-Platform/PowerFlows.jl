@@ -31,6 +31,8 @@ struct StateVectorCache
         Union{Nothing, PNM.KLULinSolveCache{Float64, J_INDEX_TYPE}},
     }
     fallback_matrix::Base.RefValue{Union{Nothing, SparseMatrixCSC{Float64, J_INDEX_TYPE}}}
+    # Whether F and J at the start came from the fused kernel, so a cold rerun evaluates alike.
+    fused_start::Base.RefValue{Bool}
 end
 
 function StateVectorCache(x0::Vector{Float64}, f0::Vector{Float64})
@@ -44,6 +46,7 @@ function StateVectorCache(x0::Vector{Float64}, f0::Vector{Float64})
         x, r, r_predict, Δx_proposed, Δx_cauchy, Δx_nr, ones(size(x0)), copy(f0),
         Base.RefValue{Union{Nothing, PNM.KLULinSolveCache{Float64, J_INDEX_TYPE}}}(nothing),
         Base.RefValue{Union{Nothing, SparseMatrixCSC{Float64, J_INDEX_TYPE}}}(nothing),
+        Base.RefValue(false),
     )
 end
 
@@ -312,6 +315,42 @@ function _arc_flow_scratch(entry::PolarNRCache, data::ACPowerFlowData)
         return entry.arc_flows
     end
     return ArcFlowScratch(data)
+end
+
+function _fill_flow_voltages!(
+    V::Vector{ComplexF64},
+    ::Nothing,
+    data::ACPowerFlowData,
+    time_step::Int,
+)
+    @views V .=
+        data.bus_magnitude[:, time_step] .* exp.(1im .* data.bus_angles[:, time_step])
+    return
+end
+
+# Reuses the last polar evaluation's cis(θ) when its θ is bitwise the column's (exp(iθ) and
+# cis(θ) round alike), whichever solver last wrote the column.
+function _fill_flow_voltages!(
+    V::Vector{ComplexF64},
+    entry::PolarNRCache,
+    data::ACPowerFlowData,
+    time_step::Int,
+)
+    s = entry.residual.bus_state
+    θ = view(data.bus_angles, :, time_step)
+    if !s.phasor_valid || !_bitwise_equal(s.θ, θ)
+        return _fill_flow_voltages!(V, nothing, data, time_step)
+    end
+    @views V .= data.bus_magnitude[:, time_step] .* s.phasor
+    return
+end
+
+function _bitwise_equal(a::Vector{Float64}, b::AbstractVector{Float64})
+    length(a) == length(b) || return false
+    @inbounds for i in eachindex(a, b)
+        a[i] === b[i] || return false
+    end
+    return true
 end
 
 function _ref_set_changed(
@@ -1385,14 +1424,52 @@ function _nr_linear_solver_cache!(
     return linSolveCache
 end
 
-# Polar: defer the Jacobian entirely — a 0-iteration warm start must not pay for a
-# Jacobian evaluation + sparse-structure copy. The caller builds J only when the
-# convergence check fails.
 function _nr_initialize_with_jacobian_deferred(
     pf::ACPolarPowerFlow, data::ACPowerFlowData, time_step::Int64; kwargs...,
 )
     residual, x0 = _initialize_residual_x0(pf, data, time_step; kwargs...)
     return residual, nothing, x0
+end
+
+# No candidate start to compare: F and J at x0 come from one fused sweep. `fused` is false when
+# `_fused_x0!` fell back to `improve_x0!`, leaving J stale.
+function _fused_polar_init(
+    pf::ACPolarPowerFlow, data::ACPowerFlowData, time_step::Int64; kwargs...,
+)
+    residual = ACPowerFlowResidual(data, time_step)
+    x0 = calculate_x0(data, time_step)
+    J = ACPowerFlowJacobian(data, residual, time_step)
+    fused = _fused_x0!(x0, pf, data, residual, J, time_step)
+    _log_initial_residual(residual)
+    if get(kwargs, :validate_voltage_magnitudes, DEFAULT_VALIDATE_VOLTAGES)
+        validate_voltage_magnitudes(x0, residual.validate_indices,
+            get(kwargs, :vm_validation_range, DEFAULT_VALIDATION_RANGE), 0)
+    end
+    return residual, J, x0, fused
+end
+
+"""Evaluate F and J at `x0` in one fused sweep. On a large residual with a fallback start
+enabled, run `improve_x0!` instead and return `false`: J is then stale."""
+function _fused_x0!(
+    x0::Vector{Float64},
+    pf::ACPolarPowerFlow,
+    data::ACPowerFlowData,
+    residual::ACPowerFlowResidual,
+    J::ACPowerFlowJacobian,
+    time_step::Int64,
+)
+    _update_residual_and_jacobian!(residual, J, x0, data, time_step)
+    large = _large_residual(residual)
+    if large && (get_enhanced_flat_start(pf) || get_robust_power_flow(pf))
+        # `bus_state` already holds x0, so this re-evaluation adds exactly 0 on PQ buses.
+        improve_x0!(x0, pf, data, residual, time_step)
+        return false
+    end
+    # The same log as `improve_x0!` when it would change nothing.
+    @debug "skipping enhanced flat start"
+    @debug "skipping running DC power flow fallback"
+    large && _warn_large_initial_residual(residual, data, time_step)
+    return true
 end
 
 # Rectangular/mixed: J is structure-only (no value evaluation), cheap enough to build eagerly.
@@ -1478,10 +1555,44 @@ function _fresh_newton_workspace(
     converged = norm(residual.Rv, Inf) < tol
     converged && return residual, J_deferred, x0_init, nothing, nothing, true
     J = _nr_build_jacobian(pf, data, residual, J_deferred, time_step)
-    linSolveCache = make_linear_solver_cache(backend, J.Jv)
+    return _fresh_solver_state(pf, data, time_step, backend, residual, J, x0_init, false)
+end
+
+# Polar with no candidate start: one fused F/J sweep replaces the deferred-J path.
+function _fresh_newton_workspace(
+    pf::ACPolarPowerFlow,
+    data::ACPowerFlowData,
+    time_step::Int64,
+    backend,
+    tol::Float64,
+    init_kwargs::NamedTuple,
+)
+    if haskey(init_kwargs, :x0) || !_x0_has_no_candidates(pf, data, time_step)
+        return @invoke _fresh_newton_workspace(
+            pf::AbstractACPowerFlow, data, time_step, backend, tol, init_kwargs)
+    end
+    residual, J, x0_init, fused = _fused_polar_init(pf, data, time_step; init_kwargs...)
+    converged = norm(residual.Rv, Inf) < tol
+    converged && return residual, nothing, x0_init, nothing, nothing, true
+    fused || J(data, time_step)
+    return _fresh_solver_state(pf, data, time_step, backend, residual, J, x0_init, fused)
+end
+
+function _fresh_solver_state(
+    pf::AbstractACPowerFlow,
+    data::ACPowerFlowData,
+    time_step::Int64,
+    backend,
+    residual,
+    J,
+    x0_init::Vector{Float64},
+    fused::Bool,
+)
+    linSolveCache = _polar_jacobian_cache(backend, J.Jv)
     _symbolic_step!(pf, linSolveCache, J.Jv, data, time_step)
     _count_symbolic_factor!(data)
     stateVector = StateVectorCache(x0_init, residual.Rv)
+    stateVector.fused_start[] = fused
     return residual, J, x0_init, linSolveCache, stateVector, false
 end
 
@@ -1653,11 +1764,15 @@ function _polar_newton_workspace!(
 
     residual = entry.residual
     J = entry.J
-    # Re-run the value paths exactly as a fresh init would: improve_x0 (which re-evaluates the
-    # residual at x0 with identical logging) then the full Jacobian fill.
     x0_init = entry.x0
     update_state!(x0_init, data, time_step)
-    improve_x0!(x0_init, pf, data, residual, time_step)
+    # As a fresh start would: fused F and J unless `improve_x0!` has a candidate to compare.
+    if _x0_has_no_candidates(pf, data, time_step)
+        fused = _fused_x0!(x0_init, pf, data, residual, J, time_step)
+    else
+        improve_x0!(x0_init, pf, data, residual, time_step)
+        fused = false
+    end
     _log_initial_residual(residual)
     if get(init_kwargs, :validate_voltage_magnitudes, DEFAULT_VALIDATE_VOLTAGES)
         validate_voltage_magnitudes(
@@ -1668,10 +1783,10 @@ function _polar_newton_workspace!(
         )
     end
     converged = norm(residual.Rv, Inf) < tol
-    # Defer the Jacobian fill past the convergence check: a 0-iteration warm start must not
-    # pay for it. `nothing` lets the caller rebuild only if it actually needs J.
+    # Off the fused path, defer the Jacobian fill past the convergence check: a 0-iteration
+    # warm start must not pay for it. `nothing` lets the caller rebuild only if it needs J.
     converged && return residual, nothing, x0_init, nothing, nothing, true
-    J(data, time_step)
+    fused || J(data, time_step)
     # Reuse the linear-solver cache (the Symbolic holds: the pattern is bus-type-agnostic) and the
     # state-vector buffers; refresh only the per-solve values.
     linSolveCache = entry.linSolveCache
@@ -1681,6 +1796,7 @@ function _polar_newton_workspace!(
     copyto!(stateVector.x, x0_init)
     copyto!(stateVector.r, residual.Rv)
     _reset_for_reuse!(stateVector)
+    stateVector.fused_start[] = fused
     return residual, J, x0_init, linSolveCache, stateVector, false
 end
 
@@ -1701,6 +1817,7 @@ function _restore_solve_start!(R::ACPowerFlowResidual)
     copyto!(R.Q_net, view(S, :, 2))
     copyto!(R.bus_state.Vm, view(S, :, 3))
     copyto!(R.bus_state.θ, view(S, :, 4))
+    R.bus_state.phasor_valid = false
     # The restored state, not `data` (holding the failed iterate), is authoritative.
     R.bus_state.data_stale = true
     return
@@ -1720,11 +1837,34 @@ function _restart_from!(
     time_step::Int64,
 )
     _restore_solve_start!(residual)
-    residual(data, x0, time_step)
-    J(data, time_step)
+    _evaluate_start!(residual, J, data, x0, time_step, stateVector.fused_start[])
     copyto!(stateVector.x, x0)
     copyto!(stateVector.r, residual.Rv)
     _reset_for_reuse!(stateVector)
+    return
+end
+
+function _evaluate_start!(residual, J, data::ACPowerFlowData, x0::Vector{Float64},
+    time_step::Int64, ::Bool)
+    residual(data, x0, time_step)
+    J(data, time_step)
+    return
+end
+
+function _evaluate_start!(
+    residual::ACPowerFlowResidual,
+    J::ACPowerFlowJacobian,
+    data::ACPowerFlowData,
+    x0::Vector{Float64},
+    time_step::Int64,
+    fused::Bool,
+)
+    if fused
+        _update_residual_and_jacobian!(residual, J, x0, data, time_step)
+    else
+        residual(data, x0, time_step)
+        J(data, time_step)
+    end
     return
 end
 

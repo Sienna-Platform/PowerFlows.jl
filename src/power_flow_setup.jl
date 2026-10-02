@@ -45,15 +45,28 @@ function improve_x0!(x0::Vector{Float64},
         @debug "skipping running DC power flow fallback"
     end
 
-    if sum(abs, residual.Rv) > LARGE_RESIDUAL * length(residual.Rv)
-        # Tail rows (LCC/VSC/area) are not bus quantities: let the resolver label the index.
-        lg_res, ix = findmax(abs, residual.Rv)
-        lg_res_rounded = round(lg_res; sigdigits = 3)
-        @warn "Initial guess provided results in a large initial residual of $lg_res_rounded. " *
-              "Largest residual at $(_describe_residual_entry(residual, data, time_step, ix))"
-    end
-
+    _large_residual(residual) && _warn_large_initial_residual(residual, data, time_step)
     return x0
+end
+
+_large_residual(residual) = sum(abs, residual.Rv) > LARGE_RESIDUAL * length(residual.Rv)
+
+# `improve_x0!` compares candidate starts only after a converged earlier step or with GA on.
+function _x0_has_no_candidates(
+    pf::ACPolarPowerFlow,
+    data::ACPowerFlowData,
+    time_step::Int64,
+)
+    return !get_ga_flat_start(pf) && !any(@view(data.converged[1:(time_step - 1)]))
+end
+
+function _warn_large_initial_residual(residual, data::ACPowerFlowData, time_step::Int64)
+    # Tail rows (LCC/VSC/area) are not bus quantities: let the resolver label the index.
+    lg_res, ix = findmax(abs, residual.Rv)
+    lg_res_rounded = round(lg_res; sigdigits = 3)
+    @warn "Initial guess provided results in a large initial residual of $lg_res_rounded. " *
+          "Largest residual at $(_describe_residual_entry(residual, data, time_step, ix))"
+    return
 end
 
 """Rectangular analog of the polar [`improve_x0`](@ref): base flat start →

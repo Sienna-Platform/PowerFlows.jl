@@ -380,18 +380,21 @@ function _solve_column!(
     # NOTE PNM's structs use ComplexF32, while the system objects store Float64's.
     #      so if you set the system bus angles/voltages to match these fields, then repeat
     #      this math using the system voltages, you'll see differences in the flows, ~1e-4.
-    @views step_V .=
-        data.bus_magnitude[:, time_step] .* exp.(1im .* data.bus_angles[:, time_step])
+    _fill_flow_voltages!(step_V, data.polar_nr_cache[], data, time_step)
     mul!(Sft, Yft.data, step_V)
     mul!(Stf, Ytf.data, step_V)
-    Sft .= view(step_V, fb_ix) .* conj.(Sft)
-    Stf .= view(step_V, tb_ix) .* conj.(Stf)
-    data.arc_active_power_flow_from_to[:, time_step] .= real.(Sft)
-    data.arc_reactive_power_flow_from_to[:, time_step] .= imag.(Sft)
-    data.arc_active_power_flow_to_from[:, time_step] .= real.(Stf)
-    data.arc_reactive_power_flow_to_from[:, time_step] .= imag.(Stf)
-
-    _compute_arc_angle_differences_from_indices!(data, fb_ix, tb_ix, time_step)
+    θ = view(data.bus_angles, :, time_step)
+    @inbounds for k in eachindex(fb_ix, tb_ix)
+        f = fb_ix[k]
+        t = tb_ix[k]
+        s_ft = step_V[f] * conj(Sft[k])
+        s_tf = step_V[t] * conj(Stf[k])
+        data.arc_active_power_flow_from_to[k, time_step] = real(s_ft)
+        data.arc_reactive_power_flow_from_to[k, time_step] = imag(s_ft)
+        data.arc_active_power_flow_to_from[k, time_step] = real(s_tf)
+        data.arc_reactive_power_flow_to_from[k, time_step] = imag(s_tf)
+        data.arc_angle_differences[k, time_step] = θ[f] - θ[t]
+    end
     return converged
 end
 

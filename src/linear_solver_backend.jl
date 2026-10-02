@@ -151,6 +151,13 @@ make_linear_solver_cache(::PNM.KLUSolver, A::SparseMatrixCSC{Float64}) =
 make_linear_solver_cache(::PNM.AppleAccelerateLUSolver, A::SparseMatrixCSC{Float64}) =
     PNM.AAFactorCache(A)
 
+# The polar Jacobian's pattern is fixed at construction (bus-type agnostic) and refactored a few
+# times per solve, so skip KLU's per-refactor structural compare (about 20 us at 10k buses).
+_polar_jacobian_cache(::PNM.KLUSolver, A::SparseMatrixCSC{Float64}) =
+    PNM.KLULinSolveCache(A; snapshot_values = false, check_pattern = false)
+_polar_jacobian_cache(backend::PNM.LinearSolverType, A::SparseMatrixCSC{Float64}) =
+    make_linear_solver_cache(backend, A)
+
 """Adapter: PowerFlows historically calls `solve_w_refinement(cache, A, b, eps)`
 with a step-tolerance `eps`. Map onto PNM's residual-based refined solve."""
 function solve_w_refinement(
