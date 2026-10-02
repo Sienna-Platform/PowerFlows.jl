@@ -740,7 +740,7 @@ function _build_parallel_ic_system(; shared_ac::Bool = true)
     )
     dcbuses = PSY.DCBus[]
     for k in 1:2
-        dcb = PSY.DCBus(;
+        dcb = PSY.DCBus(; input_basis = PSY.CU,
             number = 100 + k,
             name = "dc$k",
             available = true,

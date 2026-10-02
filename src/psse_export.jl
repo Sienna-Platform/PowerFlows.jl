@@ -732,10 +732,10 @@ function write_to_buffers!(
             md["zone_mapping"][PSY.get_name(PSY.get_load_zone(bus))]
         end
         OWNER = PSSE_DEFAULT
-        VM = PSY.get_magnitude(bus)
+        VM = PSY.get_magnitude(bus, PSY.CU)
         VA = rad2deg(PSY.get_angle(bus))
-        NVHI = PSY.get_voltage_limits(bus).max
-        NVLO = PSY.get_voltage_limits(bus).min
+        NVHI = PSY.get_voltage_limits(bus, PSY.CU).max
+        NVLO = PSY.get_voltage_limits(bus, PSY.CU).min
         EVHI = PSSE_DEFAULT
         EVLO = PSSE_DEFAULT
 
@@ -1022,7 +1022,7 @@ function _write_3w_transformer_record2!(
     X3_1 = _value_or_default(PSY.get_x_31(transformer, PSY.SU), PSSE_DEFAULT)
     SBAS3_1 = _value_or_default(PSY.get_base_power_31(transformer), PSSE_DEFAULT)
     star_bus = PSY.get_star_bus(transformer)
-    VMSTAR = PSY.get_magnitude(star_bus)
+    VMSTAR = PSY.get_magnitude(star_bus, PSY.CU)
     ANSTAR = rad2deg(PSY.get_angle(star_bus))
 
     @fastprintdelim_unroll(io, true, R1_2, X1_2, SBASE1_2, R2_3,
@@ -1642,7 +1642,7 @@ function write_to_buffers!(
         )
 
         # Get common fields
-        VS = PSY.get_magnitude(PSY.get_bus(generator))
+        VS = PSY.get_magnitude(PSY.get_bus(generator), PSY.CU)
         MBASE = PSY.get_base_power(generator, PSY.NU)
         STAT = 0
         if PSY.get_available(generator)

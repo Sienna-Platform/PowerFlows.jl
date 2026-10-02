@@ -9,16 +9,14 @@
 #
 # PNM exposes KLU ops as PNM.solve!/full_factor!/... and AppleAccelerate ops as
 # PNM.AccelerateWrapper.solve!/full_factor!/...; the MKLPardiso ops live in the
-# extension. PowerFlows unifies them below via dispatch over the
-# PFLinearSolverCache Union. A future PNM-side abstract supertype will let us
-# drop this Union.
+# extension. PowerFlows unifies them below by dispatch; every backend cache
+# subtypes `PNM.LinearSolverCache`.
 
 """Cache for the MKLPardiso backend. `ps` (the `Pardiso.MKLPardisoSolver` handle) is held as
-`Any`: its type is only available once the `Pardiso.jl` extension loads, and keeping it untyped
-also keeps this struct concrete so it stays a splittable member of `PFLinearSolverCache` (the cost
-is confined to the Pardiso solve path). `A` is snapshotted because Pardiso reads it at solve time;
-`Ti` is left abstract since Pardiso converts indices to `Int32` internally."""
-mutable struct PardisoLinSolveCache
+`Any`: its type is only available once the `Pardiso.jl` extension loads. `A` is snapshotted
+because Pardiso reads it at solve time; `Ti` is left abstract since Pardiso converts indices to
+`Int32` internally."""
+mutable struct PardisoLinSolveCache <: PNM.LinearSolverCache
     ps::Any                       # Pardiso.MKLPardisoSolver
     A::SparseMatrixCSC{Float64}
     is_factored::Bool
@@ -26,20 +24,6 @@ mutable struct PardisoLinSolveCache
     scratch_mat::Matrix{Float64}  # persistent multi-RHS solve buffer (resized on shape change) → non-alloc matrix solve!
     released::Bool                # set once RELEASE_ALL has freed the native MKL handle (guards double-free)
 end
-
-"""Union of the KLU, AppleAccelerate, and MKLPardiso solver caches. Every member is concrete so
-the 4-way union stays within Julia's small-union splitting. Both KLU index types are listed: the
-AC Newton cache and its fallback are built from `J.Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE}`
-(`Int32` off Apple, `Int64` on Apple), while PNM's DC ABA factorization is always
-`KLULinSolveCache{Float64, Int64}` regardless of platform — so the DC solve path needs the `Int64`
-member even where `J_INDEX_TYPE === Int32`."""
-const PFLinearSolverCache =
-    Union{
-        PNM.KLULinSolveCache{Float64, Int32},
-        PNM.KLULinSolveCache{Float64, Int64},
-        PNM.AAFactorCache,
-        PardisoLinSolveCache,
-    }
 
 """Supertype for the polar NR/TR reuse cache (`PolarNRCache`, `power_flow_method.jl`).
 Exists so `PowerFlowData` can type its `polar_nr_cache` slot as a two-member union:
@@ -170,7 +154,7 @@ make_linear_solver_cache(::PNM.AppleAccelerateLUSolver, A::SparseMatrixCSC{Float
 """Adapter: PowerFlows historically calls `solve_w_refinement(cache, A, b, eps)`
 with a step-tolerance `eps`. Map onto PNM's residual-based refined solve."""
 function solve_w_refinement(
-    cache::PFLinearSolverCache,
+    cache::PNM.LinearSolverCache,
     A::SparseMatrixCSC{Float64},
     b::Vector{Float64},
     refinement_eps::Float64,

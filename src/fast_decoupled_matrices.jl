@@ -76,7 +76,7 @@ struct FDArcParams
 end
 
 """
-    FDMatrices{S <: FDScheme}
+    FDMatrices{S <: FDScheme, C <: PNM.LinearSolverCache}
 
 Container for the constant fast-decoupled matrices for one `(data, scheme)`. Parametrized on the
 scheme type `S` so `scheme` is a concretely-typed field.
@@ -87,21 +87,21 @@ scheme type `S` so `scheme` is a concretely-typed field.
 - `pvpq::Vector{Int}`: non-REF bus indices (rows/cols of B′), sorted.
 - `bp::SparseMatrixCSC{Float64, J_INDEX_TYPE}`: B′ over `pvpq` (assembled; symmetric except with
   phase shifters).
-- `bp_cache::PFLinearSolverCache`: B′ factorization (built once, reused across iterations/steps).
+- `bp_cache::C`: B′ factorization (built once, reused across iterations/steps).
 - `bpp_full::SparseMatrixCSC{Float64, J_INDEX_TYPE}`: B″ assembled over ALL buses; the `[pq, pq]`
   submatrix is extracted per driver invocation via [`extract_bpp`](@ref).
 """
-struct FDMatrices{S <: FDScheme}
+struct FDMatrices{S <: FDScheme, C <: PNM.LinearSolverCache}
     scheme::S
     arc_params::FDArcParams
     pvpq::Vector{Int}
     bp::SparseMatrixCSC{Float64, J_INDEX_TYPE}
-    bp_cache::PFLinearSolverCache
+    bp_cache::C
     bpp_full::SparseMatrixCSC{Float64, J_INDEX_TYPE}
 end
 
 """
-    FDBppCache
+    FDBppCache{C <: PNM.LinearSolverCache}
 
 A factored B″ over a specific PQ set. Produced by [`extract_bpp`](@ref); the cache is reusable
 across iterations and time steps that return to the same PQ set (Q-limit / multi-period reuse).
@@ -109,12 +109,12 @@ across iterations and time steps that return to the same PQ set (Q-limit / multi
 # Fields
 - `pq::Vector{Int}`: PQ bus indices defining the submatrix (sorted).
 - `bpp::SparseMatrixCSC{Float64, J_INDEX_TYPE}`: the `[pq, pq]` submatrix of `bpp_full`.
-- `bpp_cache::PFLinearSolverCache`: its factorization.
+- `bpp_cache::C`: its factorization.
 """
-struct FDBppCache
+struct FDBppCache{C <: PNM.LinearSolverCache}
     pq::Vector{Int}
     bpp::SparseMatrixCSC{Float64, J_INDEX_TYPE}
-    bpp_cache::PFLinearSolverCache
+    bpp_cache::C
 end
 
 """Accessor for the assembled (unfactored) B′ matrix. Used by tests and diagnostics."""

@@ -50,7 +50,7 @@ real `tol`. Dispatches on `handoff_solver` (a `Type`): the [`NoHandoff`](@ref) m
 (returns the current convergence status and `0` handoff iterations); the general
 `ACPowerFlowSolverType` method also no-ops when the stage state already meets `tol`, else refreshes
 the formulation Jacobian VALUES at the current state and calls the matching inner method:
-NR/TR via the shared `_run_power_flow_method(::StateVectorCache, ::PFLinearSolverCache, ...)`;
+NR/TR via the shared `_run_power_flow_method(::StateVectorCache, ::PNM.LinearSolverCache, ...)`;
 LM via its workspace-based `_run_power_flow_method(x0::Vector, ::LMWorkspace, ...)` adapter.
 All paths mutate `sv.x` / `residual` / `J` in place (the SAME objects the stage loop used), so the
 caller's subsequent `J(time_step)` / `_finalize_*` see the refined solution. `stage_iters` and

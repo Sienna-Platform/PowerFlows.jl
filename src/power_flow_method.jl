@@ -95,7 +95,7 @@ cache hangs off `data`, so a back-reference would form a cycle. `arc_flows` lets
 `solve_power_flow!` skip rebuilding its branch-flow scratch. `lean` is the slot whose plan the
 KLU cache was given, for [`_align_lean_plan!`](@ref). `x0` and `partition` are the reuse path's
 start-point and island-partition buffers."""
-struct PolarNRCache{C <: PFLinearSolverCache} <: AbstractNRCache
+struct PolarNRCache{C <: PNM.LinearSolverCache} <: AbstractNRCache
     residual::ACPowerFlowResidual
     J::ACPowerFlowJacobian
     linSolveCache::C
@@ -363,7 +363,7 @@ end
 
 """Solve for the Newton-Raphson step, given the factorization object for `J.Jv`
 (if non-singular) or its stand-in (if singular)."""
-function _solve_Δx_nr!(stateVector::StateVectorCache, cache::PFLinearSolverCache)
+function _solve_Δx_nr!(stateVector::StateVectorCache, cache::PNM.LinearSolverCache)
     copyto!(stateVector.Δx_nr, stateVector.r)
     solve!(cache, stateVector.Δx_nr)
     return
@@ -375,7 +375,7 @@ exceeds `refinement_threshold`, run iterative refinement and recompute it. Retur
 signal (see [`_set_Δx_nr!`](@ref))."""
 function _do_refinement!(stateVector::StateVectorCache,
     A::SparseMatrixCSC{Float64, J_INDEX_TYPE},
-    cache::PFLinearSolverCache,
+    cache::PNM.LinearSolverCache,
     refinement_threshold::Float64,
     refinement_eps::Float64,
 )
@@ -406,7 +406,7 @@ factorization is singular or the residual stays above `refinement_threshold`."""
 function _factor_solve_ok!(factor!,
     stateVector::StateVectorCache,
     J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
-    linSolveCache::PFLinearSolverCache,
+    linSolveCache::PNM.LinearSolverCache,
     refinement_threshold::Float64,
     refinement_eps::Float64)
     try
@@ -438,7 +438,7 @@ end
 function _set_Δx_nr!(stateVector::StateVectorCache,
     J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
     data::ACPowerFlowData,
-    linSolveCache::PFLinearSolverCache,
+    linSolveCache::PNM.LinearSolverCache,
     solver::ACPowerFlowSolverType,
     refinement_threshold::Float64,
     refinement_eps::Float64)
@@ -646,7 +646,7 @@ the value of the Jacobian at the new `x`, if needed. Unlike
 `_simple_step`, this has a return value, the updated value of `delta``."""
 function _trust_region_step(time_step::Int,
     stateVector::StateVectorCache,
-    linSolveCache::PFLinearSolverCache,
+    linSolveCache::PNM.LinearSolverCache,
     residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
     J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
     data::ACPowerFlowData,
@@ -892,7 +892,7 @@ end
  if it reads it again."""
 function _simple_step(time_step::Int,
     stateVector::StateVectorCache,
-    linSolveCache::PFLinearSolverCache,
+    linSolveCache::PNM.LinearSolverCache,
     residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
     J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
     data::ACPowerFlowData,
@@ -949,7 +949,7 @@ should terminate early. Like [`_simple_step`](@ref), it leaves the Jacobian at t
 pre-step iterate; the caller refills it after an accepted step."""
 function _iwamoto_step(time_step::Int,
     stateVector::StateVectorCache,
-    linSolveCache::PFLinearSolverCache,
+    linSolveCache::PNM.LinearSolverCache,
     residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
     J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
     data::ACPowerFlowData,
@@ -1054,7 +1054,7 @@ end
     $DEFAULT_REFINEMENT_EPS """
 function _run_power_flow_method(time_step::Int,
     stateVector::StateVectorCache,
-    linSolveCache::PFLinearSolverCache,
+    linSolveCache::PNM.LinearSolverCache,
     residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
     J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
     data::ACPowerFlowData,
@@ -1151,7 +1151,7 @@ end
     damping to salvage the step before reverting. Default: $DEFAULT_IWAMOTO_FALLBACK."""
 function _run_power_flow_method(time_step::Int,
     stateVector::StateVectorCache,
-    linSolveCache::PFLinearSolverCache,
+    linSolveCache::PNM.LinearSolverCache,
     residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
     J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
     data::ACPowerFlowData,
@@ -1488,7 +1488,7 @@ end
 """Rectangular/mixed NR/TR linear-solver cache stored in `data.solver_cache`. Reused when the
 rebuilt Jacobian has the recorded sparsity pattern (`colptr`, `rowval`, `m`, `n`);
 `bus_type_snapshot` holds the bus types of the last factorization."""
-mutable struct RectMixedNRCache{C <: PFLinearSolverCache} <: SolverCache
+mutable struct RectMixedNRCache{C <: PNM.LinearSolverCache} <: SolverCache
     colptr::Vector{J_INDEX_TYPE}
     rowval::Vector{J_INDEX_TYPE}
     m::Int

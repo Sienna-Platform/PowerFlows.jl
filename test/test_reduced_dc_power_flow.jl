@@ -55,7 +55,7 @@ end
 
 @testset "Validation test: Ward Reduction and DC Power Flow" begin
     sys = build_system(PSITestSystems, "c_sys5")
-    b6 = ACBus(;
+    b6 = ACBus(; input_basis = PSY.CU,
         number = 6,
         name = "b6",
         available = true,

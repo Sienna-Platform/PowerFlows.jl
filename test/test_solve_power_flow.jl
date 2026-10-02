@@ -92,7 +92,7 @@ function test_ac_line_configurations(ACSolver)
     solve_and_store_power_flow!(pf, sys)
     @test PSY.get_active_power_flow(line, PSY.SU) == 0.0
     test_bus = get_component(PSY.ACBus, sys, "Bus 4")
-    @test isapprox(PSY.get_magnitude(test_bus), 1.002; atol = 1e-3, rtol = 0)
+    @test isapprox(PSY.get_magnitude(test_bus, PSY.CU), 1.002; atol = 1e-3, rtol = 0)
 
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
     pf = ACPowerFlow{ACSolver}(; correct_bustypes = true)
