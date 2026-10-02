@@ -243,8 +243,10 @@ function _mixed_polar_parity(
     # P_gen / Q_gen parity catches slack-recovery and Q-writeback bugs that
     # Vm/θ parity alone cannot — the internal residual math can converge to the
     # correct voltages while the reported generator outputs disagree.
-    @test maximum(abs.(bus_p.P_gen .- bus_h.P_gen)) < atol
-    @test maximum(abs.(bus_p.Q_gen .- bus_h.Q_gen)) < atol
+    # P_gen/Q_gen are in MW/MVAr: two solves converged to tol (pu) differ by up to tol·base.
+    atol_mw = atol * PSY.get_base_power(sys_p)
+    @test maximum(abs.(bus_p.P_gen .- bus_h.P_gen)) < atol_mw
+    @test maximum(abs.(bus_p.Q_gen .- bus_h.Q_gen)) < atol_mw
     if sys_r !== nothing
         pf_r = ACRectangularPowerFlow{solver}(;
             pf_kwargs...,
@@ -255,8 +257,8 @@ function _mixed_polar_parity(
         bus_r = res_r["bus_results"]
         @test maximum(abs.(bus_r.Vm .- bus_h.Vm)) < atol
         @test maximum(abs.(bus_r.θ .- bus_h.θ)) < atol
-        @test maximum(abs.(bus_r.P_gen .- bus_h.P_gen)) < atol
-        @test maximum(abs.(bus_r.Q_gen .- bus_h.Q_gen)) < atol
+        @test maximum(abs.(bus_r.P_gen .- bus_h.P_gen)) < atol_mw
+        @test maximum(abs.(bus_r.Q_gen .- bus_h.Q_gen)) < atol_mw
     end
     return
 end
@@ -345,8 +347,9 @@ function _rect_polar_parity(
     # correct voltages while the reported generator outputs disagree (e.g., if
     # the subnetwork slack is over-attributed to REF instead of distributed
     # across participating buses).
-    @test maximum(abs.(bus_p.P_gen - bus_r.P_gen)) < atol
-    @test maximum(abs.(bus_p.Q_gen - bus_r.Q_gen)) < atol
+    atol_mw = atol * PSY.get_base_power(sys_p)
+    @test maximum(abs.(bus_p.P_gen - bus_r.P_gen)) < atol_mw
+    @test maximum(abs.(bus_p.Q_gen - bus_r.Q_gen)) < atol_mw
     return
 end
 

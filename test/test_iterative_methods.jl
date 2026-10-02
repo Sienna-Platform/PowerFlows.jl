@@ -183,24 +183,30 @@ end
     # by throwing SingularException; AppleAccelerate and MKLPardiso instead return a
     # finite garbage solution. The backend-agnostic residual guard in `_set_Δx_nr!`
     # must route every backend through the regularized fallback, which emits the
-    # "Jacobian is singular" warning. Pre-fix, the AppleAccelerate default skipped the
-    # fallback silently, so this test asserts the warning is actually produced.
+    # "Jacobian is singular" warning. Pre-fix, AppleAccelerate skipped the fallback
+    # silently, so this test asserts the warning is produced on every available backend.
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
-    pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
-        enhanced_flat_start = false,
-        solution_parameters = SolutionParameters(; maxIterations = 3),
-    )
-    data = PowerFlowData(pf, sys)
-    data.bus_magnitude .= 0.0
-    @test_logs(
-        (:warn, r"Jacobian is singular"),
-        match_mode = :any,
-        solve_power_flow!(data),
-    )
+    backends = ["KLU"]
+    if PNM._has_apple_accelerate_backend()
+        push!(backends, "AppleAccelerateLU")
+    end
+    for linear_solver in backends
+        pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+            enhanced_flat_start = false,
+            solution_parameters = SolutionParameters(; maxIterations = 3, linear_solver),
+        )
+        data = PowerFlowData(pf, sys)
+        data.bus_magnitude .= 0.0
+        @test_logs(
+            (:warn, r"Jacobian is singular"),
+            match_mode = :any,
+            solve_power_flow!(data),
+        )
+    end
 end
 
 @testset "Singular Jacobian falls through the KLU re-pivot" begin
-    # `_repivots` is false on the default AppleAccelerate backend, so force KLU.
+    # `_repivots` is false on AppleAccelerate; pin KLU so the test holds whatever the default.
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
     pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
         enhanced_flat_start = false,
@@ -395,4 +401,24 @@ end
         @test_logs (:warn, Regex(".*Largest residual at bus $(bus_no).*")
         ) match_mode = :any solve_power_flow!(data)
     end
+end
+
+@testset "NR maxIterations allows exactly maxIterations Newton steps" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14")
+    pf = ACPowerFlow{NewtonRaphsonACPowerFlow}()
+    reported = r"converged after (\d+) iterations"
+    budget = Logging.with_logger(Logging.NullLogger()) do
+        return findfirst(1:10) do m
+            return solve_power_flow!(PowerFlowData(pf, sys); maxIterations = m)
+        end
+    end
+    @test !isnothing(budget)
+    logs, _ = Test.collect_test_logs(; min_level = Logging.Debug) do
+        solve_power_flow!(PowerFlowData(pf, sys); maxIterations = budget)
+    end
+    steps = [
+        parse(Int, m[1]) for m in (match(reported, string(l.message)) for l in logs)
+        if !isnothing(m)
+    ]
+    @test steps == [budget]
 end

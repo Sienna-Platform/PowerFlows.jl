@@ -25,8 +25,17 @@ end
 """Condition estimate κ̂(J), or `NaN` when the backend exposes none. The NaN
 fallback is restricted to the non-KLU `PFLinearSolverCache` members so the concrete
 `KLULinSolveCache` doesn't shadow the KLU method onto the NaN path."""
-_diag_condest(cache::PNM.KLULinSolveCache) = condest!(cache)
-_diag_condest(::Union{PNM.AAFactorCache, PardisoLinSolveCache}) = NaN
+function _diag_condest(cache::PNM.KLULinSolveCache, A::SparseMatrixCSC{Float64})
+    # A lean factorization has no KLU factors to estimate from. Replacing the stale KLU numeric
+    # it leaves is invisible to the solve: the next `numeric_refactor!` goes lean again.
+    PNM.KLUWrapper.lean_active(cache) && PNM.KLUWrapper.pivoted_factor!(cache, A)
+    return condest!(cache, A)
+end
+_diag_condest(
+    ::Union{PNM.AAFactorCache, PardisoLinSolveCache},
+    ::SparseMatrixCSC{Float64},
+) =
+    NaN
 
 function (op::SchurInverseOperator)(v::AbstractVector{Float64})
     b = op.buffer
@@ -455,7 +464,7 @@ function run_solver_diagnostics!(
         λ_min, eig_converged = _schur_min_eigenvalue(op)
 
         abs_max, ix = findmax(abs, residual.Rv)
-        κ = _diag_condest(cache)
+        κ = _diag_condest(cache, J.Jv)
         λ_str = if eig_converged
             "$(_fmt_eig(λ_min)) (|λ_min| = $(_sf4(abs(λ_min))))"
         else

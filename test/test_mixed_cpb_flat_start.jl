@@ -74,7 +74,7 @@ end
     pq = findall(==(PSY.ACBusTypes.PQ), bt)
     @test !isempty(ref) && !isempty(pv) && !isempty(pq)
     ref_angle = sum(data.bus_angles[r, 1] for r in ref) / length(ref)
-    target_vm = sum(data.bus_magnitude[p, 1] for p in pv) / length(pv)
+    target_vm = sum(data.bus_magnitude[p, 1] for p in vcat(pv, ref)) / length(vcat(pv, ref))
 
     # Mirror the rect rule exactly: when the subnetwork REF angle is identically
     # 0.0 the bus keeps its own angle (rect/polar heuristic — a flat REF angle

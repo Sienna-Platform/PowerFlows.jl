@@ -395,3 +395,20 @@ end
     data = PowerFlowData(DCPowerFlow(), sys)
     @test_throws ArgumentError solve_power_flow!(data; linear_solver = "Dense")
 end
+
+@testset "vPTDF DC flows come from the angle solve, not PTDF rows" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    vdata = PowerFlowData(vPTDFDCPowerFlow(; calculate_loss_factors = true), sys)
+    solve_power_flow!(vdata)
+    aba = PowerFlowData(DCPowerFlow(), sys)
+    solve_power_flow!(aba)
+    @test isapprox(
+        vdata.arc_active_power_flow_from_to,
+        aba.arc_active_power_flow_from_to;
+        atol = 1e-10,
+    )
+    @test isempty(PNM.get_cache(vdata.power_network_matrix))
+    ptdf = PowerFlowData(PTDFDCPowerFlow(; calculate_loss_factors = true), sys)
+    solve_power_flow!(ptdf)
+    @test isapprox(vdata.loss_factors, ptdf.loss_factors; atol = 1e-10)
+end
