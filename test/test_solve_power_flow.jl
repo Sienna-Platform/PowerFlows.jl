@@ -92,7 +92,7 @@ function test_ac_line_configurations(ACSolver)
     solve_and_store_power_flow!(pf, sys)
     @test PSY.get_active_power_flow(line, PSY.SU) == 0.0
     test_bus = get_component(PSY.ACBus, sys, "Bus 4")
-    @test isapprox(PSY.get_magnitude(test_bus), 1.002; atol = 1e-3, rtol = 0)
+    @test isapprox(PSY.get_magnitude(test_bus, PSY.CU), 1.002; atol = 1e-3, rtol = 0)
 
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
     pf = ACPowerFlow{ACSolver}(; correct_bustypes = true)
@@ -902,4 +902,28 @@ end
 
 @testset "AC arc_angle_differences validation" begin
     foreach(test_ac_arc_angle_differences, AC_SOLVERS_TO_TEST)
+end
+
+# Island A: REF 1.02, PV 1.04, PQ. Island B: REF 1.06, PQ, no PV bus.
+@testset "polar enhanced flat start: multiple islands, PV-less island" begin
+    sys = System(100.0)
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.02)
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.PV, 230, 1.04)
+    b3 = _add_simple_bus!(sys, 3, ACBusTypes.PQ, 230)
+    b4 = _add_simple_bus!(sys, 4, ACBusTypes.REF, 230, 1.06)
+    b5 = _add_simple_bus!(sys, 5, ACBusTypes.PQ, 230)
+    _add_simple_line!(sys, b1, b2, 1e-3, 1e-2)
+    _add_simple_line!(sys, b2, b3, 1e-3, 1e-2)
+    _add_simple_line!(sys, b4, b5, 1e-3, 1e-2)
+    _add_simple_source!(sys, b1)
+    _add_simple_source!(sys, b4)
+    _add_simple_thermal_standard!(sys, b2, 0.1, 0.0)
+    _add_simple_load!(sys, b3, 10.0, 2.0)
+    _add_simple_load!(sys, b5, 10.0, 2.0)
+    data = PowerFlowData(ACPowerFlow(), sys)
+    bus_lookup = PF.get_bus_lookup(data)
+    x = PF._enhanced_flat_start(PF.calculate_x0(data, 1), data, 1)
+    @test all(isfinite, x)
+    @test x[2 * bus_lookup[3] - 1] ≈ (1.02 + 1.04) / 2
+    @test x[2 * bus_lookup[5] - 1] ≈ 1.06
 end

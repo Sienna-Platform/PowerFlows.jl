@@ -27,7 +27,8 @@ setting and cannot round-trip a per-time-step schedule — use
 
 ## Keyword Arguments
 - `tol`: Infinite norm of residuals under which convergence is declared. Default is `1e-9`.
-- `maxIterations`: Maximum number of Newton-Raphson iterations. Default is `30`.
+- `maxIterations`: Maximum number of Newton-Raphson iterations. Default is
+  `$DEFAULT_NR_MAX_ITER`.
 
 # Returns
 - `converged::Bool`: Indicates whether the power flow solution converged.
@@ -221,6 +222,9 @@ The power flow solver settings are taken from the `ACPowerFlow` object stored in
 # Keyword Arguments
 - `time_steps`: Specifies the time steps to solve. Defaults to sorting and collecting the keys of `get_time_step_map(data)`.
 
+The number of tasks solving contiguous chunks of `time_steps` concurrently is the stored
+`n_threads` of the model's [`SolutionParameters`](@ref).
+
 # Description
 This function solves the AC power flow problem for each time step specified in `data`.
 It preallocates memory for the results and iterates over the sorted time steps.
@@ -241,6 +245,15 @@ function solve_power_flow!(
     kwargs...,
 )
     pf = get_pf(data)
+    # The solvers swallow unknown keywords, so a per-call thread count would run serially unnoticed.
+    for k in (:threads, :n_threads)
+        haskey(kwargs, k) && throw(
+            ArgumentError(
+                "solve_power_flow! takes no `$k` keyword; set the worker count with " *
+                "`SolutionParameters(; n_threads)` on the power flow model.",
+            ),
+        )
+    end
     merged_kwargs = merge(get_solver_kwargs(pf), NamedTuple(kwargs))
     merged_kwargs.maxIterations < 1 && error(
         "maxIterations must be >= 1, got $(merged_kwargs.maxIterations) for $(typeof(pf)).",
@@ -257,88 +270,19 @@ function solve_power_flow!(
             maxlog = 1,
         )
     end
-    # preallocate results
     ts_converged = fill(false, length(sorted_time_steps))
-
-    Yft = data.power_network_matrix.arc_admittance_from_to
-    Ytf = data.power_network_matrix.arc_admittance_to_from
-    @assert PNM.get_bus_lookup(Yft) == get_bus_lookup(data)
-    arcs = PNM.get_arc_axis(Yft)
-    @assert arcs == PNM.get_arc_axis(Ytf)
-    @assert length(PNM.get_bus_axis(Yft)) == length(data.bus_angles[:, 1])
-    bus_lookup = get_bus_lookup(data)
-    fb_ix = [bus_lookup[bus_no] for bus_no in first.(arcs)]  # from bus indices
-    tb_ix = [bus_lookup[bus_no] for bus_no in last.(arcs)]   # to bus indices
-    @assert length(fb_ix) == length(arcs)
-
-    # Per-step branch-flow buffers, allocated once and reused across time steps.
-    step_V = Vector{ComplexF64}(undef, length(data.bus_angles[:, 1]))
-    Sft = Vector{ComplexF64}(undef, length(arcs))
-    Stf = Vector{ComplexF64}(undef, length(arcs))
-
-    cd = get_controlled_devices(data)
-    validate_device_store_width(cd, get_time_steps(data))
-    for (ts_pos, time_step) in enumerate(sorted_time_steps)
-        load_device_state!(cd, data, time_step)
-        converged = _ac_power_flow_with_area_relax!(data, pf, time_step; merged_kwargs...)
-        save_device_state!(cd, data, time_step)
-        ts_converged[ts_pos] = converged
-        converged && _warn_vsc_limit_violations(data, time_step)
-
-        if OVERWRITE_NON_CONVERGED && !converged
-            # set values to NaN for not converged time steps
-            data.bus_active_power_injections[:, time_step] .= NaN
-            data.bus_active_power_withdrawals[:, time_step] .= NaN
-            data.bus_active_power_constant_current_withdrawals[:, time_step] .= NaN
-            data.bus_active_power_constant_impedance_withdrawals[:, time_step] .= NaN
-            data.bus_reactive_power_injections[:, time_step] .= NaN
-            data.bus_reactive_power_withdrawals[:, time_step] .= NaN
-            data.bus_reactive_power_constant_current_withdrawals[:, time_step] .= NaN
-            data.bus_reactive_power_constant_impedance_withdrawals[:, time_step] .= NaN
-            data.bus_magnitude[:, time_step] .= NaN
-            data.bus_angles[:, time_step] .= NaN
-        elseif get_lcc_count(data) > 0 && converged
-            # calculate branch flows for LCCs: their self-admittances may change.
-            V =
-                data.bus_magnitude[:, time_step] .*
-                exp.(1im .* data.bus_angles[:, time_step])
-            for (i, (bus_indices, self_admittances)) in
-                enumerate(zip(data.lcc.bus_indices, data.lcc.branch_admittances))
-                (rectifier_ix, inverter_ix) = bus_indices
-                (rectifier_y, inverter_y) = self_admittances
-                S_inverter = V[inverter_ix] * conj(inverter_y * V[inverter_ix])
-                S_rectifier = V[rectifier_ix] * conj(rectifier_y * V[rectifier_ix])
-                data.lcc.arc_active_power_flow_from_to[i, time_step] =
-                    real(S_rectifier)
-                data.lcc.arc_reactive_power_flow_from_to[i, time_step] =
-                    imag(S_rectifier)
-                data.lcc.arc_active_power_flow_to_from[i, time_step] =
-                    real(S_inverter)
-                data.lcc.arc_reactive_power_flow_to_from[i, time_step] =
-                    imag(S_inverter)
-            end
-        end
-
-        # Per-step branch flows (not batched after the loop) so a future per-step Yft/Ytf
-        # (e.g. varying tap positions) is used correctly. Buffers are preallocated above and
-        # reused in place across time steps.
-        # NOTE PNM's structs use ComplexF32, while the system objects store Float64's.
-        #      so if you set the system bus angles/voltages to match these fields, then repeat
-        #      this math using the system voltages, you'll see differences in the flows, ~1e-4.
-        @views step_V .=
-            data.bus_magnitude[:, time_step] .* exp.(1im .* data.bus_angles[:, time_step])
-        mul!(Sft, Yft.data, step_V)
-        mul!(Stf, Ytf.data, step_V)
-        Sft .= view(step_V, fb_ix) .* conj.(Sft)
-        Stf .= view(step_V, tb_ix) .* conj.(Stf)
-        data.arc_active_power_flow_from_to[:, time_step] .= real.(Sft)
-        data.arc_reactive_power_flow_from_to[:, time_step] .= imag.(Sft)
-        data.arc_active_power_flow_to_from[:, time_step] .= real.(Stf)
-        data.arc_reactive_power_flow_to_from[:, time_step] .= imag.(Stf)
-
-        _compute_arc_angle_differences_from_indices!(data, fb_ix, tb_ix, time_step)
+    validate_device_store_width(get_controlled_devices(data), get_time_steps(data))
+    n_work = min(get_n_threads(pf), length(sorted_time_steps))
+    if n_work > 1
+        _solve_columns_threaded!(
+            ts_converged, data, pf, sorted_time_steps, n_work, merged_kwargs)
+    else
+        _solve_columns!(
+            ts_converged, data, pf, sorted_time_steps, 1:length(sorted_time_steps),
+            merged_kwargs)
     end
 
+    # Written after the solves: `improve_x0` reads `converged` as of entry.
     data.converged[sorted_time_steps] .= ts_converged
 
     if !all(ts_converged)
@@ -348,6 +292,360 @@ function solve_power_flow!(
 
     return all(ts_converged)
 end
+
+function _solve_columns!(
+    ts_converged::Vector{Bool},
+    data::ACPowerFlowData,
+    pf::AbstractACPowerFlow{<:ACPowerFlowSolverType},
+    steps::AbstractVector{Int},
+    positions::UnitRange{Int},
+    merged_kwargs::NamedTuple,
+)
+    flows = Base.RefValue{ArcFlowScratch}()
+    cd = get_controlled_devices(data)
+    for pos in positions
+        ts_converged[pos] = _solve_column!(data, pf, steps[pos], flows, cd, merged_kwargs)
+    end
+    (; attempts, rejects, solve_failures, late_analyses) = _lean_counts(data)
+    @debug "lean LU refactors on this cache so far" attempts rejects solve_failures late_analyses
+    return ts_converged
+end
+
+# Fetched after the solve, so a first solve's fresh polar cache lends its scratch instead of a
+# second one being built.
+function _column_arc_flows!(slot::Base.RefValue, data::ACPowerFlowData)
+    arcs = PNM.get_arc_axis(data.power_network_matrix.arc_admittance_from_to)
+    if !isassigned(slot) || slot[].arcs !== arcs
+        slot[] = _arc_flow_scratch(data.polar_nr_cache[], data)
+    end
+    return slot[]
+end
+
+"""Solve one time step and write its column: voltages, injections, branch and LCC flows.
+Touches no other column of `data`."""
+function _solve_column!(
+    data::ACPowerFlowData,
+    pf::AbstractACPowerFlow{<:ACPowerFlowSolverType},
+    time_step::Int,
+    flows_slot::Base.RefValue,
+    cd::Union{Nothing, ControlledDeviceSet},
+    merged_kwargs::NamedTuple,
+)
+    Yft = data.power_network_matrix.arc_admittance_from_to
+    Ytf = data.power_network_matrix.arc_admittance_to_from
+
+    load_device_state!(cd, data, time_step)
+    data.iterations[time_step] = 0
+    # Before the solve, so serial and threaded runs build the lean plan at the same step.
+    _prepare_lean_plan!(pf, data, time_step,
+        resolve_linear_solver_backend(get(merged_kwargs, :linear_solver, nothing)))
+    converged = _ac_power_flow_with_area_relax!(data, pf, time_step; merged_kwargs...)
+    save_device_state!(cd, data, time_step)
+    converged && _warn_vsc_limit_violations(data, time_step)
+
+    if OVERWRITE_NON_CONVERGED && !converged
+        # set values to NaN for not converged time steps
+        data.bus_active_power_injections[:, time_step] .= NaN
+        data.bus_active_power_withdrawals[:, time_step] .= NaN
+        data.bus_active_power_constant_current_withdrawals[:, time_step] .= NaN
+        data.bus_active_power_constant_impedance_withdrawals[:, time_step] .= NaN
+        data.bus_reactive_power_injections[:, time_step] .= NaN
+        data.bus_reactive_power_withdrawals[:, time_step] .= NaN
+        data.bus_reactive_power_constant_current_withdrawals[:, time_step] .= NaN
+        data.bus_reactive_power_constant_impedance_withdrawals[:, time_step] .= NaN
+        data.bus_magnitude[:, time_step] .= NaN
+        data.bus_angles[:, time_step] .= NaN
+    elseif get_lcc_count(data) > 0 && converged
+        # calculate branch flows for LCCs: their self-admittances may change.
+        for (i, (bus_indices, self_admittances)) in
+            enumerate(zip(data.lcc.bus_indices, data.lcc.branch_admittances))
+            (rectifier_ix, inverter_ix) = bus_indices
+            (rectifier_y, inverter_y) = self_admittances
+            V_inverter = _bus_voltage_phasor(data, inverter_ix, time_step)
+            V_rectifier = _bus_voltage_phasor(data, rectifier_ix, time_step)
+            S_inverter = V_inverter * conj(inverter_y * V_inverter)
+            S_rectifier = V_rectifier * conj(rectifier_y * V_rectifier)
+            data.lcc.arc_active_power_flow_from_to[i, time_step] =
+                real(S_rectifier)
+            data.lcc.arc_reactive_power_flow_from_to[i, time_step] =
+                imag(S_rectifier)
+            data.lcc.arc_active_power_flow_to_from[i, time_step] =
+                real(S_inverter)
+            data.lcc.arc_reactive_power_flow_to_from[i, time_step] =
+                imag(S_inverter)
+        end
+    end
+
+    flows = _column_arc_flows!(flows_slot, data)
+    (; fb_ix, tb_ix, Sft, Stf) = flows
+    step_V = flows.V
+    # Per-step branch flows so a future per-step Yft/Ytf (e.g. varying tap positions) is used
+    # correctly.
+    # NOTE PNM's structs use ComplexF32, while the system objects store Float64's.
+    #      so if you set the system bus angles/voltages to match these fields, then repeat
+    #      this math using the system voltages, you'll see differences in the flows, ~1e-4.
+    _fill_flow_voltages!(step_V, data.polar_nr_cache[], data, time_step)
+    mul!(Sft, Yft.data, step_V)
+    mul!(Stf, Ytf.data, step_V)
+    θ = view(data.bus_angles, :, time_step)
+    @inbounds for k in eachindex(fb_ix, tb_ix)
+        f = fb_ix[k]
+        t = tb_ix[k]
+        s_ft = step_V[f] * conj(Sft[k])
+        s_tf = step_V[t] * conj(Stf[k])
+        data.arc_active_power_flow_from_to[k, time_step] = real(s_ft)
+        data.arc_reactive_power_flow_from_to[k, time_step] = imag(s_ft)
+        data.arc_active_power_flow_to_from[k, time_step] = real(s_tf)
+        data.arc_reactive_power_flow_to_from[k, time_step] = imag(s_tf)
+        data.arc_angle_differences[k, time_step] = θ[f] - θ[t]
+    end
+    return converged
+end
+
+"""Solve contiguous chunks of `steps` on `n_work` tasks. Each task gets a `_column_worker`
+view of `data`, so its Newton workspace and KLU factorization are its own. The workers' caches
+live in `data.worker_slots`, so a repeated solve reuses them."""
+function _solve_columns_threaded!(
+    ts_converged::Vector{Bool},
+    data::ACPowerFlowData,
+    pf::AbstractACPowerFlow{<:ACPowerFlowSolverType},
+    steps::AbstractVector{Int},
+    n_work::Int,
+    merged_kwargs::NamedTuple,
+)
+    backend = _check_threadable(merged_kwargs)
+    # Built here, before any task can race to build it, so every worker shares one pivot order.
+    _prepare_lean_plan!(pf, data, first(steps), backend)
+    chunks = collect(Iterators.partition(1:length(steps), cld(length(steps), n_work)))
+    slots = _worker_slots!(data, length(chunks))
+    workers = [_column_worker(data, steps, c, s) for (c, s) in zip(chunks, slots)]
+    # With no stored cache, the first chunk's first step solves before any task starts, so its
+    # cache can seed the other workers: they share its read-only maps instead of building their own.
+    head = _head_steps(slots[1].polar_nr_cache[], chunks[1])
+    _solve_slot!(ts_converged, workers[1], slots[1], pf, steps, head, merged_kwargs)
+    _seed_workers!(workers, steps, chunks)
+    @sync for (i, positions) in enumerate(chunks)
+        worker = workers[i]
+        slot = slots[i]
+        rest = _rest_of_chunk(i, positions, head)
+        Threads.@spawn _solve_slot!(
+            ts_converged, worker, slot, pf, steps, rest, merged_kwargs)
+    end
+    for (worker, positions) in zip(workers, chunks)
+        _merge_worker_area!(data, worker, steps, positions)
+    end
+    return ts_converged
+end
+
+function _worker_slots!(data::ACPowerFlowData, n::Int)
+    slots = data.worker_slots
+    while length(slots) < n
+        push!(slots, WorkerSlot())
+    end
+    return view(slots, 1:n)
+end
+
+# A worker that raised leaves caches nothing can vouch for: drop them so the next call rebuilds.
+function _solve_slot!(ts_converged, worker, slot::WorkerSlot, pf, steps, positions, kwargs)
+    try
+        _solve_columns!(ts_converged, worker, pf, steps, positions, kwargs)
+    catch
+        slot.polar_nr_cache[] = nothing
+        slot.solver_cache[] = nothing
+        rethrow()
+    end
+    return
+end
+
+_head_steps(::Nothing, positions::UnitRange{Int}) = first(positions):first(positions)
+_head_steps(::AbstractNRCache, positions::UnitRange{Int}) =
+    first(positions):(first(positions) - 1)
+
+_rest_of_chunk(i::Int, positions::UnitRange{Int}, head::UnitRange{Int}) =
+    _rest_of_chunk(Val(isone(i)), positions, head)
+_rest_of_chunk(::Val{true}, positions::UnitRange{Int}, head::UnitRange{Int}) =
+    (last(head) + 1):last(positions)
+_rest_of_chunk(::Val{false}, positions::UnitRange{Int}, ::UnitRange{Int}) = positions
+
+function _seed_workers!(workers, steps, chunks)
+    seed = workers[1].polar_nr_cache[]
+    memo = workers[1].ac_jacobian_structure_cache[]
+    for i in 2:length(workers)
+        _seed_from_memo!(workers[i], seed, memo, steps[first(chunks[i])])
+    end
+    return
+end
+
+# Only a worker with no stored cache is seeded.
+_seed_from_memo!(worker::ACPowerFlowData, seed, memo, time_step::Int) =
+    _seed_empty!(worker.polar_nr_cache[], worker, seed, memo, time_step)
+_seed_empty!(::Nothing, worker, seed, memo, time_step) =
+    _seed_from_memo_now!(worker, seed, memo, time_step)
+_seed_empty!(::AbstractNRCache, worker, seed, memo, time_step) = nothing
+
+# A worker whose matrix or area data differs from the seed's has its own memo: leave it unseeded.
+_seed_from_memo_now!(::ACPowerFlowData, ::Any, ::Nothing, ::Int) = nothing
+function _seed_from_memo_now!(
+    worker::ACPowerFlowData,
+    seed,
+    memo::ACJacobianStructureCache,
+    time_step::Int,
+)
+    _lean_plan_tried(memo, worker) || return
+    _seed_worker!(worker, seed, memo.lean, time_step)
+    return
+end
+
+_prepare_lean_plan!(
+    ::AbstractACPowerFlow,
+    ::ACPowerFlowData,
+    ::Int,
+    ::PNM.LinearSolverType,
+) =
+    nothing
+
+function _prepare_lean_plan!(
+    ::ACPolarPowerFlow{<:Union{NewtonRaphsonACPowerFlow, TrustRegionACPowerFlow}},
+    data::ACPowerFlowData,
+    time_step::Int,
+    ::PNM.KLUSolver,
+)
+    _USE_LEAN_LU[] || return
+    _lean_plan_tried(data.ac_jacobian_structure_cache[], data) && return
+    _lean_plan_slot!(data, time_step)
+    return
+end
+
+# Skips the residual and Jacobian builds of `_lean_plan_slot!` while `data` keeps its memo. A memo
+# whose slack slots no longer fit is replaced by the solve, which then builds its plan itself.
+_lean_plan_tried(::Nothing, ::ACPowerFlowData) = false
+function _lean_plan_tried(memo::ACJacobianStructureCache, data::ACPowerFlowData)
+    return memo.lean.tried && memo.matrix === data.power_network_matrix &&
+           memo.area_data === data.area_interchange
+end
+
+"""A `PowerFlowData` sharing every time-indexed array of `data` (each task writes only its own
+columns) with the slot's solver caches, a private `converged`, and private copies of the state a solve
+mutates outside its column: the controlled-device scratch and counters, the network matrix when
+taps are controlled, the LCC branch admittances, and the area-interchange data when it is active.
+The Jacobian-structure memo is shared too: it is read-only once built, and it carries the lean-LU
+plan. A worker with its own network matrix or area data misses that memo and plans itself.
+`improve_x0` warm-starts from the last step converged at entry; steps owned by other tasks are
+cleared there, since their columns are being rewritten concurrently. So a first solve matches the
+serial one exactly (controlled taps aside: the serial Y-bus accumulates ComplexF32 round-off
+across steps), while a re-solve may pick a different warm start at a chunk's first step."""
+function _column_worker(
+    data::ACPowerFlowData,
+    steps::AbstractVector{Int},
+    positions::UnitRange{Int},
+    slot::WorkerSlot,
+)
+    converged = copy(data.converged)
+    for (pos, t) in enumerate(steps)
+        if !(pos in positions)
+            converged[t] = false
+        end
+    end
+    cd = get_controlled_devices(data)
+    fresh = (
+        converged = converged,
+        power_network_matrix = _worker_network_matrix(cd, data.power_network_matrix),
+        lcc = _override(data.lcc; branch_admittances = copy(data.lcc.branch_admittances)),
+        area_interchange = _worker_area_data(data.area_interchange),
+        controlled_devices = _worker_devices(cd),
+        solver_cache = slot.solver_cache,
+        ac_jacobian_structure_cache = Base.RefValue{
+            Union{Nothing, ACJacobianStructureCache},
+        }(
+            data.ac_jacobian_structure_cache[],
+        ),
+        polar_nr_cache = slot.polar_nr_cache,
+        worker_slots = WorkerSlot[],
+    )
+    args = map(f -> get(fresh, f, getfield(data, f)), fieldnames(typeof(data)))
+    return typeof(data)(args...)
+end
+
+_worker_devices(::Nothing) = nothing
+# The per-step stores stay shared: each step reads and writes only its own column.
+function _worker_devices(cd::ControlledDeviceSet)
+    return _override(cd;
+        taps = deepcopy(cd.taps),
+        shunts = deepcopy(cd.shunts),
+        facts = deepcopy(cd.facts),
+        inner_solves = Ref(0),
+        symbolic_factors = Ref(0),
+        numeric_refactors = Ref(0),
+    )
+end
+
+# Controlled taps write only the Y-bus, `Yft` and `Ytf` values. Axes, lookups and the branch
+# catalog stay shared: the catalog reaches the System's components, so a deepcopy would copy it.
+_worker_network_matrix(::Nothing, matrix) = matrix
+function _worker_network_matrix(cd::ControlledDeviceSet, matrix)
+    if isempty(cd.taps)
+        return matrix
+    end
+    return _override(matrix;
+        data = copy(matrix.data),
+        arc_admittance_from_to = _copy_values(matrix.arc_admittance_from_to),
+        arc_admittance_to_from = _copy_values(matrix.arc_admittance_to_from),
+    )
+end
+
+_copy_values(::Nothing) = nothing
+_copy_values(m::PNM.ArcAdmittanceMatrix) = _override(m; data = copy(m.data))
+
+# A relax renumbers the working area set across all columns. Shared while inactive, so the
+# workers keep hitting the memo, which keys on this object's identity.
+function _worker_area_data(aid::AreaInterchangeData)
+    if isempty(aid.pristine_areas)
+        return aid
+    end
+    return deepcopy(aid)
+end
+
+"""Copy what post-processing reads for the worker's own steps back into `data`: the
+`pristine_delta_p` columns and the `relaxed` records."""
+function _merge_worker_area!(
+    data::ACPowerFlowData,
+    worker::ACPowerFlowData,
+    steps::AbstractVector{Int},
+    positions::UnitRange{Int},
+)
+    aid = data.area_interchange
+    isempty(aid.pristine_areas) && return
+    worker_aid = worker.area_interchange
+    for pos in positions
+        t = steps[pos]
+        @views aid.pristine_delta_p[:, t] .= worker_aid.pristine_delta_p[:, t]
+        if haskey(worker_aid.relaxed, t)
+            aid.relaxed[t] = worker_aid.relaxed[t]
+        end
+    end
+    return
+end
+
+# Resolved again here: a per-call `linear_solver` overrides the one checked at construction.
+function _check_threadable(merged_kwargs::NamedTuple)
+    backend = resolve_linear_solver_backend(get(merged_kwargs, :linear_solver, nothing))
+    _check_concurrent_factorization(backend)
+    return backend
+end
+
+_check_concurrent_factorization(::PNM.KLUSolver) = nothing
+function _check_concurrent_factorization(backend::PNM.LinearSolverType)
+    throw(
+        ArgumentError(
+            "n_threads > 1 requires the KLU linear solver; $(nameof(typeof(backend))) is not " *
+            "verified safe under concurrent factorization. Pass linear_solver = \"KLU\" or " *
+            "n_threads = 1.",
+        ),
+    )
+end
+
+_bus_voltage_phasor(data::ACPowerFlowData, ix::Int, time_step::Int) =
+    data.bus_magnitude[ix, time_step] * exp(1im * data.bus_angles[ix, time_step])
 
 function _solve_with_q_limits!(
     pf::AbstractACPowerFlow{<:ACPowerFlowSolverType},
@@ -500,7 +798,7 @@ function _check_q_limit_bounds!(
         Q_min = data.bus_reactive_power_bounds[ix, time_step][1]
 
         if !(Q_min - BOUNDS_TOLERANCE <= Q_gen <= Q_max + BOUNDS_TOLERANCE)
-            @info "Bus $(bus_names[ix]) changed to PSY.ACBusTypes.PQ"
+            @debug "Bus $(bus_names[ix]) changed to PSY.ACBusTypes.PQ"
             within_limits = false
             data.bus_type[ix, time_step] = PSY.ACBusTypes.PQ
             data.bus_reactive_power_injections[ix, time_step] =

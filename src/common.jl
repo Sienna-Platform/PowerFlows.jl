@@ -253,7 +253,7 @@ function _set_bus_angles_and_magnitudes!(
         if bus_no in subnetwork_keys && bus_no != main_ref_bus
             bus_angles[ix] = 0.0
         end
-        bus_vm = PSY.get_magnitude(bus)
+        bus_vm = PSY.get_magnitude(bus, PSY.CU)
         # prevent unfeasible starting values for voltage magnitude at PQ buses (for PV and REF buses we cannot do this):
         if bus_type[ix] == PSY.ACBusTypes.PQ &&
            bus_vm < BUS_VOLTAGE_MAGNITUDE_CUTOFF_MIN
@@ -718,8 +718,14 @@ end
 polar state layout (`x[2i-1]` = |V| of bus `i`). Bus types are invariant
 across NR/TR iterations, so this filtering is hoisted out of the per-iteration
 validator. Only PQ is checked (PV/REF have |V| pinned to a set-point)."""
-function _pq_validate_indices(bus_type::AbstractVector{PSY.ACBusTypes.Value})
-    validate_indices = Int[]
+_pq_validate_indices(bus_type::AbstractVector{PSY.ACBusTypes.Value}) =
+    _pq_validate_indices!(Int[], bus_type)
+
+function _pq_validate_indices!(
+    validate_indices::Vector{Int},
+    bus_type::AbstractVector{PSY.ACBusTypes.Value},
+)
+    empty!(validate_indices)
     for (i, bt) in enumerate(bus_type)
         bt == PSY.ACBusTypes.PQ && push!(validate_indices, 2 * i - 1)
     end

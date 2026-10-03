@@ -12,29 +12,33 @@ constructor calls instead, to avoid a reference cycle through `data.polar_nr_cac
 
 # Fields
 - `Jv::SparseArrays.SparseMatrixCSC{Float64, $J_INDEX_TYPE}`: The Jacobian matrix, which is updated by `_update_jacobian_matrix_values!`.
-- `bus_slack_participation_factors::SparseVector{Float64, Int}`: Normalized per-bus slack participation factors for the current time step (from the `ACPowerFlowResidual`). Used for the distributed slack Jacobian entries.
+- `bus_slack_participation_factors::Vector{Float64}`: Normalized per-bus slack participation factors for the current time step (the `ACPowerFlowResidual`'s vector, shared). Used for the distributed slack Jacobian entries.
 - `subnetworks::Dict{Int64, Vector{Int64}}`: Subnetwork mapping from REF bus to bus list (from the `ACPowerFlowResidual`). Used for the distributed slack Jacobian entries.
-- `independent_ref::Set{Int}`: Multi-swing REF bus indices, from `_multi_swing_ref_indices`. Computed once at construction because the Q-limit loop only flips PV↔PQ, never REF.
+- `independent_ref::Set{Int}`: Multi-swing REF bus indices, from `_multi_swing_ref_indices`. Recomputed in place by `_refresh_polar_residual!` when the partition or the REF set changes.
+- `slack_jnz::Vector{Int32}`: per bus, the `nonzeros(Jv)` offset of `∂F_P/∂x[2·ref−1]` for its island's REF, or 0 when the pattern has no such slot (and for the REF itself). See `_slack_jnz!`.
+- `bus_state::PolarBusState`: per-bus |V|, θ and `cis(θ)` (the residual's, shared).
 """
 struct ACPowerFlowJacobian
     Jv::SparseArrays.SparseMatrixCSC{Float64, J_INDEX_TYPE}  # This is the Jacobian matrix, updated in place by `_update_jacobian_matrix_values!`
-    bus_slack_participation_factors::SparseVector{Float64, Int}
+    bus_slack_participation_factors::Vector{Float64}
     subnetworks::Dict{Int64, Vector{Int64}}
     independent_ref::Set{Int}
+    slack_jnz::Vector{Int32}
     bus_active_constant_I::Vector{Float64}
     bus_reactive_constant_I::Vector{Float64}
     bus_active_constant_Z::Vector{Float64}
     bus_reactive_constant_Z::Vector{Float64}
+    bus_state::PolarBusState
     # nzval-offset caches built once at construction; see _build_polar_nz_caches.
-    # The fill writes directly into nonzeros(Jv) via these, avoiding setindex
-    # binary search and Yb[i,j] getindex in the hot path.
-    od_from::Vector{Int}            # bus_from per off-diagonal Ybus entry
-    od_to::Vector{Int}              # bus_to per off-diagonal Ybus entry
-    od_ybus_nz::Vector{Int}         # nonzeros(Yb) index for that entry (g, b)
-    od_jnz::Matrix{Int}             # 4 × n_od: J nzval offsets for (p,vm),(q,vm),(p,va),(q,va)
-    diag_jnz::Matrix{Int}           # 4 × n_buses: J nzval offsets for the self block, same slot order
-    diag_ybus_nz::Vector{Int}       # n_buses: nonzeros(Yb) index for Yb[i,i]
-    diag_accum::Matrix{Float64}     # 4 × n_buses scratch for the per-bus diagonal accumulation
+    # Off-diagonal Ybus entries are grouped by row (bus_from), so the fill keeps each bus's
+    # diagonal sums in registers and writes nonzeros(Jv) directly. Int32 on every platform
+    # halves the kernel's index traffic; a J too large for it errors at the conversion.
+    od_ptr::Vector{Int32}           # n_buses + 1: entries of bus_from i are od_ptr[i]:od_ptr[i+1]-1
+    od_to::Vector{Int32}            # bus_to per off-diagonal Ybus entry
+    od_ybus_nz::Vector{Int32}       # nonzeros(Yb) index for that entry (g, b)
+    od_jnz::Matrix{Int32}           # 4 × n_od: J nzval offsets for (p,vm),(q,vm),(p,va),(q,va)
+    diag_jnz::Matrix{Int32}         # 4 × n_buses: J nzval offsets for the self block, same slot order
+    diag_ybus_nz::Vector{Int32}     # n_buses: nonzeros(Yb) index for Yb[i,i]
 end
 
 """
@@ -56,12 +60,9 @@ J(data, time_step)  # Updates the Jacobian matrix Jv
 ```
 """
 function (J::ACPowerFlowJacobian)(data::ACPowerFlowData, time_step::Int64)
-    _update_jacobian_matrix_values!(J.Jv, data, time_step,
-        J.bus_slack_participation_factors, J.subnetworks, J.independent_ref,
-        J.bus_active_constant_I, J.bus_reactive_constant_I,
-        J.bus_active_constant_Z, J.bus_reactive_constant_Z,
-        J.od_from, J.od_to, J.od_ybus_nz, J.od_jnz,
-        J.diag_jnz, J.diag_ybus_nz, J.diag_accum)
+    _sync_from_data!(J.bus_state, data, time_step)
+    _fill_bus_phasor!(J.bus_state)
+    _update_jacobian_matrix_values!(J, data, time_step)
     return
 end
 
@@ -92,12 +93,9 @@ function (J::ACPowerFlowJacobian)(
     Jv::SparseArrays.SparseMatrixCSC{Float64, J_INDEX_TYPE},
     time_step::Int64,
 )
-    _update_jacobian_matrix_values!(J.Jv, data, time_step,
-        J.bus_slack_participation_factors, J.subnetworks, J.independent_ref,
-        J.bus_active_constant_I, J.bus_reactive_constant_I,
-        J.bus_active_constant_Z, J.bus_reactive_constant_Z,
-        J.od_from, J.od_to, J.od_ybus_nz, J.od_jnz,
-        J.diag_jnz, J.diag_ybus_nz, J.diag_accum)
+    _sync_from_data!(J.bus_state, data, time_step)
+    _fill_bus_phasor!(J.bus_state)
+    _update_jacobian_matrix_values!(J, data, time_step)
     copyto!(Jv, J.Jv)
     return
 end
@@ -125,41 +123,113 @@ J(data, time_step)  # Updates the Jacobian matrix stored internally in J.
 J.Jv  # Access the Jacobian matrix stored internally in J.
 ```
 """
-# Memoize the expensive Jacobian sparse-structure build (~3.2 MB on 2000 buses) so it is built
-# once and reused across the Q-limit inner loop and repeated PCM solves. The structure is
-# invariant under the PV→PQ flips that drive the Q-limit loop (colptr/rowval verified byte-identical
-# across a flip); the cache key is the network-matrix identity + slack nonzero pattern + area
-# interchange data, so a distributed-slack participant drop correctly rebuilds. Returns a full `copy`
-# so each `ACPowerFlowJacobian` owns a fresh mutable buffer, or `nothing` to signal a rebuild. Lives
-# in its own `data.ac_jacobian_structure_cache` field ([`ACJacobianStructureCache`](@ref)) so it
-# never collides with the FastDecoupled/DC caches in `data.solver_cache[]`.
-_reuse_ac_jac_structure(::Nothing, matrix, nzind, area_data) = nothing
-_reuse_ac_jac_structure(e::ACJacobianStructureCache, matrix, nzind, area_data) =
-    if e.matrix === matrix && e.nzind == nzind && e.area_data === area_data
-        copy(e.structure)
-    else
-        nothing
-    end
-
-function _get_or_build_jacobian_structure(
+# The distributed-slack slots the Ybus pattern lacks: `(bus_k, ref)` for each bus with a nonzero
+# participation factor in `data` (whatever its bus type, so a PV→PQ flip keeps the pattern) that
+# is not a neighbour of its island's REF. With the Ybus pattern (fixed, since contingencies write
+# zeros), LCC/VSC and area data, this is all the polar J pattern depends on. Sorted, so it
+# compares as a cache key.
+function _extra_slack_slots(
     data::ACPowerFlowData,
-    slack_factors::SparseVector{Float64, Int},
     subnetworks::Dict{Int64, Vector{Int64}},
     time_step::Int64,
 )
-    nzind = SparseArrays.nonzeroinds(slack_factors)
+    factors = data.bus_slack_participation_factors
+    slots = Tuple{Int, Int}[]
+    for (ref_bus, subnetwork_buses) in subnetworks
+        for bus_k in subnetwork_buses
+            iszero(factors[bus_k, time_step]) && continue
+            ref_bus in data.neighbors[bus_k] && continue
+            push!(slots, (bus_k, ref_bus))
+        end
+    end
+    return sort!(slots)
+end
+
+"""Fill `slack_jnz[k]` with the `nonzeros(Jv)` offset of `(2k−1, 2·ref−1)` for every bus `k` of
+each island other than its REF `ref`, or 0 when `Jv` has no such slot. The slots it pointed to
+before are zeroed first: after a partition change nothing else writes a slot to a bus's old REF."""
+function _slack_jnz!(
+    slack_jnz::Vector{Int32},
+    Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
+    subnetworks::Dict{Int64, Vector{Int64}},
+)
+    Jvnz = SparseArrays.nonzeros(Jv)
+    for o in slack_jnz
+        if !iszero(o)
+            Jvnz[o] = 0.0
+        end
+    end
+    fill!(slack_jnz, 0)
+    rowvals = SparseArrays.rowvals(Jv)
+    for (ref_bus, subnetwork_buses) in subnetworks
+        rng = SparseArrays.nzrange(Jv, 2 * ref_bus - 1)
+        for bus_k in subnetwork_buses
+            bus_k == ref_bus && continue
+            row = 2 * bus_k - 1
+            k = searchsortedfirst(view(rowvals, rng), row)
+            if k <= length(rng) && rowvals[rng[k]] == row
+                slack_jnz[bus_k] = rng[k]
+            end
+        end
+    end
+    return
+end
+
+"""Whether `J`'s pattern holds a distributed-slack slot for every participating bus outside the
+multi-swing islands."""
+function _slack_slots_cover(
+    slack_jnz::Vector{Int32},
+    bus_slack_participation_factors::Vector{Float64},
+    subnetworks::Dict{Int64, Vector{Int64}},
+    independent_ref::Set{Int},
+)
+    for (ref_bus, subnetwork_buses) in subnetworks
+        ref_bus in independent_ref && continue
+        for bus_k in subnetwork_buses
+            if bus_k != ref_bus && !iszero(bus_slack_participation_factors[bus_k]) &&
+               iszero(slack_jnz[bus_k])
+                return false
+            end
+        end
+    end
+    return true
+end
+
+# Memoize the expensive Jacobian sparse-structure build (~3.2 MB on 2000 buses) so it is built
+# once and reused across the Q-limit inner loop, repeated PCM solves and contingencies that only
+# change values. The key is the network-matrix identity + area interchange data, and the memo's
+# slots must cover `_extra_slack_slots` (as `_slack_slots_cover` does for a polar cache), so an
+# outage that drops a slot keeps the shared structure and its lean plan. Returns a full `copy` so
+# each `ACPowerFlowJacobian` owns a fresh mutable buffer, or `nothing` to signal a rebuild. Lives
+# in its own `data.ac_jacobian_structure_cache` field ([`ACJacobianStructureCache`](@ref)) so it
+# never collides with the FastDecoupled/DC caches in `data.solver_cache[]`.
+_reuse_ac_jac_structure(::Nothing, matrix, slots, area_data) = nothing
+function _reuse_ac_jac_structure(e::ACJacobianStructureCache, matrix, slots, area_data)
+    if e.matrix === matrix && e.area_data === area_data && issubset(slots, e.slack_slots)
+        return copy(e.structure)
+    end
+    return nothing
+end
+
+function _get_or_build_jacobian_structure(
+    data::ACPowerFlowData,
+    subnetworks::Dict{Int64, Vector{Int64}},
+    time_step::Int64,
+)
+    slots = _extra_slack_slots(data, subnetworks, time_step)
     reused = _reuse_ac_jac_structure(
-        data.ac_jacobian_structure_cache[], data.power_network_matrix, nzind,
+        data.ac_jacobian_structure_cache[], data.power_network_matrix, slots,
         data.area_interchange)
     isnothing(reused) || return reused
-    Jv0 = _create_jacobian_matrix_structure(data, slack_factors, subnetworks, time_step)
+    Jv0 = _create_jacobian_matrix_structure(data, slots)
     # Cache a pristine copy; `Jv0` is about to be mutated by the Newton loop. `area_data`
     # is stored by IDENTITY (not copied) — a rebuilt `PowerFlowData` gets a fresh
     # `AreaInterchangeData`, forcing a rebuild; a Q-limit flip keeps the same object, so
     # reuse still works.
     data.ac_jacobian_structure_cache[] =
         ACJacobianStructureCache(
-            data.power_network_matrix, copy(nzind), copy(Jv0), data.area_interchange)
+            data.power_network_matrix, slots, copy(Jv0), data.area_interchange,
+            LeanPlanSlot())
     return Jv0
 end
 
@@ -168,43 +238,38 @@ function ACPowerFlowJacobian(
     residual::ACPowerFlowResidual,
     time_step::Int64,
 )
-    Jv0 = _get_or_build_jacobian_structure(
-        data,
-        residual.bus_slack_participation_factors,
-        residual.subnetworks,
-        time_step,
-    )
-    od_from, od_to, od_ybus_nz, od_jnz, diag_jnz, diag_ybus_nz, diag_accum =
+    Jv0 = _get_or_build_jacobian_structure(data, residual.subnetworks, time_step)
+    od_ptr, od_to, od_ybus_nz, od_jnz, diag_jnz, diag_ybus_nz =
         _build_polar_nz_caches(data, Jv0)
+    slack_jnz = zeros(Int32, length(residual.bus_slack_participation_factors))
+    _slack_jnz!(slack_jnz, Jv0, residual.subnetworks)
     return ACPowerFlowJacobian(
         Jv0,
         residual.bus_slack_participation_factors,
         residual.subnetworks,
         _multi_swing_ref_indices(data.bus_type, residual.subnetworks, time_step),
+        slack_jnz,
         residual.bus_active_constant_I,
         residual.bus_reactive_constant_I,
         residual.bus_active_constant_Z,
         residual.bus_reactive_constant_Z,
-        od_from,
+        residual.bus_state,
+        od_ptr,
         od_to,
         od_ybus_nz,
         od_jnz,
         diag_jnz,
         diag_ybus_nz,
-        diag_accum,
     )
 end
 
 """
 Build the once-per-construction nzval-offset caches that drive the polar
-Jacobian fill. The Ybus is swept in CSC column order (column = `bus_to`,
-row = `bus_from`), mirroring the residual sweep so the stored Ybus nonzero is
-exactly `Yb[bus_from, bus_to]`. For each off-diagonal entry we record the four
-`J.Jv` nzval offsets of its 2×2 block; for each diagonal we record the self
-block offsets and the `Yb[i,i]` position. `diag_accum` is the 4×n_buses scratch
-the fill uses to accumulate the per-bus diagonal terms across the column sweep
-(the accumulation order differs from the old Set iteration, hence values match
-only up to floating-point reassociation).
+Jacobian fill. Off-diagonal Ybus entries `Yb[bus_from, bus_to]` are grouped by
+`bus_from` (CSR order, `od_ptr`), so the fill sums each bus's diagonal terms in
+registers. For each off-diagonal entry we record the four `J.Jv` nzval offsets of
+its 2×2 block; for each diagonal we record the self block offsets and the
+`Yb[i,i]` position.
 """
 function _build_polar_nz_caches(
     data::ACPowerFlowData,
@@ -213,18 +278,23 @@ function _build_polar_nz_caches(
     Yb = data.power_network_matrix.data
     num_buses = first(size(data.bus_type))
     Yrows = SparseArrays.rowvals(Yb)
-    n_od = 0
+    od_ptr = zeros(Int32, num_buses + 1)
     for bus_to in 1:num_buses
         for j in SparseArrays.nzrange(Yb, bus_to)
-            Yrows[j] != bus_to && (n_od += 1)
+            bus_from = Yrows[j]
+            bus_from != bus_to && (od_ptr[bus_from + 1] += 1)
         end
     end
-    od_from = Vector{Int}(undef, n_od)
-    od_to = Vector{Int}(undef, n_od)
-    od_ybus_nz = Vector{Int}(undef, n_od)
-    od_jnz = Matrix{Int}(undef, 4, n_od)
-    diag_jnz = Matrix{Int}(undef, 4, num_buses)
-    diag_ybus_nz = zeros(Int, num_buses)  # 0 = no Yb[i,i] nonzero (self-admittance ≡ 0)
+    od_ptr[1] = 1
+    for i in 1:num_buses
+        od_ptr[i + 1] += od_ptr[i]
+    end
+    n_od = od_ptr[end] - 1
+    od_to = Vector{Int32}(undef, n_od)
+    od_ybus_nz = Vector{Int32}(undef, n_od)
+    od_jnz = Matrix{Int32}(undef, 4, n_od)
+    diag_jnz = Matrix{Int32}(undef, 4, num_buses)
+    diag_ybus_nz = zeros(Int32, num_buses)  # 0 = no Yb[i,i] nonzero (self-admittance ≡ 0)
     # Diagonal J slots always exist (neighbors include self); fill them even if the
     # bus has no Ybus diagonal entry, matching the old getindex-returns-0 behavior.
     for bus_from in 1:num_buses
@@ -235,7 +305,7 @@ function _build_polar_nz_caches(
         diag_jnz[3, bus_from] = _jv_nz_index(Jv, 2 * bus_from - 1, col_va)
         diag_jnz[4, bus_from] = _jv_nz_index(Jv, 2 * bus_from, col_va)
     end
-    k = 0
+    next = od_ptr[1:num_buses]
     for bus_to in 1:num_buses
         col_to_vm = 2 * bus_to - 1
         col_to_va = 2 * bus_to
@@ -246,8 +316,8 @@ function _build_polar_nz_caches(
             if bus_from == bus_to
                 diag_ybus_nz[bus_from] = j
             else
-                k += 1
-                od_from[k] = bus_from
+                k = next[bus_from]
+                next[bus_from] += 1
                 od_to[k] = bus_to
                 od_ybus_nz[k] = j
                 od_jnz[1, k] = _jv_nz_index(Jv, row_from_p, col_to_vm)
@@ -257,8 +327,7 @@ function _build_polar_nz_caches(
             end
         end
     end
-    diag_accum = zeros(Float64, 4, num_buses)
-    return od_from, od_to, od_ybus_nz, od_jnz, diag_jnz, diag_ybus_nz, diag_accum
+    return od_ptr, od_to, od_ybus_nz, od_jnz, diag_jnz, diag_ybus_nz
 end
 
 """
@@ -470,13 +539,13 @@ function _create_jacobian_matrix_structure_lcc(
 end
 
 """
-    _create_jacobian_matrix_structure(data::ACPowerFlowData, time_step::Int64) -> SparseMatrixCSC{Float64, $J_INDEX_TYPE}
+    _create_jacobian_matrix_structure(data::ACPowerFlowData, extra_slack_slots::Vector{Tuple{Int, Int}}) -> SparseMatrixCSC{Float64, $J_INDEX_TYPE}
 
 Create the structure of the Jacobian matrix for an AC power flow problem.
 
 # Arguments
 - `data::ACPowerFlowData`: The power flow model.
-- `time_step::Int64`: The specific time step for which the Jacobian matrix structure is created.
+- `extra_slack_slots::Vector{Tuple{Int, Int}}`: The distributed-slack slots the Ybus pattern lacks, from `_extra_slack_slots`.
 
 # Returns
 - `SparseMatrixCSC{Float64, $J_INDEX_TYPE}`: A sparse matrix with structural zeros representing the structure of the Jacobian matrix.
@@ -491,8 +560,6 @@ this function groups the partial derivatives by bus. The structure is organized 
 
 This approach is more memory-efficient. Furthermore, this structure results in a more efficient factorization because the values are more likely to be grouped close to the diagonal.
 Refer to Electric Energy Systems: Analysis and Operation by Antonio Gomez-Exposito and Fernando L. Alvarado for more details.
-
-The function initializes three arrays (`rows`, `columns`, and `values`) to store the row indices, column indices, and values of the non-zero elements of the Jacobian matrix, respectively.
 
 For each bus in the system, the function iterates over its neighboring buses and determines the type of each neighboring bus (`REF`, `PV`, or `PQ`).
 Depending on the bus type, the function adds the appropriate entries to the Jacobian matrix structure.
@@ -525,71 +592,105 @@ J = \\begin{bmatrix}
 In reality, for large networks, this matrix would be sparse, and each 2×2 block would only be nonzero
 when there's a line between the respective buses.
 
-Finally, the function constructs a sparse matrix from the collected indices and values and returns it.
+The bus blocks are written straight into CSC arrays (`_bus_block_pattern`); the few slack, LCC,
+VSC and area tail entries are assembled with `sparse` and merged in (`_merge_patterns`).
 """
 function _create_jacobian_matrix_structure(
     data::ACPowerFlowData,
-    bus_slack_participation_factors::SparseVector{Float64, Int},
-    subnetworks::Dict{Int64, Vector{Int64}},
-    time_step::Int64,
+    extra_slack_slots::Vector{Tuple{Int, Int}},
 )
-    # Create Jacobian structure
-    # Initialize arrays to store the row indices, column indices, and values of the non-zero elements of the Jacobian matrix
-    rows = J_INDEX_TYPE[]      # I
-    columns = J_INDEX_TYPE[]   # J
-    values = Float64[]  # V
-
+    rows = J_INDEX_TYPE[]
+    columns = J_INDEX_TYPE[]
+    values = Float64[]
     num_buses = first(size(data.bus_type))
-    num_lccs = size(data.lcc.p_set, 1)
-
-    num_lines = length(get_arc_lookup(data))
-    sizehint!(rows, 4 * num_lines + 15 * num_lccs)
-    sizehint!(columns, 4 * num_lines + 15 * num_lccs)
-    sizehint!(values, 4 * num_lines + 15 * num_lccs)
-
-    for bus_from in 1:num_buses
-        row_from_p = 2 * bus_from - 1  # Row index for the value that is related to active power
-        row_from_q = 2 * bus_from      # Row index for the value that is related to reactive power
-        for bus_to in data.neighbors[bus_from]
-            col_to_vm = 2 * bus_to - 1  # Column index for the value related to voltage magnitude
-            col_to_va = 2 * bus_to      # Column index for the value related to voltage angle
-            # We ignore the bus type and initialize the structure as if all buses were PQ -
-            # mainly because we can have a PV -> PQ transition, and the number of REF buses is small
-            # bus_type = data.bus_type[bus_to, time_step]
-            _create_jacobian_matrix_structure_bus!(
-                rows,
-                columns,
-                values,
-                bus_from,
-                bus_to,
-                row_from_p,
-                row_from_q,
-                col_to_vm,
-                col_to_va,
-                # Val(bus_type),
-            )
-        end
+    # Distributed slack: each participating bus k has ∂F_P_k/∂x[2*ref-1] = -c_k, a slot the
+    # Ybus pattern lacks when k is not a neighbor of the ref bus.
+    for (bus_k, ref_bus) in extra_slack_slots
+        push!(rows, J_INDEX_TYPE(2 * bus_k - 1))
+        push!(columns, J_INDEX_TYPE(2 * ref_bus - 1))
+        push!(values, 0.0)
     end
-
-    # Add structural entries for distributed slack: each participating bus k has
-    # ∂F_P_k/∂x[2*ref-1] = -c_k. If bus k is not a neighbor of the ref bus,
-    # this entry doesn't exist yet in the sparsity pattern.
-    for (ref_bus, subnetwork_buses) in subnetworks
-        for bus_k in subnetwork_buses
-            bus_slack_participation_factors[bus_k] == 0.0 && continue
-            if !(ref_bus in data.neighbors[bus_k])
-                push!(rows, J_INDEX_TYPE(2 * bus_k - 1))
-                push!(columns, J_INDEX_TYPE(2 * ref_bus - 1))
-                push!(values, 0.0)
-            end
-        end
-    end
-
     _create_jacobian_matrix_structure_lcc(data, rows, columns, values, num_buses)
     _create_jacobian_matrix_structure_vsc(data, rows, columns, values, num_buses)
     _create_jacobian_matrix_structure_area(data, rows, columns, values)
-    Jv0 = SparseArrays.sparse(rows, columns, values)
-    return Jv0
+    if isempty(rows)
+        return _bus_block_pattern(data.neighbors, num_buses, 2 * num_buses)
+    end
+    m = max(2 * num_buses, Int(maximum(rows)))
+    n = max(2 * num_buses, Int(maximum(columns)))
+    return _merge_patterns(
+        _bus_block_pattern(data.neighbors, num_buses, n),
+        SparseArrays.sparse(rows, columns, values, m, n),
+    )
+end
+
+# The all-PQ 2×2 bus blocks of every `neighbors` pair as an all-zero CSC with `n` columns: a
+# bus pair puts rows (2f-1, 2f) in columns (2t-1, 2t) for each t in neighbors[f]. Scanning f in
+# order fills each column's rows already sorted, so no sort or duplicate pass is needed.
+function _bus_block_pattern(neighbors::Vector{Set{Int}}, num_buses::Int, n::Int)
+    count = zeros(Int, num_buses)
+    for bus_from in 1:num_buses, bus_to in neighbors[bus_from]
+        count[bus_to] += 1
+    end
+    colptr = Vector{J_INDEX_TYPE}(undef, n + 1)
+    colptr[1] = 1
+    for bus_to in 1:num_buses
+        colptr[2 * bus_to] = colptr[2 * bus_to - 1] + 2 * count[bus_to]
+        colptr[2 * bus_to + 1] = colptr[2 * bus_to] + 2 * count[bus_to]
+    end
+    colptr[(2 * num_buses + 2):end] .= colptr[2 * num_buses + 1]
+    nnz_total = colptr[2 * num_buses + 1] - 1
+    rowval = Vector{J_INDEX_TYPE}(undef, nnz_total)
+    next = colptr[1:2:(2 * num_buses)]
+    for bus_from in 1:num_buses, bus_to in neighbors[bus_from]
+        p = next[bus_to]
+        q = p + 2 * count[bus_to]
+        rowval[p] = 2 * bus_from - 1
+        rowval[p + 1] = 2 * bus_from
+        rowval[q] = 2 * bus_from - 1
+        rowval[q + 1] = 2 * bus_from
+        next[bus_to] = p + 2
+    end
+    return SparseArrays.SparseMatrixCSC(
+        2 * num_buses, n, colptr, rowval, zeros(Float64, nnz_total))
+end
+
+# Union of two sorted, duplicate-free CSC patterns with `size(B)` (`A` may have fewer rows),
+# summing the values where both hold an entry, as `sparse` combines duplicates.
+function _merge_patterns(
+    A::SparseArrays.SparseMatrixCSC{Float64, J_INDEX_TYPE},
+    B::SparseArrays.SparseMatrixCSC{Float64, J_INDEX_TYPE},
+)
+    m, n = size(B)
+    ra, va = SparseArrays.rowvals(A), SparseArrays.nonzeros(A)
+    rb, vb = SparseArrays.rowvals(B), SparseArrays.nonzeros(B)
+    colptr = Vector{J_INDEX_TYPE}(undef, n + 1)
+    rowval = Vector{J_INDEX_TYPE}(undef, SparseArrays.nnz(A) + SparseArrays.nnz(B))
+    nzval = Vector{Float64}(undef, length(rowval))
+    colptr[1] = 1
+    p = 1
+    for j in 1:n
+        ia, ea = A.colptr[j], A.colptr[j + 1]
+        ib, eb = B.colptr[j], B.colptr[j + 1]
+        while ia < ea || ib < eb
+            if ib == eb || (ia < ea && ra[ia] < rb[ib])
+                rowval[p], nzval[p] = ra[ia], va[ia]
+                ia += 1
+            elseif ia == ea || rb[ib] < ra[ia]
+                rowval[p], nzval[p] = rb[ib], vb[ib]
+                ib += 1
+            else
+                rowval[p], nzval[p] = ra[ia], va[ia] + vb[ib]
+                ia += 1
+                ib += 1
+            end
+            p += 1
+        end
+        colptr[j + 1] = p
+    end
+    resize!(rowval, p - 1)
+    resize!(nzval, p - 1)
+    return SparseArrays.SparseMatrixCSC(m, n, colptr, rowval, nzval)
 end
 
 # Structural slots for the VSC tail (polar). Bus×converter injection, the two control rows per
@@ -837,115 +938,180 @@ end
 """Bus indices of REF buses sharing an island with another REF (multi-swing). Each
 self-balances its own P-slot (`∂F_P/∂x[2i−1] = −1`) instead of the distributed island
 scalar; single-swing islands are excluded and keep the distributed-slack path."""
-function _multi_swing_ref_indices(
+_multi_swing_ref_indices(
+    bus_type::AbstractMatrix{PSY.ACBusTypes.Value},
+    subnetworks::Dict{Int64, Vector{Int64}},
+    time_step::Int64,
+) = _multi_swing_ref_indices!(Set{Int}(), bus_type, subnetworks, time_step)
+
+function _multi_swing_ref_indices!(
+    independent::Set{Int},
     bus_type::AbstractMatrix{PSY.ACBusTypes.Value},
     subnetworks::Dict{Int64, Vector{Int64}},
     time_step::Int64,
 )
-    independent = Set{Int}()
+    empty!(independent)
     for subnetwork_buses in values(subnetworks)
-        refs = filter(ix -> bus_type[ix, time_step] == PSY.ACBusTypes.REF, subnetwork_buses)
-        length(refs) > 1 && union!(independent, refs)
+        n_ref = count(ix -> bus_type[ix, time_step] == PSY.ACBusTypes.REF, subnetwork_buses)
+        n_ref > 1 || continue
+        for ix in subnetwork_buses
+            bus_type[ix, time_step] == PSY.ACBusTypes.REF && push!(independent, ix)
+        end
     end
     return independent
 end
 
-"""Update Jv from the bus voltages/angles in `data`.
+"""Marks a Jacobian-only sweep: the bus-row residual writes compile away."""
+struct NoResidualRows end
+
+@inline _write_bus_rows!(::NoResidualRows, ::Int, ::Float64, ::Float64) = nothing
+@inline function _write_bus_rows!(F::Vector{Float64}, i::Int, fp::Float64, fq::Float64)
+    F[2 * i - 1] = fp
+    F[2 * i] = fq
+    return
+end
+
+"""
+    _update_residual_and_jacobian!(R::ACPowerFlowResidual, J::ACPowerFlowJacobian, x::Vector{Float64}, data::ACPowerFlowData, time_step::Int64)
+
+Fused polar kernel: evaluate the residual `R.Rv` at `x` and fill `J.Jv` at the same iterate in
+one sweep over Ybus. Equals `R(data, x, time_step)` then `J(data, time_step)` up to the
+summation order of the residual rows, except that `data` receives the iterate's voltages and
+injections only at the next [`_write_back_bus_state!`](@ref).
+"""
+function _update_residual_and_jacobian!(
+    R::ACPowerFlowResidual,
+    J::ACPowerFlowJacobian,
+    x::Vector{Float64},
+    data::ACPowerFlowData,
+    time_step::Int64,
+)
+    _update_residual_state!(R, x, data, time_step, WriteBackDeferred())
+    R.Rv .= 0.0
+    _polar_ybus_sweep!(J, R.Rv, data, time_step)
+    # The residual tails refresh LCC/VSC/area state the Jacobian tails read.
+    _finish_residual!(R, x, data, time_step)
+    _set_jacobian_tails!(J, data, time_step)
+    return
+end
+
+function _update_jacobian_matrix_values!(
+    J::ACPowerFlowJacobian,
+    data::ACPowerFlowData,
+    time_step::Int64,
+)
+    _polar_ybus_sweep!(J, NoResidualRows(), data, time_step)
+    _set_jacobian_tails!(J, data, time_step)
+    return
+end
+
+"""Fill the Ybus part of Jv (and the distributed-slack cross-terms) from `J.bus_state` (|V| and
+cis(θ), refilled by the caller); with `F::Vector{Float64}` also write
+the Ybus part of the residual bus rows.
 
 INVARIANT (Phase 3 depends on this): every structural nonzero produced by the
 Ybus sweep is written on every call — including the slots that are genuinely 0
 for PV/REF neighbors and the constant REF/PV diagonal-block entries the old fill
 only set at construction. The hot path writes `nonzeros(Jv)` through the
 construction-time offset caches (`od_jnz`, `diag_jnz`); no setindex/getindex on
-sparse matrices and exactly one `sincos(θ_from − θ_to)` per directed Ybus edge.
-Slack cross-terms and LCC tail entries are small, structural-only sets and stay
-on the existing setindex path."""
-function _update_jacobian_matrix_values!(
-    Jv::SparseArrays.SparseMatrixCSC{Float64, J_INDEX_TYPE},
+sparse matrices and no trig per Ybus nonzero: cis(θ_from − θ_to) is
+`phasor[from] * conj(phasor[to])`.
+Slack cross-terms go through `slack_jnz`; LCC tail entries are a small,
+structural-only set and stay on the setindex path."""
+function _polar_ybus_sweep!(
+    J::ACPowerFlowJacobian,
+    F::Union{Vector{Float64}, NoResidualRows},
     data::ACPowerFlowData,
     time_step::Int64,
-    bus_slack_participation_factors::SparseVector{Float64, Int},
-    subnetworks::Dict{Int64, Vector{Int64}},
-    independent_ref::Set{Int},
-    bus_active_constant_I::Vector{Float64},
-    bus_reactive_constant_I::Vector{Float64},
-    bus_active_constant_Z::Vector{Float64},
-    bus_reactive_constant_Z::Vector{Float64},
-    od_from::Vector{Int},
-    od_to::Vector{Int},
-    od_ybus_nz::Vector{Int},
-    od_jnz::Matrix{Int},
-    diag_jnz::Matrix{Int},
-    diag_ybus_nz::Vector{Int},
-    diag_accum::Matrix{Float64},
 )
+    Jv = J.Jv
+    od_ptr = J.od_ptr
+    od_to = J.od_to
+    od_ybus_nz = J.od_ybus_nz
+    od_jnz = J.od_jnz
+    diag_jnz = J.diag_jnz
+    diag_ybus_nz = J.diag_ybus_nz
+    e = J.bus_state.phasor
+    bus_slack_participation_factors = J.bus_slack_participation_factors
+    independent_ref = J.independent_ref
+    bus_active_constant_I = J.bus_active_constant_I
+    bus_reactive_constant_I = J.bus_reactive_constant_I
+    bus_active_constant_Z = J.bus_active_constant_Z
+    bus_reactive_constant_Z = J.bus_reactive_constant_Z
     Yb = data.power_network_matrix.data
     Yb_vals = SparseArrays.nonzeros(Yb)
     Jvnz = SparseArrays.nonzeros(Jv)
-    Vm = view(data.bus_magnitude, :, time_step)
-    θ = view(data.bus_angles, :, time_step)
+    Vm = J.bus_state.Vm
     bus_types = view(data.bus_type, :, time_step)
     num_buses = first(size(data.bus_type))
 
-    fill!(diag_accum, 0.0)
-
-    # Off-diagonal sweep. diag_accum rows mirror the old `diag_elements`:
-    # 1: ∂P∂θ_from, 2: ∂Q∂θ_from, 3: ∂P∂V_from, 4: ∂Q∂V_from.
-    @inbounds for e in eachindex(od_from)
-        bus_from = od_from[e]
-        bus_to = od_to[e]
-        y = Yb_vals[od_ybus_nz[e]]
-        g_ij = real(y)
-        b_ij = imag(y)
-        Vm_from = Vm[bus_from]
-        Vm_to = Vm[bus_to]
-        sinθ, cosθ = sincos(θ[bus_from] - θ[bus_to])
-        p_vm_common = g_ij * cosθ + b_ij * sinθ
-        q_vm_common = g_ij * sinθ - b_ij * cosθ
-        p_va_common = Vm_from * Vm_to * q_vm_common          # Vm_f·Vm_t·(g·sin − b·cos)
-        q_va_common = Vm_from * Vm_to * (-g_ij * cosθ - b_ij * sinθ)
-        # Diagonal accumulation is bus_to-type-independent (REF/PV/PQ identical).
-        diag_accum[3, bus_from] += Vm_to * p_vm_common
-        diag_accum[1, bus_from] -= p_va_common
-        diag_accum[4, bus_from] += Vm_to * q_vm_common
-        diag_accum[2, bus_from] -= q_va_common
-        # Off-diagonal slot values depend on bus_to type: PQ writes all four; PV
-        # zeroes the (·, Vm) columns (Vm_to not a state); REF zeroes all four
-        # (its columns hold P_gen/Q_gen). Every slot is written each call.
-        bt = bus_types[bus_to]
-        if bt == PSY.ACBusTypes.PQ
-            Jvnz[od_jnz[1, e]] = Vm_from * p_vm_common  # Jv[p, vm]
-            Jvnz[od_jnz[2, e]] = Vm_from * q_vm_common  # Jv[q, vm]
-            Jvnz[od_jnz[3, e]] = p_va_common            # Jv[p, va]
-            Jvnz[od_jnz[4, e]] = q_va_common            # Jv[q, va]
-        elseif bt == PSY.ACBusTypes.PV
-            Jvnz[od_jnz[1, e]] = 0.0
-            Jvnz[od_jnz[2, e]] = 0.0
-            Jvnz[od_jnz[3, e]] = p_va_common
-            Jvnz[od_jnz[4, e]] = q_va_common
-        else  # REF
-            Jvnz[od_jnz[1, e]] = 0.0
-            Jvnz[od_jnz[2, e]] = 0.0
-            Jvnz[od_jnz[3, e]] = 0.0
-            Jvnz[od_jnz[4, e]] = 0.0
-        end
-    end
-
-    # Diagonal blocks. diag_jnz rows: 1: Jv[p, vm], 2: Jv[q, vm], 3: Jv[p, va],
-    # 4: Jv[q, va]. diag_accum slot 3→Jv[p,vm], 4→Jv[q,vm], 1→Jv[p,va], 2→Jv[q,va].
     @inbounds for bus_from in 1:num_buses
         Vm_from = Vm[bus_from]
+        e_from = e[bus_from]
+        # Off-diagonal parts of the self block and of the P and Q injections.
+        dp_dθ = 0.0
+        dq_dθ = 0.0
+        dp_dv = 0.0
+        dq_dv = 0.0
+        fp = 0.0
+        fq = 0.0
+        for k in od_ptr[bus_from]:(od_ptr[bus_from + 1] - 1)
+            bus_to = od_to[k]
+            y = Yb_vals[od_ybus_nz[k]]
+            g_ij = real(y)
+            b_ij = imag(y)
+            Vm_to = Vm[bus_to]
+            c = e_from * conj(e[bus_to])
+            cosθ = real(c)
+            sinθ = imag(c)
+            p_vm_common = g_ij * cosθ + b_ij * sinθ
+            q_vm_common = g_ij * sinθ - b_ij * cosθ
+            vv = Vm_from * Vm_to
+            p_va_common = vv * q_vm_common          # Vm_f·Vm_t·(g·sin − b·cos)
+            q_va_common = vv * (-g_ij * cosθ - b_ij * sinθ)
+            fp += vv * p_vm_common
+            fq += vv * q_vm_common
+            # Diagonal accumulation is bus_to-type-independent (REF/PV/PQ identical).
+            dp_dv += Vm_to * p_vm_common
+            dp_dθ -= p_va_common
+            dq_dv += Vm_to * q_vm_common
+            dq_dθ -= q_va_common
+            # Off-diagonal slot values depend on bus_to type: PQ writes all four; PV
+            # zeroes the (·, Vm) columns (Vm_to not a state); REF zeroes all four
+            # (its columns hold P_gen/Q_gen). Every slot is written each call.
+            bt = bus_types[bus_to]
+            if bt == PSY.ACBusTypes.PQ
+                Jvnz[od_jnz[1, k]] = Vm_from * p_vm_common  # Jv[p, vm]
+                Jvnz[od_jnz[2, k]] = Vm_from * q_vm_common  # Jv[q, vm]
+                Jvnz[od_jnz[3, k]] = p_va_common            # Jv[p, va]
+                Jvnz[od_jnz[4, k]] = q_va_common            # Jv[q, va]
+            elseif bt == PSY.ACBusTypes.PV
+                Jvnz[od_jnz[1, k]] = 0.0
+                Jvnz[od_jnz[2, k]] = 0.0
+                Jvnz[od_jnz[3, k]] = p_va_common
+                Jvnz[od_jnz[4, k]] = q_va_common
+            else  # REF
+                Jvnz[od_jnz[1, k]] = 0.0
+                Jvnz[od_jnz[2, k]] = 0.0
+                Jvnz[od_jnz[3, k]] = 0.0
+                Jvnz[od_jnz[4, k]] = 0.0
+            end
+        end
+        yii = if iszero(diag_ybus_nz[bus_from])
+            zero(eltype(Yb_vals))
+        else
+            Yb_vals[diag_ybus_nz[bus_from]]
+        end
+        vv_ii = Vm_from * Vm_from
+        _write_bus_rows!(F, bus_from, fp + vv_ii * real(yii), fq - vv_ii * imag(yii))
+
+        # diag_jnz rows: 1: Jv[p, vm], 2: Jv[q, vm], 3: Jv[p, va], 4: Jv[q, va].
         bt = bus_types[bus_from]
         if bt == PSY.ACBusTypes.PQ
-            Jvnz[diag_jnz[3, bus_from]] = diag_accum[1, bus_from]  # ∂P∂θ_from
-            Jvnz[diag_jnz[4, bus_from]] = diag_accum[2, bus_from]  # ∂Q∂θ_from
-            yii = if diag_ybus_nz[bus_from] == 0
-                zero(eltype(Yb_vals))
-            else
-                Yb_vals[diag_ybus_nz[bus_from]]
-            end
-            d3 = diag_accum[3, bus_from] + 2 * real(yii) * Vm_from  # ∂P∂V_from
-            d4 = diag_accum[4, bus_from] - 2 * imag(yii) * Vm_from  # ∂Q∂V_from
+            Jvnz[diag_jnz[3, bus_from]] = dp_dθ
+            Jvnz[diag_jnz[4, bus_from]] = dq_dθ
+            d3 = dp_dv + 2 * real(yii) * Vm_from  # ∂P∂V_from
+            d4 = dq_dv - 2 * imag(yii) * Vm_from  # ∂Q∂V_from
             # ZIP chain rule: P_net(V) = P₀ − const_I_P·V − const_Z_P·V², so ∂F_P/∂V
             # picks up −∂P_net/∂V = +const_I_P + 2·const_Z_P·V (same shape on Q).
             d3 +=
@@ -954,13 +1120,13 @@ function _update_jacobian_matrix_values!(
             d4 +=
                 bus_reactive_constant_I[bus_from] +
                 2 * bus_reactive_constant_Z[bus_from] * Vm_from
-            Jvnz[diag_jnz[1, bus_from]] = d3  # ∂P∂V_from
-            Jvnz[diag_jnz[2, bus_from]] = d4  # ∂Q∂V_from
+            Jvnz[diag_jnz[1, bus_from]] = d3
+            Jvnz[diag_jnz[2, bus_from]] = d4
         elseif bt == PSY.ACBusTypes.PV
             Jvnz[diag_jnz[1, bus_from]] = 0.0
             Jvnz[diag_jnz[2, bus_from]] = -1.0
-            Jvnz[diag_jnz[3, bus_from]] = diag_accum[1, bus_from]  # ∂P∂θ_from
-            Jvnz[diag_jnz[4, bus_from]] = diag_accum[2, bus_from]  # ∂Q∂θ_from
+            Jvnz[diag_jnz[3, bus_from]] = dp_dθ
+            Jvnz[diag_jnz[4, bus_from]] = dq_dθ
         else  # REF
             if bus_from in independent_ref
                 # Multi-swing island: this swing self-balances at its own P-slot, so
@@ -975,26 +1141,35 @@ function _update_jacobian_matrix_values!(
         end
     end
 
-    # Distributed slack cross-terms: for each participating bus k (other than the
-    # REF bus), the active power residual depends on the REF bus state variable
-    # x[2*ref-1] through the slack distribution: ∂F_P_k/∂x[2*ref-1] = -c_k.
-    for (ref_bus, subnetwork_buses) in subnetworks
-        # Multi-swing island: each swing self-balances at its own P-slot (handled in the
-        # per-bus diagonal fill above); there is no single distributed scalar to couple, so
-        # skip the cross-terms entirely.
-        ref_bus in independent_ref && continue
-        col_ref = 2 * ref_bus - 1
+    # Distributed slack cross-terms: for each bus k (other than the REF bus), the active power
+    # residual depends on the REF bus state variable x[2*ref-1] through the slack distribution:
+    # ∂F_P_k/∂x[2*ref-1] = -c_k. Every slot is written, so a factor that drops to zero (or an
+    # island turning multi-swing, where each swing self-balances) leaves no stale value.
+    slack_jnz = J.slack_jnz
+    @inbounds for (ref_bus, subnetwork_buses) in J.subnetworks
+        multi_swing = ref_bus in independent_ref
         for bus_k in subnetwork_buses
-            bus_k == ref_bus && continue
-            c_k = bus_slack_participation_factors[bus_k]
-            c_k == 0.0 && continue
-            Jv[2 * bus_k - 1, col_ref] = -c_k
+            o = slack_jnz[bus_k]
+            iszero(o) && continue
+            if multi_swing
+                Jvnz[o] = 0.0
+            else
+                Jvnz[o] = -bus_slack_participation_factors[bus_k]
+            end
         end
     end
+    return
+end
 
-    _set_entries_for_lcc(data, Jv, num_buses, time_step)
-    _set_entries_for_vsc(data, Jv, num_buses, time_step)
-    _set_entries_for_area(data, Jv, time_step)
+function _set_jacobian_tails!(
+    J::ACPowerFlowJacobian,
+    data::ACPowerFlowData,
+    time_step::Int64,
+)
+    num_buses = first(size(data.bus_type))
+    _set_entries_for_lcc(data, J.Jv, num_buses, time_step)
+    _set_entries_for_vsc(data, J.Jv, num_buses, time_step)
+    _set_entries_for_area(data, J.Jv, time_step)
     return
 end
 

@@ -64,8 +64,6 @@ import Printf: @sprintf
 import LineSearches: BackTracking
 
 include("definitions.jl")
-# Before PowerFlowData.jl: defines PFLinearSolverCache and AbstractNRCache, which
-# type the lazily-populated cache slots on PowerFlowData.
 include("linear_solver_backend.jl")
 include("solution_parameters.jl")
 # `AreaInterchangeData` must be defined before `power_flow_types.jl` references it in

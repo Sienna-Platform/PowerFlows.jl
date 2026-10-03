@@ -15,6 +15,17 @@ abstract type SystemPowerFlowContainer <: PowerFlowContainer end
 
 get_system(container::SystemPowerFlowContainer) = container.system
 
+"""Solver-cache refs one threaded time-step worker keeps between calls, so a repeated solve
+reuses its Newton workspace instead of rebuilding it."""
+struct WorkerSlot
+    solver_cache::Base.RefValue{Union{Nothing, SolverCache}}
+    polar_nr_cache::Base.RefValue{Union{Nothing, AbstractNRCache}}
+end
+WorkerSlot() = WorkerSlot(
+    Base.RefValue{Union{Nothing, SolverCache}}(nothing),
+    Base.RefValue{Union{Nothing, AbstractNRCache}}(nothing),
+)
+
 """
     PowerFlowData{M <: PNM.PowerNetworkMatrix, N <: Union{PNM.PowerNetworkMatrix, Nothing}}
 
@@ -144,6 +155,7 @@ struct PowerFlowData{
     arc_bus_incidence::Union{SparseMatrixCSC{Int8, Int}, Nothing}
     neighbors::Vector{Set{Int}}
     converged::BitVector
+    iterations::Vector{Int}
     loss_factors::Union{Matrix{Float64}, Nothing}
     voltage_stability_factors::Union{Matrix{Float64}, Nothing}
     arc_active_power_losses::Union{Matrix{Float64}, Nothing}
@@ -173,6 +185,9 @@ struct PowerFlowData{
     # slot so it never contends with a DC/FD `solver_cache`. Typed as the `AbstractNRCache` forward
     # supertype because `PolarNRCache` is defined later, in `power_flow_method.jl`.
     polar_nr_cache::Base.RefValue{Union{Nothing, AbstractNRCache}}
+    # One per threaded time-step worker, kept between calls so a repeated solve reuses them.
+    # A worker's own data holds none.
+    worker_slots::Vector{WorkerSlot}
 end
 
 # aliases for specific type parameter combinations.
@@ -255,6 +270,10 @@ get_aux_network_matrix(pfd::PowerFlowData) = pfd.aux_network_matrix
 get_neighbor(pfd::PowerFlowData) = pfd.neighbors
 supports_multi_period(::PowerFlowData) = true
 get_converged(pfd::PowerFlowData) = pfd.converged
+"""Iterations per time step of the latest AC solve, summed over every iterative solve that step
+ran (cold retry, Q-limit and area-interchange passes). 0 for a start already within tolerance and
+for DC power flows."""
+get_iterations(pfd::PowerFlowData) = pfd.iterations
 get_loss_factors(pfd::PowerFlowData) = pfd.loss_factors
 get_voltage_stability_factors(pfd::PowerFlowData) = pfd.voltage_stability_factors
 get_arc_active_power_losses(pfd::PowerFlowData) = pfd.arc_active_power_losses
@@ -436,6 +455,7 @@ function PowerFlowData(
         arc_bus_incidence,
         neighbors,
         falses(n_time_steps), # converged
+        zeros(Int, n_time_steps), # iterations
         calculate_loss_factors ? zeros(n_buses, n_time_steps) : nothing, # loss_factors
         calculate_voltage_stability_factors ? zeros(n_buses, n_time_steps) : nothing, # voltage_stability_factors
         _make_arc_active_power_losses(pf, n_arcs, n_time_steps), # arc_active_power_losses
@@ -460,6 +480,7 @@ function PowerFlowData(
         controlled_devices,
         Base.RefValue{Union{Nothing, ACJacobianStructureCache}}(nothing), # ac_jacobian_structure_cache
         Base.RefValue{Union{Nothing, AbstractNRCache}}(nothing), # polar_nr_cache (lazily populated)
+        WorkerSlot[], # worker_slots
     )
 end
 

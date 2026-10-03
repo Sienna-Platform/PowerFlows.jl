@@ -45,7 +45,7 @@ end
 # relative-residual guard here on a synthetic probe solve rather than trusting only
 # `SingularException`.
 # `probe` is reused across calls: `r` holds the all-ones right-hand side, `Δx_nr` its solve.
-function _singular_base_solve!(probe, lin_cache::PFLinearSolverCache, J)
+function _singular_base_solve!(probe, lin_cache::PNM.LinearSolverCache, J)
     fill!(probe.r, 1.0)
     fill!(probe.Δx_nr, 1.0)
     solve!(lin_cache, probe.Δx_nr)

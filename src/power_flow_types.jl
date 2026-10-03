@@ -28,16 +28,34 @@ discriminates which path populated it — no sentinel tag is needed and a cross-
 `MethodError` rather than a silent reuse."""
 abstract type SolverCache end
 
+"""One frozen KLU pivot order (`PNM.KLUWrapper.LeanLUPlan`) for a Jacobian structure, built
+once on the operating-point-free Jacobian (|V| = 1, θ = 0) by [`_lean_plan_slot!`](@ref).
+`tried` is set by the first build attempt, so tasks sharing the slot never write it; `valid` is
+false when that attempt found the Jacobian singular. `bus_types` are the bus types that Jacobian
+was built with, for comparing a solve's bus types against the plan's."""
+mutable struct LeanPlanSlot
+    plan::PNM.KLUWrapper.LeanLUPlan
+    tried::Bool
+    valid::Bool
+    bus_types::Vector{PSY.ACBusTypes.Value}
+end
+
+LeanPlanSlot() =
+    LeanPlanSlot(PNM.KLUWrapper.LeanLUPlan(), false, false, PSY.ACBusTypes.Value[])
+
 """Memoized AC-Jacobian sparse structure, stored in its OWN `PowerFlowData` field (not the shared
 `solver_cache` slot): the NR/TR AC Jacobian and a [`SolverCache`](@ref) can both be live in one
 solve — e.g. a FastDecoupled solve that hands off to NR uses a `FastDecoupledCache` *and* this
 structure — so the two must not contend for a single slot. Cache key is the network-matrix
-identity + slack nonzero pattern (`nzind`); see `_get_or_build_jacobian_structure`."""
+identity + the distributed-slack slots the Ybus pattern lacks (`_extra_slack_slots`); see
+`_get_or_build_jacobian_structure`. `lean` holds the KLU lean-LU pivot order shared by every
+polar NR cache built on `structure` ([`LeanPlanSlot`](@ref))."""
 struct ACJacobianStructureCache
     matrix::PNM.AC_Ybus_Matrix
-    nzind::Vector{Int}
+    slack_slots::Vector{Tuple{Int, Int}}
     structure::SparseMatrixCSC{Float64, J_INDEX_TYPE}
     area_data::AreaInterchangeData
+    lean::LeanPlanSlot
 end
 
 # Centralized so the multi-line warning text can't drift between the two
@@ -109,6 +127,19 @@ function _validate_discrete_control_settings(
             ),
         )
     end
+    return
+end
+
+function _validate_n_threads(n_threads::Int)
+    n_threads >= 1 || throw(ArgumentError("n_threads must be >= 1, got $n_threads."))
+    return
+end
+
+# Any formulation and solver threads; the backend must be safe under concurrent factorization.
+function _validate_threading_settings(params::SolutionParameters)
+    _validate_n_threads(params.n_threads)
+    params.n_threads == 1 && return
+    _check_concurrent_factorization(resolve_linear_solver_backend(params.linear_solver))
     return
 end
 
@@ -556,6 +587,7 @@ function ACPolarPowerFlow{ACSolver}(;
         generator_slack_participation_factors,
         distribute_slack_proportional_to_headroom,
     )
+    _validate_threading_settings(params)
     # Returns the possibly-floored tolerance, so the stored parameters carry the value the
     # solve will actually use rather than the one the caller asked for.
     params = _override(
@@ -644,6 +676,7 @@ get_interchange_tolerance(::PowerFlowEvaluationModel) = DEFAULT_INTERCHANGE_TOLE
 get_tie_definition(pf::AbstractACPowerFlow) =
     get_solution_parameters(pf).tie_definition
 get_tie_definition(::PowerFlowEvaluationModel) = :lines_only
+get_n_threads(pf::AbstractACPowerFlow) = get_solution_parameters(pf).n_threads
 
 """
     ACRectangularPowerFlow{ACSolver}(; kwargs...) where {ACSolver <: ACPowerFlowSolverType}
@@ -763,6 +796,7 @@ function ACRectangularPowerFlow{ACSolver}(;
         time_steps,
     )
     _validate_discrete_control_settings(params.control_discrete_devices, ACSolver)
+    _validate_threading_settings(params)
     params = _resolve_solver_defaults(
         params,
         ACRectangularPowerFlow,
@@ -905,6 +939,7 @@ function ACMixedPowerFlow{ACSolver}(;
         time_steps,
     )
     _validate_discrete_control_settings(params.control_discrete_devices, ACSolver)
+    _validate_threading_settings(params)
     params = _resolve_solver_defaults(params, ACMixedPowerFlow, ACSolver, marquardt_scaling)
     return ACMixedPowerFlow{ACSolver}(
         exporter,
@@ -1138,6 +1173,9 @@ where creating and storing the full PTDF matrix would be infeasible or slow. See
 - `distribute_slack_proportional_to_headroom::Bool`: Whether to distribute the slack proportional to
     generator headroom. Default is `false`.
 - `skip_redistribution::Bool`: Whether to skip slack redistribution. Default is `false`.
+- `n_threads::Int`: Number of workers a caller that parallelizes over this model (e.g. a
+    contingency analysis) may use. PowerFlows' own vPTDF solve does not read it. Must be
+    `>= 1`. Default is `1`.
 """
 struct vPTDFDCPowerFlow <: AbstractDCPowerFlow
     exporter::Union{Nothing, PowerFlowEvaluationModel}
@@ -1153,6 +1191,7 @@ struct vPTDFDCPowerFlow <: AbstractDCPowerFlow
     time_steps::Int
     time_step_names::Vector{String}
     correct_bustypes::Bool
+    n_threads::Int
 end
 
 function vPTDFDCPowerFlow(;
@@ -1169,12 +1208,14 @@ function vPTDFDCPowerFlow(;
     time_steps::Int = 1,
     time_step_names::Vector{String} = String[],
     correct_bustypes::Bool = false,
+    n_threads::Int = 1,
 )
     _validate_slack_distribution_settings(
         distribute_slack_proportional_to_headroom,
         generator_slack_participation_factors,
         time_steps,
     )
+    _validate_n_threads(n_threads)
     return vPTDFDCPowerFlow(
         exporter,
         calculate_loss_factors,
@@ -1185,11 +1226,13 @@ function vPTDFDCPowerFlow(;
         time_steps,
         time_step_names,
         correct_bustypes,
+        n_threads,
     )
 end
 
 get_calculate_loss_factors(pf::PTDFDCPowerFlow) = pf.calculate_loss_factors
 get_calculate_loss_factors(pf::vPTDFDCPowerFlow) = pf.calculate_loss_factors
+get_n_threads(pf::vPTDFDCPowerFlow) = pf.n_threads
 get_lossy_flows(pf::DCPowerFlow) = pf.lossy_flows
 
 # See also: PSSEExportPowerFlow in psse_export.jl

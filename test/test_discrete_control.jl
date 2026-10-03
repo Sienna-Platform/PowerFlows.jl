@@ -1348,16 +1348,14 @@ end
     d = first(set.taps)
     pre_v = copy(data.bus_magnitude[:, ts])
     pre_q = copy(data.bus_reactive_power_injections[:, ts])
-    # `_run_power_flow_method`'s loop guard is `i < maxIterations` with i starting at 1,
-    # so maxIterations=1 (or 0) takes ZERO real steps — maxIterations=2 is the smallest
-    # budget that runs exactly one real NR step (mutating bus_magnitude away from the
+    # maxIterations=1 runs exactly one real NR step (mutating bus_magnitude away from the
     # poisoned start) while still failing to converge from such a bad warm start.
     data.bus_magnitude[:, ts] .= 0.05
     snapshot_v = copy(data.bus_magnitude[:, ts])
     scratch_snap = PowerFlows._snapshot_state(data, ts)
     ok = PowerFlows._restore_one!(
         d, data, ts, PowerFlows.current_parameter(d), pf, scratch_snap;
-        maxIterations = 2)
+        maxIterations = 1)
     @test !ok
     # On failure the pre-call state must be untouched (no diverged iterate left).
     @test data.bus_magnitude[:, ts] == snapshot_v
