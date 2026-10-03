@@ -207,3 +207,65 @@ end
         @test threaded_state() == reference
     end
 end
+
+@testset "_copy_for_task shares read-only state only" begin
+    pf = ACPolarPowerFlow(;
+        solution_parameters = SolutionParameters(; linear_solver = "KLU"))
+    data = PowerFlowData(pf,
+        PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false))
+    @test solve_power_flow!(data)
+    entry = data.polar_nr_cache[]
+    slot = data.ac_jacobian_structure_cache[].lean
+    dup = PF._copy_for_task(entry, slot, data, 1)
+    for f in (:od_ptr, :od_to, :od_ybus_nz, :od_jnz, :diag_jnz, :diag_ybus_nz)
+        @test getfield(dup.J, f) === getfield(entry.J, f)
+    end
+    @test dup.arc_flows.arcs === entry.arc_flows.arcs
+    @test dup.arc_flows.fb_ix === entry.arc_flows.fb_ix
+    @test dup.arc_flows.tb_ix === entry.arc_flows.tb_ix
+    @test dup.lean === entry.lean
+    @test dup.linSolveCache !== entry.linSolveCache
+    @test dup.J.Jv !== entry.J.Jv
+    @test dup.J.Jv == entry.J.Jv
+    @test dup.residual.Rv !== entry.residual.Rv
+    @test dup.J.bus_state === dup.residual.bus_state
+    @test dup.J.bus_state !== entry.J.bus_state
+    @test dup.stateVector.x !== entry.stateVector.x
+    @test isnothing(dup.stateVector.fallback_cache[])
+    @test isnothing(dup.stateVector.fallback_matrix[])
+    @test dup.arc_flows.V !== entry.arc_flows.V
+    @test dup.x0 !== entry.x0
+    @test dup.partition !== entry.partition
+    @test dup.J.bus_slack_participation_factors ===
+          dup.residual.bus_slack_participation_factors
+    @test dup.J.bus_slack_participation_factors !==
+          entry.J.bus_slack_participation_factors
+    @test PNM.KLUWrapper.has_lean_plan(dup.linSolveCache)
+end
+
+@testset "a copy never takes a swapped plan" begin
+    pf = ACPolarPowerFlow(;
+        solution_parameters = SolutionParameters(; linear_solver = "KLU"))
+    data = PowerFlowData(pf,
+        PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false))
+    @test solve_power_flow!(data)
+    k = findlast(==(PSY.ACBusTypes.PV), data.bus_type[:, 1])
+    data.bus_type[k, 1] = PSY.ACBusTypes.REF
+    data.bus_active_power_withdrawals .*= 1.01
+    @test solve_power_flow!(data)
+    entry = data.polar_nr_cache[]
+    slot = entry.lean
+    q0 = copy(slot.plan.q)
+    @test entry.linSolveCache.lean_plan.q != slot.plan.q
+    dup = PF._copy_for_task(entry, slot, data, 1)
+    lin, seed = dup.linSolveCache, entry.linSolveCache
+    @test lin.lean_plan.p === slot.plan.p
+    @test lin.lean_q !== seed.lean_q
+    @test lin.lean_plan.q !== seed.lean_plan.q
+    @test slot.plan.q == q0
+    @test entry.linSolveCache.lean_plan.q != slot.plan.q
+
+    data.bus_type[k, 1] = PSY.ACBusTypes.PV
+    dup2 = PF._copy_for_task(entry, slot, data, 1)
+    @test dup2.linSolveCache.lean_plan === slot.plan
+end

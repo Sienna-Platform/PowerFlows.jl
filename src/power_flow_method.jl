@@ -111,6 +111,56 @@ struct PolarNRCache{C <: PNM.LinearSolverCache} <: AbstractNRCache
     partition::SubnetworkScratch
 end
 
+"""Copy of a polar NR cache for another worker. Shares the read-only Jacobian index maps, arc
+index vectors and lean slot, and owns everything a solve writes. Its KLU cache takes the
+slot's pristine plan, never `entry`'s current one: a swapped plan's `q` is `entry`'s own
+`lean_q`, which `entry`'s next swap overwrites."""
+function _copy_for_task(
+    entry::PolarNRCache{<:PNM.KLULinSolveCache},
+    slot::LeanPlanSlot,
+    data::ACPowerFlowData,
+    time_step::Int,
+)
+    J, sv, af = entry.J, entry.stateVector, entry.arc_flows
+    substitutes = IdDict{Any, Any}(
+        sv.fallback_cache => typeof(sv.fallback_cache)(nothing),
+        sv.fallback_matrix => typeof(sv.fallback_matrix)(nothing),
+    )
+    for a in (J.od_ptr, J.od_to, J.od_ybus_nz, J.od_jnz, J.diag_jnz, J.diag_ybus_nz,
+        af.arcs, af.fb_ix, af.tb_ix)
+        substitutes[a] = a
+    end
+    lin = _polar_jacobian_cache(entry.backend, J.Jv)
+    # PNM forbids deepcopy of a KLU cache, so copy the other fields one by one; the shared
+    # `substitutes` keeps J's aliases of the residual's vectors inside the copy.
+    dup = PolarNRCache(
+        Base.deepcopy_internal(entry.residual, substitutes),
+        Base.deepcopy_internal(J, substitutes),
+        lin,
+        Base.deepcopy_internal(sv, substitutes),
+        entry.backend,
+        copy(entry.bus_type_snapshot),
+        Base.deepcopy_internal(af, substitutes),
+        entry.lean,
+        copy(entry.x0),
+        Base.deepcopy_internal(entry.partition, substitutes),
+    )
+    _seed_lean_plan!(lin, dup.J.Jv, slot, data, time_step)
+    return dup
+end
+
+# A worker is seeded only from a KLU polar cache; any other seed leaves it to build its own.
+_seed_worker!(::ACPowerFlowData, ::Any, ::LeanPlanSlot, ::Int) = nothing
+function _seed_worker!(
+    worker::ACPowerFlowData,
+    seed::PolarNRCache{<:PNM.KLULinSolveCache},
+    slot::LeanPlanSlot,
+    time_step::Int,
+)
+    worker.polar_nr_cache[] = _copy_for_task(seed, slot, worker, time_step)
+    return
+end
+
 """Mark the retained polar NR cache's island partition stale, so its next reuse re-derives it.
 For callers that edit Ybus values in a way that can split or merge islands (zeroing a bridge's
 admittances, restoring it) without necessarily changing bus types."""
@@ -201,6 +251,17 @@ function _symbolic_step!(
     if !slot.tried
         slot = _lean_plan_slot!(data, time_step)
     end
+    _seed_lean_plan!(c, A, slot, data, time_step)
+    return
+end
+
+function _seed_lean_plan!(
+    c::PNM.KLULinSolveCache{Float64},
+    A::SparseMatrixCSC{Float64},
+    slot::LeanPlanSlot,
+    data::ACPowerFlowData,
+    time_step::Int64,
+)
     if slot.valid
         PNM.KLUWrapper.defer_symbolic!(c, A)
         PNM.KLUWrapper.set_lean_plan!(c, slot.plan)
