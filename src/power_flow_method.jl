@@ -164,8 +164,13 @@ end
 """Mark the retained polar NR cache's island partition stale, so its next reuse re-derives it.
 For callers that edit Ybus values in a way that can split or merge islands (zeroing a bridge's
 admittances, restoring it) without necessarily changing bus types."""
-_invalidate_partition!(data::ACPowerFlowData) =
+function _invalidate_partition!(data::ACPowerFlowData)
     _invalidate_partition!(data.polar_nr_cache[])
+    for slot in data.worker_slots
+        _invalidate_partition!(slot.polar_nr_cache[])
+    end
+    return
+end
 _invalidate_partition!(::Nothing) = nothing
 function _invalidate_partition!(entry::PolarNRCache)
     empty!(entry.bus_type_snapshot)

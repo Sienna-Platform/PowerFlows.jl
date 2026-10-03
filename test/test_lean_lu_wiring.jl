@@ -87,7 +87,7 @@ end
     @test _lean_slot(data) === slot
     @test _lean_plan_hash(slot.plan) == h
 
-    worker = PF._column_worker(data, 1:24, 1:6)
+    worker = PF._column_worker(data, 1:24, 1:6, PF.WorkerSlot())
     @test worker.ac_jacobian_structure_cache[] === data.ac_jacobian_structure_cache[]
     @test isnothing(worker.polar_nr_cache[])
 end
