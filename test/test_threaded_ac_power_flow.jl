@@ -111,6 +111,48 @@ end
     end
 end
 
+@testset "seeded workers match serial bitwise (c_sys14 T=24 and ACTIVSg2000 T=16)" begin
+    for (build, prepare!, T) in (
+        (
+            () -> PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false),
+            prepare_ts_data!, 24,
+        ),
+        (
+            () -> PSB.build_system(PSB.MatpowerTestSystems, "matpower_ACTIVSg2000_sys"),
+            _replicate_col1_to_all_steps!, 16,
+        ),
+    )
+        datas = map((1, 4)) do n
+            pf = ACPolarPowerFlow(; time_steps = T, correct_bustypes = true,
+                solution_parameters = _threaded_params(n))
+            d = PowerFlowData(pf, build())
+            prepare!(d, T)
+            @test solve_power_flow!(d)
+            d
+        end
+        seq, thr = datas
+        @test isequal(seq.bus_magnitude, thr.bus_magnitude)
+        @test isequal(seq.bus_angles, thr.bus_angles)
+        @test seq.iterations == thr.iterations
+    end
+end
+
+@testset "seeding shares the first worker's index maps" begin
+    T = 8
+    pf = ACPolarPowerFlow(; time_steps = T, solution_parameters = _threaded_params(2))
+    d = PowerFlowData(
+        pf, PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false))
+    prepare_ts_data!(d, T)
+    @test solve_power_flow!(d)
+    # Needs Task 4's `worker_slots`; switch to `@test` then.
+    @test_broken hasproperty(d, :worker_slots) &&
+                 let (a, b) = (
+            s.polar_nr_cache[] for s in d.worker_slots
+        )
+        a.J.od_jnz === b.J.od_jnz
+    end
+end
+
 @testset "threaded parity: Q limits" begin
     seq, thr = _solve_sequential_and_threaded(
         () -> PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false),
