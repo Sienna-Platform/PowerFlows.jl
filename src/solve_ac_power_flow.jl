@@ -416,17 +416,48 @@ function _solve_columns_threaded!(
     # Built here, before any task can race to build it, so every worker shares one pivot order.
     _prepare_lean_plan!(pf, data, first(steps), backend)
     chunks = collect(Iterators.partition(1:length(steps), cld(length(steps), n_work)))
-    workers = Vector{typeof(data)}(undef, length(chunks))
+    workers = [_column_worker(data, steps, positions) for positions in chunks]
+    # The first chunk's first step solves before any task starts, so its cache can seed the
+    # other workers: they share its read-only maps instead of each building their own.
+    head = first(chunks[1])
+    _solve_columns!(ts_converged, workers[1], pf, steps, head:head, merged_kwargs)
+    _seed_workers!(workers, steps, chunks)
     @sync for (i, positions) in enumerate(chunks)
-        worker = _column_worker(data, steps, positions)
-        workers[i] = worker
-        Threads.@spawn _solve_columns!(
-            ts_converged, worker, pf, steps, positions, merged_kwargs)
+        worker = workers[i]
+        rest = _rest_of_chunk(i, positions)
+        Threads.@spawn _solve_columns!(ts_converged, worker, pf, steps, rest, merged_kwargs)
     end
     for (worker, positions) in zip(workers, chunks)
         _merge_worker_area!(data, worker, steps, positions)
     end
     return ts_converged
+end
+
+_rest_of_chunk(i::Int, positions::UnitRange{Int}) = _rest_of_chunk(Val(isone(i)), positions)
+_rest_of_chunk(::Val{true}, positions::UnitRange{Int}) =
+    (first(positions) + 1):last(positions)
+_rest_of_chunk(::Val{false}, positions::UnitRange{Int}) = positions
+
+function _seed_workers!(workers, steps, chunks)
+    seed = workers[1].polar_nr_cache[]
+    memo = workers[1].ac_jacobian_structure_cache[]
+    for i in 2:length(workers)
+        _seed_from_memo!(workers[i], seed, memo, steps[first(chunks[i])])
+    end
+    return
+end
+
+# A worker whose matrix or area data differs from the seed's has its own memo: leave it unseeded.
+_seed_from_memo!(::ACPowerFlowData, ::Any, ::Nothing, ::Int) = nothing
+function _seed_from_memo!(
+    worker::ACPowerFlowData,
+    seed,
+    memo::ACJacobianStructureCache,
+    time_step::Int,
+)
+    _lean_plan_tried(memo, worker) || return
+    _seed_worker!(worker, seed, memo.lean, time_step)
+    return
 end
 
 _prepare_lean_plan!(
