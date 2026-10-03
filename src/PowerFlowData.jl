@@ -15,6 +15,17 @@ abstract type SystemPowerFlowContainer <: PowerFlowContainer end
 
 get_system(container::SystemPowerFlowContainer) = container.system
 
+"""Solver-cache refs one threaded time-step worker keeps between calls, so a repeated solve
+reuses its Newton workspace instead of rebuilding it."""
+struct WorkerSlot
+    solver_cache::Base.RefValue{Union{Nothing, SolverCache}}
+    polar_nr_cache::Base.RefValue{Union{Nothing, AbstractNRCache}}
+end
+WorkerSlot() = WorkerSlot(
+    Base.RefValue{Union{Nothing, SolverCache}}(nothing),
+    Base.RefValue{Union{Nothing, AbstractNRCache}}(nothing),
+)
+
 """
     PowerFlowData{M <: PNM.PowerNetworkMatrix, N <: Union{PNM.PowerNetworkMatrix, Nothing}}
 
@@ -174,6 +185,9 @@ struct PowerFlowData{
     # slot so it never contends with a DC/FD `solver_cache`. Typed as the `AbstractNRCache` forward
     # supertype because `PolarNRCache` is defined later, in `power_flow_method.jl`.
     polar_nr_cache::Base.RefValue{Union{Nothing, AbstractNRCache}}
+    # One per threaded time-step worker, kept between calls so a repeated solve reuses them.
+    # A worker's own data holds none.
+    worker_slots::Vector{WorkerSlot}
 end
 
 # aliases for specific type parameter combinations.
@@ -466,6 +480,7 @@ function PowerFlowData(
         controlled_devices,
         Base.RefValue{Union{Nothing, ACJacobianStructureCache}}(nothing), # ac_jacobian_structure_cache
         Base.RefValue{Union{Nothing, AbstractNRCache}}(nothing), # polar_nr_cache (lazily populated)
+        WorkerSlot[], # worker_slots
     )
 end
 

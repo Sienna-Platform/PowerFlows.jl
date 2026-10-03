@@ -144,13 +144,82 @@ end
         pf, PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false))
     prepare_ts_data!(d, T)
     @test solve_power_flow!(d)
-    # Needs Task 4's `worker_slots`; switch to `@test` then.
-    @test_broken hasproperty(d, :worker_slots) &&
-                 let (a, b) = (
-            s.polar_nr_cache[] for s in d.worker_slots
-        )
-        a.J.od_jnz === b.J.od_jnz
+    a, b = (s.polar_nr_cache[] for s in d.worker_slots)
+    @test a.J.od_jnz === b.J.od_jnz
+end
+
+function _slot_data(T, n_threads)
+    pf = ACPolarPowerFlow(;
+        time_steps = T,
+        solution_parameters = _threaded_params(n_threads),
+    )
+    d = PowerFlowData(
+        pf, PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false))
+    prepare_ts_data!(d, T)
+    return d
+end
+
+@testset "repeated threaded solves reuse worker caches" begin
+    T = 16
+    d = _slot_data(T, 4)
+    ref = _slot_data(T, 1)
+    flat = (copy(d.bus_magnitude), copy(d.bus_angles))
+    @test solve_power_flow!(d)
+    caches = [s.polar_nr_cache[] for s in d.worker_slots]
+    @test length(caches) == 4
+    @test solve_power_flow!(ref)
+    # New inputs, so a skipped head step or chunk leaves stale columns that the match catches.
+    for x in (d, ref)
+        x.bus_active_power_withdrawals .*= 1.01
+        x.bus_reactive_power_withdrawals .*= 1.01
+        x.bus_magnitude .= flat[1]
+        x.bus_angles .= flat[2]
     end
+    @test solve_power_flow!(d)
+    @test all(d.converged)
+    @test all(s.polar_nr_cache[] === c for (s, c) in zip(d.worker_slots, caches))
+    @test solve_power_flow!(ref)
+    @test maximum(abs, d.bus_magnitude .- ref.bus_magnitude) < 1e-8
+    @test maximum(abs, d.bus_angles .- ref.bus_angles) < 1e-8
+    @test all(d.iterations .<= ref.iterations)
+end
+
+@testset "invalidating the partition invalidates every worker slot" begin
+    d = _slot_data(8, 2)
+    @test solve_power_flow!(d)
+    PF._invalidate_partition!(d)
+    @test all(isempty(s.polar_nr_cache[].bus_type_snapshot) for s in d.worker_slots)
+end
+
+@testset "a worker's own data holds no slots" begin
+    d = _slot_data(8, 2)
+    slot = PF.WorkerSlot()
+    w = PF._column_worker(d, 1:8, 1:4, slot)
+    @test isempty(w.worker_slots)
+    @test w.polar_nr_cache === slot.polar_nr_cache
+end
+
+@testset "a slot whose worker raised is cleared" begin
+    d = _slot_data(8, 2)
+    @test solve_power_flow!(d)
+    slot = d.worker_slots[2]
+    @test !isnothing(slot.polar_nr_cache[])
+    @test_throws Exception PF._solve_slot!(
+        fill(false, 8), PF._column_worker(d, 1:8, 5:8, slot), slot,
+        d.pf, 1:8, 5:99, (;))
+    @test isnothing(slot.polar_nr_cache[])
+    @test isnothing(slot.solver_cache[])
+    @test solve_power_flow!(d)
+end
+
+@testset "a raising step clears its own slot only" begin
+    d = _slot_data(8, 2)
+    # No reference bus at step 7 makes the solve raise inside the second chunk's task.
+    d.bus_type[:, 7] .= PSY.ACBusTypes.PQ
+    @test_throws Exception solve_power_flow!(d)
+    @test !isnothing(d.worker_slots[1].polar_nr_cache[])
+    @test isnothing(d.worker_slots[2].polar_nr_cache[])
+    @test isnothing(d.worker_slots[2].solver_cache[])
 end
 
 @testset "threaded parity: Q limits" begin

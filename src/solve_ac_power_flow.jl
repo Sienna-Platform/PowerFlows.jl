@@ -403,7 +403,8 @@ function _solve_column!(
 end
 
 """Solve contiguous chunks of `steps` on `n_work` tasks. Each task gets a `_column_worker`
-view of `data`, so its Newton workspace and KLU factorization are its own."""
+view of `data`, so its Newton workspace and KLU factorization are its own. The workers' caches
+live in `data.worker_slots`, so a repeated solve reuses them."""
 function _solve_columns_threaded!(
     ts_converged::Vector{Bool},
     data::ACPowerFlowData,
@@ -416,16 +417,19 @@ function _solve_columns_threaded!(
     # Built here, before any task can race to build it, so every worker shares one pivot order.
     _prepare_lean_plan!(pf, data, first(steps), backend)
     chunks = collect(Iterators.partition(1:length(steps), cld(length(steps), n_work)))
-    workers = [_column_worker(data, steps, positions) for positions in chunks]
-    # The first chunk's first step solves before any task starts, so its cache can seed the
-    # other workers: they share its read-only maps instead of each building their own.
-    head = first(chunks[1])
-    _solve_columns!(ts_converged, workers[1], pf, steps, head:head, merged_kwargs)
+    slots = _worker_slots!(data, length(chunks))
+    workers = [_column_worker(data, steps, c, s) for (c, s) in zip(chunks, slots)]
+    # With no stored cache, the first chunk's first step solves before any task starts, so its
+    # cache can seed the other workers: they share its read-only maps instead of building their own.
+    head = _head_steps(slots[1].polar_nr_cache[], chunks[1])
+    _solve_slot!(ts_converged, workers[1], slots[1], pf, steps, head, merged_kwargs)
     _seed_workers!(workers, steps, chunks)
     @sync for (i, positions) in enumerate(chunks)
         worker = workers[i]
-        rest = _rest_of_chunk(i, positions)
-        Threads.@spawn _solve_columns!(ts_converged, worker, pf, steps, rest, merged_kwargs)
+        slot = slots[i]
+        rest = _rest_of_chunk(i, positions, head)
+        Threads.@spawn _solve_slot!(
+            ts_converged, worker, slot, pf, steps, rest, merged_kwargs)
     end
     for (worker, positions) in zip(workers, chunks)
         _merge_worker_area!(data, worker, steps, positions)
@@ -433,10 +437,35 @@ function _solve_columns_threaded!(
     return ts_converged
 end
 
-_rest_of_chunk(i::Int, positions::UnitRange{Int}) = _rest_of_chunk(Val(isone(i)), positions)
-_rest_of_chunk(::Val{true}, positions::UnitRange{Int}) =
-    (first(positions) + 1):last(positions)
-_rest_of_chunk(::Val{false}, positions::UnitRange{Int}) = positions
+function _worker_slots!(data::ACPowerFlowData, n::Int)
+    slots = data.worker_slots
+    while length(slots) < n
+        push!(slots, WorkerSlot())
+    end
+    return view(slots, 1:n)
+end
+
+# A worker that raised leaves caches nothing can vouch for: drop them so the next call rebuilds.
+function _solve_slot!(ts_converged, worker, slot::WorkerSlot, pf, steps, positions, kwargs)
+    try
+        _solve_columns!(ts_converged, worker, pf, steps, positions, kwargs)
+    catch
+        slot.polar_nr_cache[] = nothing
+        slot.solver_cache[] = nothing
+        rethrow()
+    end
+    return
+end
+
+_head_steps(::Nothing, positions::UnitRange{Int}) = first(positions):first(positions)
+_head_steps(::AbstractNRCache, positions::UnitRange{Int}) =
+    first(positions):(first(positions) - 1)
+
+_rest_of_chunk(i::Int, positions::UnitRange{Int}, head::UnitRange{Int}) =
+    _rest_of_chunk(Val(isone(i)), positions, head)
+_rest_of_chunk(::Val{true}, positions::UnitRange{Int}, head::UnitRange{Int}) =
+    (last(head) + 1):last(positions)
+_rest_of_chunk(::Val{false}, positions::UnitRange{Int}, ::UnitRange{Int}) = positions
 
 function _seed_workers!(workers, steps, chunks)
     seed = workers[1].polar_nr_cache[]
@@ -447,9 +476,16 @@ function _seed_workers!(workers, steps, chunks)
     return
 end
 
+# Only a worker with no stored cache is seeded.
+_seed_from_memo!(worker::ACPowerFlowData, seed, memo, time_step::Int) =
+    _seed_empty!(worker.polar_nr_cache[], worker, seed, memo, time_step)
+_seed_empty!(::Nothing, worker, seed, memo, time_step) =
+    _seed_from_memo_now!(worker, seed, memo, time_step)
+_seed_empty!(::AbstractNRCache, worker, seed, memo, time_step) = nothing
+
 # A worker whose matrix or area data differs from the seed's has its own memo: leave it unseeded.
-_seed_from_memo!(::ACPowerFlowData, ::Any, ::Nothing, ::Int) = nothing
-function _seed_from_memo!(
+_seed_from_memo_now!(::ACPowerFlowData, ::Any, ::Nothing, ::Int) = nothing
+function _seed_from_memo_now!(
     worker::ACPowerFlowData,
     seed,
     memo::ACJacobianStructureCache,
@@ -489,7 +525,7 @@ function _lean_plan_tried(memo::ACJacobianStructureCache, data::ACPowerFlowData)
 end
 
 """A `PowerFlowData` sharing every time-indexed array of `data` (each task writes only its own
-columns) with fresh solver caches, a private `converged`, and private copies of the state a solve
+columns) with the slot's solver caches, a private `converged`, and private copies of the state a solve
 mutates outside its column: the controlled-device scratch and counters, the network matrix when
 taps are controlled, the LCC branch admittances, and the area-interchange data when it is active.
 The Jacobian-structure memo is shared too: it is read-only once built, and it carries the lean-LU
@@ -502,6 +538,7 @@ function _column_worker(
     data::ACPowerFlowData,
     steps::AbstractVector{Int},
     positions::UnitRange{Int},
+    slot::WorkerSlot,
 )
     converged = copy(data.converged)
     for (pos, t) in enumerate(steps)
@@ -516,13 +553,14 @@ function _column_worker(
         lcc = _override(data.lcc; branch_admittances = copy(data.lcc.branch_admittances)),
         area_interchange = _worker_area_data(data.area_interchange),
         controlled_devices = _worker_devices(cd),
-        solver_cache = Base.RefValue{Union{Nothing, SolverCache}}(nothing),
+        solver_cache = slot.solver_cache,
         ac_jacobian_structure_cache = Base.RefValue{
             Union{Nothing, ACJacobianStructureCache},
         }(
             data.ac_jacobian_structure_cache[],
         ),
-        polar_nr_cache = Base.RefValue{Union{Nothing, AbstractNRCache}}(nothing),
+        polar_nr_cache = slot.polar_nr_cache,
+        worker_slots = WorkerSlot[],
     )
     args = map(f -> get(fresh, f, getfield(data, f)), fieldnames(typeof(data)))
     return typeof(data)(args...)
