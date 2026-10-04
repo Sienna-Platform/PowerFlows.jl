@@ -28,6 +28,7 @@ Private = true
 Pages = [
     "fast_decoupled_matrices.jl",
     "fast_decoupled_method.jl",
+    "staged_handoff.jl",
 ]
 ```
 
