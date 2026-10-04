@@ -93,11 +93,10 @@ end
 """Polar NR/TR workspace stored in `data.polar_nr_cache`, reused across Q-limit retries, time
 steps and contingencies. `bus_type_snapshot` holds the bus types the residual's partition was
 last derived for (emptied by [`_invalidate_partition!`](@ref)). `residual` and `J` do not store
-`data`: this
-cache hangs off `data`, so a back-reference would form a cycle. `arc_flows` lets a reused
-`solve_power_flow!` skip rebuilding its branch-flow scratch. `lean` is the slot whose plan the
-KLU cache was given, for [`_align_lean_plan!`](@ref). `x0` and `partition` are the reuse path's
-start-point and island-partition buffers."""
+`data`: this cache hangs off `data`, so a back-reference would form a cycle. `arc_flows` lets a
+reused `solve_power_flow!` skip rebuilding its branch-flow scratch. `lean` is the slot whose plan
+the KLU cache was given, for [`_align_lean_plan!`](@ref). `x0` and `partition` are the reuse
+path's start-point and island-partition buffers."""
 struct PolarNRCache{C <: PNM.LinearSolverCache} <: AbstractNRCache
     residual::ACPowerFlowResidual
     J::ACPowerFlowJacobian
@@ -130,7 +129,7 @@ function _copy_for_task(
         af.arcs, af.fb_ix, af.tb_ix)
         substitutes[a] = a
     end
-    lin = _polar_jacobian_cache(entry.backend, J.Jv)
+    lin = _polar_jacobian_cache(PNM.KLUSolver(), J.Jv)
     # PNM forbids deepcopy of a KLU cache, so copy the other fields one by one; the shared
     # `substitutes` keeps J's aliases of the residual's vectors inside the copy.
     dup = PolarNRCache(
@@ -149,15 +148,17 @@ function _copy_for_task(
     return dup
 end
 
-# A worker is seeded only from a KLU polar cache; any other seed leaves it to build its own.
-_seed_worker!(::ACPowerFlowData, ::Any, ::LeanPlanSlot, ::Int) = nothing
+# A worker is seeded only from a KLU polar cache and only when it shares the seed's memo (same
+# matrix and area data); otherwise it builds its own.
+_seed_worker!(::ACPowerFlowData, ::Any, ::Any, ::Int) = nothing
 function _seed_worker!(
     worker::ACPowerFlowData,
     seed::PolarNRCache{<:PNM.KLULinSolveCache},
-    slot::LeanPlanSlot,
+    memo::ACJacobianStructureCache,
     time_step::Int,
 )
-    worker.polar_nr_cache[] = _copy_for_task(seed, slot, worker, time_step)
+    _lean_plan_tried(memo, worker) || return
+    worker.polar_nr_cache[] = _copy_for_task(seed, memo.lean, worker, time_step)
     return
 end
 
@@ -242,25 +243,13 @@ function _restore_partition!(entry::PolarNRCache, snap::PartitionSnapshot)
     return
 end
 
-# After a bus-type or partition change, `klu_refactor` on the inherited pivot order can hit a zero
-# pivot (a PV bus's |V| column holds a single -1 where a PQ bus's holds dP/dV, dQ/dV). Free only
-# the Numeric: the next `numeric_refactor!` then runs a fresh `klu_factor` on the kept Symbolic,
-# or, with a lean plan, a lean refactor whose pivot-ratio check falls back to `klu_factor`.
-function _drop_numeric!(c::PNM.KLULinSolveCache)
-    PNM.KLUWrapper.drop_numeric!(c)
-    return
-end
-# These backends pivot afresh on every numeric factorization.
-_drop_numeric!(::PNM.AAFactorCache) = nothing
-_drop_numeric!(::PardisoLinSolveCache) = nothing
-
 # Test-only switch: `false` keeps every polar NR cache on plain KLU, for comparing against it.
 const _USE_LEAN_LU = Ref(true)
 
 """The [`LeanPlanSlot`](@ref) of the Jacobian structure `data` uses at `time_step`, building
 its plan on first use from a separately built Jacobian (a fresh serial solve of a system with
 no LCC plans on its own Jacobian instead, in `_symbolic_step!`). Either way the plan is factored
-at |V| = 1, θ = 0 (as p3s does), so it depends only on the network, bus types, slack factors,
+at |V| = 1, θ = 0, so it depends only on the network, bus types, slack factors,
 ZIP loads and stored LCC state at `time_step`, never on an iterate: every cache, task and
 contingency sharing the slot pivots identically."""
 function _lean_plan_slot!(data::ACPowerFlowData, time_step::Int64)
@@ -376,12 +365,12 @@ function _resume_lean!(c::PNM.KLULinSolveCache)
     PNM.KLUWrapper.pause_lean!(c, false)
     return
 end
-_resume_lean!(::Union{PNM.AAFactorCache, PardisoLinSolveCache}) = nothing
+_resume_lean!(::PNM.LinearSolverCache) = nothing
 function _pause_lean!(c::PNM.KLULinSolveCache)
     PNM.KLUWrapper.pause_lean!(c, true)
     return
 end
-_pause_lean!(::Union{PNM.AAFactorCache, PardisoLinSolveCache}) = nothing
+_pause_lean!(::PNM.LinearSolverCache) = nothing
 
 # The plan pivots a PV bus's Q column on its Q row (that column's only entry) and a REF bus's P
 # column on its P row. A bus promoted from PV to REF since the plan was built (an island
@@ -401,7 +390,7 @@ function _align_lean_plan!(
     return
 end
 _align_lean_plan!(
-    ::Union{PNM.AAFactorCache, PardisoLinSolveCache},
+    ::PNM.LinearSolverCache,
     ::LeanPlanSlot,
     ::AbstractVector{PSY.ACBusTypes.Value},
 ) = nothing
@@ -429,7 +418,7 @@ _lean_counts(::SolverCache) = _NO_LEAN_COUNTS
 _lean_counts(entry::PolarNRCache) = _lean_counts(entry.linSolveCache)
 _lean_counts(c::PNM.KLULinSolveCache) = merge(
     PNM.KLUWrapper.lean_counts(c), (; cold_retries = PNM.KLUWrapper.cold_retries(c)))
-_lean_counts(::Union{PNM.AAFactorCache, PardisoLinSolveCache}) = _NO_LEAN_COUNTS
+_lean_counts(::PNM.LinearSolverCache) = _NO_LEAN_COUNTS
 
 _cold_retries(data::ACPowerFlowData) = _lean_counts(data).cold_retries
 
@@ -437,13 +426,13 @@ _cold_retries(data::ACPowerFlowData) = _lean_counts(data).cold_retries
 # order chosen for other values; only such a solve is rerun cold when it fails.
 _reuses_pivot_order(c::PNM.KLULinSolveCache) =
     PNM.KLUWrapper.has_lean_plan(c) || PNM.is_factored(c)
-_reuses_pivot_order(::Union{PNM.AAFactorCache, PardisoLinSolveCache}) = false
+_reuses_pivot_order(::PNM.LinearSolverCache) = false
 
 """`_lean_counts(c)` and whether `c` holds a factorization, before a run that
 [`_pivoted_fresh_at_start`](@ref) then checks."""
 _retry_start(c::PNM.KLULinSolveCache) =
     merge(_lean_counts(c), (; factored = PNM.is_factored(c)))
-_retry_start(c::Union{PNM.AAFactorCache, PardisoLinSolveCache}) = _lean_counts(c)
+_retry_start(c::PNM.LinearSolverCache) = _lean_counts(c)
 
 # The run since `before` pivoted afresh at x0, as a cold rerun would: its one lean attempt was
 # rejected (the rest stayed on that `klu_factor` order, `numeric_refactor!`), or it made no lean
@@ -456,20 +445,18 @@ function _pivoted_fresh_at_start(c::PNM.KLULinSolveCache, before::NamedTuple)
     end
     return iszero(attempts) && !before.factored
 end
-_pivoted_fresh_at_start(::Union{PNM.AAFactorCache, PardisoLinSolveCache}, ::NamedTuple) =
-    false
+_pivoted_fresh_at_start(::PNM.LinearSolverCache, ::NamedTuple) = false
 
-# p3s accepts a lean factor on its pivot ratio alone (nr_klu.cpp:582-588). A poor lean step costs
-# iterations, never a wrong answer: convergence is judged on the residual, and a solve that fails
-# on lean factors is rerun cold.
+# A lean factor is accepted on its pivot ratio alone. A poor lean step costs iterations, never a
+# wrong answer: convergence is judged on the residual, and a solve that fails on lean factors is
+# rerun cold.
 _skips_refinement(c::PNM.KLULinSolveCache) = PNM.KLUWrapper.lean_active(c)
-_skips_refinement(::Union{PNM.AAFactorCache, PardisoLinSolveCache}) = false
+_skips_refinement(::PNM.LinearSolverCache) = false
 
 """Seed `work`'s Jacobian-structure memo, and with it the lean-LU plan, from `base`'s (an empty
-rect/mixed NR cache too, [`_seed_rect_mixed!`](@ref)). For a
-working copy whose Ybus is a value copy of `base`'s with the same pattern (PowerTransmission-
-SecurityAnalysis), so every copy pivots like `base` instead of on whatever it solves first. An
-unbuilt plan is not shared: the copies would race to build it."""
+rect/mixed NR cache too, [`_seed_rect_mixed!`](@ref)). For a working copy whose Ybus is a value
+copy of `base`'s with the same pattern, so every copy pivots like `base` instead of on whatever it
+solves first. An unbuilt plan is not shared: the copies would race to build it."""
 function _inherit_jacobian_structure!(work::ACPowerFlowData, base::ACPowerFlowData)
     _seed_rect_mixed!(work, work.solver_cache[], base.solver_cache[])
     _inherit_jacobian_structure!(work, base.ac_jacobian_structure_cache[])
@@ -478,12 +465,7 @@ end
 _inherit_jacobian_structure!(::ACPowerFlowData, ::Nothing) = nothing
 
 function _inherit_jacobian_structure!(work::ACPowerFlowData, memo::ACJacobianStructureCache)
-    y = work.power_network_matrix.data
-    y0 = memo.matrix.data
-    (
-        SparseArrays.getcolptr(y) == SparseArrays.getcolptr(y0) &&
-        SparseArrays.rowvals(y) == SparseArrays.rowvals(y0)
-    ) ||
+    _same_sparsity(memo.matrix.data, work.power_network_matrix.data) ||
         error(
             "The working copy's Ybus pattern differs from the base's; cannot share its " *
             "Jacobian structure.",
@@ -530,19 +512,11 @@ function _fill_flow_voltages!(
 )
     s = entry.residual.bus_state
     θ = view(data.bus_angles, :, time_step)
-    if !s.phasor_valid || !_bitwise_equal(s.θ, θ)
+    if !s.phasor_valid || !isequal(s.θ, θ)
         return _fill_flow_voltages!(V, nothing, data, time_step)
     end
     @views V .= data.bus_magnitude[:, time_step] .* s.phasor
     return
-end
-
-function _bitwise_equal(a::Vector{Float64}, b::AbstractVector{Float64})
-    length(a) == length(b) || return false
-    @inbounds for i in eachindex(a, b)
-        a[i] === b[i] || return false
-    end
-    return true
 end
 
 function _ref_set_changed(
@@ -710,7 +684,7 @@ function _set_Δx_nr!(stateVector::StateVectorCache,
         _do_refinement!(stateVector, M, cache, refinement_threshold, refinement_eps)
     end
     # Not rmul!: BLAS dscal wakes OpenBLAS's thread pool every Newton step, which then spins on
-    # the cores PTSA and threaded time steps run their workers on.
+    # the cores threaded callers run their workers on.
     stateVector.Δx_nr .= .-stateVector.Δx_nr
     return ok
 end
@@ -1710,21 +1684,33 @@ function _nr_initialize_with_jacobian_deferred(
     return residual, nothing, x0
 end
 
-# No candidate start to compare: F and J at x0 come from one fused sweep. `fused` is false when
-# `_fused_x0!` fell back to `improve_x0!`, leaving J stale.
-function _fused_polar_init(
-    pf::ACPolarPowerFlow, data::ACPowerFlowData, time_step::Int64; kwargs...,
+# Choose the start in `x0` and evaluate F there: one fused F/J sweep when `improve_x0!` has no
+# candidate to compare. Returns whether J is current.
+function _polar_start!(
+    x0::Vector{Float64},
+    pf::ACPolarPowerFlow,
+    data::ACPowerFlowData,
+    residual::ACPowerFlowResidual,
+    J::ACPowerFlowJacobian,
+    time_step::Int64,
+    init_kwargs::NamedTuple,
 )
-    residual = ACPowerFlowResidual(data, time_step)
-    x0 = calculate_x0(data, time_step)
-    J = ACPowerFlowJacobian(data, residual, time_step)
-    fused = _fused_x0!(x0, pf, data, residual, J, time_step)
-    _log_initial_residual(residual)
-    if get(kwargs, :validate_voltage_magnitudes, DEFAULT_VALIDATE_VOLTAGES)
-        validate_voltage_magnitudes(x0, residual.validate_indices,
-            get(kwargs, :vm_validation_range, DEFAULT_VALIDATION_RANGE), 0)
+    if _x0_has_no_candidates(pf, data, time_step)
+        fused = _fused_x0!(x0, pf, data, residual, J, time_step)
+    else
+        improve_x0!(x0, pf, data, residual, time_step)
+        fused = false
     end
-    return residual, J, x0, fused
+    _log_initial_residual(residual)
+    if get(init_kwargs, :validate_voltage_magnitudes, DEFAULT_VALIDATE_VOLTAGES)
+        validate_voltage_magnitudes(
+            x0,
+            residual.validate_indices,
+            get(init_kwargs, :vm_validation_range, DEFAULT_VALIDATION_RANGE),
+            0,
+        )
+    end
+    return fused
 end
 
 """Evaluate F and J at `x0` in one fused sweep. On a large residual with a fallback start
@@ -1850,7 +1836,10 @@ function _fresh_newton_workspace(
         return @invoke _fresh_newton_workspace(
             pf::AbstractACPowerFlow, data, time_step, backend, tol, init_kwargs)
     end
-    residual, J, x0_init, fused = _fused_polar_init(pf, data, time_step; init_kwargs...)
+    residual = ACPowerFlowResidual(data, time_step)
+    x0_init = calculate_x0(data, time_step)
+    J = ACPowerFlowJacobian(data, residual, time_step)
+    fused = _polar_start!(x0_init, pf, data, residual, J, time_step, init_kwargs)
     converged = norm(residual.Rv, Inf) < tol
     converged && return residual, nothing, x0_init, nothing, nothing, true
     fused || J(data, time_step)
@@ -2144,22 +2133,7 @@ function _polar_newton_workspace!(
     J = entry.J
     x0_init = entry.x0
     update_state!(x0_init, data, time_step)
-    # As a fresh start would: fused F and J unless `improve_x0!` has a candidate to compare.
-    if _x0_has_no_candidates(pf, data, time_step)
-        fused = _fused_x0!(x0_init, pf, data, residual, J, time_step)
-    else
-        improve_x0!(x0_init, pf, data, residual, time_step)
-        fused = false
-    end
-    _log_initial_residual(residual)
-    if get(init_kwargs, :validate_voltage_magnitudes, DEFAULT_VALIDATE_VOLTAGES)
-        validate_voltage_magnitudes(
-            x0_init,
-            residual.validate_indices,
-            get(init_kwargs, :vm_validation_range, DEFAULT_VALIDATION_RANGE),
-            0,
-        )
-    end
+    fused = _polar_start!(x0_init, pf, data, residual, J, time_step, init_kwargs)
     converged = norm(residual.Rv, Inf) < tol
     # Off the fused path, defer the Jacobian fill past the convergence check: a 0-iteration
     # warm start must not pay for it. `nothing` lets the caller rebuild only if it needs J.
@@ -2222,16 +2196,10 @@ function _restart_from!(
     return
 end
 
-function _evaluate_start!(residual, J, data::ACPowerFlowData, x0::Vector{Float64},
-    time_step::Int64, ::Bool)
-    residual(data, x0, time_step)
-    J(data, time_step)
-    return
-end
-
+# `fused` is only ever true on the polar path.
 function _evaluate_start!(
-    residual::ACPowerFlowResidual,
-    J::ACPowerFlowJacobian,
+    residual,
+    J,
     data::ACPowerFlowData,
     x0::Vector{Float64},
     time_step::Int64,
@@ -2317,14 +2285,13 @@ function _newton_power_flow(
         counts = _retry_start(linSolveCache)
         converged, i = run_method()
         if !converged && reused && !_pivoted_fresh_at_start(linSolveCache, counts)
-            # p3s nr_klu.cpp:798-820: rerun once from x0 as a fresh KLU solve would, so a reused
-            # pivot order never changes a solve's status.
+            # Rerun once from x0 as a fresh KLU solve would, so a reused pivot order never
+            # changes a solve's status.
             @debug "solve failed on a reused pivot order; retrying on a fresh factorization" time_step
             PNM.KLUWrapper.cold_restart!(linSolveCache)
             _restart_from!(stateVector, residual, J, data, x0_init, time_step)
-            failed = i
-            converged, i = run_method()
-            i += failed
+            converged, i_cold = run_method()
+            i += i_cold
         end
         x_final = stateVector.x
         _finalize_formulation!(pf, data, x_final, residual, time_step)
@@ -2336,9 +2303,9 @@ function _newton_power_flow(
     # opted into loss / voltage-stability factors — those need J even at 0 iterations, or a
     # first solve that lands within tol would leave them at their zero-initialized values.
     if get_calculate_loss_factors(data) || get_calculate_voltage_stability_factors(data)
-        J = _nr_build_jacobian(pf, data, residual, J_or_nothing, time_step)
+        J_lf = _nr_build_jacobian(pf, data, residual, J_or_nothing, time_step)
         return _finalize_power_flow(
-            converged, i, string(T), residual, data, J.Jv, time_step)
+            converged, i, string(T), residual, data, J_lf.Jv, time_step)
     end
     return _finalize_power_flow(
         converged, i, string(T), residual, data, nothing, time_step)
