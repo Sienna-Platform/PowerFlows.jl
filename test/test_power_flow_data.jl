@@ -11,6 +11,40 @@
           PF.vPTDFPowerFlowData
 end
 
+# Islands come from the Ybus the build already made; only a reduction rebuilds one from `sys`.
+@testset "PowerFlowData finds islands on its own Ybus" begin
+    sys = System(100.0)
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.02)
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.PQ, 230)
+    b3 = _add_simple_bus!(sys, 3, ACBusTypes.REF, 230, 1.06)
+    b4 = _add_simple_bus!(sys, 4, ACBusTypes.PQ, 230)
+    _add_simple_line!(sys, b1, b2, 1e-3, 1e-2)
+    _add_simple_line!(sys, b3, b4, 1e-3, 1e-2)
+    _add_simple_source!(sys, b1)
+    _add_simple_source!(sys, b3)
+    _add_simple_load!(sys, b2, 10.0, 2.0)
+    _add_simple_load!(sys, b4, 10.0, 2.0)
+    @test PF._subnetworks(ACPowerFlow(), sys, PNM.Ybus(sys)) == PNM.find_subnetworks(sys)
+    # `PNM.find_subnetworks(sys)` logs this from the second Ybus it builds.
+    function build_logs(pf, sys = sys)
+        logger = Test.TestLogger(; min_level = Logging.Info)
+        data = with_logger(() -> PowerFlowData(pf, sys), logger)
+        second_ybus =
+            any(r -> occursin("Validating connectivity", string(r.message)), logger.logs)
+        return data, second_ybus
+    end
+    for pf in (ACPowerFlow(), DCPowerFlow(), PTDFDCPowerFlow(), vPTDFDCPowerFlow())
+        data, second_ybus = build_logs(pf)
+        @test !second_ybus
+        lookup = PF.get_bus_lookup(data)
+        @test data.bus_type[lookup[1], 1] == ACBusTypes.REF
+        @test data.bus_type[lookup[3], 1] == ACBusTypes.REF
+    end
+    sys14 = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    radial = DCPowerFlow(; network_reductions = PNM.NetworkReduction[PNM.RadialReduction()])
+    @test last(build_logs(radial, sys14))
+end
+
 @testset "PowerFlowData multiperiod" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
     time_steps = 24

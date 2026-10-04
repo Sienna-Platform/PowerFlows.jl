@@ -337,9 +337,12 @@ function _solve_column!(
 
     load_device_state!(cd, data, time_step)
     data.iterations[time_step] = 0
-    # Before the solve, so serial and threaded runs build the lean plan at the same step.
-    _prepare_lean_plan!(pf, data, time_step,
-        resolve_linear_solver_backend(get(merged_kwargs, :linear_solver, nothing)))
+    # The LCC Jacobian tails read LCC state that the solve's start residual rewrites, so an LCC
+    # system plans before the solve, as a threaded run does.
+    if get_lcc_count(data) > 0
+        _prepare_lean_plan!(pf, data, time_step,
+            resolve_linear_solver_backend(get(merged_kwargs, :linear_solver, nothing)))
+    end
     converged = _ac_power_flow_with_area_relax!(data, pf, time_step; merged_kwargs...)
     save_device_state!(cd, data, time_step)
     converged && _warn_vsc_limit_violations(data, time_step)
@@ -468,6 +471,7 @@ function _seed_workers!(workers, steps, chunks)
     memo = workers[1].ac_jacobian_structure_cache[]
     for i in 2:length(workers)
         _seed_from_memo!(workers[i], seed, memo, steps[first(chunks[i])])
+        _seed_rect_mixed!(workers[i], workers[i].solver_cache[], workers[1].solver_cache[])
     end
     return
 end
@@ -529,7 +533,9 @@ plan. A worker with its own network matrix or area data misses that memo and pla
 `improve_x0` warm-starts from the last step converged at entry; steps owned by other tasks are
 cleared there, since their columns are being rewritten concurrently. So a first solve matches the
 serial one exactly (controlled taps aside: the serial Y-bus accumulates ComplexF32 round-off
-across steps), while a re-solve may pick a different warm start at a chunk's first step."""
+across steps, and a first step converged at its start: a serial run with no LCC then builds the
+lean plan at a later step), while a re-solve may pick a different warm start at a chunk's first
+step."""
 function _column_worker(
     data::ACPowerFlowData,
     steps::AbstractVector{Int},

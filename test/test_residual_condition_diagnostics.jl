@@ -387,10 +387,16 @@ end
         end
         return vcat(vec(copy(data.bus_magnitude)), vec(copy(data.bus_angles)))
     end
-    for scale in (3.0, 6.0, 12.0), maxiter in (2, 7)
-        off = final_state(; stop_at_fold = false, scale, maxiter)
-        on = final_state(; stop_at_fold = true, scale, maxiter)
-        @test isequal(off, on)           # `isequal` so NaN == NaN on aborted solves
+    # The diagnostics refactor at every iterate, so a diagnosed solve takes no chord steps.
+    PF._USE_CHORD[] = false
+    try
+        for scale in (3.0, 6.0, 12.0), maxiter in (2, 7)
+            off = final_state(; stop_at_fold = false, scale, maxiter)
+            on = final_state(; stop_at_fold = true, scale, maxiter)
+            @test isequal(off, on)           # `isequal` so NaN == NaN on aborted solves
+        end
+    finally
+        PF._USE_CHORD[] = true
     end
 end
 

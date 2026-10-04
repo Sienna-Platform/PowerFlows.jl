@@ -618,6 +618,7 @@ function make_and_initialize_power_flow_data(
     arc_lossy_admittance_to_from::Union{SparseMatrixCSC{YBUS_ELTYPE, Int}, Nothing} = nothing,
     arc_bus_incidence::Union{SparseMatrixCSC{Int8, Int}, Nothing} = nothing,
     controlled_devices::Union{Nothing, ControlledDeviceSet} = nothing,
+    subnetworks::Dict{Int, Set{Int}} = PNM.find_subnetworks(sys),
 ) where {M <: PNM.PowerNetworkMatrix, N <: Union{PNM.PowerNetworkMatrix, Nothing}}
     if isnothing(controlled_devices) && get_control_discrete_devices(pf)
         @warn "control_discrete_devices=true, but no controlled_devices were supplied \
@@ -644,8 +645,33 @@ function make_and_initialize_power_flow_data(
         controlled_devices = controlled_devices,
     )
     @assert length(data.lcc.setpoint_at_rectifier) == n_lccs
-    initialize_power_flow_data!(data, pf, sys; correct_bustypes = get_correct_bustypes(pf))
+    initialize_power_flow_data!(
+        data,
+        pf,
+        sys;
+        correct_bustypes = get_correct_bustypes(pf),
+        subnetworks = subnetworks,
+    )
     return data
+end
+
+# `PNM.find_subnetworks(sys)` builds a second, default Ybus only to find the islands; read
+# them off the one already built. A reduced Ybus has reduced bus axes, so reductions keep
+# the `sys` path.
+function _subnetworks(pf::PowerFlowEvaluationModel, sys::PSY.System, ybus::PNM.Ybus)
+    if !isempty(get_network_reductions(pf))
+        return PNM.find_subnetworks(sys)
+    end
+    ref_angles = Dict{Int, Float64}(
+        PSY.get_number(b) => PSY.get_angle(b) for
+        b in PSY.get_components(PSY.ACBus, sys) if
+        PSY.get_bustype(b) == PSY.ACBusTypes.REF
+    )
+    return PNM.assign_reference_buses!(
+        PNM.find_subnetworks(ybus),
+        Set(PNM.get_ref_bus(ybus)),
+        ref_angles,
+    )
 end
 
 # Build the signed arc-bus incidence from PNM's `IncidenceMatrix`, permuted to align its rows/cols
@@ -746,6 +772,7 @@ function PowerFlowData(
         aux_network_matrix;
         neighbors = neighbors,
         controlled_devices = controlled_devices,
+        subnetworks = _subnetworks(pf, sys, power_network_matrix),
     )
 end
 
@@ -811,6 +838,7 @@ function PowerFlowData(
         arc_lossy_admittance_from_to = arc_lossy_from_to,
         arc_lossy_admittance_to_from = arc_lossy_to_from,
         arc_bus_incidence = arc_bus_incidence,
+        subnetworks = _subnetworks(pf, sys, ybus),
     )
 end
 
@@ -861,6 +889,7 @@ function PowerFlowData(
         power_network_matrix,
         aux_network_matrix;
         arc_bus_incidence = arc_bus_incidence,
+        subnetworks = _subnetworks(pf, sys, ybus),
     )
 end
 
@@ -909,7 +938,8 @@ function PowerFlowData(
         pf,
         sys,
         power_network_matrix,
-        aux_network_matrix,
+        aux_network_matrix;
+        subnetworks = _subnetworks(pf, sys, ybus),
     )
 end
 

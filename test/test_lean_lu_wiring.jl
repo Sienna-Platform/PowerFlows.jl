@@ -254,6 +254,54 @@ end
     @test data.ac_jacobian_structure_cache[] === memo
 end
 
+@testset "lean LU: a fresh solve plans on its own Jacobian and leaves it as it was" begin
+    data = _lean_sys14_data()
+    residual = PF.ACPowerFlowResidual(data, 1)
+    J = PF.ACPowerFlowJacobian(data, residual, 1)
+    J(data, 1)
+    s = J.bus_state
+    before = (copy(s.Vm), copy(s.θ), copy(s.phasor), copy(SparseArrays.nonzeros(J.Jv)))
+    slot = PF.LeanPlanSlot()
+    PF._plan_at_flat_in_place!(slot, J, data, 1)
+    @test slot.tried && slot.valid
+    @test (s.Vm, s.θ, s.phasor, SparseArrays.nonzeros(J.Jv)) == before
+    @test _lean_plan_hash(slot.plan) == _lean_plan_hash(PF._lean_plan_slot!(data, 1).plan)
+
+    planned = _lean_sys14_data()
+    PF._lean_plan_slot!(planned, 1)
+    @test solve_power_flow!(planned)
+    fresh = _lean_sys14_data()
+    @test solve_power_flow!(fresh)
+    @test _lean_plan_hash(_lean_slot(fresh).plan) ==
+          _lean_plan_hash(_lean_slot(planned).plan)
+    @test fresh.bus_magnitude == planned.bus_magnitude
+    @test fresh.bus_angles == planned.bus_angles
+    @test PF._lean_counts(fresh) == PF._lean_counts(planned)
+end
+
+@testset "lean LU: an LCC system plans before the solve, serial and threaded alike" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14_hvdc_lcc")
+    function lcc_data(n_threads)
+        pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+            time_steps = 3, correct_bustypes = true,
+            solution_parameters = SolutionParameters(; linear_solver = "KLU", n_threads))
+        return PowerFlowData(pf, sys)
+    end
+    planned = lcc_data(1)
+    PF._lean_plan_slot!(planned, 1)
+    serial = lcc_data(1)
+    threaded = lcc_data(2)
+    for data in (planned, serial, threaded)
+        @test solve_power_flow!(data)
+    end
+    for data in (serial, threaded)
+        @test _lean_plan_hash(_lean_slot(data).plan) ==
+              _lean_plan_hash(_lean_slot(planned).plan)
+        @test data.bus_magnitude == planned.bus_magnitude
+        @test data.bus_angles == planned.bus_angles
+    end
+end
+
 @testset "lean LU: accepted lean factors skip residual refinement" begin
     # With a negative threshold every refinement check fails, re-pivoting the factorization.
     never = SolutionParameters(; linear_solver = "KLU", refinement_threshold = -1.0)
@@ -326,6 +374,20 @@ end
     @test_logs failed match_mode = :any @test !_without_lean(() -> solve_power_flow!(klu))
 end
 
+@testset "lean LU: a solve that pivoted fresh at its start is not rerun" begin
+    capped = SolutionParameters(; linear_solver = "KLU", maxIterations = 1)
+    bad = _lean_sys14_data(; solution_parameters = capped)
+    slot = PF._lean_plan_slot!(bad, 1)
+    p = slot.plan
+    # An unreachable pivot ratio: the first lean refactor is rejected for a klu_factor at x0.
+    slot.plan = _KW.LeanLUPlan(p.n, 1e300, p.p, p.q, p.cp, p.dpos, p.row, p.a_row,
+        p.dep_lb, p.dep_le, p.a_colptr, p.a_rowval)
+    @test !with_logger(() -> solve_power_flow!(bad), NullLogger())
+    @test _lean_ar(bad) == (1, 1)
+    @test iszero(PF._cold_retries(bad))
+    @test PF.get_iterations(bad)[1] == 1
+end
+
 # The plan with 30% of its scatter map randomized: the lean solve diverges far enough that the
 # telescoped ZIP loads lose their set points unless the retry restores them.
 function _scrambled_plan(plan, rng)
@@ -363,5 +425,153 @@ end
         @test PF._cold_retries(bad) == 1
         @test bad.bus_magnitude == klu.bus_magnitude
         @test bad.bus_angles == klu.bus_angles
+    end
+end
+
+function _lean_rm_data(F; T = 1, n_threads = 1, params = (;), kwargs...)
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    data = PowerFlowData(
+        F{NewtonRaphsonACPowerFlow}(;
+            time_steps = T, correct_bustypes = true,
+            solution_parameters = SolutionParameters(;
+                linear_solver = "KLU", n_threads, params...),
+            kwargs...),
+        sys,
+    )
+    n = size(data.bus_type, 1)
+    profile = [1 + 0.02 * cos(0.7 * i + 1.3 * t) for i in 1:n, t in 1:T]
+    data.bus_active_power_withdrawals .*= profile
+    data.bus_reactive_power_withdrawals .*= profile
+    return data
+end
+
+@testset "lean LU: rectangular and mixed NR on KLU match plain KLU" begin
+    for F in (ACRectangularPowerFlow, ACMixedPowerFlow)
+        lean = _lean_rm_data(F; T = 24)
+        @test solve_power_flow!(lean)
+        klu = _lean_rm_data(F; T = 24)
+        @test _without_lean(() -> solve_power_flow!(klu))
+        cache = lean.solver_cache[]
+        @test _KW.has_lean_plan(cache.linSolveCache)
+        @test cache.linSolveCache.lean_plan === cache.lean.plan
+        @test !_KW.has_lean_plan(klu.solver_cache[].linSolveCache)
+        (; attempts, rejects, solve_failures, cold_retries) = PF._lean_counts(lean)
+        @test attempts > 0
+        @test iszero(rejects) && iszero(solve_failures) && iszero(cold_retries)
+        @test PF._lean_counts(klu) == PF._NO_LEAN_COUNTS
+        @test lean.converged == klu.converged
+        @test lean.bus_type == klu.bus_type
+        @test isapprox(lean.bus_magnitude, klu.bus_magnitude; atol = 1e-10)
+        @test isapprox(lean.bus_angles, klu.bus_angles; atol = 1e-10)
+
+        lean = _lean_rm_data(F; T = 24, check_reactive_power_limits = true)
+        klu = _lean_rm_data(F; T = 24, check_reactive_power_limits = true)
+        @test solve_power_flow!(lean)
+        @test _without_lean(() -> solve_power_flow!(klu))
+        @test lean.converged == klu.converged
+        @test lean.bus_type == klu.bus_type
+        @test isapprox(lean.bus_magnitude, klu.bus_magnitude; atol = 1e-10)
+        @test isapprox(lean.bus_angles, klu.bus_angles; atol = 1e-10)
+    end
+end
+
+@testset "lean LU: rectangular and mixed pause the plan off its bus types" begin
+    # A PV→PQ flip keeps the mixed pattern and changes the rectangular one.
+    for (F, same_pattern) in ((ACRectangularPowerFlow, false), (ACMixedPowerFlow, true))
+        data = _lean_rm_data(F)
+        @test solve_power_flow!(data)
+        cache = data.solver_cache[]
+        k = findfirst(==(PSY.ACBusTypes.PV), data.bus_type[:, 1])
+        data.bus_type[k, 1] = PSY.ACBusTypes.PQ
+        data.bus_active_power_withdrawals .*= 1.01
+        (; attempts) = PF._lean_counts(cache)
+        @test solve_power_flow!(data)
+        @test (data.solver_cache[] === cache) == same_pattern
+        @test PF._lean_counts(cache).attempts == attempts
+        # A rebuild for a new pattern is not planned; a reused cache keeps its plan.
+        @test _KW.has_lean_plan(data.solver_cache[].linSolveCache) == same_pattern
+        @test data.solver_cache[].lean.tried == same_pattern
+    end
+    data = _lean_rm_data(ACMixedPowerFlow)
+    @test solve_power_flow!(data)
+    cache = data.solver_cache[]
+    k = findfirst(==(PSY.ACBusTypes.PV), data.bus_type[:, 1])
+    data.bus_type[k, 1] = PSY.ACBusTypes.PQ
+    data.bus_active_power_withdrawals .*= 1.01
+    @test solve_power_flow!(data)
+    data.bus_type[k, 1] = PSY.ACBusTypes.PV
+    data.bus_active_power_withdrawals .*= 1.01
+    (; attempts) = PF._lean_counts(cache)
+    @test solve_power_flow!(data)
+    @test data.solver_cache[] === cache
+    @test PF._lean_counts(cache).attempts > attempts
+    @test iszero(PF._lean_counts(cache).rejects)
+end
+
+@testset "lean LU: a rejected rectangular plan is retired" begin
+    data = _lean_rm_data(ACRectangularPowerFlow; T = 2)
+    @test solve_power_flow!(data)
+    cache = data.solver_cache[]
+    @test cache.lean.valid
+    lin = cache.linSolveCache
+    R = PF.ACRectangularCIResidual(data, 1)
+    x = Vector{Float64}(undef, length(R.Rv))
+    PF.rect_initial_state!(x, data, R.bus_state_offset, R.bus_block_size, 1)
+    R(data, x, 1)
+    bad = copy(PF.ACRectangularCIJacobian(data, R, 1).Jv)
+    # Shrink the plan's first pivot far below its reject ratio.
+    bad[lin.lean_plan.p[1], lin.lean_plan.q[1]] *= 1e-14
+    PF._resume_lean!(lin)
+    PF.numeric_refactor!(lin, bad)
+    @test PF._lean_counts(cache).rejects == 1
+    data.bus_active_power_withdrawals .*= 1.01
+    @test solve_power_flow!(data)
+    @test !data.solver_cache[].lean.valid
+    klu = _lean_rm_data(ACRectangularPowerFlow; T = 2)
+    @test _without_lean(() -> solve_power_flow!(klu))
+    klu.bus_active_power_withdrawals .*= 1.01
+    @test _without_lean(() -> solve_power_flow!(klu))
+    @test isapprox(data.bus_magnitude, klu.bus_magnitude; atol = 1e-10)
+    @test isapprox(data.bus_angles, klu.bus_angles; atol = 1e-10)
+end
+
+@testset "lean LU: a failed solve on a paused plan is not rerun" begin
+    data = _lean_rm_data(ACMixedPowerFlow; params = (; maxIterations = 1))
+    vm0, va0 = copy(data.bus_magnitude), copy(data.bus_angles)
+    with_logger(() -> solve_power_flow!(data), NullLogger())
+    cache = data.solver_cache[]
+    @test cache.lean.valid
+    k = findfirst(==(PSY.ACBusTypes.PV), data.bus_type[:, 1])
+    data.bus_type[k, 1] = PSY.ACBusTypes.PQ
+    copyto!(data.bus_magnitude, vm0)
+    copyto!(data.bus_angles, va0)
+    retries = PF._cold_retries(data)
+    @test !with_logger(() -> solve_power_flow!(data), NullLogger())
+    @test data.solver_cache[] === cache
+    @test PF._cold_retries(data) == retries
+    @test PF.get_iterations(data)[1] == 1
+end
+
+@testset "lean LU: rectangular and mixed workers and copies share the seed's plan" begin
+    for F in (ACRectangularPowerFlow, ACMixedPowerFlow)
+        threaded = _lean_rm_data(F; T = 24, n_threads = 2)
+        @test solve_power_flow!(threaded)
+        a, b = (s.solver_cache[] for s in threaded.worker_slots)
+        @test a.lean.valid && b.lean === a.lean
+        @test b.linSolveCache.lean_plan === a.lean.plan
+        serial = _lean_rm_data(F; T = 24)
+        @test solve_power_flow!(serial)
+        @test threaded.converged == serial.converged
+        @test isapprox(threaded.bus_magnitude, serial.bus_magnitude; atol = 1e-10)
+        @test isapprox(threaded.bus_angles, serial.bus_angles; atol = 1e-10)
+
+        work = _lean_rm_data(F; T = 24)
+        PF._inherit_jacobian_structure!(work, serial)
+        @test work.solver_cache[].lean === serial.solver_cache[].lean
+        work.bus_active_power_withdrawals .*= 1.01
+        @test solve_power_flow!(work)
+        @test work.solver_cache[].linSolveCache.lean_plan ===
+              serial.solver_cache[].lean.plan
+        @test PF._lean_counts(work).attempts > 0
     end
 end

@@ -29,7 +29,9 @@
             solve_power_flow!(data_loss_factors)
 
             # get loss factors using brute force approach (sequential power flow evaluations for each bus)
-            bf_loss_factors = penalty_factors_brute_force(data_brute_force, pf)
+            # A 1e-6 difference quotient needs solves well past the default tol: NR's chord steps
+            # stop just under it instead of overshooting it quadratically.
+            bf_loss_factors = penalty_factors_brute_force(data_brute_force, pf; tol = 1e-12)
 
             # confirm that loss factors match for the Jacobian-based and brute force approaches
             @test all(

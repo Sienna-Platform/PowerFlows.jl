@@ -6,6 +6,7 @@ function initialize_power_flow_data!(
     pf::PowerFlowEvaluationModel,
     sys::System;
     correct_bustypes = false,
+    subnetworks::Dict{Int, Set{Int}} = PNM.find_subnetworks(sys),
 )
     nrd = get_network_reduction_data(data)
     reverse_bus_search_map = PNM.get_reverse_bus_search_map(nrd)
@@ -40,7 +41,8 @@ function initialize_power_flow_data!(
         bus_reduction_map,
         reverse_bus_search_map,
         sys,
-        correct_bustypes,
+        correct_bustypes;
+        subnetworks = subnetworks,
     )
     # initialize for all time steps, or just the first?
     data.bus_type[:, :] .= bus_type
