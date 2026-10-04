@@ -92,7 +92,7 @@ steps and contingencies. `bus_type_snapshot` holds the bus types the residual's 
 last derived for (emptied by [`_invalidate_partition!`](@ref)). `residual` and `J` do not store
 `data`: `data` holds this cache, so a back-reference would form a cycle. `arc_flows` lets a
 reused `solve_power_flow!` skip rebuilding its branch-flow scratch. `lean` is the slot whose plan
-the KLU cache was given, for [`_align_lean_plan!`](@ref). `x0` and `partition` are the reuse
+the KLU cache was given, for `_align_lean_plan!`. `x0` and `partition` are the reuse
 path's start-point and island-partition buffers."""
 struct PolarNRCache{C <: PNM.LinearSolverCache} <: AbstractNRCache
     residual::ACPowerFlowResidual
