@@ -1,6 +1,3 @@
-# Generalized-admittance (GA) AC power flow: construction, blocks, iteration kernel, solve parity
-# against polar NR, handoff, multi-period, DC-network (VSC/HVDC) and LCC coupling.
-
 const GA = GeneralizedAdmittanceACPowerFlow
 const GA_SYS14 = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
 
@@ -45,6 +42,7 @@ function ga_dense_problem(data::PF.PowerFlowData, ts::Int = 1)
         Vset = data.bus_magnitude[v_ix, ts], s, u_ref = data.bus_magnitude[l_ix, ts])
 end
 
+# Equation numbers refer to Artoisenet & Verstraete, arXiv:2609.14132, 2026.
 function ga_dense_reference(p, y; tol = 1e-11, maxiter = 500)
     nv = length(p.v_ix)
     nl = length(p.l_ix)
@@ -89,7 +87,6 @@ function ga_parity(sys::PSY.System; pf_kwargs = (;), ga_solve_kwargs = (;), tol 
     return data_nr, data_ga
 end
 
-# PQ magnitudes 1.0 and every non-REF angle 0.0 at time step 1.
 function ga_true_flat_start!(data)
     bus_type = PF.get_bus_type(data)
     for ix in axes(bus_type, 1)
@@ -131,7 +128,6 @@ function ga_check_against_dense(sys, n_iter)
     return part, np, cache, y
 end
 
-# Point-to-point VSC between the first two PQ buses of c_sys14; `kw` sets the converter modes.
 function ga_add_vsc!(sys::PSY.System, name::String; kw...)
     pq = ga_pq_buses(sys)
     arc = _get_or_make_arc(sys, pq[1], pq[2])
@@ -186,8 +182,7 @@ function ga_vsc_ac_voltage_system()
     )
 end
 
-# Converter with a lossy from terminal on the REF bus: the DC substep must settle P_c at
-# the fixed REF |V|, and the AC-voltage/pv modes must not leak Q into the REF row.
+# The lossy `to` terminal is on the REF bus: the DC substep must settle P_c at the fixed REF |V|.
 function ga_vsc_system_ref_terminal(; g = 45.0)
     sys = ga_sys14()
     pick(t) = first(
@@ -355,7 +350,7 @@ end
             y = PF._ga_initial_shunts(b, np, part, data, 1)
             q0 = only(PF._ga_flat_start_q0(b, part, y, data.bus_magnitude[part.s_ix, 1]))
             q3 = data.bus_reactive_power_withdrawals[only(part.q_ix), 1]
-            u3 = (10 * 1.0 + 5 * 1.05) / (15 + q3) # spec §3.6 by hand: B33 = -15 - q3
+            u3 = (10 * 1.0 + 5 * 1.05) / (15 + q3) # by hand: B33 = -15 - q3
             @test q0 ≈ 1.05 * (-15 * 1.05 + 10 * 1.0 + 5 * u3) atol = 1e-10
             @test q0 < 0.0
             @test y[1] ≈ complex(real(PF._ga_s(np, 1, 1.05)), -q0) / 1.05^2
