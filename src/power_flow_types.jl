@@ -692,8 +692,8 @@ rectangular coordinates (MATPOWER's `newtonpf_S_cart`).
 State per bus: PQ and PV `(eᵢ, fᵢ)`, REF `(P_netᵢ, Q_netᵢ)` with `(eᵢ, fᵢ)` fixed.
 Rows per bus: PQ and REF `(ΔPᵢ, ΔQᵢ)` with `ΔSᵢ = Vᵢ·conj((Y_bus·V)ᵢ) − S_specᵢ`; PV
 `(ΔPᵢ, |Vᵢ|² − V_setᵢ²)`. A PV bus's reactive power is recovered from the converged
-voltages. Like the polar form, and unlike a current mismatch, the rows do not change when
-all bus angles rotate together, so Newton converges from a flat start.
+voltages. Like the polar form, the rows do not change when all bus angles rotate together,
+so Newton converges from a flat start.
 
 `ACSolver` defaults to [`NewtonRaphsonACPowerFlow`](@ref). Supported solvers:
 [`NewtonRaphsonACPowerFlow`](@ref), [`TrustRegionACPowerFlow`](@ref), and

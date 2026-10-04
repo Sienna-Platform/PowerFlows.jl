@@ -14,8 +14,8 @@
     end
 end
 
-# Power mismatch is unchanged by a common rotation of all bus angles; the former current-injection
-# rows were not, and Newton failed from flat on ACTIVSg2000 (solution angles down to −1.29 rad).
+# Power mismatch does not change under a common rotation of all bus angles, so Newton must
+# converge from flat on ACTIVSg2000, where solution angles reach −1.29 rad.
 @testset "Rectangular Power Flow: flat start on ACTIVSg2000" begin
     sys = PSB.build_system(PSB.MatpowerTestSystems, "matpower_ACTIVSg2000_sys")
     function flat_data(pf)

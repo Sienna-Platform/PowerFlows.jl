@@ -183,8 +183,8 @@ end
 end
 
 @testset "Rect/Mixed: converged means the published state meets tol (ACTIVSg2000)" begin
-    # PV magnitudes are published at the setpoint, not the solver's |e + jf|; near a
-    # low-impedance branch that gap moved neighbouring rows well past a loose tol.
+    # PV magnitudes are published at the setpoint, not at the solver's |e + jf|. Near a
+    # low-impedance branch, that gap can push neighbor rows past `tol`.
     sys = PSB.build_system(PSB.MatpowerTestSystems, "matpower_ACTIVSg2000_sys")
     cases = (
         (ACRectangularPowerFlow, PF.ACRectangularCIResidual, PF.rect_initial_state!, 1e-3),

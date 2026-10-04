@@ -10,8 +10,7 @@ from the converged voltages ([`rect_finalize_bus_injections!`](@ref)).
 
 `ΔS = V·conj(I) − S_spec`, with `I = Y_bus_eff·V` plus the LCC terminal currents. Power
 mismatch is unchanged by a common rotation of all bus angles, so Newton converges from a flat
-start like the polar form; a current mismatch is not, and fails once the solution's angle spread
-passes about 0.6 rad.
+start like the polar form.
 
 # Fields
 - `Rv::Vector{Float64}` — residual values, length `total_bus_state + tail`

@@ -19,8 +19,8 @@ For the conceptual split between evaluation models and solvers, see
 
 Warm-solve timings: median of 10 runs after warm-up, with the `[min, max]`
 range. Hardware-dependent — compare medians across cells, not absolutes. The
-Rectangular rows were measured with the former current-injection rows of
-[`ACRectangularPowerFlow`](@ref) and are not yet re-measured.
+Rectangular rows were measured before [`ACRectangularPowerFlow`](@ref) used a
+power-balance residual.
 
 ## 2000-bus (`ACTIVSg2000`, tol `1e-9`)
 

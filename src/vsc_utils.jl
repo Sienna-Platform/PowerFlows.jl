@@ -1000,11 +1000,9 @@ function _apply_vsc_bus_injections_mixed!(
     return
 end
 
-# VSC Jacobian writer for the MCPB current-injection rows (`imag_first_pq = true`: imag-first slot
-# order at PQ buses; `false`: real-first current rows). The control + DC-KCL tail rows are
-# [`_set_vsc_tail_entries_rect!`](@ref), shared with the rectangular power-mismatch form. All writes
-# go through the pre-built `vsc_nz` nzval-index cache (and `diag_base_nz` for the current-injection
-# coupling), so the hot path is `O(n_conv + n_node + n_branch)` with no `O(log nnz)` setindex.
+# VSC Jacobian bus entries for the MCPB rows. `imag_first_pq = true` selects the MCPB layout:
+# imag-first current rows at PQ buses, and the power and pin rows at PV buses.
+# [`_set_vsc_tail_entries_rect!`](@ref) writes the control and DC-KCL tail rows.
 function _set_entries_for_vsc_rect_mcpb!(
     Jvnz::Vector{Float64},
     diag_base_nz::Matrix{Int},

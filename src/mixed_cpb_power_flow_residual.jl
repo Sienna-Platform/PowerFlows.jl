@@ -341,8 +341,8 @@ _converged_at_setpoints!(
     ::Float64,
 ) = true
 
-# The PV row holds e² + f² only to `tol`; near a low-impedance branch that gap moves the
-# neighbouring current rows by orders of magnitude more (ACTIVSg2000: 6e-11 in |V|, 5e-8 in F).
+# The PV row holds e² + f² only to `tol`. Near a low-impedance branch, that gap moves the
+# neighbouring rows by orders of magnitude more.
 function _converged_at_setpoints!(
     residual::Union{ACRectangularCIResidual, ACMixedCPBResidual},
     data::ACPowerFlowData,
@@ -379,10 +379,8 @@ Called right after an iterate moved by `x .+= Δx`, before `F` is evaluated ther
 form scales each PV `(e, f)` whose magnitude is off its setpoint by more than
 `PV_PROJECTION_THRESHOLD` back onto it, keeping the angle, and adds the shift to `Δx` so
 `x .-= Δx` still undoes the move. Its PQ current rows are not rotation invariant, and without
-this a flat start on ACTIVSg2000 diverges. No-op for the other forms. NR, chord and Iwamoto
-steps call it; trust-region and Levenberg-Marquardt steps do not, since a projected trial point
-leaves their step model (with it, LM stalls from flat on ACTIVSg2000 and TR fails on
-`psse_14_zero_impedance_branch_test_system`).
+this a flat start can diverge. No-op for the other forms. Trust-region and Levenberg-Marquardt
+steps do not call it: a projected trial point leaves their step model.
 """
 function _project_pv_setpoints!(
     ::Union{ACPowerFlowResidual, ACRectangularCIResidual},

@@ -130,9 +130,10 @@ function _create_rect_ci_jacobian_structure(
     dcn = get_dc_network(data)
     total_state = total_bus_state + state_tail_length(data, dcn)
 
-    sizehint!(rows, 4 * SparseArrays.nnz(Y_bus_eff) + 17 * n_lccs + 4 * n_buses)
-    sizehint!(cols, 4 * SparseArrays.nnz(Y_bus_eff) + 17 * n_lccs + 4 * n_buses)
-    sizehint!(vals, 4 * SparseArrays.nnz(Y_bus_eff) + 17 * n_lccs + 4 * n_buses)
+    n_entries = 4 * SparseArrays.nnz(Y_bus_eff) + 17 * n_lccs + 4 * n_buses
+    sizehint!(rows, n_entries)
+    sizehint!(cols, n_entries)
+    sizehint!(vals, n_entries)
 
     function push_block!(r_off::Int, c_off::Int)
         for r in 0:1, c in 0:1
@@ -160,7 +161,7 @@ function _create_rect_ci_jacobian_structure(
         ref_bus in residual.independent_ref && continue
         ref_off = Int(bus_state_offset[ref_bus])
         for bus_k in subnetwork_buses
-            spf[bus_k] == 0.0 && continue
+            iszero(spf[bus_k]) && continue
             bus_k == ref_bus && continue
             k_off = Int(bus_state_offset[bus_k])
             push!(rows, J_INDEX_TYPE(k_off))
@@ -382,7 +383,7 @@ function _set_entries_for_lcc_rect!(
             # except the two tap diagonals, so zero the block and pin F_t_fb → tap_r (row
             # 15), F_t_tb → tap_i (row 18), matching _write_lcc_tail!. The α-limit identity
             # diagonals are not in lcc_nz (set at pattern build), so they survive.
-            Jvnz[lcc_nz[1:24, i]] .= 0.0
+            Jvnz[view(lcc_nz, :, i)] .= 0.0
             Jvnz[lcc_nz[15, i]] = 1.0
             Jvnz[lcc_nz[18, i]] = 1.0
             continue

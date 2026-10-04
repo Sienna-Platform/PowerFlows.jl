@@ -496,8 +496,8 @@ end
     end
 end
 
-# A PV row holds e² + f² only to `tol`, so `(e, f)` there can sit off the published setpoint
-# `|V|`; the power balance at the published voltages then misses `tol` (c_sys14 mixed: 2.7e-8).
+# A PV row holds e² + f² only to `tol`, so `(e, f)` can differ from the published setpoint
+# `|V|`. The power balance at the published voltages can then miss `tol`.
 @testset "LM: rect and mixed convergence holds at the published voltages" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
     tol = 1e-8
