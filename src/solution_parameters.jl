@@ -92,10 +92,11 @@ take effect.
 - `n_threads::Int`: number of tasks a multi-period AC solve spreads contiguous chunks of its
   time steps over. `1` (the default) solves them in order on the calling thread. Any AC
   formulation and solver threads; above `1` the linear solver must be `"KLU"`, checked at
-  construction. A first solve equals the serial solve bitwise, with two exceptions: with
+  construction. A first solve equals the serial solve bitwise, with three exceptions: with
   controlled taps the serial Y-bus accumulates ComplexF32 round-off across steps that a
-  worker's copy does not, and with controlled taps or area interchange each worker plans its
-  own pivot order, so results agree to factorization round-off. On
+  worker's copy does not; with controlled taps or area interchange each worker plans its
+  own pivot order; and when a first step converges at its start, a serial run with no LCC
+  builds the lean-LU plan at a later step. Results then agree to factorization round-off. On
   a re-solve, a chunk's first step may warm-start differently, since steps owned by other
   tasks are not used as warm starts. Julia needs at least that many threads (`--threads`) to
   see a speedup.
