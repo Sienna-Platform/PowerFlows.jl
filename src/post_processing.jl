@@ -1044,11 +1044,16 @@ function write_power_flow_solution!(
         arc_ix = arc_lookup[arc]
         p_arc = data.arc_active_power_flow_from_to[arc_ix, time_step]
         q_arc = data.arc_reactive_power_flow_from_to[arc_ix, time_step]
-        atol = _stored_flow_atol(branch, data, arc, time_step, nrd)
-        @assert isapprox(flow_entry.P_from_to, p_arc; atol) "Flow mismatch at " *
-                                                            "arc $arc: recomputed P=$(flow_entry.P_from_to), stored P=$p_arc"
-        @assert isapprox(flow_entry.Q_from_to, q_arc; atol) "Flow mismatch at " *
-                                                            "arc $arc: recomputed Q=$(flow_entry.Q_from_to), stored Q=$q_arc"
+        if !(
+            isapprox(flow_entry.P_from_to, p_arc; atol = 1e-3) &&
+            isapprox(flow_entry.Q_from_to, q_arc; atol = 1e-3)
+        )
+            atol = _stored_flow_atol(branch, data, arc, time_step, nrd)
+            @assert isapprox(flow_entry.P_from_to, p_arc; atol) "Flow mismatch at " *
+                                                                "arc $arc: recomputed P=$(flow_entry.P_from_to), stored P=$p_arc"
+            @assert isapprox(flow_entry.Q_from_to, q_arc; atol) "Flow mismatch at " *
+                                                                "arc $arc: recomputed Q=$(flow_entry.Q_from_to), stored Q=$q_arc"
+        end
         set_power_flow!(branch, flow_entry.P_from_to + im * flow_entry.Q_from_to)
     end
 
