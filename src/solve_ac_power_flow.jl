@@ -307,8 +307,7 @@ function _solve_columns!(
     for pos in positions
         ts_converged[pos] = _solve_column!(data, pf, steps[pos], flows, cd, merged_kwargs)
     end
-    (; attempts, rejects, solve_failures, late_analyses) = _lean_counts(data)
-    @debug "lean LU refactors on this cache so far" attempts rejects solve_failures late_analyses
+    @debug "lean LU refactors on this cache so far" lean = _lean_counts(data)
     return ts_converged
 end
 
@@ -426,7 +425,10 @@ function _solve_columns_threaded!(
     @sync for (i, positions) in enumerate(chunks)
         worker = workers[i]
         slot = slots[i]
-        rest = _rest_of_chunk(i, positions, head)
+        rest = positions
+        if isone(i)
+            rest = (last(head) + 1):last(positions)
+        end
         Threads.@spawn _solve_slot!(
             ts_converged, worker, slot, pf, steps, rest, merged_kwargs)
     end
@@ -460,41 +462,21 @@ _head_steps(::Nothing, positions::UnitRange{Int}) = first(positions):first(posit
 _head_steps(::AbstractNRCache, positions::UnitRange{Int}) =
     first(positions):(first(positions) - 1)
 
-_rest_of_chunk(i::Int, positions::UnitRange{Int}, head::UnitRange{Int}) =
-    _rest_of_chunk(Val(isone(i)), positions, head)
-_rest_of_chunk(::Val{true}, positions::UnitRange{Int}, head::UnitRange{Int}) =
-    (last(head) + 1):last(positions)
-_rest_of_chunk(::Val{false}, positions::UnitRange{Int}, ::UnitRange{Int}) = positions
-
 function _seed_workers!(workers, steps, chunks)
     seed = workers[1].polar_nr_cache[]
     memo = workers[1].ac_jacobian_structure_cache[]
     for i in 2:length(workers)
-        _seed_from_memo!(workers[i], seed, memo, steps[first(chunks[i])])
-        _seed_rect_mixed!(workers[i], workers[i].solver_cache[], workers[1].solver_cache[])
+        worker = workers[i]
+        _seed_empty!(worker.polar_nr_cache[], worker, seed, memo, steps[first(chunks[i])])
+        _seed_rect_mixed!(worker, worker.solver_cache[], workers[1].solver_cache[])
     end
     return
 end
 
 # Only a worker with no stored cache is seeded.
-_seed_from_memo!(worker::ACPowerFlowData, seed, memo, time_step::Int) =
-    _seed_empty!(worker.polar_nr_cache[], worker, seed, memo, time_step)
 _seed_empty!(::Nothing, worker, seed, memo, time_step) =
-    _seed_from_memo_now!(worker, seed, memo, time_step)
+    _seed_worker!(worker, seed, memo, time_step)
 _seed_empty!(::AbstractNRCache, worker, seed, memo, time_step) = nothing
-
-# A worker whose matrix or area data differs from the seed's has its own memo: leave it unseeded.
-_seed_from_memo_now!(::ACPowerFlowData, ::Any, ::Nothing, ::Int) = nothing
-function _seed_from_memo_now!(
-    worker::ACPowerFlowData,
-    seed,
-    memo::ACJacobianStructureCache,
-    time_step::Int,
-)
-    _lean_plan_tried(memo, worker) || return
-    _seed_worker!(worker, seed, memo.lean, time_step)
-    return
-end
 
 _prepare_lean_plan!(
     ::AbstractACPowerFlow,
@@ -544,17 +526,13 @@ function _lean_plan_tried(memo::ACJacobianStructureCache, data::ACPowerFlowData)
 end
 
 """A `PowerFlowData` sharing every time-indexed array of `data` (each task writes only its own
-columns) with the slot's solver caches, a private `converged`, and private copies of the state a solve
+columns) with the slot's solver caches, a private `converged` (steps owned by other tasks are
+cleared, so `improve_x0` never warm-starts from them), and private copies of the state a solve
 mutates outside its column: the controlled-device scratch and counters, the network matrix when
 taps are controlled, the LCC branch admittances, and the area-interchange data when it is active.
-The Jacobian-structure memo is shared too: it is read-only once built, and it carries the lean-LU
-plan. A worker with its own network matrix or area data misses that memo and plans itself.
-`improve_x0` warm-starts from the last step converged at entry; steps owned by other tasks are
-cleared there, since their columns are being rewritten concurrently. So a first solve matches the
-serial one exactly (controlled taps aside: the serial Y-bus accumulates ComplexF32 round-off
-across steps, and a first step converged at its start: a serial run with no LCC then builds the
-lean plan at a later step), while a re-solve may pick a different warm start at a chunk's first
-step."""
+The read-only Jacobian-structure memo, which carries the lean-LU plan, is shared; a worker with its
+own network matrix or area data misses it and plans itself. See [`SolutionParameters`](@ref)'s
+`n_threads` for how results compare to a serial solve."""
 function _column_worker(
     data::ACPowerFlowData,
     steps::AbstractVector{Int},
