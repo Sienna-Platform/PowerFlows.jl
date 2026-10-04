@@ -399,6 +399,7 @@ function _fd_fixed_jacobian_power_flow(
         sg = FDSafeguardState(sv.x, ss)
         converged = norm(residual.Rv, Inf) < stage_tol
         refrozen = false
+        fresh = true   # J holds values at the current cycle-start state
 
         while i < maxIterations && !converged
             _fd_begin_cycle!(sg, sv.x, ss)
@@ -440,8 +441,21 @@ function _fd_fixed_jacobian_power_flow(
 
             # --- non-divergent backtracking ---
             if fd_non_divergent && ss >= fd_ndvfct * sg.prev_ss
-                # The full step failed to improve enough: re-apply a halved step from the
-                # cycle-start state, up to `fd_max_step_halvings` times.
+                # A step from a stale J failed: refreeze at the cycle start and retry before
+                # halving. The mixed PV power rows rotate with the bus angle, so J frozen at x0
+                # diverges outright once angles move (ACTIVSg2000).
+                if refreeze_on_stall && !fresh
+                    copyto!(sv.x, sg.cycle_x)
+                    residual(data, sv.x, time_step)
+                    J(data, time_step)
+                    numeric_refactor!(cache, J.Jv)
+                    ss = sg.prev_ss
+                    fresh = true
+                    i += 1
+                    continue
+                end
+                # Re-apply a halved step from the cycle-start state, up to
+                # `fd_max_step_halvings` times.
                 accepted = false
                 factor = 1.0
                 for _ in 1:fd_max_step_halvings
@@ -458,32 +472,19 @@ function _fd_fixed_jacobian_power_flow(
                     end
                 end
                 if !accepted
-                    # Exhausted halvings: optionally refreeze ONCE, else terminate and
-                    # restore the best-Σ(Rv²) state seen.
-                    if refreeze_on_stall && !refrozen
-                        refrozen = true
-                        # refresh J at the best state, refactor in place, continue
-                        _fd_restore_best!(sv, residual, sg, data, time_step)
-                        J(data, time_step)
-                        numeric_refactor!(cache, J.Jv)
-                        ss = sg.best_ss
-                        _fd_reset_safeguard!(sg, sv.x, ss)
-                        converged = norm(residual.Rv, Inf) < stage_tol
-                        i += 1
-                        continue
-                    else
-                        _fd_restore_best!(sv, residual, sg, data, time_step)
-                        ss = sg.best_ss
-                        @warn(
-                            "$solver_name: non-divergent backtracking exhausted; " *
-                            "restoring best state (Σmismatch² = $(ss))."
-                        )
-                        break
-                    end
+                    _fd_restore_best!(sv, residual, sg, data, time_step)
+                    ss = sg.best_ss
+                    @warn(
+                        "$solver_name: non-divergent backtracking exhausted; " *
+                        "restoring best state (Σmismatch² = $(ss))."
+                    )
+                    break
                 end
+                fresh = false
             else
                 # step accepted; update best-state record
                 _fd_update_best!(sg, sv.x, ss)
+                fresh = false
             end
 
             validate_voltage_magnitudes && _validate_state_magnitudes(
@@ -529,8 +530,7 @@ function _fd_fixed_jacobian_power_flow(
 end
 
 """Restore the best-Σ(Rv²) state recorded in `sg` into `sv.x` and re-evaluate the residual
-there (syncing `data`). Used on non-divergent termination, V≈0 abort, and before a
-one-shot refreeze."""
+there (syncing `data`). Used on non-divergent termination and V≈0 abort."""
 function _fd_restore_best!(
     sv::StateVectorCache,
     residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},

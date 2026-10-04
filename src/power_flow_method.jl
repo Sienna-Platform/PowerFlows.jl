@@ -634,7 +634,8 @@ end
 
 """Sets `Δx_proposed` equal to the `Δx` by which we should update `x`. Decides
 between the Cauchy step `Δx_cauchy`, Newton-Raphson step `Δx_nr`, and the dogleg
-interpolation between the two, based on which fall within the trust region."""
+interpolation between the two, based on which fall within the trust region. Returns the
+scaled norm of `Δx_nr`."""
 function _dogleg!(Δx_proposed::Vector{Float64},
     Δx_cauchy::Vector{Float64},
     Δx_nr::Vector{Float64},
@@ -684,7 +685,7 @@ function _dogleg!(Δx_proposed::Vector{Float64},
             @debug "Dogleg step selected (τ = $(siground(tau)))"
         end
     end
-    return
+    return nr_norm
 end
 
 """Accept a trust region step: update cached residual and autoscale vector `d`.
@@ -771,7 +772,7 @@ function _trust_region_step(time_step::Int,
         DEFAULT_REFINEMENT_THRESHOLD,
         DEFAULT_REFINEMENT_EPS,
     )
-    _dogleg!(
+    nr_norm = _dogleg!(
         stateVector.Δx_proposed,
         stateVector.Δx_cauchy,
         stateVector.Δx_nr,
@@ -781,6 +782,12 @@ function _trust_region_step(time_step::Int,
         stateVector.r_scratch,
         delta,
     )
+    # δ_max anchors on ‖x₀‖, which says nothing about the P/Q-slot scale: a warm start across a
+    # near-zero-impedance branch needs Newton steps ~1e5 long. Never cap below the Newton step.
+    delta_cap = delta_max
+    if isfinite(nr_norm)
+        delta_cap = max(delta_max, DEFAULT_TRUST_REGION_DELTA_MAX_FACTOR * nr_norm)
+    end
     # find proposed next point.
     stateVector.x .+= stateVector.Δx_proposed
 
@@ -826,7 +833,7 @@ function _trust_region_step(time_step::Int,
                 # Iwamoto accepted a damped step — shrink trust region since the
                 # full proposed step was rejected by rho. Do not use rho-based
                 # expansion logic because rho corresponds to the rejected full step.
-                delta = min(delta / 2, delta_max)
+                delta = min(delta / 2, delta_cap)
                 @debug "Trust region decreased (Iwamoto fallback accepted): δ $(siground(old_delta)) → $(siground(delta))"
                 return delta
             end
@@ -851,7 +858,7 @@ function _trust_region_step(time_step::Int,
     else
         @debug "Trust region unchanged: δ = $(siground(delta))"
     end
-    delta = min(delta, delta_max)
+    delta = min(delta, delta_cap)
     return delta
 end
 

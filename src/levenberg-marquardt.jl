@@ -147,6 +147,11 @@ end
 _default_marquardt_scaling(::Type{<:AbstractACPowerFlow}) = false
 _default_marquardt_scaling(::Type{<:ACRectangularPowerFlow}) = true
 
+# The ‖F‖ in λ = μ‖F‖. Polar caps it at 1: at a huge ‖F‖ (near-zero-impedance branches),
+# μ‖F‖ damps away the Newton step that converges. Capping breaks mixed from flat starts.
+_lm_damping_norm(_, sumsq::Float64) = sqrt(sumsq)
+_lm_damping_norm(::ACPowerFlowResidual, sumsq::Float64) = min(sqrt(sumsq), 1.0)
+
 """Driver for the LevenbergMarquardtACPowerFlow method: sets up the data
 structures (e.g. residual), runs the power flow method via calling `_run_power_flow_method`
 on them, then handles post-processing (e.g. loss factors)."""
@@ -319,11 +324,13 @@ function update_damping_factor!(
     # J is current unless the previous step moved x; refresh only then.
     previous_step_accepted && J(data, time_step)
 
-    λ = μ * sqrt(residualSize)
+    λ = μ * _lm_damping_norm(residual, residualSize)
     ρ, accepted = compute_error(x, residual, J, data, λ, time_step, residualSize, ws)
     coef = 4.0
     if ρ > 0.75
-        μ = max(μ / coef, 1e-8)
+        # Low floor: near-zero-impedance branches leave J a direction with σ² ~ 1e-12 that
+        # the solution moves along. min keeps a caller's smaller λ_0.
+        μ = min(μ, max(μ / coef, 1e-12))
     elseif ρ >= 0.25
         # intentional no-op
     else

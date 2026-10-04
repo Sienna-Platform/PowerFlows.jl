@@ -298,3 +298,20 @@ end
     ratios = [err / Δx_mag for (err, Δx_mag) in zip(errors, Δx_mags)]
     @test all(isapprox(r, ratios[1]; rtol = 0.2) for r in ratios)
 end
+
+@testset "RH method: records its iteration count" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14")
+    data = PowerFlowData(ACPowerFlow{RobustHomotopyPowerFlow}(), sys)
+    @test solve_power_flow!(data)
+    @test data.iterations[1] > 0
+end
+
+@testset "RH method: a failed line search returns false instead of throwing" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14")
+    data = PowerFlowData(ACPowerFlow{RobustHomotopyPowerFlow}(), sys)
+    pq = findfirst(==(PSY.ACBusTypes.PQ), data.bus_type[:, 1])
+    # A non-finite objective makes LineSearches' BackTracking throw on every step.
+    data.bus_active_power_withdrawals[pq, 1] = NaN
+    @test_logs (:error, r"RobustHomotopyPowerFlow solver failed") match_mode = :any min_level =
+        Logging.Error @test !solve_power_flow!(data)
+end

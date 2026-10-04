@@ -61,7 +61,7 @@ import SparseArrays:
 import DataStructures: OrderedDict
 import Dates
 import Printf: @sprintf
-import LineSearches: BackTracking
+import LineSearches: BackTracking, LineSearchException
 
 include("definitions.jl")
 include("linear_solver_backend.jl")

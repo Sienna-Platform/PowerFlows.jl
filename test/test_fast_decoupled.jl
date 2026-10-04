@@ -538,6 +538,18 @@ end
         atol = TIGHT_TOLERANCE, rtol = 0)
     @test isapprox(data_fd.bus_angles[:, 1], data_nr.bus_angles[:, 1];
         atol = TIGHT_TOLERANCE, rtol = 0)
+
+    # Mixed PV power rows rotate with the bus angle: J frozen at x0 diverges here unless a
+    # failed stale step refreezes at the cycle start.
+    sys_mx = PSB.build_system(PSB.MatpowerTestSystems, "matpower_ACTIVSg2000_sys")
+    data_mx = PowerFlowData(
+        ACMixedPowerFlow{_fd_solver(:fixed_jacobian)}(; correct_bustypes = true), sys_mx,
+    )
+    @test solve_power_flow!(data_mx)
+    @test isapprox(data_mx.bus_magnitude[:, 1], data_nr.bus_magnitude[:, 1];
+        atol = TIGHT_TOLERANCE, rtol = 0)
+    @test isapprox(data_mx.bus_angles[:, 1], data_nr.bus_angles[:, 1];
+        atol = TIGHT_TOLERANCE, rtol = 0)
 end
 
 # A stressed, high r/x two-bus PQ system used to exercise the safeguard helpers.
