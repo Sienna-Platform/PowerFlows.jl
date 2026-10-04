@@ -42,11 +42,6 @@ struct HandoffLinearCache{C <: PNM.LinearSolverCache}
     cache::C
 end
 
-# The linear-solver cache type a handoff slot holds (constant-folded; keeps `where {C}` out of
-# a Union, which Aqua reports as an unbound type parameter).
-_handoff_cache_type(slot::Base.RefValue{<:Union{Nothing, HandoffLinearCache}}) =
-    fieldtype(Base.nonnothingtype(eltype(slot)), :cache)
-
 # The handoff runs on the stage's own `J` with the polar NR solve's linear-solver setup: a KLU cache
 # seeded with the structure memo's lean-LU plan (planned at flat on first use), so it pivots like
 # the plain NR solve and skips the symbolic analysis.
@@ -58,17 +53,10 @@ function _new_handoff_cache(
     time_step::Int64,
 )
     backend = resolve_linear_solver_backend(linear_solver)
-    hcache = _handoff_jacobian_cache(backend, J)
+    hcache = _polar_jacobian_cache(backend, J.Jv)
     _seed_handoff_cache!(data.ac_jacobian_structure_cache[], pf, hcache, J, data, time_step)
     return hcache
 end
-
-_handoff_jacobian_cache(backend::PNM.LinearSolverType, J::ACPowerFlowJacobian) =
-    _polar_jacobian_cache(backend, J.Jv)
-_handoff_jacobian_cache(
-    backend::PNM.LinearSolverType,
-    J::Union{ACRectangularCIJacobian, ACMixedCPBJacobian},
-) = make_linear_solver_cache(backend, J.Jv)
 
 # An area-interchange relax cleared the memo mid-solve: no lean slot to seed from.
 _seed_handoff_cache!(
@@ -102,17 +90,6 @@ _handoff_linear_cache!(
 # Reuse `slot`'s cache when its structure memo is the one `J` was built from. The kept Numeric
 # is dropped (the last solve's pivot order can hit a zero pivot after a bus-type change) and the
 # lean path re-armed for this solve's bus types, as the polar NR cache's reuse does.
-_reuse_handoff_cache!(
-    slot::Base.RefValue{<:Union{Nothing, HandoffLinearCache}},
-    structure::ACJacobianStructureCache,
-    pf::AbstractACPowerFlow,
-    data::ACPowerFlowData,
-    J,
-    time_step::Int64,
-    linear_solver::Union{Nothing, AbstractString},
-) =
-    _reuse_handoff_cache!(slot, slot[], structure, pf, data, J, time_step, linear_solver)
-
 function _reuse_handoff_cache!(
     slot::Base.RefValue{<:Union{Nothing, HandoffLinearCache}},
     kept::HandoffLinearCache,
@@ -144,22 +121,22 @@ function _reuse_handoff_cache!(
     time_step::Int64,
     linear_solver::Union{Nothing, AbstractString},
 )
-    hcache =
-        _new_handoff_cache(pf, linear_solver, J, data, time_step)::_handoff_cache_type(slot)
+    hcache = _new_handoff_cache(pf, linear_solver, J, data, time_step)
     slot[] = HandoffLinearCache(structure, hcache)
     return hcache
 end
 
 # An area-interchange relax cleared the memo mid-solve: nothing to key the kept cache on.
 _reuse_handoff_cache!(
-    slot::Base.RefValue{<:Union{Nothing, HandoffLinearCache}},
+    ::Base.RefValue{<:Union{Nothing, HandoffLinearCache}},
+    ::Any,
     ::Nothing,
     pf::AbstractACPowerFlow,
     data::ACPowerFlowData,
     J,
     time_step::Int64,
     linear_solver::Union{Nothing, AbstractString},
-) = _new_handoff_cache(pf, linear_solver, J, data, time_step)::_handoff_cache_type(slot)
+) = _new_handoff_cache(pf, linear_solver, J, data, time_step)
 
 # As `_newton_power_flow`: a handoff that fails on a reused pivot order (a lean plan or a kept
 # KLU numeric) is rerun once from the stage state on a fresh factorization, so the reuse never
