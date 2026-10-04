@@ -31,7 +31,8 @@ struct StateVectorCache
         Union{Nothing, PNM.KLULinSolveCache{Float64, J_INDEX_TYPE}},
     }
     fallback_matrix::Base.RefValue{Union{Nothing, SparseMatrixCSC{Float64, J_INDEX_TYPE}}}
-    # Whether F and J at the start came from the fused kernel, so a cold rerun evaluates alike.
+    # Whether the fused kernel evaluated F and J at the start. `_restart_from!` reads it to
+    # evaluate the same way.
     fused_start::Base.RefValue{Bool}
 end
 

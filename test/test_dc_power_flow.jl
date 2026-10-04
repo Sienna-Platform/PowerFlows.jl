@@ -101,7 +101,7 @@ end
 
 @testset "DC power flow with an LCC" begin
     # DC holds the LCC at the schedule AC solves to (transfer_setpoint), so its terminal
-    # powers equal AC's; the stored active_power_flow is an output and must not size it.
+    # powers equal AC's. The stored active_power_flow is an output and must not size it.
     sys, lcc = simple_lcc_system()
     @assert get_base_power(sys, PSY.NU) == 100.0 "Test system base power changed."
     set_active_power_flow!(lcc, 0.1 * PSY.SU)

@@ -135,7 +135,8 @@ function _validate_n_threads(n_threads::Int)
     return
 end
 
-# Any formulation and solver threads; the backend must be safe under concurrent factorization.
+# Every formulation and solver supports threads. The backend must be safe under concurrent
+# factorization.
 function _validate_threading_settings(params::SolutionParameters)
     _validate_n_threads(params.n_threads)
     params.n_threads == 1 && return

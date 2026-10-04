@@ -244,7 +244,8 @@ function solve_power_flow!(
     kwargs...,
 )
     pf = get_pf(data)
-    # The solvers swallow unknown keywords, so a per-call thread count would run serially unnoticed.
+    # The solvers swallow unknown keywords, so a per-call thread count would run serially
+    # unnoticed.
     for k in (:threads, :n_threads)
         haskey(kwargs, k) && throw(
             ArgumentError(
@@ -428,7 +429,7 @@ function _solve_columns_threaded!(
             rest = (last(head) + 1):last(positions)
         end
         Threads.@spawn _solve_slot!(
-            ts_converged, worker, slot, pf, steps, rest, merged_kwargs)
+            ts_converged, worker, slot, pf, steps, $rest, merged_kwargs)
     end
     for (worker, positions) in zip(workers, chunks)
         _merge_worker_area!(data, worker, steps, positions)
@@ -444,7 +445,8 @@ function _worker_slots!(data::ACPowerFlowData, n::Int)
     return view(slots, 1:n)
 end
 
-# A worker that raised leaves caches nothing can vouch for: drop them so the next call rebuilds.
+# A worker that raised an error leaves its caches in an unknown state.
+# Drop them so that the next call rebuilds them.
 function _solve_slot!(ts_converged, worker, slot::WorkerSlot, pf, steps, positions, kwargs)
     try
         _solve_columns!(ts_converged, worker, pf, steps, positions, kwargs)
@@ -470,7 +472,6 @@ function _seed_workers!(workers, steps, chunks)
     return
 end
 
-# Only a worker with no stored cache is seeded.
 _seed_empty!(::Nothing, worker, seed, memo, time_step) =
     _seed_worker!(worker, seed, memo, time_step)
 _seed_empty!(::AbstractNRCache, worker, seed, memo, time_step) = nothing

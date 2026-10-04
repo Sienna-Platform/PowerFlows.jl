@@ -185,8 +185,8 @@ struct PowerFlowData{
     # slot so it never contends with a DC/FD `solver_cache`. Typed as the `AbstractNRCache` forward
     # supertype because `PolarNRCache` is defined later, in `power_flow_method.jl`.
     polar_nr_cache::Base.RefValue{Union{Nothing, AbstractNRCache}}
-    # One per threaded time-step worker, kept between calls so a repeated solve reuses them.
-    # A worker's own data holds none.
+    # One slot for each threaded time-step worker. The slots stay between calls, so a repeated
+    # solve reuses them. The data of a worker holds no slots.
     worker_slots::Vector{WorkerSlot}
 end
 

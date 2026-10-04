@@ -51,7 +51,8 @@ end
 
 _large_residual(residual) = sum(abs, residual.Rv) > LARGE_RESIDUAL * length(residual.Rv)
 
-# `improve_x0!` compares candidate starts only after a converged earlier step or with GA on.
+# `improve_x0!` compares candidate starts only with `ga_flat_start` on or after an earlier
+# step converged.
 function _x0_has_no_candidates(
     pf::ACPolarPowerFlow,
     data::ACPowerFlowData,

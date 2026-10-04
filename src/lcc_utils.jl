@@ -807,7 +807,7 @@ end
 
 # The DC formulations hold an LCC at the schedule the AC model solves to, not its stored
 # `active_power_flow` (an output, 0 in most data). Losses are the DC-line R·i_dc² only, as in AC;
-# the LCC `loss` curve is not used by either model.
+# neither model uses the LCC `loss` curve.
 function _lcc_scheduled_flows(lcc::PSY.TwoTerminalLCCLine, base_power::Float64)
     (at_rectifier, p_set) = _lcc_schedule(lcc, base_power)
     r = _lcc_dc_resistance(lcc)

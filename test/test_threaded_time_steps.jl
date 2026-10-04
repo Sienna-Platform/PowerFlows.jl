@@ -100,7 +100,8 @@ end
             time_steps = 2, solution_parameters = _klu(2)),
         sys,
     )
-    # AppleAccelerateLU resolves only on Apple; the tag-level check is in test_threaded_ac_power_flow.jl.
+    # AppleAccelerateLU resolves only on Apple. test_threaded_ac_power_flow.jl checks the
+    # backend tags on every platform.
     if Sys.isapple()
         @test_throws r"requires the KLU" solve_power_flow!(
             plain; linear_solver = "AppleAccelerateLU")
