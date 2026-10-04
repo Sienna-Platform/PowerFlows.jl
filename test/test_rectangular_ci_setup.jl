@@ -167,11 +167,11 @@ end
         @test newx0[off] == x0[off]
         @test newx0[off + 1] == x0[off + 1]
     end
-    # All PQ magnitudes equal the mean PV setpoint magnitude (single subnetwork).
-    pv = findall(==(PSY.ACBusTypes.PV), bt)
+    # All PQ magnitudes equal the mean PV and REF setpoint magnitude (single subnetwork).
+    sources = findall(in((PSY.ACBusTypes.PV, PSY.ACBusTypes.REF)), bt)
     pq = findall(==(PSY.ACBusTypes.PQ), bt)
-    if !isempty(pv) && !isempty(pq)
-        target = sum(data.bus_magnitude[p, 1] for p in pv) / length(pv)
+    if !isempty(pq)
+        target = sum(data.bus_magnitude[p, 1] for p in sources) / length(sources)
         for i in pq
             off = Int(residual.bus_state_offset[i])
             @test hypot(newx0[off], newx0[off + 1]) ≈ target atol = 1e-9

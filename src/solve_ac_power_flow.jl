@@ -27,7 +27,8 @@ setting and cannot round-trip a per-time-step schedule — use
 
 ## Keyword Arguments
 - `tol`: Infinite norm of residuals under which convergence is declared. Default is `1e-9`.
-- `maxIterations`: Maximum number of Newton-Raphson iterations. Default is `30`.
+- `maxIterations`: Maximum number of Newton-Raphson iterations. Default is
+  `$DEFAULT_NR_MAX_ITER`.
 
 # Returns
 - `converged::Bool`: Indicates whether the power flow solution converged.
