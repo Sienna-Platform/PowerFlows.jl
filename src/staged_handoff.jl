@@ -1,9 +1,8 @@
 """
     _validate_handoff_solver(handoff_solver, solver_label)
 
-Validate the `handoff_solver` setting of a staged AC driver. Throws a descriptive `ArgumentError`
-on an unsupported value; `solver_label` names the driver in the message. Returns `nothing` when
-valid.
+Throw an `ArgumentError` that names `solver_label` when `handoff_solver` is not `NoHandoff`,
+`NewtonRaphsonACPowerFlow`, `TrustRegionACPowerFlow`, or `LevenbergMarquardtACPowerFlow`.
 """
 function _validate_handoff_solver(handoff_solver, solver_label::String)
     if !(
@@ -23,38 +22,23 @@ function _validate_handoff_solver(handoff_solver, solver_label::String)
     return nothing
 end
 
-"""The stage exit tolerance: the loose `handoff_tol` when a handoff will polish the result to
-the real `tol`, else `tol` itself (stage only). Dispatches on `handoff_solver` (a `Type`) rather
-than branching on an `isnothing`/`===` check."""
+"""The stage exit tolerance: `handoff_tol` when a handoff solver refines the result to `tol`,
+else `tol`."""
 _stage_tol(::Type{NoHandoff}, tol, handoff_tol) = tol
 _stage_tol(::Type{<:ACPowerFlowSolverType}, tol, handoff_tol) = handoff_tol
 
-# The `Jv` argument for `_finalize_power_flow`: the assembled Jacobian values when the :decoupled
-# driver built `J`, or `nothing` when it skipped it (no handoff, no loss/vstab factors).
+# The `Jv` argument for `_finalize_power_flow`: `J.Jv`, or `nothing` when the stage driver did not
+# build `J`.
 _finalize_jv(::Nothing) = nothing
 _finalize_jv(J) = J.Jv
-
-# =====================================================================================
-# Opt-in handoff. The stage iterates to a loose `handoff_tol` (`stage_tol`), then
-# this helper hands the stage state (FD or GA) off to the existing NR/TR/LM inner method for
-# final refinement to the real `tol`. No-op when handoff is disabled or the stage met `tol`.
-# =====================================================================================
 
 """
     _maybe_handoff!(handoff_solver, pf, sv, residual, J, data, time_step, tol, linear_solver,
                     solver_name, stage_iters) -> (converged::Bool, handoff_iters::Int)
 
-Run the opt-in handoff solver (`NewtonRaphsonACPowerFlow` / `TrustRegionACPowerFlow` /
-`LevenbergMarquardtACPowerFlow`) from the current state `sv.x` for final refinement to the
-real `tol`. Dispatches on `handoff_solver` (a `Type`): the [`NoHandoff`](@ref) method is a no-op
-(returns the current convergence status and `0` handoff iterations); the general
-`ACPowerFlowSolverType` method also no-ops when the stage state already meets `tol`, else refreshes
-the formulation Jacobian VALUES at the current state and calls the matching inner method:
-NR/TR via the shared `_run_power_flow_method(::StateVectorCache, ::PFLinearSolverCache, ...)`;
-LM via its workspace-based `_run_power_flow_method(x0::Vector, ::LMWorkspace, ...)` adapter.
-All paths mutate `sv.x` / `residual` / `J` in place (the SAME objects the stage loop used), so the
-caller's subsequent `J(time_step)` / `_finalize_*` see the refined solution. `stage_iters` and
-`solver_name` are used only for the `@info` handoff log line.
+Refine the stage state `sv.x` to `tol` with `handoff_solver` (NR, TR, or LM). The method does
+nothing for `NoHandoff` or when the stage state already meets `tol`. It updates `sv.x`,
+`residual`, and `J` in place, so the caller finalizes the refined state.
 """
 function _maybe_handoff!(
     ::Type{NoHandoff},
@@ -85,9 +69,10 @@ function _maybe_handoff!(
     solver_name::String,
     stage_iters::Int,
 )
-    stage_met_tol = norm(residual.Rv, Inf) < tol
-    stage_met_tol && return (stage_met_tol, 0)
-    J(data, time_step)           # refresh Jacobian VALUES at the stage state
+    if norm(residual.Rv, Inf) < tol
+        return (true, 0)
+    end
+    J(data, time_step)
     if handoff_solver === LevenbergMarquardtACPowerFlow
         # LM's inner method takes the raw state vector + an LMWorkspace (a different signature
         # from NR/TR) and mutates x0 in place; see src/levenberg-marquardt.jl.
@@ -105,7 +90,12 @@ function _maybe_handoff!(
             tol, maxIterations = DEFAULT_NR_MAX_ITER,
         )
     end
+    status = if converged
+        "converged"
+    else
+        "did NOT converge"
+    end
     @info "$solver_name: stage $stage_iters iters → handoff $(handoff_solver) " *
-          "$(converged ? "converged" : "did NOT converge") in $i2 iters."
+          "$status in $i2 iters."
     return (converged, i2)
 end
