@@ -312,8 +312,6 @@ function _area_interchange_fixture()
     return sys
 end
 
-# The fused kernel (the NR step's residual + Jacobian in one Ybus sweep) must equal the
-# separate F-only and J-only evaluations at the same iterate.
 function _check_fused_kernel(data::PF.ACPowerFlowData, label::String)
     residual = PF.ACPowerFlowResidual(data, 1)
     J = PF.ACPowerFlowJacobian(data, residual, 1)
@@ -361,8 +359,7 @@ end
     )
 end
 
-# The fused kernel defers `data`'s voltages and injections to `_write_back_bus_state!`, which must
-# leave `data` exactly as a write-through evaluation at the same iterate does.
+# The fused kernel defers writes of voltages and injections to `data` until `_write_back_bus_state!`.
 function _check_deferred_write_back(make_data, label::String)
     eager = make_data()
     deferred = make_data()
@@ -399,8 +396,7 @@ end
         () -> PF.PowerFlowData(nr(; correct_bustypes = true), lcc), "two LCCs")
 end
 
-# The pre-direct-CSC builder: COO triplets for every `neighbors` pair plus the tails, through
-# `sparse`. `_create_jacobian_matrix_structure` must reproduce it byte for byte.
+# COO reference: triplets for every `neighbors` pair and the tails, assembled with `sparse`.
 function _reference_jacobian_structure(data::PF.ACPowerFlowData, slots)
     rows = PF.J_INDEX_TYPE[]
     columns = PF.J_INDEX_TYPE[]
