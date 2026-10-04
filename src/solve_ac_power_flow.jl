@@ -246,7 +246,8 @@ function solve_power_flow!(
     kwargs...,
 )
     pf = get_pf(data)
-    # The solvers swallow unknown keywords, so a per-call thread count would run serially unnoticed.
+    # The solvers swallow unknown keywords, so a per-call thread count would run serially
+    # unnoticed.
     for k in (:threads, :n_threads)
         haskey(kwargs, k) && throw(
             ArgumentError(
@@ -315,7 +316,7 @@ end
 # Fetched after the solve, so a first solve's fresh polar cache lends its scratch instead of a
 # second one being built.
 function _column_arc_flows!(slot::Base.RefValue, data::ACPowerFlowData)
-    arcs = PNM.get_arc_axis(data.power_network_matrix.arc_admittance_from_to)
+    arcs = get_arc_axis(data)
     if !isassigned(slot) || slot[].arcs !== arcs
         slot[] = _arc_flow_scratch(data.polar_nr_cache[], data)
     end
@@ -379,11 +380,8 @@ function _solve_column!(
     flows = _column_arc_flows!(flows_slot, data)
     (; fb_ix, tb_ix, Sft, Stf) = flows
     step_V = flows.V
-    # Per-step branch flows so a future per-step Yft/Ytf (e.g. varying tap positions) is used
-    # correctly.
-    # NOTE PNM's structs use ComplexF32, while the system objects store Float64's.
-    #      so if you set the system bus angles/voltages to match these fields, then repeat
-    #      this math using the system voltages, you'll see differences in the flows, ~1e-4.
+    # PNM's structs use ComplexF32 and the System stores Float64. Flows computed again from the
+    # System voltages differ from these flows by approximately 1e-4.
     _fill_flow_voltages!(step_V, data.polar_nr_cache[], data, time_step)
     mul!(Sft, Yft.data, step_V)
     mul!(Stf, Ytf.data, step_V)
@@ -432,7 +430,7 @@ function _solve_columns_threaded!(
             rest = (last(head) + 1):last(positions)
         end
         Threads.@spawn _solve_slot!(
-            ts_converged, worker, slot, pf, steps, rest, merged_kwargs)
+            ts_converged, worker, slot, pf, steps, $rest, merged_kwargs)
     end
     for (worker, positions) in zip(workers, chunks)
         _merge_worker_area!(data, worker, steps, positions)
@@ -448,7 +446,8 @@ function _worker_slots!(data::ACPowerFlowData, n::Int)
     return view(slots, 1:n)
 end
 
-# A worker that raised leaves caches nothing can vouch for: drop them so the next call rebuilds.
+# A worker that raised an error leaves its caches in an unknown state.
+# Drop them so that the next call rebuilds them.
 function _solve_slot!(ts_converged, worker, slot::WorkerSlot, pf, steps, positions, kwargs)
     try
         _solve_columns!(ts_converged, worker, pf, steps, positions, kwargs)
@@ -475,7 +474,6 @@ function _seed_workers!(workers, steps, chunks)
     return
 end
 
-# Only a worker with no stored cache is seeded.
 _seed_empty!(::Nothing, worker, seed, memo, time_step) =
     _seed_worker!(worker, seed, memo, time_step)
 _seed_empty!(::AbstractNRCache, worker, seed, memo, time_step) = nothing

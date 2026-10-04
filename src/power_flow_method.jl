@@ -31,7 +31,8 @@ struct StateVectorCache
         Union{Nothing, PNM.KLULinSolveCache{Float64, J_INDEX_TYPE}},
     }
     fallback_matrix::Base.RefValue{Union{Nothing, SparseMatrixCSC{Float64, J_INDEX_TYPE}}}
-    # Whether F and J at the start came from the fused kernel, so a cold rerun evaluates alike.
+    # Whether the fused kernel evaluated F and J at the start. `_restart_from!` reads it to
+    # evaluate the same way.
     fused_start::Base.RefValue{Bool}
 end
 
@@ -93,7 +94,7 @@ end
 """Polar NR/TR workspace stored in `data.polar_nr_cache`, reused across Q-limit retries, time
 steps and contingencies. `bus_type_snapshot` holds the bus types the residual's partition was
 last derived for (emptied by [`_invalidate_partition!`](@ref)). `residual` and `J` do not store
-`data`: this cache hangs off `data`, so a back-reference would form a cycle. `arc_flows` lets a
+`data`: `data` holds this cache, so a back-reference would form a cycle. `arc_flows` lets a
 reused `solve_power_flow!` skip rebuilding its branch-flow scratch. `lean` is the slot whose plan
 the KLU cache was given, for [`_align_lean_plan!`](@ref). `x0` and `partition` are the reuse
 path's start-point and island-partition buffers."""
@@ -484,7 +485,7 @@ end
 _arc_flow_scratch(::Nothing, data::ACPowerFlowData) = ArcFlowScratch(data)
 
 function _arc_flow_scratch(entry::PolarNRCache, data::ACPowerFlowData)
-    arcs = PNM.get_arc_axis(data.power_network_matrix.arc_admittance_from_to)
+    arcs = get_arc_axis(data)
     if entry.arc_flows.arcs === arcs
         return entry.arc_flows
     end
@@ -553,8 +554,7 @@ function _refresh_polar_residual!(
             _slack_jnz!(J.slack_jnz, J.Jv, subnetworks)
         end
         _pq_validate_indices!(residual.validate_indices, bus_type)
-        resize!(snapshot, length(bus_type))
-        copyto!(snapshot, bus_type)
+        copy!(snapshot, bus_type)
         _drop_numeric!(entry.linSolveCache)
     end
     spf = residual.bus_slack_participation_factors
@@ -2185,7 +2185,6 @@ end
 _save_solve_start!(::Union{ACRectangularCIResidual, ACMixedCPBResidual}) = nothing
 _restore_solve_start!(::Union{ACRectangularCIResidual, ACMixedCPBResidual}) = nothing
 
-# Residual, Jacobian and state back at `x0`, every buffer as a reused workspace starts a solve.
 function _restart_from!(
     stateVector::StateVectorCache,
     residual,

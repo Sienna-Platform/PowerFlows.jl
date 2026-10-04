@@ -61,11 +61,10 @@ function _ga_flat_start_q0(b::GABlocks, part::GAPartition, y::Vector{ComplexF64}
     for j in eachindex(b.Bqq_diag)
         nz[b.Bqq_diag[j]] += imag(y[nv + j])
     end
-    Yvs = view(b.Yls, 1:nv, :)
-    Yqs = view(b.Yls, (nv + 1):size(b.Yls, 1), :)
-    u_q = -imag.(Yqs * Vm_s .+ b.Yqv * part.Vset)
+    ys = b.Yls * Vm_s
+    u_q = -imag.(view(ys, (nv + 1):length(ys)) .+ b.Yqv * part.Vset)
     PNM.solve!(PNM.klu_factorize(b.Bqq), u_q)
-    return part.Vset .* imag.(Yvs * Vm_s .+ b.Yvv * part.Vset .+ b.Yvq * u_q)
+    return part.Vset .* imag.(view(ys, 1:nv) .+ b.Yvv * part.Vset .+ b.Yvq * u_q)
 end
 
 function _ga_initial_shunts(b::GABlocks, np::GANodalPower, part::GAPartition,

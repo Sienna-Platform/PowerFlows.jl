@@ -183,8 +183,7 @@ end
     # by throwing SingularException; AppleAccelerate and MKLPardiso instead return a
     # finite garbage solution. The backend-agnostic residual guard in `_set_Δx_nr!`
     # must route every backend through the regularized fallback, which emits the
-    # "Jacobian is singular" warning. Pre-fix, AppleAccelerate skipped the fallback
-    # silently, so this test asserts the warning is produced on every available backend.
+    # "Jacobian is singular" warning.
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
     backends = ["KLU"]
     if PNM._has_apple_accelerate_backend()

@@ -337,8 +337,8 @@ function _dc_power_flow_fallback!(data::ACPowerFlowData, time_step::Int)
         data.bus_hvdc_net_power[valid_ix, time_step] +
         data.bus_phase_shift_injections[valid_ix]
     # PNM's KLUWrapper.KLULinSolveCache exposes solve! (in-place) instead of ldiv!.
-    # The factored ABA is shared by every threaded time-step worker and KLU solves through
-    # its numeric workspace. ponytail: one global lock; the fallback only runs on a large residual.
+    # Threaded time-step workers share the factored ABA, and a KLU solve writes its numeric
+    # workspace. One global lock is enough: the fallback runs only on a large residual.
     @lock _DC_FALLBACK_LOCK PNM.solve!(solver_cache, p_inj)
     data.bus_angles[valid_ix, time_step] .= p_inj
     # The reduced solve is referenced to 0 at each ref bus, but the AC solve holds each

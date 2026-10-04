@@ -108,7 +108,7 @@ function _switched_admittance(
 end
 
 # P0 * V^e is exactly the constant power (slot 1), current (2) or impedance (3) term for
-# e = 0, 1, 2; any other exponent has no ZIP equivalent and is refused rather than approximated.
+# e = 0, 1, 2. Any other exponent has no ZIP equivalent, so it errors instead of an approximation.
 function _exponential_zip_slot(load::PSY.ExponentialLoad, exponent::Float64)
     if iszero(exponent)
         return 1
@@ -172,20 +172,20 @@ function _get_withdrawals!(
         bus_reactive_power_constant_impedance_withdrawals[bus_ix] +=
             PSY.get_impedance_reactive_power(l, PSY.SU)
     end
+    p = (
+        bus_active_power_withdrawals,
+        bus_active_power_constant_current_withdrawals,
+        bus_active_power_constant_impedance_withdrawals,
+    )
+    q = (
+        bus_reactive_power_withdrawals,
+        bus_reactive_power_constant_current_withdrawals,
+        bus_reactive_power_constant_impedance_withdrawals,
+    )
     for l in PSY.get_available_components(PSY.ExponentialLoad, sys)
         bus = PSY.get_bus(l)
         PSY.get_number(bus) in removed_buses && continue
         bus_ix = _get_bus_ix(bus_lookup, reverse_bus_search_map, PSY.get_number(bus))
-        p = (
-            bus_active_power_withdrawals,
-            bus_active_power_constant_current_withdrawals,
-            bus_active_power_constant_impedance_withdrawals,
-        )
-        q = (
-            bus_reactive_power_withdrawals,
-            bus_reactive_power_constant_current_withdrawals,
-            bus_reactive_power_constant_impedance_withdrawals,
-        )
         p[_exponential_zip_slot(l, PSY.get_α(l))][bus_ix] += PSY.get_active_power(l, PSY.SU)
         q[_exponential_zip_slot(l, PSY.get_β(l))][bus_ix] +=
             PSY.get_reactive_power(l, PSY.SU)
