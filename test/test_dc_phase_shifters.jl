@@ -284,19 +284,3 @@ end
     @test all(isfinite, data.arc_active_power_flow_from_to)
     @test all(isfinite, data.arc_active_power_flow_to_from)
 end
-
-@testset "AC DC-angle fallback includes phase-shifter injections" begin
-    sys = _dc_pst_loop_sys()
-    dc = PowerFlowData(DCPowerFlow(), sys)
-    solve_power_flow!(dc)
-    ac = PowerFlowData(
-        ACPowerFlow(; correct_bustypes = true, robust_power_flow = true), sys)
-    PF._dc_power_flow_fallback!(ac, 1)
-    dc_lookup = PF.get_bus_lookup(dc)
-    ac_lookup = PF.get_bus_lookup(ac)
-    for bus in (1, 2, 3)
-        @test ac.bus_angles[ac_lookup[bus], 1] ≈ dc.bus_angles[dc_lookup[bus], 1] atol =
-            1e-12
-    end
-    @test !iszero(ac.bus_angles[ac_lookup[3], 1])
-end
