@@ -429,3 +429,23 @@ end
     data = PowerFlowData(DCPowerFlow(), sys)
     @test_throws ArgumentError solve_power_flow!(data; linear_solver = "Dense")
 end
+
+@testset "vPTDFDCPowerFlow linear_solver" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+
+    @test PF.get_linear_solver(vPTDFDCPowerFlow(; linear_solver = "KLU")) == "KLU"
+    @test PF.get_linear_solver(vPTDFDCPowerFlow()) == PNM._default_linear_solver()
+    @test_throws ErrorException vPTDFDCPowerFlow(; linear_solver = "NotASolver")
+    @test_throws ArgumentError vPTDFDCPowerFlow(; linear_solver = "Dense")
+
+    default_data = PowerFlowData(vPTDFDCPowerFlow(), sys)
+    klu_data = PowerFlowData(vPTDFDCPowerFlow(; linear_solver = "KLU"), sys)
+    solve_power_flow!(default_data)
+    solve_power_flow!(klu_data)
+    @test isapprox(
+        klu_data.arc_active_power_flow_from_to,
+        default_data.arc_active_power_flow_from_to;
+        atol = 1e-9,
+    )
+    @test isapprox(klu_data.bus_angles, default_data.bus_angles; atol = 1e-9)
+end

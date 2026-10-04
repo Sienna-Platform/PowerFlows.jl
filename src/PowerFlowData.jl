@@ -902,7 +902,7 @@ function PowerFlowData(
     ybus = PNM.Ybus(sys;
         network_reductions = network_reductions,
         irreducible_buses = _dc_converter_ac_buses(sys))
-    power_network_matrix = PNM.VirtualPTDF(ybus) # evaluates an empty virtual PTDF
+    power_network_matrix = PNM.VirtualPTDF(ybus; linear_solver = get_linear_solver(pf)) # evaluates an empty virtual PTDF
     aux_network_matrix = PNM.ABA_Matrix(ybus; factorize = true)
 
     return make_and_initialize_power_flow_data(
