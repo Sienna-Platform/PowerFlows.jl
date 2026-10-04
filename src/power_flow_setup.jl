@@ -1,7 +1,7 @@
 _log_initial_residual(residual) =
-    @debug "Initial residual size: " *
-           "$(norm(residual.Rv, 2)) L2, " *
-           "$(norm(residual.Rv, Inf)) L∞"
+    @info "Initial residual size: " *
+          "$(norm(residual.Rv, 2)) L2, " *
+          "$(norm(residual.Rv, Inf)) L∞"
 
 improve_x0(
     pf::ACPolarPowerFlow,
@@ -143,12 +143,11 @@ function _pick_better_x0(x0::Vector{Float64},
     residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
     data::ACPowerFlowData,
     improvement_method::String,
-    success_level::Logging.LogLevel = Logging.Debug,
 )
     residualSize = sum(abs, residual.Rv)
     residual(data, newx0, time_step)
     if sum(abs, residual.Rv) < residualSize
-        Logging.@logmsg success_level "success: $improvement_method yields smaller residual"
+        @info "success: $improvement_method yields smaller residual"
         copyto!(x0, newx0)
         return true
     end
@@ -169,8 +168,7 @@ function dc_power_flow_start!(x0::Vector{Float64},
     newx0 = calculate_x0(data, time_step)
     # The fallback overwrote `data`'s angles, so re-establish `_pick_better_x0`'s precondition.
     residual(data, x0, time_step)
-    _pick_better_x0(
-        x0, newx0, time_step, residual, data, "DC power flow fallback", Logging.Info)
+    _pick_better_x0(x0, newx0, time_step, residual, data, "DC power flow fallback")
     return
 end
 

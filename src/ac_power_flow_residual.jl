@@ -426,13 +426,11 @@ function _update_residual_state!(
 
     if num_lcc > 0
         lcc_end = vsc_off
-        @views data.lcc.rectifier.tap[:, time_step] .=
-            x[(lcc_end - 4 * num_lcc + 1):4:lcc_end]
-        @views data.lcc.inverter.tap[:, time_step] .=
-            x[(lcc_end - 4 * num_lcc + 2):4:lcc_end]
-        @views data.lcc.rectifier.thyristor_angle[:, time_step] .=
+        data.lcc.rectifier.tap[:, time_step] = x[(lcc_end - 4 * num_lcc + 1):4:lcc_end]
+        data.lcc.inverter.tap[:, time_step] = x[(lcc_end - 4 * num_lcc + 2):4:lcc_end]
+        data.lcc.rectifier.thyristor_angle[:, time_step] =
             x[(lcc_end - 4 * num_lcc + 3):4:lcc_end]
-        @views data.lcc.inverter.thyristor_angle[:, time_step] .=
+        data.lcc.inverter.thyristor_angle[:, time_step] =
             x[(lcc_end - 4 * num_lcc + 4):4:lcc_end]
         _update_ybus_lcc!(data, time_step)
     end
