@@ -59,9 +59,8 @@ end
 """Polar NR/TR workspace stored in `data.polar_nr_cache`, reused across Q-limit retries, time
 steps and contingencies. `bus_type_snapshot` holds the bus types the residual's partition was
 last derived for (emptied by [`_invalidate_partition!`](@ref)). `residual` and `J` do not store
-`data`: this
-cache hangs off `data`, so a back-reference would form a cycle. `x0` and `partition` are the
-reuse path's start-point and island-partition buffers."""
+`data`: this cache hangs off `data`, so a back-reference would form a cycle. `x0` and
+`partition` are the reuse path's start-point and island-partition buffers."""
 struct PolarNRCache{C <: PFLinearSolverCache} <: AbstractNRCache
     residual::ACPowerFlowResidual
     J::ACPowerFlowJacobian
@@ -83,17 +82,6 @@ function _invalidate_partition!(entry::PolarNRCache)
     empty!(entry.bus_type_snapshot)
     return
 end
-
-# After a bus-type or partition change, `klu_refactor` on the inherited pivot order can hit a zero
-# pivot (a PV bus's |V| column holds a single -1 where a PQ bus's holds dP/dV, dQ/dV). Free only
-# the Numeric: the next `numeric_refactor!` then runs a fresh `klu_factor` on the kept Symbolic.
-function _drop_numeric!(c::PNM.KLULinSolveCache)
-    PNM.KLUWrapper.drop_numeric!(c)
-    return
-end
-# These backends pivot afresh on every numeric factorization.
-_drop_numeric!(::PNM.AAFactorCache) = nothing
-_drop_numeric!(::PardisoLinSolveCache) = nothing
 
 function _ref_set_changed(
     before::Vector{PSY.ACBusTypes.Value},

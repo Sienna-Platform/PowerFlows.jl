@@ -93,9 +93,7 @@ function (J::ACPowerFlowJacobian)(
     Jv::SparseArrays.SparseMatrixCSC{Float64, J_INDEX_TYPE},
     time_step::Int64,
 )
-    _sync_from_data!(J.bus_state, data, time_step)
-    _fill_bus_phasor!(J.bus_state)
-    _update_jacobian_matrix_values!(J, data, time_step)
+    J(data, time_step)
     copyto!(Jv, J.Jv)
     return
 end
@@ -669,8 +667,8 @@ function _merge_patterns(
     colptr[1] = 1
     p = 1
     for j in 1:n
-        ia, ea = A.colptr[j], A.colptr[j + 1]
-        ib, eb = B.colptr[j], B.colptr[j + 1]
+        ia, ea = Int(A.colptr[j]), Int(A.colptr[j + 1])
+        ib, eb = Int(B.colptr[j]), Int(B.colptr[j + 1])
         while ia < ea || ib < eb
             if ib == eb || (ia < ea && ra[ia] < rb[ib])
                 rowval[p], nzval[p] = ra[ia], va[ia]
@@ -986,7 +984,8 @@ function _update_residual_and_jacobian!(
     time_step::Int64,
 )
     _update_residual_state!(R, x, data, time_step, WriteBackDeferred())
-    R.Rv .= 0.0
+    # The sweep assigns every bus row; only the tail rows need clearing.
+    fill!(view(R.Rv, (2 * first(size(data.bus_type)) + 1):length(R.Rv)), 0.0)
     _polar_ybus_sweep!(J, R.Rv, data, time_step)
     # The residual tails refresh LCC/VSC/area state the Jacobian tails read.
     _finish_residual!(R, x, data, time_step)
