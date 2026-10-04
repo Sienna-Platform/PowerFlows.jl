@@ -1,6 +1,6 @@
-# VSC DC substep and final settle (spec §3.8). AC-voltage converters own their Q_c on the AC side,
-# so the DC substep only settles P_c and V_dc; the AC-voltage converters' Q is extracted by the
-# iteration kernel and handed back to the DC network here.
+# VSC DC substep and final settle. AC-voltage converters get Q_c from the AC side, so the DC
+# substep settles only P_c and V_dc. The iteration kernel calculates the Q of these converters,
+# and this file writes it back to the DC network.
 
 struct GANoDC end
 
