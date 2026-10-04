@@ -507,6 +507,21 @@ end
             @test report.refreshes > 0
         end
 
+        @testset "starts from the voltages in data ($name)" for (name, build) in (
+            ("c_sys14", ga_sys14), ("LCC", ga_lcc_system))
+            sys = build()
+            data_nr = PowerFlowData(ACPowerFlow{NewtonRaphsonACPowerFlow}(), sys)
+            @test solve_power_flow!(data_nr)
+            pf = ACPowerFlow{GA}()
+            data = PowerFlowData(pf, sys)
+            PF.get_bus_magnitude(data) .= PF.get_bus_magnitude(data_nr)
+            PF.get_bus_angles(data) .= PF.get_bus_angles(data_nr)
+            report = PF._ga_solve(pf, data, 1)
+            @test report.converged
+            @test report.stage_iterations == 1
+            ga_compare(data_nr, data; tol = 1e-8)
+        end
+
         @testset "non-zero REF angle" begin
             sys = ga_sys14()
             ref = only(
