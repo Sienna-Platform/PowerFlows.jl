@@ -144,10 +144,11 @@ end
 
 # An AC-voltage-controlling converter (ControlPVac/ControlVdcQ) pins |V_ac| at its bus. At a PV/REF
 # bus the magnitude is already regulated, so the pin row would be constant in the state (a singular
-# Jacobian). When the converter's target equals the bus setpoint at every time step, the converter
-# is demoted to its reactive-power mode (Q pinned at its setpoint, the bus's generators supply the
-# rest); a differing target is an infeasible conflict and errors. Two AC-voltage converters on one
-# PQ bus duplicate the pin row — the same singularity. Fail fast at lowering, naming the bus.
+# Jacobian). When the converter's target equals the bus setpoint at every time step, lowering
+# demotes the converter to its reactive-power mode: Q stays at its setpoint and the bus's
+# generators supply the rest. A different target is an infeasible conflict and errors. Two
+# AC-voltage converters on one PQ bus duplicate the pin row, which is the same singularity.
+# Lowering fails fast and names the bus.
 function _resolve_vsc_ac_controls!(
     dcn::DCNetwork,
     bus_types::AbstractVector,

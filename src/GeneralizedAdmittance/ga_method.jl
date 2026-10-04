@@ -1,7 +1,3 @@
-# Driver for the generalized-admittance (PFPD) AC power flow (spec §4): the fixed-point
-# stage with its exit singletons, best-iterate write-back, the polar residual check
-# through the shared explicit-state sync, and the opt-in NR/TR/LM handoff.
-
 @enum GAStageExit::Int8 GAConverged GAMaxIter GANonFinite GADiverged GAStagnated
 
 struct GASolveReport
@@ -168,9 +164,8 @@ function _ga_check_consistency(
     if exit != GAConverged
         return
     end
-    r = norm(residual.Rv, Inf)
+    r, row = findmax(abs, residual.Rv)
     if r > GA_CONSISTENCY_FACTOR * tol
-        row = argmax(abs.(residual.Rv))
         error(
             "GeneralizedAdmittanceACPowerFlow: gap met tol=$tol but the polar residual " *
             "is $r at row $row (bus index $(cld(row, 2))): formulation bug.",
@@ -186,10 +181,9 @@ _ga_check_consistency(
 _ga_partition(data::ACPowerFlowData, time_step::Int) =
     GAPartition(data, time_step, _ga_vsc_ac_voltage_targets(data, time_step))
 
-# Builds the converter terms and shunts for `time_step` and runs the stage on `cache`.
-# The first iterate is the voltages in `data`, as for every other solver: from the
-# zero-current u0 (|u| ≈ 0.3, rotated by the PV stiffening on resistive ties) Anderson can
-# carry a near-unit-gain PV angle to another power flow root.
+# The first iterate is the voltages in `data`, as for every other solver. From the
+# zero-current u0 (|u| ≈ 0.3, rotated by the PV stiffening on resistive ties), Anderson can
+# move a near-unit-gain PV angle to a different power flow root.
 function _ga_stage!(
     data::ACPowerFlowData,
     part::GAPartition,
@@ -250,7 +244,7 @@ function _ga_solve(
     need_factors =
         get_calculate_loss_factors(data) || get_calculate_voltage_stability_factors(data)
     J = nothing
-    if handoff_solver !== NoHandoff || need_factors
+    if _fd_needs_handoff_jacobian(handoff_solver) || need_factors
         J = ACPowerFlowJacobian(data, residual, time_step)
     end
     converged, handoff_iters = _maybe_handoff!(
@@ -289,14 +283,14 @@ function _ga_flat_start(
     handoff_tol::Float64,
 )
     dcn = get_dc_network(data)
-    saved_dc = (copy(dcn.p_c), copy(dcn.q_c), copy(dcn.node_vdc))
+    p_c, q_c, node_vdc = copy(dcn.p_c), copy(dcn.q_c), copy(dcn.node_vdc)
     part = _ga_partition(data, time_step)
     (; ws, exit, iters, best_gap) = _ga_stage!(
         data, part, _build_ga_cache(data, part), time_step, DEFAULT_GA_MAX_ITER,
         handoff_tol, NewtonRaphsonACPowerFlow)
-    copyto!(dcn.p_c, saved_dc[1])
-    copyto!(dcn.q_c, saved_dc[2])
-    copyto!(dcn.node_vdc, saved_dc[3])
+    copyto!(dcn.p_c, p_c)
+    copyto!(dcn.q_c, q_c)
+    copyto!(dcn.node_vdc, node_vdc)
     @info "Generalized-admittance flat start: $exit after $iters " *
           "iterations, gap $best_gap."
     newx0 = copy(x0)

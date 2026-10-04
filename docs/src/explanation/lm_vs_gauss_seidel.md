@@ -66,9 +66,8 @@ All settings are passed through `solution_parameters`.
     $\lambda = \mu\min(\lVert F\rVert, 1)$ for [`ACPolarPowerFlow`](@ref). A large
     value keeps LM in the heavily-damped, steepest-descent-like regime — small,
     cautious steps and a broad basin, with no aggressive Newton jumps — which is the
-    closest analogue to a Gauss-Seidel sweep. On polar, the cap means a large
-    mismatch no longer adds damping, so raise `λ_0` itself further to get the same
-    effect.
+    closest analogue to a Gauss-Seidel sweep. On polar, the cap stops a large
+    mismatch from adding damping, so raise `λ_0` itself to get the same effect.
   - **`marquardt_scaling => true`.** Gauss-Seidel implicitly normalizes each bus
     update by that bus's self-admittance $Y_{ii}$ (it solves the $i$-th nodal
     equation for $V_i$, dividing by $Y_{ii}$). The Marquardt diagonal $D$ (column

@@ -1,6 +1,6 @@
 # Threaded multi-period AC solves (`SolutionParameters(; n_threads > 1)`) must reproduce the
 # sequential solve on every per-step output. A worker warm-starts only from its own chunk's
-# steps, so a first solve matches the sequential one; a worker that plans its own pivot order
+# steps, so a first solve matches the sequential one. A worker that plans its own pivot order
 # (a private network matrix or area set) differs only by factorization round-off.
 
 const THREADED_PARITY_ATOL = 1e-9
@@ -105,7 +105,8 @@ end
         )
         @test all(seq.converged)
         _test_threaded_parity(seq, thr)
-        # Shared memo and pivot order: a first solve is bitwise the serial one.
+        # Workers share one Jacobian structure and pivot order, so a first solve is bitwise equal
+        # to the serial solve.
         @test isequal(seq.bus_magnitude, thr.bus_magnitude)
         @test isequal(seq.bus_angles, thr.bus_angles)
     end
@@ -122,30 +123,14 @@ end
             _replicate_col1_to_all_steps!, 16,
         ),
     )
-        datas = map((1, 4)) do n
-            pf = ACPolarPowerFlow(; time_steps = T, correct_bustypes = true,
-                solution_parameters = _threaded_params(n))
-            d = PowerFlowData(pf, build())
-            prepare!(d, T)
-            @test solve_power_flow!(d)
-            d
-        end
-        seq, thr = datas
+        seq, thr = _solve_sequential_and_threaded(
+            build, prepare!; time_steps = T, correct_bustypes = true)
+        @test all(seq.converged)
+        @test all(thr.converged)
         @test isequal(seq.bus_magnitude, thr.bus_magnitude)
         @test isequal(seq.bus_angles, thr.bus_angles)
         @test seq.iterations == thr.iterations
     end
-end
-
-@testset "seeding shares the first worker's index maps" begin
-    T = 8
-    pf = ACPolarPowerFlow(; time_steps = T, solution_parameters = _threaded_params(2))
-    d = PowerFlowData(
-        pf, PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false))
-    prepare_ts_data!(d, T)
-    @test solve_power_flow!(d)
-    a, b = (s.polar_nr_cache[] for s in d.worker_slots)
-    @test a.J.od_jnz === b.J.od_jnz
 end
 
 function _slot_data(T, n_threads)
@@ -157,6 +142,13 @@ function _slot_data(T, n_threads)
         pf, PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false))
     prepare_ts_data!(d, T)
     return d
+end
+
+@testset "seeding shares the first worker's index maps" begin
+    d = _slot_data(8, 2)
+    @test solve_power_flow!(d)
+    a, b = (s.polar_nr_cache[] for s in d.worker_slots)
+    @test a.J.od_jnz === b.J.od_jnz
 end
 
 @testset "repeated threaded solves reuse worker caches" begin
@@ -245,10 +237,9 @@ end
     )
 end
 
-# Not compared against the sequential solve: taps update the ComplexF32 Y-bus by deltas, so the
-# sequential solve accumulates round-off across steps (~8e-6 pu in reactive injections here)
-# while each worker starts from a fresh copy. Instead, with one step per task, each threaded
-# step must match a single-step solve at that step's load.
+# Taps update the ComplexF32 Y-bus by deltas. The sequential solve accumulates round-off across
+# steps (~8e-6 pu in reactive injections here), but each worker starts from a fresh copy. Thus,
+# with one step per task, each threaded step must match a single-step solve at that step's load.
 @testset "threaded taps match single-step solves" begin
     time_steps = 6
     pf = ACPolarPowerFlow(;
@@ -305,10 +296,7 @@ end
 # Races are intermittent: repeat the threaded solve and require identical results each time.
 @testset "threaded solves are repeatable" begin
     function threaded_state()
-        pf = ACPolarPowerFlow(; time_steps = 24, solution_parameters = _threaded_params(4))
-        sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
-        data = PowerFlowData(pf, sys)
-        prepare_ts_data!(data, 24)
+        data = _slot_data(24, 4)
         @test solve_power_flow!(data)
         return (copy(data.bus_magnitude), copy(data.bus_angles),
             copy(data.arc_active_power_flow_from_to))

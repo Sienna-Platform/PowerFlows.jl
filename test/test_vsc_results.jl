@@ -91,8 +91,8 @@ end
     @test isapprox(PSY.get_active_power(ic2, PSY.SU), 0.30; atol = 1e-6)
     @test isapprox(PSY.get_active_power(ic3, PSY.SU), 0.20; atol = 1e-6)
 
-    # the stored P_dc is the DC network's own injection, not an extra bus injection: re-solving
-    # the stored System must reproduce the first solve
+    # The stored P_dc is the DC network injection, not an extra bus injection.
+    # A re-solve of the stored System must reproduce the first solve.
     data2 = PowerFlowData(pf, sys)
     @test solve_power_flow!(data2)
     @test isapprox(data2.bus_magnitude, data.bus_magnitude; atol = 1e-8)

@@ -183,8 +183,7 @@ end
     # by throwing SingularException; AppleAccelerate and MKLPardiso instead return a
     # finite garbage solution. The backend-agnostic residual guard in `_set_Δx_nr!`
     # must route every backend through the regularized fallback, which emits the
-    # "Jacobian is singular" warning. Pre-fix, AppleAccelerate skipped the fallback
-    # silently, so this test asserts the warning is produced on every available backend.
+    # "Jacobian is singular" warning.
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
     backends = ["KLU"]
     if PNM._has_apple_accelerate_backend()
@@ -559,22 +558,23 @@ end
         PSB.build_system(PSB.PSSEParsingTestSystems, name))
 end
 
+function _chord_solve(pf, sys, chord::Bool)
+    PF._USE_CHORD[] = chord
+    try
+        data = PowerFlowData(pf, sys)
+        n0 = PF._CHORD_STEPS[]
+        @test solve_power_flow!(data)
+        return data, PF._CHORD_STEPS[] - n0
+    finally
+        PF._USE_CHORD[] = true
+    end
+end
+
 @testset "NR chord steps near convergence" begin
     sys = PSB.build_system(PSB.PSISystems, "RTS_GMLC_DA_sys")
-    function solve(chord::Bool)
-        PF._USE_CHORD[] = chord
-        try
-            pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(; calculate_loss_factors = true)
-            data = PowerFlowData(pf, sys)
-            n0 = PF._CHORD_STEPS[]
-            @test solve_power_flow!(data)
-            return data, PF._CHORD_STEPS[] - n0
-        finally
-            PF._USE_CHORD[] = true
-        end
-    end
-    newton, no_chords = solve(false)
-    chord, chords = solve(true)
+    pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(; calculate_loss_factors = true)
+    newton, no_chords = _chord_solve(pf, sys, false)
+    chord, chords = _chord_solve(pf, sys, true)
     @test iszero(no_chords)
     @test chords > 0
     # Chord steps count as iterations; the refactored steps are fewer.
@@ -588,19 +588,9 @@ end
 @testset "Rectangular and mixed NR chord steps" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
     for form in (ACRectangularPowerFlow, ACMixedPowerFlow)
-        function solve(chord::Bool)
-            PF._USE_CHORD[] = chord
-            try
-                data = PowerFlowData(form{NewtonRaphsonACPowerFlow}(), sys)
-                n0 = PF._CHORD_STEPS[]
-                @test solve_power_flow!(data)
-                return data, PF._CHORD_STEPS[] - n0
-            finally
-                PF._USE_CHORD[] = true
-            end
-        end
-        newton, no_chords = solve(false)
-        chord, chords = solve(true)
+        pf = form{NewtonRaphsonACPowerFlow}()
+        newton, no_chords = _chord_solve(pf, sys, false)
+        chord, chords = _chord_solve(pf, sys, true)
         @test iszero(no_chords)
         @test chords > 0
         @test isapprox(chord.bus_magnitude, newton.bus_magnitude; atol = 1e-7)

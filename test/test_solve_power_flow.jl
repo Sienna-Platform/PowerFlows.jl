@@ -1081,7 +1081,6 @@ end
     @test found > 0
 end
 
-# Island A: REF 1.02, PV 1.04, PQ. Island B: REF 1.06, PQ, no PV bus.
 @testset "polar enhanced flat start: multiple islands, PV-less island" begin
     sys = System(100.0)
     b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.02)

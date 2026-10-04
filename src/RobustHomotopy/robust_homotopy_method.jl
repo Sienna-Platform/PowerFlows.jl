@@ -73,8 +73,8 @@ end
 sig3(x::Float64) = round(x; sigdigits = 3)
 
 # Every backtrack shrinks α by at least half, so past this many α·|δ| is below
-# INSUFFICIENT_CHANGE_IN_X for any practical |δ|; the default 1000 only adds F evaluations
-# at the round-off floor (seen on the Eastern Interconnect from flat).
+# INSUFFICIENT_CHANGE_IN_X for any practical |δ|. The default 1000 only adds F evaluations
+# at the round-off floor.
 const RH_LINE_SEARCH_MAX_ITER = 50
 
 """Armijo backtracking from α = 1. Returns `(α, ϕ(α), true)`, or `(0.0, φ_0, false)` when no

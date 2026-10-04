@@ -121,7 +121,7 @@ end
     @test isapprox(PF.solve!(cache, copy(b)), x_lean; rtol = 1e-10)
     @test isapprox(PF.tsolve!(cache, copy(b)), transpose(Matrix(Jv)) \ b; rtol = 1e-8)
 
-    # ... and the rest of that solve stays on it; the next solve goes lean again.
+    # After a re-pivot, refactors stay on KLU until `_resume_lean!`.
     PF.numeric_refactor!(cache, Jv)
     @test !cache.lean_active && cache.numeric != C_NULL
     PF._resume_lean!(cache)
@@ -362,7 +362,7 @@ end
     @test bad.bus_magnitude == klu.bus_magnitude
     @test bad.bus_type == klu.bus_type
 
-    # A healthy lean solve, and a fresh plain-KLU one, never retry.
+    # A healthy lean solve never retries.
     lean = _lean_sys14_data()
     @test solve_power_flow!(lean)
     @test iszero(PF._cold_retries(lean))
@@ -448,7 +448,6 @@ end
     @test h.lean_plan === _lean_slot(fd).plan
     @test isapprox(fd.bus_magnitude, nr.bus_magnitude; atol = 1e-9, rtol = 0)
     @test isapprox(fd.bus_angles, nr.bus_angles; atol = 1e-9, rtol = 0)
-    # A re-solve keeps the cache and stays on the lean path.
     (; attempts) = PF._lean_counts(h)
     copyto!(fd.bus_magnitude, vm0)
     copyto!(fd.bus_angles, va0)
@@ -462,7 +461,6 @@ end
     @test _lean_slot(ga).tried
     @test isapprox(ga.bus_magnitude, nr.bus_magnitude; atol = 1e-9, rtol = 0)
 
-    # Planned up front only when a Newton handoff will use it.
     for (handoff, planned) in ((NewtonRaphsonACPowerFlow, true), (PF.NoHandoff, false))
         data = staged(PF.FastDecoupledXB, handoff)
         PF._prepare_lean_plan!(PF.get_pf(data), data, 1, PNM.KLUSolver())

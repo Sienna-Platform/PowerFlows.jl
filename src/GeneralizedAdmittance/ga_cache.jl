@@ -1,9 +1,3 @@
-# Solver cache for the generalized-admittance loop, stored in `data.solver_cache[]`.
-#
-# Holds the fixed sparse blocks (built once per network/partition), two KLU factorizations
-# over the complex Yℓℓ and Yqq blocks (refactored, not re-ordered, whenever the shunts are
-# refreshed), the preallocated workspace, and the Anderson history.
-
 struct GAWorkspace
     u0::Vector{ComplexF64}
     u::Vector{ComplexF64}
@@ -124,14 +118,9 @@ mutable struct GeneralizedAdmittanceCache <: SolverCache
 end
 
 _ga_cache_key(data::ACPowerFlowData, part::GAPartition) =
-    GACacheKey(
-        objectid(get_power_network_matrix(data)),
-        copy(part.s_ix),
-        copy(part.v_ix),
-        copy(part.q_ix),
-    )
+    GACacheKey(objectid(get_power_network_matrix(data)), part.s_ix, part.v_ix, part.q_ix)
 
-# Mirrors `_reuse_fd_cache`: an empty slot rebuilds; a foreign cache is a loud MethodError.
+# An empty slot rebuilds. A cache from a different solver raises a MethodError.
 _ga_can_reuse(::Nothing, ::GACacheKey) = false
 _ga_can_reuse(c::GeneralizedAdmittanceCache, key::GACacheKey) = c.key == key
 

@@ -2,11 +2,11 @@
 #
 # Purpose:
 #   Wall-clock speedup of a threaded multi-period AC solve (`n_threads > 1`) over the serial
-#   solve. Each system is solved for `PF_BENCH_TIME_STEPS` steps with loads and generation
-#   scaled per step (±5% sinusoid), so every step needs real Newton iterations. Serial KLU
+#   solve. Each system solves `PF_BENCH_TIME_STEPS` steps with loads and generation scaled
+#   per step (±5% sinusoid), so every step needs real Newton iterations. Serial KLU
 #   (`n_threads = 1`) is the baseline for KLU at each `n_threads`. Every timed solve uses a
-#   fresh `PowerFlowData` (build excluded), and the best of `PF_BENCH_REPS` runs is kept after
-#   one warmup.
+#   fresh `PowerFlowData` (build excluded). The script keeps the best of `PF_BENCH_REPS` runs
+#   after one warmup.
 #
 # Run command (from repo root; start Julia with at least the largest `n_threads`):
 #   julia --project=test --threads=8 scripts/profiling/benchmark_threaded_time_steps.jl

@@ -233,8 +233,8 @@ function _write_back_bus_state!(
     return
 end
 
-"""Hand `data` the iterate at once: the residual functor's contract, which every caller outside
-the NR loop's fused kernel relies on."""
+"""Hand `data` the iterate at once. Every caller outside the NR loop's fused kernel needs this
+contract of the residual functor."""
 struct WriteBackNow end
 """Leave `data` stale until [`_write_back_bus_state!`](@ref); only the NR loop uses this."""
 struct WriteBackDeferred end
@@ -451,11 +451,7 @@ function _update_residual_state!(
 end
 
 function _fill_bus_phasor!(s::PolarBusState)
-    phasor = s.phasor
-    θ = s.θ
-    @inbounds for i in eachindex(phasor, θ)
-        phasor[i] = cis(θ[i])
-    end
+    s.phasor .= cis.(s.θ)
     s.phasor_valid = true
     return
 end
@@ -573,7 +569,11 @@ function _find_subnetworks_for_reference_buses!(
         root = PNM.get_representative(uf, ix)
         g = s.group[root]
         if iszero(g)
-            members = isempty(s.pool) ? Int[] : empty!(pop!(s.pool))
+            if isempty(s.pool)
+                members = Int[]
+            else
+                members = empty!(pop!(s.pool))
+            end
             push!(s.buses, members)
             push!(s.roots, root)
             g = length(s.buses)

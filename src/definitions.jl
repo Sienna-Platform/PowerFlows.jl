@@ -64,9 +64,8 @@ const LCC_sinϕ_TOLERANCE = 1e-8 # if sin(ϕ) < this, treat dQ/dV as zero to avo
 const LCC_SMALL_ANGLE_THRESHOLD = deg2rad(5) # warn if converged LCC thyristor angle α_r/α_i falls outside (this, π/2 − this)
 
 const DEFAULT_NR_MAX_ITER = 50 # default maxIterations for the NR power flow
-"""`SolutionParameters.maxIterations` sentinel: when left unset, the formulation
-constructor resolves it to the solver's own default at model construction.
-Never a legitimate iteration count."""
+"""`SolutionParameters.maxIterations` value for "unset": the formulation constructor replaces
+it with the solver default."""
 const UNSET_MAX_ITERATIONS = -1
 const DEFAULT_NR_TOL = 1e-9 # default tolerance for the NR power flow
 const DEFAULT_REFINEMENT_THRESHOLD = 5e-2 # do refinement if relative error > 5%.
@@ -143,7 +142,7 @@ const SQRT6_DIV_PI = sqrt(6) / π
 # Feasibility tolerance for the GA LCC closed form: |S| = (V·t)·K·I must be ≥ |P|
 # up to this slack; below it, `cos φ` would exceed 1 and the operating point is infeasible.
 const GA_LCC_FEASIBILITY_TOL = 1e-12
-# Newton cap for the GA per-iteration VSC DC substep (spec §3.8).
+# Newton iteration cap for the VSC DC substep in each GA iteration.
 const GA_DC_MAX_ITER = 3
 const DEFAULT_GA_MAX_ITER = 500 # generalized-admittance fixed-point iteration cap
 const GA_DIVERGENCE_FACTOR = 1e3 # stage diverged when gap > factor × best gap since a refresh
@@ -157,7 +156,7 @@ const GA_ANDERSON_DEPTH = 5 # Anderson-mixing history length over the corrective
 const GA_REFRESH_DROP = 10.0
 # A stall is GA_STALL_ITERATIONS iterations without a GA_STALL_GAIN relative gap gain. It
 # refreshes the shunts with PV stiffness max(GA_RESTIFFEN_GROWTH × current,
-# GA_RESTIFFEN_FLOOR × GA_PV_STIFFNESS_FRACTION); a gap-drop refresh sets it back to zero.
+# GA_RESTIFFEN_FLOOR × GA_PV_STIFFNESS_FRACTION); a gap-drop refresh sets it to zero.
 const GA_STALL_ITERATIONS = 40
 const GA_STALL_GAIN = 0.1
 const GA_RESTIFFEN_FLOOR = 0.1
@@ -183,7 +182,7 @@ const OVERWRITE_NON_CONVERGED = true # overwrite non-converged time steps with N
 # Adam / gradient descent power flow
 const ADAM_BACKTRACK_FACTOR = 0.5
 const ADAM_MAX_BACKTRACKS = 10
-const DEFAULT_GD_MAX_ITER = 10_000 # c_sys14 converges in 5049 Adam steps; NR's 50 never converges
+const DEFAULT_GD_MAX_ITER = 10_000
 
 # robust homotopy method constants
 const β = 10.0^-3

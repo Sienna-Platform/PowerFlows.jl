@@ -31,7 +31,8 @@ struct StateVectorCache
         Union{Nothing, PNM.KLULinSolveCache{Float64, J_INDEX_TYPE}},
     }
     fallback_matrix::Base.RefValue{Union{Nothing, SparseMatrixCSC{Float64, J_INDEX_TYPE}}}
-    # Whether F and J at the start came from the fused kernel, so a cold rerun evaluates alike.
+    # Whether the fused kernel evaluated F and J at the start. `_restart_from!` reads it to
+    # evaluate the same way.
     fused_start::Base.RefValue{Bool}
 end
 
@@ -93,7 +94,7 @@ end
 """Polar NR/TR workspace stored in `data.polar_nr_cache`, reused across Q-limit retries, time
 steps and contingencies. `bus_type_snapshot` holds the bus types the residual's partition was
 last derived for (emptied by [`_invalidate_partition!`](@ref)). `residual` and `J` do not store
-`data`: this cache hangs off `data`, so a back-reference would form a cycle. `arc_flows` lets a
+`data`: `data` holds this cache, so a back-reference would form a cycle. `arc_flows` lets a
 reused `solve_power_flow!` skip rebuilding its branch-flow scratch. `lean` is the slot whose plan
 the KLU cache was given, for [`_align_lean_plan!`](@ref). `x0` and `partition` are the reuse
 path's start-point and island-partition buffers."""
@@ -180,7 +181,7 @@ end
 
 """A polar NR cache's island partition and the bus types it was derived for, from
 [`_snapshot_partition`](@ref). It holds no Jacobian offsets, so [`_restore_partition!`](@ref) can
-put it back into any polar cache built on the same network."""
+restore it into any polar cache built on the same network."""
 struct PartitionSnapshot
     bus_type::Vector{PSY.ACBusTypes.Value}
     subnetworks::Dict{Int64, Vector{Int64}}
@@ -206,7 +207,7 @@ function _snapshot_partition(entry)
     )
 end
 
-"""Put `snap` back into `data`'s polar NR cache instead of [`_invalidate_partition!`](@ref), so
+"""Restore `snap` into `data`'s polar NR cache instead of [`_invalidate_partition!`](@ref), so
 its next reuse skips re-deriving the islands. The caller guarantees that `data`'s Ybus is again
 the one `snap` was taken on. The cache is left as a re-derivation for `snap.bus_type` would leave
 it: partition, slack slots, PQ indices, and a dropped KLU Numeric. Worker slots are invalidated."""
@@ -279,8 +280,8 @@ function _plan_at_flat!(
     return
 end
 
-# A solve's own `J`, already evaluated at its start: plan at flat, then put `J` and the bus state
-# it shares with the residual back, sparing `_lean_plan_slot!`'s second residual and Jacobian.
+# A solve's own `J`, already evaluated at its start: plan at flat, then restore `J` and the bus
+# state it shares with the residual, sparing `_lean_plan_slot!`'s second residual and Jacobian.
 function _plan_at_flat_in_place!(
     slot::LeanPlanSlot,
     J::ACPowerFlowJacobian,
@@ -484,7 +485,7 @@ end
 _arc_flow_scratch(::Nothing, data::ACPowerFlowData) = ArcFlowScratch(data)
 
 function _arc_flow_scratch(entry::PolarNRCache, data::ACPowerFlowData)
-    arcs = PNM.get_arc_axis(data.power_network_matrix.arc_admittance_from_to)
+    arcs = get_arc_axis(data)
     if entry.arc_flows.arcs === arcs
         return entry.arc_flows
     end
@@ -553,8 +554,7 @@ function _refresh_polar_residual!(
             _slack_jnz!(J.slack_jnz, J.Jv, subnetworks)
         end
         _pq_validate_indices!(residual.validate_indices, bus_type)
-        resize!(snapshot, length(bus_type))
-        copyto!(snapshot, bus_type)
+        copy!(snapshot, bus_type)
         _drop_numeric!(entry.linSolveCache)
     end
     spf = residual.bus_slack_participation_factors
@@ -1137,8 +1137,8 @@ function _simple_step(time_step::Int,
     return J_filled, factored
 end
 
-# Chord steps: once ‖F‖∞ < CHORD_TRIGGER, NR reuses its last LU and keeps a step only if ‖F‖∞
-# falls by CHORD_CONTRACTION (about three chord steps replace one refactor near the solution).
+# Chord steps: once ‖F‖∞ < CHORD_TRIGGER, NR reuses its last LU while each step cuts ‖F‖∞ to at
+# most CHORD_CONTRACTION times its value (see `_chord_step!`).
 const CHORD_TRIGGER = 1e-2
 const CHORD_CONTRACTION = 0.1
 # Test/bench switch: `false` refactors on every NR step.
@@ -1966,9 +1966,8 @@ function _set_rect_mixed_plan!(
     return
 end
 
-# Off the plan's bus types the lean path waits and KLU pivots afresh (the pre-lean cost). A plan
-# once rejected was built at a start unlike these solves (a flat one, rcond0 ~1e-5 on c_sys14
-# rect) and would be rejected again each solve, so it is retired.
+# Off the plan's bus types the lean path pauses and KLU pivots afresh. A rejected plan was built
+# at a start unlike these solves (a flat start) and would fail again each solve, so it is retired.
 function _set_lean_for_types!(
     cache::RectMixedNRCache,
     bus_type::AbstractVector{PSY.ACBusTypes.Value},
@@ -2194,7 +2193,6 @@ end
 _save_solve_start!(::Union{ACRectangularCIResidual, ACMixedCPBResidual}) = nothing
 _restore_solve_start!(::Union{ACRectangularCIResidual, ACMixedCPBResidual}) = nothing
 
-# Residual, Jacobian and state back at `x0`, every buffer as a reused workspace starts a solve.
 function _restart_from!(
     stateVector::StateVectorCache,
     residual,

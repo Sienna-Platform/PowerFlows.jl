@@ -140,10 +140,8 @@ end
 end
 
 @testset "Polar NR refresh after a bus-type and partition change: allocation" begin
-    # A per-contingency pattern on one reused `data`: bus types change and the island
-    # partition is invalidated before every solve. The refresh rebuilds the partition, the PQ
-    # index set and the start point in the cache's own buffers: 1.8 KB/call, against more than
-    # 160 KB when the partition and PQ index set were rebuilt from fresh containers.
+    # The refresh rebuilds the partition, the PQ index set and the start point in the cache's
+    # own buffers.
     sys = PSB.build_system(PSB.MatpowerTestSystems, "matpower_ACTIVSg2000_sys")
     pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(; correct_bustypes = true)
     data = PF.PowerFlowData(pf, sys)
@@ -179,8 +177,8 @@ end
 end
 
 @testset "AC reused solve_power_flow! allocation regression" begin
-    # One `solve_power_flow!` per outage on a reused `data`: the arc→bus maps
-    # and branch-flow buffers come from the `PolarNRCache`, not a per-call rebuild.
+    # A repeated solve on the same `data` reads the arc-to-bus maps and branch-flow
+    # buffers from the `PolarNRCache` and does not rebuild them.
     sys = PSB.build_system(PSB.MatpowerTestSystems, "matpower_ACTIVSg2000_sys")
     pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(; correct_bustypes = true)
     data = PF.PowerFlowData(pf, sys)

@@ -1,4 +1,4 @@
-# LCC closed form (spec §3.7). With the tail pinned at α = α_min and γ = γ_min, each
+# LCC closed form. With the tail pinned at α = α_min and γ = γ_min, each
 # terminal's complex power is constant: P from the setpoint + DC-line balance, Q from
 # Q = √((V·t)·K·I)² − P². The products (V·t) are |V|-independent, so the P+jQ withdrawals
 # are fixed per time step and fold into the constant sP terms. Terminal powers are

@@ -79,7 +79,7 @@ median is the representative figure.
     are usually faster. Measure on your system with `test/performance/fd_benchmark.jl`.
   - **ZIP loads and HVDC (LCC, VSC, multi-terminal):**
     [`ACPowerFlow`](@ref)`{`[`GeneralizedAdmittanceACPowerFlow`](@ref)`}`() — the
-    generalized-admittance (PFPD) solver: cheap linear-rate fixed-point iterations, two reused
+    generalized-admittance solver: cheap linear-rate fixed-point iterations, two reused
     KLU factors each; pair with `handoff_solver` for Newton polish.
 
 See also the explanation pages

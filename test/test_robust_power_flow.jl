@@ -86,10 +86,9 @@ end
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14")
     count_logs(logs, pattern) = count(l -> occursin(pattern, string(l.message)), logs)
     function solve_logged!(data, pf)
-        logs, ok = Test.collect_test_logs(; min_level = Logging.Debug) do
+        return Test.collect_test_logs(; min_level = Logging.Debug) do
             return solve_power_flow!(data; pf = pf)
         end
-        return logs, ok
     end
     function flat_data(pf)
         data = PowerFlowData(pf, sys)
