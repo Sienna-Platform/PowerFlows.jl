@@ -263,6 +263,7 @@ function _ga_solve(
     if converged && need_factors
         J(data, time_step)
     end
+    _finalize_formulation!(pf, data, sv.x, residual, time_step)
     converged = _finalize_power_flow(
         converged, iters + handoff_iters, name, residual, data, _finalize_jv(J),
         time_step,
