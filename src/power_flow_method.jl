@@ -430,7 +430,7 @@ _reuses_pivot_order(c::PNM.KLULinSolveCache) =
 _reuses_pivot_order(::PNM.LinearSolverCache) = false
 
 """`_lean_counts(c)` and whether `c` holds a factorization, before a run that
-[`_pivoted_fresh_at_start`](@ref) then checks."""
+`_pivoted_fresh_at_start` then checks."""
 _retry_start(c::PNM.KLULinSolveCache) =
     merge(_lean_counts(c), (; factored = PNM.is_factored(c)))
 _retry_start(c::PNM.LinearSolverCache) = _lean_counts(c)
