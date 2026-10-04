@@ -302,8 +302,7 @@ function _solve_columns!(
     for pos in positions
         ts_converged[pos] = _solve_column!(data, pf, steps[pos], flows, cd, merged_kwargs)
     end
-    (; attempts, rejects, solve_failures, late_analyses) = _lean_counts(data)
-    @debug "lean LU refactors on this cache so far" attempts rejects solve_failures late_analyses
+    @debug "lean LU refactors on this cache so far" lean = _lean_counts(data)
     return ts_converged
 end
 

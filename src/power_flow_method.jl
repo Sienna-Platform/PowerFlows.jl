@@ -123,9 +123,9 @@ const _USE_LEAN_LU = Ref(true)
 
 """The [`LeanPlanSlot`](@ref) of the Jacobian structure `data` uses at `time_step`, building
 its plan on first use. The plan is factored from a separately built Jacobian evaluated at
-|V| = 1, θ = 0 (as p3s does), so it depends only on the network, bus types, slack factors and
-ZIP loads at `time_step`, never on an iterate: every cache, task and contingency sharing the
-slot pivots identically."""
+|V| = 1, θ = 0, so it depends only on the network, bus types, slack factors and ZIP loads at
+`time_step`, never on an iterate: every cache, task and contingency sharing the slot pivots
+identically."""
 function _lean_plan_slot!(data::ACPowerFlowData, time_step::Int64)
     residual = ACPowerFlowResidual(data, time_step)
     J = ACPowerFlowJacobian(data, residual, time_step)
@@ -200,7 +200,7 @@ function _resume_lean!(c::PNM.KLULinSolveCache)
     PNM.KLUWrapper.pause_lean!(c, false)
     return
 end
-_resume_lean!(::Union{PNM.AAFactorCache, PardisoLinSolveCache}) = nothing
+_resume_lean!(::PNM.LinearSolverCache) = nothing
 
 # The plan pivots a PV bus's Q column on its Q row (that column's only entry) and a REF bus's P
 # column on its P row. A bus promoted from PV to REF since the plan was built (an island
@@ -220,7 +220,7 @@ function _align_lean_plan!(
     return
 end
 _align_lean_plan!(
-    ::Union{PNM.AAFactorCache, PardisoLinSolveCache},
+    ::PNM.LinearSolverCache,
     ::LeanPlanSlot,
     ::AbstractVector{PSY.ACBusTypes.Value},
 ) = nothing
@@ -245,7 +245,7 @@ _lean_counts(::Nothing) = _NO_LEAN_COUNTS
 _lean_counts(entry::PolarNRCache) = _lean_counts(entry.linSolveCache)
 _lean_counts(c::PNM.KLULinSolveCache) = merge(
     PNM.KLUWrapper.lean_counts(c), (; cold_retries = PNM.KLUWrapper.cold_retries(c)))
-_lean_counts(::Union{PNM.AAFactorCache, PardisoLinSolveCache}) = _NO_LEAN_COUNTS
+_lean_counts(::PNM.LinearSolverCache) = _NO_LEAN_COUNTS
 
 _cold_retries(data::ACPowerFlowData) = _lean_counts(data).cold_retries
 
@@ -253,29 +253,24 @@ _cold_retries(data::ACPowerFlowData) = _lean_counts(data).cold_retries
 # order chosen for other values; only such a solve is rerun cold when it fails.
 _reuses_pivot_order(c::PNM.KLULinSolveCache) =
     PNM.KLUWrapper.has_lean_plan(c) || PNM.is_factored(c)
-_reuses_pivot_order(::Union{PNM.AAFactorCache, PardisoLinSolveCache}) = false
+_reuses_pivot_order(::PNM.LinearSolverCache) = false
 
-# p3s accepts a lean factor on its pivot ratio alone (nr_klu.cpp:582-588). A poor lean step costs
-# iterations, never a wrong answer: convergence is judged on the residual, and a solve that fails
-# on lean factors is rerun cold.
+# A lean factor is accepted on its pivot ratio alone. A poor lean step costs iterations, never a
+# wrong answer: convergence is judged on the residual, and a solve that fails on lean factors is
+# rerun cold.
 _skips_refinement(c::PNM.KLULinSolveCache) = PNM.KLUWrapper.lean_active(c)
-_skips_refinement(::Union{PNM.AAFactorCache, PardisoLinSolveCache}) = false
+_skips_refinement(::PNM.LinearSolverCache) = false
 
 """Seed `work`'s Jacobian-structure memo, and with it the lean-LU plan, from `base`'s. For a
-working copy whose Ybus is a value copy of `base`'s with the same pattern (PowerTransmission-
-SecurityAnalysis), so every copy pivots like `base` instead of on whatever it solves first. An
-unbuilt plan is not shared: the copies would race to build it."""
+working copy whose Ybus is a value copy of `base`'s with the same pattern, so every copy pivots
+like `base` instead of on whatever it solves first. An unbuilt plan is not shared: the copies
+would race to build it."""
 _inherit_jacobian_structure!(work::ACPowerFlowData, base::ACPowerFlowData) =
     _inherit_jacobian_structure!(work, base.ac_jacobian_structure_cache[])
 _inherit_jacobian_structure!(::ACPowerFlowData, ::Nothing) = nothing
 
 function _inherit_jacobian_structure!(work::ACPowerFlowData, memo::ACJacobianStructureCache)
-    y = work.power_network_matrix.data
-    y0 = memo.matrix.data
-    (
-        SparseArrays.getcolptr(y) == SparseArrays.getcolptr(y0) &&
-        SparseArrays.rowvals(y) == SparseArrays.rowvals(y0)
-    ) ||
+    _same_sparsity(memo.matrix.data, work.power_network_matrix.data) ||
         error(
             "The working copy's Ybus pattern differs from the base's; cannot share its " *
             "Jacobian structure.",
@@ -465,7 +460,7 @@ function _set_Δx_nr!(stateVector::StateVectorCache,
         _do_refinement!(stateVector, M, cache, refinement_threshold, refinement_eps)
     end
     # Not rmul!: BLAS dscal wakes OpenBLAS's thread pool every Newton step, which then spins on
-    # the cores PTSA and threaded time steps run their workers on.
+    # the cores threaded callers run their workers on.
     stateVector.Δx_nr .= .-stateVector.Δx_nr
     return
 end
@@ -1785,14 +1780,13 @@ function _newton_power_flow(
         reused && _save_solve_start!(residual)
         converged, i = run_method()
         if !converged && reused
-            # p3s nr_klu.cpp:798-820: rerun once from x0 as a fresh KLU solve would, so a reused
-            # pivot order never changes a solve's status.
+            # Rerun once from x0 as a fresh KLU solve would, so a reused pivot order never
+            # changes a solve's status.
             @debug "solve failed on a reused pivot order; retrying on a fresh factorization" time_step
             PNM.KLUWrapper.cold_restart!(linSolveCache)
             _restart_from!(stateVector, residual, J, data, x0_init, time_step)
-            failed = i
-            converged, i = run_method()
-            i += failed
+            converged, i_cold = run_method()
+            i += i_cold
         end
         x_final = stateVector.x
         _finalize_formulation!(pf, data, x_final, residual, time_step)
@@ -1804,9 +1798,9 @@ function _newton_power_flow(
     # opted into loss / voltage-stability factors — those need J even at 0 iterations, or a
     # first solve that lands within tol would leave them at their zero-initialized values.
     if get_calculate_loss_factors(data) || get_calculate_voltage_stability_factors(data)
-        J = _nr_build_jacobian(pf, data, residual, J_or_nothing, time_step)
+        J_lf = _nr_build_jacobian(pf, data, residual, J_or_nothing, time_step)
         return _finalize_power_flow(
-            converged, i, string(T), residual, data, J.Jv, time_step)
+            converged, i, string(T), residual, data, J_lf.Jv, time_step)
     end
     return _finalize_power_flow(
         converged, i, string(T), residual, data, nothing, time_step)
