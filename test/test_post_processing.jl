@@ -364,6 +364,63 @@ end
     @test !isnan(get_active_power(g2, PSY.SU))
 end
 
+function _ref_bus_with_units(limits)
+    sys = System(100.0)
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.0, 0.0)
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.PQ, 230, 1.0, 0.0)
+    _add_simple_line!(sys, b1, b2, 0.01, 0.1, 0.0)
+    _add_simple_load!(sys, b2, 10.0, 2.0)
+    gens = map(limits) do (lo, hi)
+        g = _add_simple_thermal_standard!(sys, b1, 0.1, 0.0)
+        PSY.set_active_power_limits!(g, (min = lo * PSY.SU, max = hi * PSY.SU))
+        return g
+    end
+    return sys, b1, gens
+end
+
+@testset "REF redistribution accumulates clamped deltas across passes" begin
+    # Pass 1 clamps the third unit at P_min; pass 2 clamps the second at P_min, so the
+    # residual must shrink by the clamped deltas, not the requested ones.
+    sys, b1, gens = _ref_bus_with_units([(0.0, 1.0), (0.15, 0.3), (0.4, 0.5)])
+    P_gen = 1.0
+    PF._power_redistribution_ref(
+        sys, P_gen, 0.0, b1, PF.DEFAULT_MAX_REDISTRIBUTION_ITERATIONS,
+        PF._build_bus_injector_map(sys); skip_reactive = true,
+    )
+    p = get_active_power.(gens, (PSY.SU,))
+    @test isapprox(sum(p), P_gen; atol = 1e-9)
+    for (g, pg) in zip(gens, p)
+        lim = get_active_power_limits(g, PSY.SU)
+        @test lim.min - 1e-9 <= pg <= lim.max + 1e-9
+    end
+end
+
+@testset "REF/PV redistribution with every unit at its limit warns and keeps the balance" begin
+    sys, b1, gens = _ref_bus_with_units([(0.0, 1.0), (0.0, 2.0)])
+    bus_injectors = PF._build_bus_injector_map(sys)
+    @test_logs (:warn, r"P residual .* exceeds") match_mode = :any PF._power_redistribution_ref(
+        sys, -0.3, 0.0, b1, PF.DEFAULT_MAX_REDISTRIBUTION_ITERATIONS, bus_injectors;
+        skip_reactive = true,
+    )
+    @test isapprox(sum(get_active_power.(gens, (PSY.SU,))), -0.3; atol = 1e-9)
+    # The widest-range unit takes the residual.
+    @test isapprox(get_active_power(gens[2], PSY.SU), -0.3; atol = 1e-9)
+
+    set_active_power!.(gens, (0.5 * PSY.SU,))
+    @test_logs (:warn, r"Q residual .* exceeds") match_mode = :any PF._reactive_power_redistribution_pv(
+        sys, 3.0, b1, PF.DEFAULT_MAX_REDISTRIBUTION_ITERATIONS, bus_injectors,
+    )
+    @test isapprox(sum(get_reactive_power.(gens, (PSY.SU,))), 3.0; atol = 1e-9)
+end
+
+@testset "solve_and_store_power_flow! when the REF bus must absorb below its units' P_min" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys5_dc"; add_forecasts = false)
+    @test PF.solve_and_store_power_flow!(
+        PF.ACPowerFlow{PF.NewtonRaphsonACPowerFlow}(; correct_bustypes = true),
+        sys,
+    )
+end
+
 @testset "AC write_results: Q_load includes switched-shunt withdrawal" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14")
     pq_buses = sort(

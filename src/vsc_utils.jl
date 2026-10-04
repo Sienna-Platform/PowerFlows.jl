@@ -128,24 +128,51 @@ function _validate_dc_slacks(dcn::DCNetwork)
     return
 end
 
-# An AC-voltage-controlling converter (ControlPVac/ControlVdcQ) pins |V_ac| at its bus, which is
-# only well-posed at a PQ bus: at PV/REF the magnitude is already regulated, so the converter's
-# |V_ac|² control row is constant in the state — a structurally singular Jacobian (and an
-# infeasible setpoint conflict unless the two targets coincide). Two AC-voltage converters on one
-# bus duplicate the pin row — the same singularity. Fail fast at lowering, naming the bus.
-function _validate_vsc_ac_controls(dcn::DCNetwork, bus_types::AbstractVector)
+# How far a converter's AC-voltage target may sit from a regulated bus's setpoint and still count
+# as the same target.
+const VSC_VAC_SETPOINT_TOLERANCE = 1e-6
+
+# The same DC-side control with the AC side switched from |V_ac| to Q_c.
+function _reactive_power_mode(m::VSCControlMode)
+    if m == ControlPVac
+        return ControlPQ
+    elseif m == ControlVdcQ
+        return ControlVdc
+    end
+    return m
+end
+
+# An AC-voltage-controlling converter (ControlPVac/ControlVdcQ) pins |V_ac| at its bus. At a PV/REF
+# bus the magnitude is already regulated, so the pin row would be constant in the state (a singular
+# Jacobian). When the converter's target equals the bus setpoint at every time step, the converter
+# is demoted to its reactive-power mode (Q pinned at its setpoint, the bus's generators supply the
+# rest); a differing target is an infeasible conflict and errors. Two AC-voltage converters on one
+# PQ bus duplicate the pin row — the same singularity. Fail fast at lowering, naming the bus.
+function _resolve_vsc_ac_controls!(
+    dcn::DCNetwork,
+    bus_types::AbstractVector,
+    bus_magnitude::AbstractMatrix{Float64},
+)
     vac_pinned = Set{Int}()
     for c in 1:n_vsc_converters(dcn)
         controls_ac_voltage(dcn.converter_mode[c]) || continue
         ix = dcn.converter_ac_bus_ix[c]
         number = dcn.converter_ac_bus_number[c]
         if bus_types[ix] != PSY.ACBusTypes.PQ
-            error(
-                "A VSC converter at bus $(number) uses AC-voltage control, but the bus type is " *
-                "$(bus_types[ix]): its voltage magnitude is already regulated there, making the " *
-                "converter's |V_ac| control row singular. Use reactive-power control for this " *
-                "converter, or move the voltage regulation.",
-            )
+            for t in axes(bus_magnitude, 2)
+                v_bus = bus_magnitude[ix, t]
+                v_conv = dcn.vac_set[c, t]
+                if abs(v_conv - v_bus) > VSC_VAC_SETPOINT_TOLERANCE
+                    error(
+                        "A VSC converter at bus $(number) ($(bus_types[ix])) uses AC-voltage " *
+                        "control with setpoint $(v_conv) p.u., but the bus already regulates " *
+                        "its magnitude at $(v_bus) p.u. (time step $(t)). Make the setpoints " *
+                        "equal, or use reactive-power control for this converter.",
+                    )
+                end
+            end
+            dcn.converter_mode[c] = _reactive_power_mode(dcn.converter_mode[c])
+            continue
         end
         if ix in vac_pinned
             error(
@@ -315,6 +342,7 @@ end
 # DC node a slack when it pins V_dc.
 function _push_converter!(
     b::_DCNetworkBuilder,
+    name::String,
     ac_bus_ix::Int,
     ac_bus_number::Int,
     dc_node_ix::Int,
@@ -332,6 +360,13 @@ function _push_converter!(
     q_set::Float64,
 )
     mode = _vsc_control_mode(dc_control, ac_control)
+    # A V_dc target ≤ 0 makes the DC-KCL term P_dc/V_dc non-finite at the seed.
+    if uses_vdc_setpoint(mode) && !(dc_set > 0.0)
+        error(
+            "VSC converter $(name) controls its DC voltage ($(mode)) but its dc_setpoint is " *
+            "$(dc_set); a DC-voltage setpoint must be > 0 p.u.",
+        )
+    end
     push!(b.ac_bus_ix, ac_bus_ix)
     push!(b.dc_node_ix, dc_node_ix)
     push!(b.mode, mode)
@@ -378,7 +413,7 @@ function _lower_vsc_lines!(
         nt = _new_dc_node!(b, -1)
         dev_base = PSY.get_base_power(line)
         _push_converter!(
-            b, from_ix, from_number, nf,
+            b, "$(PSY.get_name(line)) (from)", from_ix, from_number, nf,
             PSY.get_dc_control_from(line), PSY.get_ac_control_from(line),
             PSY.get_dc_voltage_droop_from(line), PSY.get_converter_loss_from(line),
             sys_base, dev_base,
@@ -389,7 +424,7 @@ function _lower_vsc_lines!(
             PSY.get_ac_setpoint_from(line), PSY.get_reactive_power_from(line, PSY.SU),
         )
         _push_converter!(
-            b, to_ix, to_number, nt,
+            b, "$(PSY.get_name(line)) (to)", to_ix, to_number, nt,
             PSY.get_dc_control_to(line), PSY.get_ac_control_to(line),
             PSY.get_dc_voltage_droop_to(line), PSY.get_converter_loss_to(line),
             sys_base, dev_base,
@@ -420,7 +455,7 @@ function _lower_mtdc!(
         ac_ix = _get_bus_ix(bus_lookup, reverse_bus_search_map, bus_number)
         node = _dc_node!(b, PSY.get_dc_bus(ic))
         _push_converter!(
-            b, ac_ix, bus_number, node,
+            b, PSY.get_name(ic), ac_ix, bus_number, node,
             PSY.get_dc_control(ic), PSY.get_ac_control(ic),
             PSY.get_dc_voltage_droop(ic), PSY.get_loss_function(ic),
             sys_base, PSY.get_base_power(ic),
@@ -530,7 +565,7 @@ function initialize_DCNetwork!(
         G_dc,
     )
     _validate_dc_slacks(dcn)
-    _validate_vsc_ac_controls(dcn, view(data.bus_type, :, 1))
+    _resolve_vsc_ac_controls!(dcn, view(data.bus_type, :, 1), data.bus_magnitude)
     data.dc_network[] = dcn
     # Seed converter/DC-node states with a sequential decoupled DC solve (AC voltages held fixed) so
     # the joint AC↔DC Newton starts from a consistent DC operating point: the robustness of a
@@ -672,6 +707,8 @@ function _vsc_warm_start!(
         _vsc_warm_residual!(F, dcn, Vm, time_step)
         norm(F) < tol && break
         _vsc_warm_jacobian!(J, dcn, Vm, time_step)
+        # LAPACK throws ArgumentError on Inf/NaN input (e.g. an iterate reaching V_dc = 0).
+        all(isfinite, F) && all(isfinite, J) || break
         # The warm-start is best-effort: a singular/ill-conditioned tail must never abort the solve,
         # so on any linear-solve failure we keep the best seed so far and let the joint Newton run.
         local Δ

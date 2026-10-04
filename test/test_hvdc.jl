@@ -324,25 +324,31 @@ end
 end
 
 @testset "Test DC LCC arc flow sign (rectifier/inverter, with loss)" begin
-    # 30 MW with a 10% loss curve (3 MW lost): P_to_from is the received power, negated (-27), not the loss (+3).
+    # 30 MW scheduled through R = 0.05 pu: i_dc solves R·i² + i = 0.3 and the far end differs
+    # by R·i². A positive setpoint is the rectifier's power, a negative one the inverter's.
+    r = 0.05
+    i_dc = (-1.0 + sqrt(1.0 + 4.0 * r * 0.3)) / (2.0 * r)
+    loss = r * i_dc^2
     for DC_type in (PF.DCPowerFlow, PF.PTDFDCPowerFlow, PF.vPTDFDCPowerFlow)
         @testset "DC Solver: $(DC_type)" begin
-            sys, lcc = simple_lcc_system()
-            set_active_power_flow!(lcc, 30.0 * u"MW")
-            set_loss!(lcc, LossCurve(LinearCurve(0.1), NaturalUnit()))
-            pf = DC_type(; correct_bustypes = true)
-            data = PowerFlowData(pf, sys)
-            @test isapprox(data.lcc.arc_active_power_flow_from_to[1, 1], 0.3; atol = 1e-6)
-            @test isapprox(
-                data.lcc.arc_active_power_flow_to_from[1, 1],
-                -0.27;
-                atol = 1e-6,
-            )
+            for (setpoint, P_from_to, P_to_from) in
+                ((0.3, 0.3, -(0.3 - loss)), (-0.3, 0.3 + loss, -0.3))
+                sys, lcc = simple_lcc_system()
+                set_r!(lcc, r)
+                set_transfer_setpoint!(lcc, setpoint)
+                pf = DC_type(; correct_bustypes = true)
+                data = PowerFlowData(pf, sys)
+                @test isapprox(data.lcc.arc_active_power_flow_from_to[1, 1], P_from_to)
+                @test isapprox(data.lcc.arc_active_power_flow_to_from[1, 1], P_to_from)
+                bus_lookup = PF.get_bus_lookup(data)
+                @test isapprox(data.bus_hvdc_net_power[bus_lookup[2], 1], -P_from_to)
+                @test isapprox(data.bus_hvdc_net_power[bus_lookup[3], 1], -P_to_from)
 
-            results = solve_power_flow(pf, sys, PF.FlowReporting.ARC_FLOWS)
-            lcc_df = results["1"]["lcc_results"]
-            @test isapprox(lcc_df[1, :P_from_to], 30.0; atol = 1e-6)
-            @test isapprox(lcc_df[1, :P_to_from], -27.0; atol = 1e-6)
+                results = solve_power_flow(pf, sys, PF.FlowReporting.ARC_FLOWS)
+                lcc_df = results["1"]["lcc_results"]
+                @test isapprox(lcc_df[1, :P_from_to], 100.0 * P_from_to; atol = 1e-6)
+                @test isapprox(lcc_df[1, :P_to_from], 100.0 * P_to_from; atol = 1e-6)
+            end
         end
     end
 end

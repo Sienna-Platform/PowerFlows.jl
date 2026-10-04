@@ -100,14 +100,48 @@ end
 end
 
 @testset "DC power flow with an LCC" begin
+    # DC holds the LCC at the schedule AC solves to (transfer_setpoint), so its terminal
+    # powers equal AC's; the stored active_power_flow is an output and must not size it.
     sys, lcc = simple_lcc_system()
     @assert get_base_power(sys, PSY.NU) == 100.0 "Test system base power changed."
-    set_active_power_flow!(lcc, 0.3 * PSY.SU)
+    set_active_power_flow!(lcc, 0.1 * PSY.SU)
+    ac = PowerFlowData(ACPowerFlow(; correct_bustypes = true), sys)
+    @test solve_power_flow!(ac)
+    @test ac.lcc.arc_active_power_flow_from_to[1, 1] ≈ get_transfer_setpoint(lcc, PSY.SU)
     for T in (DCPowerFlow, PTDFDCPowerFlow, vPTDFDCPowerFlow)
         results =
             solve_power_flow(T(; correct_bustypes = true), sys, PF.FlowReporting.ARC_FLOWS)
-        lcc_flow = results["1"]["lcc_results"][1, :P_from_to]
-        @test lcc_flow == get_active_power_flow(lcc, PSY.NU)
+        lcc_df = results["1"]["lcc_results"]
+        @test isapprox(
+            lcc_df[1, :P_from_to],
+            100.0 * ac.lcc.arc_active_power_flow_from_to[1, 1];
+            atol = 1e-6,
+        )
+        @test isapprox(
+            lcc_df[1, :P_to_from],
+            100.0 * ac.lcc.arc_active_power_flow_to_from[1, 1];
+            atol = 1e-6,
+        )
+    end
+end
+
+@testset "DC power flow with a current-mode LCC" begin
+    # PSS/E MDC=2: 62.5 A at VSCHD = 800 kV holds the inverter at 50 MW and the rectifier at
+    # 50 MW + R·I² (I = 0.5 pu, R = 0.05 pu on the system base).
+    sys, lcc = simple_lcc_system()
+    set_power_mode!(lcc, false)
+    set_transfer_setpoint!(lcc, 62.5)
+    ac = PowerFlowData(ACPowerFlow(; correct_bustypes = true), sys)
+    @test solve_power_flow!(ac)
+    @test ac.lcc.i_dc[1, 1] ≈ 0.5
+    @test ac.lcc.arc_active_power_flow_from_to[1, 1] ≈ 0.5125 atol = 1e-6
+    @test ac.lcc.arc_active_power_flow_to_from[1, 1] ≈ -0.5 atol = 1e-6
+    for T in (DCPowerFlow, PTDFDCPowerFlow, vPTDFDCPowerFlow)
+        results =
+            solve_power_flow(T(; correct_bustypes = true), sys, PF.FlowReporting.ARC_FLOWS)
+        lcc_df = results["1"]["lcc_results"]
+        @test lcc_df[1, :P_from_to] ≈ 51.25 atol = 1e-6
+        @test lcc_df[1, :P_to_from] ≈ -50.0 atol = 1e-6
     end
 end
 

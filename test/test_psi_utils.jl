@@ -42,3 +42,50 @@ end
           (0.01 + 0.02im) + 2 * (0.03 + 0.04im)
     @test_throws DimensionMismatch PF._switched_admittance(nothing, [1], y_increase)
 end
+
+@testset "ExponentialLoad: exponents 0/1/2 map onto the ZIP withdrawals, others error" begin
+    function exponential_system(α, β)
+        sys = PSB.build_system(PSB.PSITestSystems, "c_sys5"; add_forecasts = false)
+        load = first(PSY.get_components(PSY.PowerLoad, sys))
+        bus = PSY.get_bus(load)
+        P0 = PSY.get_active_power(load, PSY.SU)
+        Q0 = PSY.get_reactive_power(load, PSY.SU)
+        PSY.set_available!(load, false)
+        PSY.add_component!(
+            sys,
+            PSY.ExponentialLoad(;
+                name = "exp_load",
+                available = true,
+                bus = bus,
+                active_power = PSY.get_active_power(load, PSY.NU),
+                reactive_power = PSY.get_reactive_power(load, PSY.NU),
+                α = α,
+                β = β,
+                base_power = PSY.get_base_power(load, PSY.NU),
+                max_active_power = PSY.get_max_active_power(load, PSY.NU),
+                max_reactive_power = PSY.get_max_reactive_power(load, PSY.NU),
+                input_basis = PSY.NU,
+            ),
+        )
+        return sys, PSY.get_number(bus), P0, Q0
+    end
+    sys, bus_no, P0, Q0 = exponential_system(1.0, 2.0)
+    @test P0 > 0.0
+    data = PowerFlowData(ACPowerFlow(), sys)
+    ix = PF.get_bus_lookup(data)[bus_no]
+    @test iszero(data.bus_active_power_withdrawals[ix, 1])
+    @test iszero(data.bus_reactive_power_withdrawals[ix, 1])
+    @test data.bus_active_power_constant_current_withdrawals[ix, 1] ≈ P0
+    @test data.bus_reactive_power_constant_impedance_withdrawals[ix, 1] ≈ Q0
+
+    sys0, _, _, _ = exponential_system(0.0, 0.0)
+    data0 = PowerFlowData(ACPowerFlow(), sys0)
+    @test data0.bus_active_power_withdrawals[ix, 1] ≈ P0
+    @test data0.bus_reactive_power_withdrawals[ix, 1] ≈ Q0
+
+    sys_bad, _, _, _ = exponential_system(1.5, 0.0)
+    @test_throws r"ExponentialLoad exp_load has voltage exponent 1.5" PowerFlowData(
+        ACPowerFlow(),
+        sys_bad,
+    )
+end

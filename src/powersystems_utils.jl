@@ -13,7 +13,10 @@ function get_reactive_power_limits_for_power_flow(
     return (min = val, max = val)
 end
 
-function get_reactive_power_limits_for_power_flow(gen::PSY.Storage, units = PSY.SU)
+function get_reactive_power_limits_for_power_flow(
+    gen::Union{PSY.Storage, PSY.HybridSystem},
+    units = PSY.SU,
+)
     limits = PSY.get_reactive_power_limits(gen, units)
     isnothing(limits) && return (min = -Inf, max = Inf)  # TODO decide on proper behavior in this case
     return limits
@@ -48,7 +51,10 @@ get_active_power_limits_for_power_flow(gen::PSY.RenewableDispatch, units = PSY.S
     (min = 0.0, max = PSY.get_rating(gen, units))
 
 # TODO verify whether this is the correct behavior for Storage, (a) for redistribution and (b) for exporting
-get_active_power_limits_for_power_flow(gen::PSY.Storage, units = PSY.SU) =
+get_active_power_limits_for_power_flow(
+    gen::Union{PSY.Storage, PSY.HybridSystem},
+    units = PSY.SU,
+) =
     (min = 0.0, max = PSY.get_output_active_power_limits(gen, units).max)
 
 """
@@ -136,6 +142,9 @@ function can_be_PV(sys::System)
     # Storage can also be considered PV (and are not Generator)
     for gen in PSY.get_available_components(PSY.Storage, sys)
         push!(pv_buses, PSY.get_number(PSY.get_bus(gen)))
+    end
+    for hybrid in PSY.get_available_components(PSY.HybridSystem, sys)
+        push!(pv_buses, PSY.get_number(PSY.get_bus(hybrid)))
     end
     return pv_buses
 end

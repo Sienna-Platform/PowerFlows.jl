@@ -796,15 +796,39 @@ function initialize_LCCParameters!(
 
     initialize_LCC_arcs_and_buses!(data, lccs, bus_lookup, reverse_bus_search_map)
 
-    # for DC power flow calculations, LCC arc flows are known from quantities from setup.
+    base_power = PSY.get_base_power(sys, PSY.NU)
     for (i, lcc_branch) in enumerate(lccs)
-        # it's an LCC, so flow can't be reversed; rhs will error if it is.
-        (P_dc, P_loss, _) = get_hvdc_power_loss(lcc_branch, sys)
-        data.lcc.arc_active_power_flow_from_to[i, :] .= P_dc
-        data.lcc.arc_active_power_flow_to_from[i, :] .= -(P_dc - P_loss)
+        (P_from_to, P_to_from) = _lcc_scheduled_flows(lcc_branch, base_power)
+        data.lcc.arc_active_power_flow_from_to[i, :] .= P_from_to
+        data.lcc.arc_active_power_flow_to_from[i, :] .= P_to_from
     end
     return
 end
+
+# The DC formulations hold an LCC at the schedule the AC model solves to, not its stored
+# `active_power_flow` (an output, 0 in most data). Losses are the DC-line R·i_dc² only, as in AC;
+# the LCC `loss` curve is not used by either model.
+function _lcc_scheduled_flows(lcc::PSY.TwoTerminalLCCLine, base_power::Float64)
+    (at_rectifier, p_set) = _lcc_schedule(lcc, base_power)
+    r = _lcc_dc_resistance(lcc)
+    return _ga_lcc_powers(at_rectifier, p_set, r, _lcc_i_dc_from_p_set(r, p_set))
+end
+
+# PSS/E MDC=1 (power mode): |SETVL| MW at the rectifier when SETVL ≥ 0, else at the inverter.
+# MDC=2 (current mode): SETVL is Amperes with VSCHD held at the inverter, so the inverter takes
+# I·VSCHD and the rectifier I·VSCHD + R·I²; scheduling that rectifier power makes
+# `_lcc_i_dc_from_p_set` return exactly I.
+function _lcc_schedule(lcc::PSY.TwoTerminalLCCLine, base_power::Float64)
+    setpoint = PSY.get_transfer_setpoint(lcc, PSY.NU)
+    if PSY.get_power_mode(lcc)
+        return (setpoint >= 0.0, abs(setpoint) / base_power)
+    end
+    i_dc = abs(setpoint) * PSY.get_scheduled_dc_voltage(lcc) / 1000.0 / base_power
+    return (true, i_dc + _lcc_dc_resistance(lcc) * i_dc^2)
+end
+
+_lcc_dc_resistance(lcc::PSY.TwoTerminalLCCLine) =
+    PSY.get_r(lcc) + PSY.get_rectifier_rc(lcc) + PSY.get_inverter_rc(lcc)
 
 """
     _lcc_i_dc_from_p_set(r, p) -> Float64
@@ -854,18 +878,15 @@ function initialize_LCCParameters!(
     lcc_arcs = PSY.get_arc.(lccs)
 
     base_power = PSY.get_base_power(sys, PSY.NU)
-    # todo: if current set point, transform into p set point
-    # lcc_p_set = I_dc_A * V_dc_V / system_base_MVA
-
-    lcc_setpoint_at_rectifier .= (PSY.get_transfer_setpoint.(lccs) .>= 0.0)
-    lcc_p_set .= abs.(PSY.get_transfer_setpoint.(lccs, PSY.NU) ./ base_power) # only one direction is supported, no reverse flow possible
+    schedules = _lcc_schedule.(lccs, base_power)
+    lcc_setpoint_at_rectifier .= first.(schedules)
+    lcc_p_set .= last.(schedules) # only one direction is supported, no reverse flow possible
     lcc_rectifier_tap .= PSY.get_rectifier_tap_setting.(lccs)
     lcc_inverter_tap .= PSY.get_inverter_tap_setting.(lccs)
     # Fixed tap targets used to pin the tap state for 0-current (0-MW) converters.
     data.lcc.rectifier.tap_setpoint .= PSY.get_rectifier_tap_setting.(lccs)
     data.lcc.inverter.tap_setpoint .= PSY.get_inverter_tap_setting.(lccs)
-    lcc_dc_line_resistance .=
-        PSY.get_r.(lccs) .+ PSY.get_rectifier_rc.(lccs) .+ PSY.get_inverter_rc.(lccs)
+    lcc_dc_line_resistance .= _lcc_dc_resistance.(lccs)
     lcc_i_dc .= _lcc_i_dc_from_p_set.(lcc_dc_line_resistance, lcc_p_set)
     lcc_rectifier_delay_angle .= PSY.get_rectifier_delay_angle.(lccs)
     lcc_inverter_extinction_angle .= PSY.get_inverter_extinction_angle.(lccs)
@@ -936,13 +957,20 @@ function lcc_vsc_fixed_injections!(
               "networks are not modeled in DC power flow, and their converter injections are " *
               "ignored. Use an AC power flow for joint AC-DC results."
     end
-    hvdc_fixed_injections!.(
-        (data,),
-        (PSY.TwoTerminalLCCLine, PSY.TwoTerminalVSCLine),
-        (sys,),
-        (bus_lookup,),
-        (reverse_bus_search_map,),
-        (removed_buses,),
+    lcc = data.lcc
+    for i in eachindex(lcc.bus_indices)
+        (from_ix, to_ix) = lcc.bus_indices[i]
+        @views data.bus_hvdc_net_power[from_ix, :] .-=
+            lcc.arc_active_power_flow_from_to[i, :]
+        @views data.bus_hvdc_net_power[to_ix, :] .-= lcc.arc_active_power_flow_to_from[i, :]
+    end
+    hvdc_fixed_injections!(
+        data,
+        PSY.TwoTerminalVSCLine,
+        sys,
+        bus_lookup,
+        reverse_bus_search_map,
+        removed_buses,
     )
     return
 end

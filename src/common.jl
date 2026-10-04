@@ -8,6 +8,13 @@ _get_bus_ix(
 considers_reactive_power(::AbstractACPowerFlow{<:ACPowerFlowSolverType}) = true
 considers_reactive_power(::AbstractDCPowerFlow) = false
 
+_contributes_active_power(::PowerFlowEvaluationModel, source::PSY.StaticInjection) =
+    contributes_active_power(source)
+# A lowered DC network injects the converter's power itself; the stored `active_power` is that
+# solution (written back on store), so counting it again would double the converter's P.
+_contributes_active_power(pf::AbstractACPowerFlow, ::PSY.InterconnectingConverter) =
+    !get_solution_parameters(pf).model_dc_network
+
 function _get_injections!(
     pf::PowerFlowEvaluationModel,
     bus_active_power_injections::Vector{Float64},
@@ -20,7 +27,7 @@ function _get_injections!(
     for source in PSY.get_available_components(PSY.StaticInjection, sys)
         bus = PSY.get_bus(source)
         PSY.get_number(bus) in removed_buses && continue
-        if contributes_active_power(source) &&
+        if _contributes_active_power(pf, source) &&
            active_power_contribution_type(source) == PowerContributionType.INJECTION
             bus_ix = _get_bus_ix(bus_lookup, reverse_bus_search_map, PSY.get_number(bus))
             bus_active_power_injections[bus_ix] += PSY.get_active_power(source, PSY.SU)
@@ -100,6 +107,37 @@ function _switched_admittance(
     return sum(engaged .* y_increase; init = 0.0 + 0.0im)
 end
 
+# P0 * V^e is exactly the constant power (slot 1), current (2) or impedance (3) term for
+# e = 0, 1, 2; any other exponent has no ZIP equivalent and is refused rather than approximated.
+function _exponential_zip_slot(load::PSY.ExponentialLoad, exponent::Float64)
+    if iszero(exponent)
+        return 1
+    elseif exponent == 1.0
+        return 2
+    elseif exponent == 2.0
+        return 3
+    end
+    error(
+        "ExponentialLoad $(PSY.get_name(load)) has voltage exponent $(exponent) " *
+        "(α = $(PSY.get_α(load)), β = $(PSY.get_β(load))); power flow supports only " *
+        "0 (constant power), 1 (constant current) and 2 (constant impedance).",
+    )
+end
+
+function _add_exponential_withdrawal!(
+    constant_power::Vector{Float64},
+    constant_current::Vector{Float64},
+    constant_impedance::Vector{Float64},
+    bus_ix::Int,
+    value::Float64,
+    exponent::Float64,
+    load::PSY.ExponentialLoad,
+)
+    parts = (constant_power, constant_current, constant_impedance)
+    parts[_exponential_zip_slot(load, exponent)][bus_ix] += value
+    return
+end
+
 function _get_withdrawals!(
     pf::PowerFlowEvaluationModel,
     bus_active_power_withdrawals::Vector{Float64},
@@ -147,6 +185,29 @@ function _get_withdrawals!(
             PSY.get_current_reactive_power(l, PSY.SU)
         bus_reactive_power_constant_impedance_withdrawals[bus_ix] +=
             PSY.get_impedance_reactive_power(l, PSY.SU)
+    end
+    for l in PSY.get_available_components(PSY.ExponentialLoad, sys)
+        bus = PSY.get_bus(l)
+        PSY.get_number(bus) in removed_buses && continue
+        bus_ix = _get_bus_ix(bus_lookup, reverse_bus_search_map, PSY.get_number(bus))
+        _add_exponential_withdrawal!(
+            bus_active_power_withdrawals,
+            bus_active_power_constant_current_withdrawals,
+            bus_active_power_constant_impedance_withdrawals,
+            bus_ix,
+            PSY.get_active_power(l, PSY.SU),
+            PSY.get_α(l),
+            l,
+        )
+        _add_exponential_withdrawal!(
+            bus_reactive_power_withdrawals,
+            bus_reactive_power_constant_current_withdrawals,
+            bus_reactive_power_constant_impedance_withdrawals,
+            bus_ix,
+            PSY.get_reactive_power(l, PSY.SU),
+            PSY.get_β(l),
+            l,
+        )
     end
     # FixedAdmittance components are already included in the Ybus matrix.
     for sa in PSY.get_available_components(PSY.SwitchedAdmittance, sys)

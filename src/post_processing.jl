@@ -50,7 +50,43 @@ function _calculate_fixed_admittance_powers(
     return busIxToFAPower
 end
 
-# sometimes errors on @assert length(remaining_unit_index) == 1. See issue #231
+"""Give the residual a REF/PV bus's redistribution could not place to the device with the most
+headroom in its direction. When every device is at that limit, the widest-range device takes it
+past its limit with a warning: the converged injection is still written back, so the stored
+device powers keep summing to the solved bus injection."""
+function _assign_residual!(
+    devices::Vector{<:PSY.StaticInjection},
+    residual::Float64,
+    get_power::Function,
+    set_power!::Function,
+    get_limits::Function,
+    bus::PSY.ACBus,
+    quantity::String,
+)
+    function headroom(d)
+        limits = get_limits(d)
+        if residual > 0.0
+            return limits.max - get_power(d, PSY.SU)
+        end
+        return get_power(d, PSY.SU) - limits.min
+    end
+    at_limit = filter(d -> headroom(d) <= BOUNDS_TOLERANCE, devices)
+    device = argmax(headroom, devices)
+    if length(at_limit) == length(devices)
+        device = argmax(d -> get_limits(d).max - get_limits(d).min, devices)
+    end
+    set_point = get_power(device, PSY.SU) + residual
+    set_power!(device, set_point * PSY.SU)
+    limits = get_limits(device)
+    if !(limits.min - BOUNDS_TOLERANCE <= set_point <= limits.max + BOUNDS_TOLERANCE)
+        @warn "Bus $(PSY.get_name(bus)): $quantity residual $residual exceeds the devices' " *
+              "limits; units at their limit: $(join(PSY.get_name.(at_limit), ", ")). " *
+              "Unit $(PSY.get_name(device)) set to $quantity = $set_point outside " *
+              "[$(limits.min), $(limits.max)]."
+    end
+    return
+end
+
 function _power_redistribution_ref(
     sys::PSY.System,
     P_gen::Float64,
@@ -161,53 +197,49 @@ function _power_redistribution_ref(
 
     if !isapprox(p_residual, 0.0; atol = ISAPPROX_ZERO_TOLERANCE)
         @debug "Ref Bus voltage residual $p_residual"
-        removed_power = sum([
-            g.max for g in get_active_power_limits_for_power_flow.(devices[units_at_limit])
-        ])
-        reallocated_p = 0.0
         it = 0
         while !isapprox(p_residual, 0.0; atol = ISAPPROX_ZERO_TOLERANCE)
-            if length(devices) == length(units_at_limit) + 1
-                @warn "all devices at the active Power Limit"
+            if length(units_at_limit) + 1 >= length(devices)
                 break
             end
+            removed_power = sum(
+                get_active_power_limits_for_power_flow(devices[ix]).max for
+                ix in units_at_limit;
+                init = 0.0,
+            )
+            reallocated_p = 0.0
             for (ix, d) in enumerate(devices)
                 ix ∈ units_at_limit && continue
                 p_limits = get_active_power_limits_for_power_flow(d)
                 part_factor = p_limits.max / (sum_basepower - removed_power)
-                p_frac = p_residual * part_factor
                 current_p = PSY.get_active_power(d, PSY.SU)
-                p_set_point = p_frac + current_p
-                if (p_set_point >= p_limits.max - BOUNDS_TOLERANCE) ||
-                   (p_set_point <= p_limits.min + BOUNDS_TOLERANCE)
+                p_target = p_residual * part_factor + current_p
+                p_set_point = clamp(p_target, p_limits.min, p_limits.max)
+                if (p_target >= p_limits.max - BOUNDS_TOLERANCE) ||
+                   (p_target <= p_limits.min + BOUNDS_TOLERANCE)
                     push!(units_at_limit, ix)
                     @warn "Unit $(PSY.get_name(d)) set at the limit $(p_set_point). P_max = $(p_limits.max) P_min = $(p_limits.min)"
                 end
-                p_set_point = clamp(p_set_point, p_limits.min, p_limits.max)
                 PSY.set_active_power!(d, p_set_point * PSY.SU)
-                reallocated_p += p_frac
+                reallocated_p += p_set_point - current_p
             end
             p_residual -= reallocated_p
-            if isapprox(p_residual, 0; atol = ISAPPROX_ZERO_TOLERANCE)
-                break
-            end
             it += 1
             if it > max_iterations
+                @warn "Maximum number of iterations for P-redistribution reached at bus $(PSY.get_name(bus)). Number of devices at P limit are: $(length(units_at_limit)) of $(length(devices)) available devices"
                 break
             end
         end
         if !isapprox(p_residual, 0.0; atol = ISAPPROX_ZERO_TOLERANCE)
-            remaining_unit_index = setdiff(1:length(devices), units_at_limit)
-            @assert length(remaining_unit_index) == 1 remaining_unit_index
-            device = devices[remaining_unit_index[1]]
-            @debug "Remaining residual $q_residual, $(PSY.get_name(bus))"
-            p_set_point = PSY.get_active_power(device, PSY.SU) + p_residual
-            PSY.set_active_power!(device, p_set_point * PSY.SU)
-            p_limits = get_active_power_limits_for_power_flow(device)
-            if (p_set_point >= p_limits.max - BOUNDS_TOLERANCE) ||
-               (p_set_point <= p_limits.min + BOUNDS_TOLERANCE)
-                @error "Unit $(PSY.get_name(device)) P=$(p_set_point) above limits. P_max = $(p_limits.max) P_min = $(p_limits.min)"
-            end
+            _assign_residual!(
+                devices,
+                p_residual,
+                PSY.get_active_power,
+                PSY.set_active_power!,
+                get_active_power_limits_for_power_flow,
+                bus,
+                "P",
+            )
         end
     end
     skip_reactive ||
@@ -215,7 +247,6 @@ function _power_redistribution_ref(
     return
 end
 
-# sometimes errors on @assert length(remaining_unit_index) == 1. See issue #231
 function _reactive_power_redistribution_pv(
     sys::PSY.System,
     Q_gen::Float64,
@@ -312,8 +343,8 @@ function _reactive_power_redistribution_pv(
     if !isapprox(q_residual, 0.0; atol = ISAPPROX_ZERO_TOLERANCE)
         it = 0
         while !isapprox(q_residual, 0.0; atol = ISAPPROX_ZERO_TOLERANCE)
-            if length(devices) == length(units_at_limit) + 1
-                @debug "Only one device not at the limit in Bus"
+            if length(units_at_limit) + 1 >= length(devices)
+                @debug "At most one device not at the limit in Bus"
                 break
             end
             removed_power = sum(PSY.get_active_power.(devices[units_at_limit], (PSY.SU,)))
@@ -362,19 +393,16 @@ function _reactive_power_redistribution_pv(
         end
     end
 
-    # Last attempt to allocate reactive power
     if !isapprox(q_residual, 0.0; atol = ISAPPROX_ZERO_TOLERANCE)
-        remaining_unit_index = setdiff(1:length(devices), units_at_limit)
-        @assert length(remaining_unit_index) == 1 remaining_unit_index
-        device = devices[remaining_unit_index[1]]
-        @debug "Remaining residual $q_residual, $(PSY.get_name(bus))"
-        q_set_point = PSY.get_reactive_power(device, PSY.SU) + q_residual
-        PSY.set_reactive_power!(device, q_set_point * PSY.SU)
-        q_limits = get_reactive_power_limits_for_power_flow(device)
-        if (q_set_point >= q_limits.max - BOUNDS_TOLERANCE) ||
-           (q_set_point <= q_limits.min + BOUNDS_TOLERANCE)
-            @error "Unit $(PSY.get_name(device)) Q=$(q_set_point) above limits. Q_max = $(q_limits.max) Q_min = $(q_limits.min)"
-        end
+        _assign_residual!(
+            devices,
+            q_residual,
+            PSY.get_reactive_power,
+            PSY.set_reactive_power!,
+            get_reactive_power_limits_for_power_flow,
+            bus,
+            "Q",
+        )
     end
 
     @assert isapprox(
