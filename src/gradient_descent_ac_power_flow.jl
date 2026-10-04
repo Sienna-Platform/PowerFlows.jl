@@ -12,9 +12,16 @@ the Adam optimizer and backtracking line search.
 | `:beta2`         | `0.999` | 2nd moment decay β₂                  |
 | `:epsilon`       | `1e-8`  | Numerical stability ε                |
 
+`maxIterations` defaults to `$DEFAULT_GD_MAX_ITER`, not Newton's `$DEFAULT_NR_MAX_ITER`: Adam
+converges linearly at best. Measured Adam steps to `tol = 1e-9` from the default start:
+`c_sys14` 5049, `c_sys5` 5505, `matpower_case14` 2242; `matpower_case30` does not converge
+within 200 000. This solver is a demonstrator, not a production solver.
+
 See also: [`ACPowerFlow`](@ref).
 """
 struct GradientDescentACPowerFlow <: ACPowerFlowSolverType end
+
+_default_max_iterations(::Type{GradientDescentACPowerFlow}) = DEFAULT_GD_MAX_ITER
 
 """
     AdamConfig(; learning_rate=0.01, beta1=0.9, beta2=0.999, epsilon=1e-8)
@@ -128,7 +135,7 @@ function _newton_power_flow(
 )
     residual, J, x0 = initialize_power_flow_variables(pf, data, time_step; kwargs...)
     tol::Float64 = get(kwargs, :tol, DEFAULT_NR_TOL)
-    maxIterations::Int = get(kwargs, :maxIterations, DEFAULT_NR_MAX_ITER)
+    maxIterations::Int = get(kwargs, :maxIterations, DEFAULT_GD_MAX_ITER)
     converged = norm(residual.Rv, Inf) < tol
 
     i = 0

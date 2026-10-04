@@ -159,10 +159,11 @@ variables and the distributed-slack column live inside the frozen Jacobian,
 handling** — it spans the trailing LCC state variables directly (the *unified*
 AC–DC approach). The polar `:decoupled` half-iterations cannot span those
 converter states in B′/B″, so they instead solve LCC by the *sequential* AC–DC
-method (see [Sequential AC–DC for LCC HVDC](@ref) below). If the frozen-Jacobian
-iteration stalls, the solver may (by default) re-evaluate and re-factor the
-Jacobian once at the current iterate and continue — a single "refreeze" before
-giving up.
+method (see [Sequential AC–DC for LCC HVDC](@ref) below). When a step from a stale
+frozen Jacobian fails the non-divergent test, the solver (by default,
+`refreeze_on_stall`) re-evaluates and re-factors the Jacobian at the cycle start
+and retries the step; only a step from a fresh Jacobian is halved, and if every
+halving fails the solve stops at the best state seen.
 
 ## Sequential AC–DC for LCC HVDC
 

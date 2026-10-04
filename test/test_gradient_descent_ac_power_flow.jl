@@ -49,6 +49,13 @@
         @test maximum(abs.(nr_bus.θ .- gd_bus.θ)) < 1e-6
     end
 
+    @testset "Default maxIterations converges on 14-bus" begin
+        sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+        data = PowerFlowData(ACPowerFlow{GradientDescentACPowerFlow}(), sys)
+        @test solve_power_flow!(data)
+        @test PF.DEFAULT_NR_MAX_ITER < data.iterations[1] < PF.DEFAULT_GD_MAX_ITER
+    end
+
     @testset "Allocation-free gradient computation" begin
         sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
         pf = ACPowerFlow{GradientDescentACPowerFlow}()

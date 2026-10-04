@@ -153,6 +153,43 @@ end
     foreach(test_ac_convergence_fail, AC_SOLVERS_TO_TEST)
 end
 
+@testset "A failed solve leaves the data re-solvable" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    data = PowerFlowData(ACPowerFlow(; correct_bustypes = true), sys)
+    p_inj = copy(data.bus_active_power_injections)
+    q_inj = copy(data.bus_reactive_power_injections)
+    vm = copy(data.bus_magnitude)
+    withdrawals = [
+        copy(data.bus_active_power_withdrawals),
+        copy(data.bus_reactive_power_withdrawals),
+        copy(data.bus_active_power_constant_current_withdrawals),
+        copy(data.bus_reactive_power_constant_current_withdrawals),
+        copy(data.bus_active_power_constant_impedance_withdrawals),
+        copy(data.bus_reactive_power_constant_impedance_withdrawals),
+    ]
+    pq = data.bus_type[:, 1] .== PSY.ACBusTypes.PQ
+    data.bus_magnitude[pq, 1] .= 1.0
+    fill!(data.bus_angles, 0.0)
+    @test_logs (:error, r"did not converge") match_mode = :any @test !solve_power_flow!(
+        data;
+        maxIterations = 1,
+    )
+    @test all(isnan, data.bus_magnitude)
+    @test [
+        data.bus_active_power_withdrawals,
+        data.bus_reactive_power_withdrawals,
+        data.bus_active_power_constant_current_withdrawals,
+        data.bus_reactive_power_constant_current_withdrawals,
+        data.bus_active_power_constant_impedance_withdrawals,
+        data.bus_reactive_power_constant_impedance_withdrawals,
+    ] == withdrawals
+    data.bus_active_power_injections .= p_inj
+    data.bus_reactive_power_injections .= q_inj
+    data.bus_magnitude .= vm
+    fill!(data.bus_angles, 0.0)
+    @test solve_power_flow!(data)
+end
+
 @testset "AC Test 240 Case PSS/e results" begin
     file = joinpath(
         TEST_DATA_DIR,
