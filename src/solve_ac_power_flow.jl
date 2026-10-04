@@ -309,7 +309,7 @@ end
 # Fetched after the solve, so a first solve's fresh polar cache lends its scratch instead of a
 # second one being built.
 function _column_arc_flows!(slot::Base.RefValue, data::ACPowerFlowData)
-    arcs = PNM.get_arc_axis(data.power_network_matrix.arc_admittance_from_to)
+    arcs = get_arc_axis(data)
     if !isassigned(slot) || slot[].arcs !== arcs
         slot[] = _arc_flow_scratch(data.polar_nr_cache[], data)
     end
@@ -339,7 +339,6 @@ function _solve_column!(
     converged && _warn_vsc_limit_violations(data, time_step)
 
     if OVERWRITE_NON_CONVERGED && !converged
-        # set values to NaN for not converged time steps
         data.bus_active_power_injections[:, time_step] .= NaN
         data.bus_active_power_withdrawals[:, time_step] .= NaN
         data.bus_active_power_constant_current_withdrawals[:, time_step] .= NaN
@@ -375,11 +374,8 @@ function _solve_column!(
     flows = _column_arc_flows!(flows_slot, data)
     (; fb_ix, tb_ix, Sft, Stf) = flows
     step_V = flows.V
-    # Per-step branch flows so a future per-step Yft/Ytf (e.g. varying tap positions) is used
-    # correctly.
-    # NOTE PNM's structs use ComplexF32, while the system objects store Float64's.
-    #      so if you set the system bus angles/voltages to match these fields, then repeat
-    #      this math using the system voltages, you'll see differences in the flows, ~1e-4.
+    # PNM's structs use ComplexF32 and the System stores Float64. Flows computed again from the
+    # System voltages differ from these flows by approximately 1e-4.
     @views step_V .=
         data.bus_magnitude[:, time_step] .* exp.(1im .* data.bus_angles[:, time_step])
     mul!(Sft, Yft.data, step_V)
@@ -445,12 +441,11 @@ function _lean_plan_tried(memo::ACJacobianStructureCache, data::ACPowerFlowData)
            memo.area_data === data.area_interchange
 end
 
-"""A `PowerFlowData` sharing every array of `data` (each task writes only its own columns) with
-fresh solver caches and a private `converged`. The Jacobian-structure memo is shared too: it is
-read-only once built, and it carries the lean-LU plan. `improve_x0` warm-starts from the last step
-converged at entry; steps owned by other tasks are cleared there, since their columns are being
-rewritten concurrently. So a first solve matches the serial one exactly, while a re-solve may pick
-a different warm start at a chunk's first step."""
+"""A `PowerFlowData` that shares every array and the Jacobian-structure memo (read-only once
+built) of `data`, with fresh solver caches and a private `converged`. Steps of other tasks are
+false in `converged`, so `improve_x0` never warm-starts from a column that another task writes.
+A first solve matches the serial one. A re-solve can pick a different warm start at the first
+step of a chunk."""
 function _column_worker(
     data::ACPowerFlowData,
     steps::AbstractVector{Int},

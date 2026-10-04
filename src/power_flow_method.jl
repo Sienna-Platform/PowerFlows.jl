@@ -289,7 +289,7 @@ end
 _arc_flow_scratch(::Nothing, data::ACPowerFlowData) = ArcFlowScratch(data)
 
 function _arc_flow_scratch(entry::PolarNRCache, data::ACPowerFlowData)
-    arcs = PNM.get_arc_axis(data.power_network_matrix.arc_admittance_from_to)
+    arcs = get_arc_axis(data)
     if entry.arc_flows.arcs === arcs
         return entry.arc_flows
     end
@@ -1691,7 +1691,6 @@ end
 _save_solve_start!(::Union{ACRectangularCIResidual, ACMixedCPBResidual}) = nothing
 _restore_solve_start!(::Union{ACRectangularCIResidual, ACMixedCPBResidual}) = nothing
 
-# Residual, Jacobian and state back at `x0`, every buffer as a reused workspace starts a solve.
 function _restart_from!(
     stateVector::StateVectorCache,
     residual,

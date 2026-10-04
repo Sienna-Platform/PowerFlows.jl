@@ -177,8 +177,8 @@ end
 end
 
 @testset "AC reused solve_power_flow! allocation regression" begin
-    # One `solve_power_flow!` per outage on a reused `data`: the arc→bus maps
-    # and branch-flow buffers come from the `PolarNRCache`, not a per-call rebuild.
+    # A repeated solve on the same `data` reads the arc-to-bus maps and branch-flow
+    # buffers from the `PolarNRCache` and does not rebuild them.
     sys = PSB.build_system(PSB.MatpowerTestSystems, "matpower_ACTIVSg2000_sys")
     pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(; correct_bustypes = true)
     data = PF.PowerFlowData(pf, sys)
