@@ -480,12 +480,11 @@ function _fd_fixed_jacobian_power_flow(
                     )
                     break
                 end
-                fresh = false
             else
                 # step accepted; update best-state record
                 _fd_update_best!(sg, sv.x, ss)
-                fresh = false
             end
+            fresh = false
 
             validate_voltage_magnitudes && _validate_state_magnitudes(
                 residual, sv.x, vm_validation_range, i,

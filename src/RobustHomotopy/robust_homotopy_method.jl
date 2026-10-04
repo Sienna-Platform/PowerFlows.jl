@@ -79,7 +79,7 @@ const RH_LINE_SEARCH_MAX_ITER = 50
 
 """Armijo backtracking from α = 1. Returns `(α, ϕ(α), true)`, or `(0.0, φ_0, false)` when no
 acceptable step exists (non-finite values, non-descent direction, round-off floor)."""
-function _backtracking_line_search(ϕ, φ_0::Float64, dφ_0::Float64)
+function _backtracking_line_search(ϕ::F, φ_0::Float64, dφ_0::Float64) where {F}
     try
         (α, φ) = BackTracking(; iterations = RH_LINE_SEARCH_MAX_ITER)(ϕ, 1.0, φ_0, dφ_0)
         return α, φ, true

@@ -159,14 +159,15 @@ end
     p_inj = copy(data.bus_active_power_injections)
     q_inj = copy(data.bus_reactive_power_injections)
     vm = copy(data.bus_magnitude)
-    withdrawals = [
-        copy(data.bus_active_power_withdrawals),
-        copy(data.bus_reactive_power_withdrawals),
-        copy(data.bus_active_power_constant_current_withdrawals),
-        copy(data.bus_reactive_power_constant_current_withdrawals),
-        copy(data.bus_active_power_constant_impedance_withdrawals),
-        copy(data.bus_reactive_power_constant_impedance_withdrawals),
-    ]
+    withdrawn(d) = (
+        d.bus_active_power_withdrawals,
+        d.bus_reactive_power_withdrawals,
+        d.bus_active_power_constant_current_withdrawals,
+        d.bus_reactive_power_constant_current_withdrawals,
+        d.bus_active_power_constant_impedance_withdrawals,
+        d.bus_reactive_power_constant_impedance_withdrawals,
+    )
+    withdrawals = map(copy, withdrawn(data))
     pq = data.bus_type[:, 1] .== PSY.ACBusTypes.PQ
     data.bus_magnitude[pq, 1] .= 1.0
     fill!(data.bus_angles, 0.0)
@@ -175,14 +176,7 @@ end
         maxIterations = 1,
     )
     @test all(isnan, data.bus_magnitude)
-    @test [
-        data.bus_active_power_withdrawals,
-        data.bus_reactive_power_withdrawals,
-        data.bus_active_power_constant_current_withdrawals,
-        data.bus_reactive_power_constant_current_withdrawals,
-        data.bus_active_power_constant_impedance_withdrawals,
-        data.bus_reactive_power_constant_impedance_withdrawals,
-    ] == withdrawals
+    @test withdrawn(data) == withdrawals
     data.bus_active_power_injections .= p_inj
     data.bus_reactive_power_injections .= q_inj
     data.bus_magnitude .= vm
