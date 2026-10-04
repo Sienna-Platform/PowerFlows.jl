@@ -298,6 +298,20 @@ end
     _verify_area_jacobian(sys, "polar area interchange (3W winding tie)")
 end
 
+nr(; kw...) = PF.ACPowerFlow{NewtonRaphsonACPowerFlow}(; kw...)
+
+_c14_gspf(c14) = Dict(
+    (ThermalStandard, get_name(g)) => Float64(i)
+    for (i, g) in enumerate(get_components(ThermalStandard, c14))
+)
+
+function _area_interchange_fixture()
+    sys = _make_two_area_system()
+    _set_slack!(sys, "Bus 6")
+    _add_area_interchange!(sys, "Area2", "Area1", 0.3; name = "A2_A1")
+    return sys
+end
+
 # The fused kernel (the NR step's residual + Jacobian in one Ybus sweep) must equal the
 # separate F-only and J-only evaluations at the same iterate.
 function _check_fused_kernel(data::PF.ACPowerFlowData, label::String)
@@ -321,13 +335,9 @@ function _check_fused_kernel(data::PF.ACPowerFlowData, label::String)
 end
 
 @testset "Fused residual + Jacobian kernel matches the separate evaluations" begin
-    nr(; kw...) = PF.ACPowerFlow{NewtonRaphsonACPowerFlow}(; kw...)
     c14 = PSB.build_system(PSITestSystems, "c_sys14")
     _check_fused_kernel(PF.PowerFlowData(nr(; correct_bustypes = true), c14), "c_sys14")
-    gspf = Dict(
-        (ThermalStandard, get_name(g)) => Float64(i)
-        for (i, g) in enumerate(get_components(ThermalStandard, c14))
-    )
+    gspf = _c14_gspf(c14)
     _check_fused_kernel(
         PF.PowerFlowData(
             nr(; correct_bustypes = true, generator_slack_participation_factors = gspf),
@@ -343,9 +353,7 @@ end
         PF.PowerFlowData(nr(; correct_bustypes = true), build_lcc_control_system()),
         "two LCCs",
     )
-    area_sys = _make_two_area_system()
-    _set_slack!(area_sys, "Bus 6")
-    _add_area_interchange!(area_sys, "Area2", "Area1", 0.3; name = "A2_A1")
+    area_sys = _area_interchange_fixture()
     _check_fused_kernel(
         PF.PowerFlowData(
             nr(; correct_bustypes = true, area_interchange_control = true), area_sys),
@@ -383,7 +391,6 @@ function _check_deferred_write_back(make_data, label::String)
 end
 
 @testset "Fused kernel write-back matches a write-through evaluation" begin
-    nr(; kw...) = PF.ACPowerFlow{NewtonRaphsonACPowerFlow}(; kw...)
     c14 = PSB.build_system(PSITestSystems, "c_sys14")
     _check_deferred_write_back(
         () -> PF.PowerFlowData(nr(; correct_bustypes = true), c14), "c_sys14")
@@ -415,15 +422,9 @@ function _reference_jacobian_structure(data::PF.ACPowerFlowData, slots)
 end
 
 @testset "Direct-CSC Jacobian structure matches the COO reference" begin
-    nr(; kw...) = PF.ACPowerFlow{NewtonRaphsonACPowerFlow}(; kw...)
     c14 = PSB.build_system(PSITestSystems, "c_sys14")
-    gspf = Dict(
-        (ThermalStandard, get_name(g)) => Float64(i)
-        for (i, g) in enumerate(get_components(ThermalStandard, c14))
-    )
-    area_sys = _make_two_area_system()
-    _set_slack!(area_sys, "Bus 6")
-    _add_area_interchange!(area_sys, "Area2", "Area1", 0.3; name = "A2_A1")
+    gspf = _c14_gspf(c14)
+    area_sys = _area_interchange_fixture()
     cases = [
         ("c_sys14", nr(; correct_bustypes = true), c14),
         ("c_sys14 distributed slack",

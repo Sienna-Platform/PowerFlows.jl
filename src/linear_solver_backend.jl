@@ -72,6 +72,18 @@ _repivots(::PNM.KLULinSolveCache) = true
 _repivots(::PNM.AAFactorCache) = false
 _repivots(::PardisoLinSolveCache) = false
 
+# After a bus-type or partition change, `klu_refactor` on the inherited pivot order can hit a zero
+# pivot (a PV bus's |V| column holds a single -1 where a PQ bus's holds dP/dV, dQ/dV). Free only
+# the Numeric: the next `numeric_refactor!` then runs a fresh `klu_factor` on the kept Symbolic,
+# or, with a lean plan, a lean refactor whose pivot-ratio check falls back to `klu_factor`.
+function _drop_numeric!(c::PNM.KLULinSolveCache)
+    PNM.KLUWrapper.drop_numeric!(c)
+    return
+end
+# These backends pivot afresh on every numeric factorization.
+_drop_numeric!(::PNM.AAFactorCache) = nothing
+_drop_numeric!(::PardisoLinSolveCache) = nothing
+
 solve!(c::PNM.KLULinSolveCache, b::StridedVecOrMat{Float64}) = PNM.solve!(c, b)
 solve!(c::PNM.AAFactorCache, b::StridedVecOrMat{Float64}) =
     PNM.AccelerateWrapper.solve!(c, b)
