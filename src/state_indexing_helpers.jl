@@ -65,7 +65,7 @@ function update_state!(x::Vector{Float64},
     @assert length(x) ==
             2 * size(data.bus_type, 1) + state_tail_length(data, dcn)
     state_variable_count = 1
-    for (ix, b) in enumerate(data.bus_type[:, time_step])
+    for (ix, b) in enumerate(view(data.bus_type, :, time_step))
         if b == PSY.ACBusTypes.REF
             x[state_variable_count] =
                 data.bus_active_power_injections[ix, time_step] -
@@ -89,7 +89,7 @@ function update_state!(x::Vector{Float64},
         end
     end
     @assert state_variable_count - 1 == size(data.bus_type, 1) * 2
-    for i in eachindex(data.lcc.p_set[:, time_step])
+    for i in axes(data.lcc.p_set, 1)
         x[state_variable_count] = data.lcc.rectifier.tap[i, time_step]
         x[state_variable_count + 1] = data.lcc.inverter.tap[i, time_step]
         x[state_variable_count + 2] = data.lcc.rectifier.thyristor_angle[i, time_step]

@@ -396,3 +396,23 @@ end
         ) match_mode = :any solve_power_flow!(data)
     end
 end
+
+@testset "NR maxIterations allows exactly maxIterations Newton steps" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14")
+    pf = ACPowerFlow{NewtonRaphsonACPowerFlow}()
+    reported = r"converged after (\d+) iterations"
+    budget = Logging.with_logger(Logging.NullLogger()) do
+        return findfirst(1:10) do m
+            return solve_power_flow!(PowerFlowData(pf, sys); maxIterations = m)
+        end
+    end
+    @test !isnothing(budget)
+    logs, _ = Test.collect_test_logs(; min_level = Logging.Debug) do
+        solve_power_flow!(PowerFlowData(pf, sys); maxIterations = budget)
+    end
+    steps = [
+        parse(Int, m[1]) for m in (match(reported, string(l.message)) for l in logs)
+        if !isnothing(m)
+    ]
+    @test steps == [budget]
+end
