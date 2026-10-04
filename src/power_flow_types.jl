@@ -1179,6 +1179,11 @@ where creating and storing the full PTDF matrix would be infeasible or slow. See
 - `n_threads::Int`: Number of workers a caller that parallelizes over this model (e.g. a
     contingency analysis) may use. PowerFlows' own vPTDF solve does not read it. Must be
     `>= 1`. Default is `1`.
+- `linear_solver::String`: Name of the sparse linear-solver backend, as for
+    [`SolutionParameters`](@ref): it factors the virtual PTDF (`PNM.VirtualPTDF`) and the
+    solve's own factorization, and a threaded caller's per-worker cores follow it. Unknown or
+    unavailable backends error at construction. Default is the `PowerNetworkMatrices`
+    platform default.
 """
 struct vPTDFDCPowerFlow <: AbstractDCPowerFlow
     exporter::Union{Nothing, PowerFlowEvaluationModel}
@@ -1195,6 +1200,7 @@ struct vPTDFDCPowerFlow <: AbstractDCPowerFlow
     time_step_names::Vector{String}
     correct_bustypes::Bool
     n_threads::Int
+    linear_solver::String
 end
 
 function vPTDFDCPowerFlow(;
@@ -1212,6 +1218,7 @@ function vPTDFDCPowerFlow(;
     time_step_names::Vector{String} = String[],
     correct_bustypes::Bool = false,
     n_threads::Int = 1,
+    linear_solver::String = PNM._default_linear_solver(),
 )
     _validate_slack_distribution_settings(
         distribute_slack_proportional_to_headroom,
@@ -1219,6 +1226,7 @@ function vPTDFDCPowerFlow(;
         time_steps,
     )
     _validate_n_threads(n_threads)
+    resolve_linear_solver_backend(linear_solver)
     return vPTDFDCPowerFlow(
         exporter,
         calculate_loss_factors,
@@ -1230,12 +1238,14 @@ function vPTDFDCPowerFlow(;
         time_step_names,
         correct_bustypes,
         n_threads,
+        linear_solver,
     )
 end
 
 get_calculate_loss_factors(pf::PTDFDCPowerFlow) = pf.calculate_loss_factors
 get_calculate_loss_factors(pf::vPTDFDCPowerFlow) = pf.calculate_loss_factors
 get_n_threads(pf::vPTDFDCPowerFlow) = pf.n_threads
+get_linear_solver(pf::vPTDFDCPowerFlow) = pf.linear_solver
 get_lossy_flows(pf::DCPowerFlow) = pf.lossy_flows
 
 # See also: PSSEExportPowerFlow in psse_export.jl

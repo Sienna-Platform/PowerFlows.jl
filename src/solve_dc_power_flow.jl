@@ -421,7 +421,7 @@ Additionally, it sets `data.converged` to `true`, indicating that the power flow
 """
 function solve_power_flow!(
     data::vPTDFPowerFlowData;
-    linear_solver::Union{Nothing, AbstractString} = nothing,
+    linear_solver::Union{Nothing, AbstractString} = get_linear_solver(data.pf),
 )
     _distribute_dc_slack!(data)
     backend = resolve_linear_solver_backend(linear_solver)
