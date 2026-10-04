@@ -297,8 +297,8 @@ function _ga_flat_start(
     copyto!(dcn.p_c, saved_dc[1])
     copyto!(dcn.q_c, saved_dc[2])
     copyto!(dcn.node_vdc, saved_dc[3])
-    @debug "Generalized-admittance flat start: $exit after $iters " *
-           "iterations, gap $best_gap."
+    @info "Generalized-admittance flat start: $exit after $iters " *
+          "iterations, gap $best_gap."
     newx0 = copy(x0)
     if !isfinite(best_gap)
         return newx0

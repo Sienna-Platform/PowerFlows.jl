@@ -206,7 +206,7 @@ end
 end
 
 @testset "Singular Jacobian falls through the KLU re-pivot" begin
-    # `_repivots` is false on AppleAccelerate; pin KLU so the test holds whatever the default.
+    # `_repivots` is false on the default AppleAccelerate backend, so force KLU.
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
     pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
         enhanced_flat_start = false,

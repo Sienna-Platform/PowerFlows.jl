@@ -1119,8 +1119,8 @@ function _polar_ybus_sweep!(
             d4 +=
                 bus_reactive_constant_I[bus_from] +
                 2 * bus_reactive_constant_Z[bus_from] * Vm_from
-            Jvnz[diag_jnz[1, bus_from]] = d3
-            Jvnz[diag_jnz[2, bus_from]] = d4
+            Jvnz[diag_jnz[1, bus_from]] = d3  # ∂P∂V_from
+            Jvnz[diag_jnz[2, bus_from]] = d4  # ∂Q∂V_from
         elseif bt == PSY.ACBusTypes.PV
             Jvnz[diag_jnz[1, bus_from]] = 0.0
             Jvnz[diag_jnz[2, bus_from]] = -1.0
