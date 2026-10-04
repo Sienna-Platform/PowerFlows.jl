@@ -30,19 +30,25 @@ function improve_x0!(x0::Vector{Float64},
     else
         @debug "skipping enhanced flat start"
     end
+    # Warm starts (after a converged step, a contingency off a solved base) skip both stages;
+    # the DC stage still runs on a large residual.
+    large = _large_residual(residual)
+    cold = isnothing(prev) && (large || _is_flat_start(residual, data, time_step))
+    dc_taken = false
+    if get_robust_power_flow(pf) && (large || cold)
+        dc_taken = dc_power_flow_start!(x0, data, time_step, residual)
+    else
+        @debug "skipping running DC power flow fallback"
+    end
+    # GA from DC angles stagnates where NR from them converges (ACTIVSg10k flat: 40 GA
+    # iterations, gap 1.6), so GA is the rescue for a start the DC stage did not improve.
     handoff_tol = get_solution_parameters(pf).handoff_tol
-    if get_ga_flat_start(pf) && norm(residual.Rv, Inf) > handoff_tol
+    if get_ga_flat_start(pf) && cold && !dc_taken && norm(residual.Rv, Inf) > handoff_tol
         newx0 = _ga_flat_start(x0, data, residual, time_step, handoff_tol)
         # The GA stage leaves `data` and `residual` at its own iterate, not at `x0`.
         residual(data, x0, time_step)
         _pick_better_x0(x0, newx0, time_step, residual, data,
             "generalized-admittance flat start")
-    end
-    if sum(abs, residual.Rv) > LARGE_RESIDUAL * length(residual.Rv) &&
-       get_robust_power_flow(pf)
-        dc_power_flow_start!(x0, data, time_step, residual)
-    else
-        @debug "skipping running DC power flow fallback"
     end
 
     _large_residual(residual) && _warn_large_initial_residual(residual, data, time_step)
@@ -51,14 +57,39 @@ end
 
 _large_residual(residual) = sum(abs, residual.Rv) > LARGE_RESIDUAL * length(residual.Rv)
 
-# `improve_x0!` compares candidate starts only with `ga_flat_start` on or after an earlier
-# step converged.
-function _x0_has_no_candidates(
-    pf::ACPolarPowerFlow,
+# Every island's non-REF buses at one angle: the start of a case with no solved point, whose REF
+# may keep a case-file angle. Reads the angles of the last iterate `residual` evaluated.
+function _is_flat_start(
+    residual::ACPowerFlowResidual,
     data::ACPowerFlowData,
     time_step::Int64,
 )
-    return !get_ga_flat_start(pf) && !any(@view(data.converged[1:(time_step - 1)]))
+    θ = residual.bus_state.θ
+    bus_types = view(data.bus_type, :, time_step)
+    for buses in values(residual.subnetworks)
+        seen = false
+        θ_flat = 0.0
+        for ix in buses
+            bus_types[ix] == PSY.ACBusTypes.REF && continue
+            if !seen
+                seen = true
+                θ_flat = θ[ix]
+            elseif θ[ix] != θ_flat
+                return false
+            end
+        end
+    end
+    return true
+end
+
+# `improve_x0!` compares candidate starts only after a converged earlier step; on a cold start
+# `_fused_x0!` decides whether a start stage runs.
+function _x0_has_no_candidates(
+    ::ACPolarPowerFlow,
+    data::ACPowerFlowData,
+    time_step::Int64,
+)
+    return !any(@view(data.converged[1:(time_step - 1)]))
 end
 
 function _warn_large_initial_residual(residual, data::ACPowerFlowData, time_step::Int64)
@@ -170,9 +201,9 @@ function _pick_better_x0(x0::Vector{Float64},
     return false
 end
 
-"""If initial residual is large, run a DC power flow and see if that gives
-a better starting point for angles. If so, then overwrite `x0` with the result of the DC
-power flow. If not, keep the original `x0`."""
+"""Run a DC power flow and see if that gives a better starting point for angles. If so, then
+overwrite `x0` with the result of the DC power flow. If not, keep the original `x0`. Returns
+whether `x0` changed."""
 function dc_power_flow_start!(x0::Vector{Float64},
     data::ACPowerFlowData,
     time_step::Int64,
@@ -182,8 +213,7 @@ function dc_power_flow_start!(x0::Vector{Float64},
     newx0 = calculate_x0(data, time_step)
     # The fallback overwrote `data`'s angles, so re-establish `_pick_better_x0`'s precondition.
     residual(data, x0, time_step)
-    _pick_better_x0(x0, newx0, time_step, residual, data, "DC power flow fallback")
-    return
+    return _pick_better_x0(x0, newx0, time_step, residual, data, "DC power flow fallback")
 end
 
 """Calculate x0 from data."""

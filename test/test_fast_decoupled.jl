@@ -951,6 +951,106 @@ end
     end
 end
 
+@testset "FastDecoupled stage hands off once contraction is lost" begin
+    @test !PF._fd_stage_stalled(PF.NoHandoff, 0.9, 1.0)
+    @test PF._fd_stage_stalled(NewtonRaphsonACPowerFlow, 0.9, 1.0)
+    @test !PF._fd_stage_stalled(NewtonRaphsonACPowerFlow, 0.1, 1.0)
+    @test PF._fd_stage_stalled(NewtonRaphsonACPowerFlow, NaN, 1.0)
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    pf = _fd_handoff_pf(:decoupled, NewtonRaphsonACPowerFlow)
+    data = PowerFlowData(pf, sys)
+    # handoff_tol = 0 is unreachable: only a stalled cycle (at round-off) ends the stage.
+    result, fd_iters, _ = _fd_loop(
+        Val(:decoupled), pf, data, 1;
+        tol = 1e-9,
+        handoff_solver = NewtonRaphsonACPowerFlow,
+        handoff_tol = 0.0,
+        fd_non_divergent = false,
+        maxIterations = PF.DEFAULT_FD_MAX_ITER,
+        validate_voltage_magnitudes = false,
+        _return_stage_iters = true,
+    )
+    @test result
+    @test fd_iters < 30
+end
+
+@testset "FastDecoupled stage never judges contraction on its first cycle" begin
+    # ACTIVSg2000's first cycle does not halve the flat-start ‖R‖∞; exiting there costs NR
+    # two extra iterations.
+    sys = PSB.build_system(PSB.MatpowerTestSystems, "matpower_ACTIVSg2000_sys")
+    for scheme in (PF.FDSchemeXB, PF.FDSchemeBX)
+        pf = ACPowerFlow{PF.FastDecoupledACPowerFlow{PF.FDDecoupled, scheme}}(;
+            correct_bustypes = true,
+            solution_parameters = SolutionParameters(;
+                handoff_solver = NewtonRaphsonACPowerFlow),
+        )
+        data = PowerFlowData(pf, sys)
+        result, fd_iters, _ = _fd_loop(
+            Val(:decoupled), pf, data, 1;
+            tol = 1e-9,
+            handoff_solver = NewtonRaphsonACPowerFlow,
+            validate_voltage_magnitudes = false,
+            _return_stage_iters = true,
+        )
+        @test result
+        @test fd_iters >= 2
+    end
+end
+
+@testset "FastDecoupled non-finite cycle counts as divergence" begin
+    for fd_non_divergent in (true, false)
+        sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+        pf = ACPowerFlow{_fd_solver(:decoupled)}()
+        data = PowerFlowData(pf, sys)
+        # A PV bus's Q row is synced explicitly: NaN there poisons Σ(Rv²) but not V or θ.
+        pv = findfirst(==(PSY.ACBusTypes.PV), data.bus_type[:, 1])
+        data.bus_reactive_power_withdrawals[pv, 1] = NaN
+        converged, iters = Logging.with_logger(Logging.NullLogger()) do
+            PF._fd_decoupled_power_flow(pf, data, 1, PF._fd_scheme(pf);
+                fd_non_divergent, validate_voltage_magnitudes = false,
+                _return_iters = true)
+        end
+        @test !converged
+        @test iters == 0
+    end
+end
+
+@testset "FastDecoupled :fixed_jacobian non-finite step stops the stage" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    pf = ACPowerFlow{_fd_solver(:fixed_jacobian)}()
+    data = PowerFlowData(pf, sys)
+    pv = findfirst(==(PSY.ACBusTypes.PV), data.bus_type[:, 1])
+    data.bus_reactive_power_withdrawals[pv, 1] = NaN
+    converged, iters, _ = Logging.with_logger(Logging.NullLogger()) do
+        PF._fd_fixed_jacobian_power_flow(pf, data, 1;
+            fd_non_divergent = false, validate_voltage_magnitudes = false,
+            _return_stage_iters = true)
+    end
+    @test !converged
+    @test iters == 0
+end
+
+@testset "FastDecoupled handoff keeps its linear cache across solves" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    pf = _fd_handoff_pf(:decoupled, NewtonRaphsonACPowerFlow)
+    data = PowerFlowData(pf, sys)
+    vm0, va0 = copy(data.bus_magnitude), copy(data.bus_angles)
+    kw = (; tol = 1e-9, handoff_solver = NewtonRaphsonACPowerFlow, handoff_tol = 1e-2,
+        validate_voltage_magnitudes = false, _return_stage_iters = true)
+    caches = map(1:2) do _
+        copyto!(data.bus_magnitude, vm0)
+        copyto!(data.bus_angles, va0)
+        result, _, handoff_iters = _fd_loop(Val(:decoupled), pf, data, 1; kw...)
+        @test result
+        @test handoff_iters > 0
+        return (data.solver_cache[].handoff[].cache, copy(data.bus_magnitude),
+            copy(data.bus_angles))
+    end
+    @test caches[1][1] === caches[2][1]
+    @test isapprox(caches[1][2], caches[2][2]; atol = 1e-12, rtol = 0)
+    @test isapprox(caches[1][3], caches[2][3]; atol = 1e-12, rtol = 0)
+end
+
 @testset "FastDecoupled invalid handoff solver throws (public path)" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
     # RobustHomotopy is not an accepted handoff target (only nothing / NR / TR / LM are).

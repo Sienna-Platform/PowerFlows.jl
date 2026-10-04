@@ -430,6 +430,46 @@ end
     end
 end
 
+@testset "lean LU: FD and GA handoffs run on the structure's plan" begin
+    function staged(S, handoff = NewtonRaphsonACPowerFlow)
+        sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+        params = SolutionParameters(;
+            linear_solver = "KLU", handoff_solver = handoff, handoff_tol = 1e-2)
+        return PowerFlowData(ACPowerFlow{S}(; solution_parameters = params), sys)
+    end
+    nr = _lean_sys14_data()
+    @test solve_power_flow!(nr)
+
+    fd = staged(PF.FastDecoupledXB)
+    vm0, va0 = copy(fd.bus_magnitude), copy(fd.bus_angles)
+    @test solve_power_flow!(fd)
+    @test _lean_slot(fd).tried
+    h = fd.solver_cache[].handoff[].cache
+    @test h.lean_plan === _lean_slot(fd).plan
+    @test isapprox(fd.bus_magnitude, nr.bus_magnitude; atol = 1e-9, rtol = 0)
+    @test isapprox(fd.bus_angles, nr.bus_angles; atol = 1e-9, rtol = 0)
+    # A re-solve keeps the cache and stays on the lean path.
+    (; attempts) = PF._lean_counts(h)
+    copyto!(fd.bus_magnitude, vm0)
+    copyto!(fd.bus_angles, va0)
+    @test solve_power_flow!(fd)
+    @test fd.solver_cache[].handoff[].cache === h
+    @test PF._lean_counts(h).attempts > attempts
+    @test PF._lean_counts(h).rejects == 0
+
+    ga = staged(GeneralizedAdmittanceACPowerFlow)
+    @test solve_power_flow!(ga)
+    @test _lean_slot(ga).tried
+    @test isapprox(ga.bus_magnitude, nr.bus_magnitude; atol = 1e-9, rtol = 0)
+
+    # Planned up front only when a Newton handoff will use it.
+    for (handoff, planned) in ((NewtonRaphsonACPowerFlow, true), (PF.NoHandoff, false))
+        data = staged(PF.FastDecoupledXB, handoff)
+        PF._prepare_lean_plan!(PF.get_pf(data), data, 1, PNM.KLUSolver())
+        @test PF._lean_plan_tried(data.ac_jacobian_structure_cache[], data) == planned
+    end
+end
+
 function _lean_rm_data(F; T = 1, n_threads = 1, params = (;), kwargs...)
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
     data = PowerFlowData(

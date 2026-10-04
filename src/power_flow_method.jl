@@ -1721,8 +1721,9 @@ function _polar_start!(
     return fused
 end
 
-"""Evaluate F and J at `x0` in one fused sweep. On a large residual with a fallback start
-enabled, run `improve_x0!` instead and return `false`: J is then stale."""
+"""Evaluate F and J at `x0` in one fused sweep. When a start stage of `improve_x0!` would run
+(a large residual with a fallback start enabled, or a flat start under `robust_power_flow` or
+`ga_flat_start`), run `improve_x0!` instead and return `false`: J is then stale."""
 function _fused_x0!(
     x0::Vector{Float64},
     pf::ACPolarPowerFlow,
@@ -1733,7 +1734,9 @@ function _fused_x0!(
 )
     _update_residual_and_jacobian!(residual, J, x0, data, time_step)
     large = _large_residual(residual)
-    if large && (get_enhanced_flat_start(pf) || get_robust_power_flow(pf))
+    cold_stage = get_robust_power_flow(pf) || get_ga_flat_start(pf)
+    if (large && (get_enhanced_flat_start(pf) || cold_stage)) ||
+       (cold_stage && _is_flat_start(residual, data, time_step))
         # `bus_state` already holds x0, so this re-evaluation adds exactly 0 on PQ buses.
         improve_x0!(x0, pf, data, residual, time_step)
         return false

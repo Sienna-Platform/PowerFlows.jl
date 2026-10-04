@@ -453,11 +453,14 @@ with the specified solver type.
     `(component_type, component_name)` tuples to participation factors. If a `Vector` of such
     dictionaries, different participation factors can be used for different time steps. Default is `nothing`.
 - `enhanced_flat_start::Bool`: Whether to use enhanced flat start initialization. Default is `true`.
-- `robust_power_flow::Bool`: Whether to use run a DC power flow as a fallback if the initial residual is large.
-    Default is `false`.
+- `robust_power_flow::Bool`: Whether to try DC power flow angles as the starting point when the
+    initial residual is large, or when the start is flat (each island's non-REF buses at one
+    angle) with no converged earlier time step. Default is `false`.
 - `ga_flat_start::Bool`: Whether to improve the starting point with a
     [`GeneralizedAdmittanceACPowerFlow`](@ref) stage run to `handoff_tol` when the initial
-    mismatch exceeds it. Recommended for large systems solved from a flat start. Default is `false`.
+    mismatch exceeds it, there is no converged earlier time step, and the start is flat or its
+    residual is large. With `robust_power_flow`, it runs only when the DC start was not taken.
+    Recommended for large systems solved from a flat start. Default is `false`.
 - `skip_redistribution::Bool`: Whether to skip slack redistribution. Default is `false`.
 - `network_reductions::Vector{PNM.NetworkReduction}`: Network reductions to apply.
     Default is an empty vector. A `PNM.ZeroImpedanceBranchReduction` placed here is routed to

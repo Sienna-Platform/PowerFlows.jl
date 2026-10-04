@@ -422,15 +422,16 @@ Build the constant fast-decoupled matrices for the given `scheme` ([`FDSchemeXB`
 
 `pvpq`/`pq` are the bus-type index sets at `time_step` (frozen within a driver invocation; the
 Q-limit outer loop re-invokes the driver after switching). The B′ factorization is reusable
-across all iterations and time steps with the same `pvpq`.
+across all iterations and time steps with the same `pvpq`. `arc_params` defaults to the branch
+data; a caller that edits the Ybus in place (an outage) passes parameters with the edit applied.
 """
 function build_fd_matrices(
     data::ACPowerFlowData,
     time_step::Int64,
     scheme::FDScheme;
     linear_solver = nothing,
+    arc_params::FDArcParams = _arc_params(data),
 )
-    arc_params = _arc_params(data)
     _warn_low_reactance(arc_params)
     ref, pv, pq = bus_type_idx(data, time_step)
     pvpq = sort(vcat(pv, pq))
