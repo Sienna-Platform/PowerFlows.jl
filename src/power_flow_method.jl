@@ -129,7 +129,7 @@ function _copy_for_task(
         af.arcs, af.fb_ix, af.tb_ix)
         substitutes[a] = a
     end
-    lin = _polar_jacobian_cache(entry.backend, J.Jv)
+    lin = _polar_jacobian_cache(PNM.KLUSolver(), J.Jv)
     # PNM forbids deepcopy of a KLU cache, so copy the other fields one by one; the shared
     # `substitutes` keeps J's aliases of the residual's vectors inside the copy.
     dup = PolarNRCache(
@@ -148,15 +148,17 @@ function _copy_for_task(
     return dup
 end
 
-# A worker is seeded only from a KLU polar cache; any other seed leaves it to build its own.
-_seed_worker!(::ACPowerFlowData, ::Any, ::LeanPlanSlot, ::Int) = nothing
+# A worker is seeded only from a KLU polar cache and only when it shares the seed's memo (same
+# matrix and area data); otherwise it builds its own.
+_seed_worker!(::ACPowerFlowData, ::Any, ::Any, ::Int) = nothing
 function _seed_worker!(
     worker::ACPowerFlowData,
     seed::PolarNRCache{<:PNM.KLULinSolveCache},
-    slot::LeanPlanSlot,
+    memo::ACJacobianStructureCache,
     time_step::Int,
 )
-    worker.polar_nr_cache[] = _copy_for_task(seed, slot, worker, time_step)
+    _lean_plan_tried(memo, worker) || return
+    worker.polar_nr_cache[] = _copy_for_task(seed, memo.lean, worker, time_step)
     return
 end
 
@@ -386,19 +388,11 @@ function _fill_flow_voltages!(
 )
     s = entry.residual.bus_state
     θ = view(data.bus_angles, :, time_step)
-    if !s.phasor_valid || !_bitwise_equal(s.θ, θ)
+    if !s.phasor_valid || !isequal(s.θ, θ)
         return _fill_flow_voltages!(V, nothing, data, time_step)
     end
     @views V .= data.bus_magnitude[:, time_step] .* s.phasor
     return
-end
-
-function _bitwise_equal(a::Vector{Float64}, b::AbstractVector{Float64})
-    length(a) == length(b) || return false
-    @inbounds for i in eachindex(a, b)
-        a[i] === b[i] || return false
-    end
-    return true
 end
 
 function _ref_set_changed(
@@ -1479,21 +1473,33 @@ function _nr_initialize_with_jacobian_deferred(
     return residual, nothing, x0
 end
 
-# No candidate start to compare: F and J at x0 come from one fused sweep. `fused` is false when
-# `_fused_x0!` fell back to `improve_x0!`, leaving J stale.
-function _fused_polar_init(
-    pf::ACPolarPowerFlow, data::ACPowerFlowData, time_step::Int64; kwargs...,
+# Choose the start in `x0` and evaluate F there: one fused F/J sweep when `improve_x0!` has no
+# candidate to compare. Returns whether J is current.
+function _polar_start!(
+    x0::Vector{Float64},
+    pf::ACPolarPowerFlow,
+    data::ACPowerFlowData,
+    residual::ACPowerFlowResidual,
+    J::ACPowerFlowJacobian,
+    time_step::Int64,
+    init_kwargs::NamedTuple,
 )
-    residual = ACPowerFlowResidual(data, time_step)
-    x0 = calculate_x0(data, time_step)
-    J = ACPowerFlowJacobian(data, residual, time_step)
-    fused = _fused_x0!(x0, pf, data, residual, J, time_step)
-    _log_initial_residual(residual)
-    if get(kwargs, :validate_voltage_magnitudes, DEFAULT_VALIDATE_VOLTAGES)
-        validate_voltage_magnitudes(x0, residual.validate_indices,
-            get(kwargs, :vm_validation_range, DEFAULT_VALIDATION_RANGE), 0)
+    if _x0_has_no_candidates(pf, data, time_step)
+        fused = _fused_x0!(x0, pf, data, residual, J, time_step)
+    else
+        improve_x0!(x0, pf, data, residual, time_step)
+        fused = false
     end
-    return residual, J, x0, fused
+    _log_initial_residual(residual)
+    if get(init_kwargs, :validate_voltage_magnitudes, DEFAULT_VALIDATE_VOLTAGES)
+        validate_voltage_magnitudes(
+            x0,
+            residual.validate_indices,
+            get(init_kwargs, :vm_validation_range, DEFAULT_VALIDATION_RANGE),
+            0,
+        )
+    end
+    return fused
 end
 
 """Evaluate F and J at `x0` in one fused sweep. On a large residual with a fallback start
@@ -1619,7 +1625,10 @@ function _fresh_newton_workspace(
         return @invoke _fresh_newton_workspace(
             pf::AbstractACPowerFlow, data, time_step, backend, tol, init_kwargs)
     end
-    residual, J, x0_init, fused = _fused_polar_init(pf, data, time_step; init_kwargs...)
+    residual = ACPowerFlowResidual(data, time_step)
+    x0_init = calculate_x0(data, time_step)
+    J = ACPowerFlowJacobian(data, residual, time_step)
+    fused = _polar_start!(x0_init, pf, data, residual, J, time_step, init_kwargs)
     converged = norm(residual.Rv, Inf) < tol
     converged && return residual, nothing, x0_init, nothing, nothing, true
     fused || J(data, time_step)
@@ -1814,22 +1823,7 @@ function _polar_newton_workspace!(
     J = entry.J
     x0_init = entry.x0
     update_state!(x0_init, data, time_step)
-    # As a fresh start would: fused F and J unless `improve_x0!` has a candidate to compare.
-    if _x0_has_no_candidates(pf, data, time_step)
-        fused = _fused_x0!(x0_init, pf, data, residual, J, time_step)
-    else
-        improve_x0!(x0_init, pf, data, residual, time_step)
-        fused = false
-    end
-    _log_initial_residual(residual)
-    if get(init_kwargs, :validate_voltage_magnitudes, DEFAULT_VALIDATE_VOLTAGES)
-        validate_voltage_magnitudes(
-            x0_init,
-            residual.validate_indices,
-            get(init_kwargs, :vm_validation_range, DEFAULT_VALIDATION_RANGE),
-            0,
-        )
-    end
+    fused = _polar_start!(x0_init, pf, data, residual, J, time_step, init_kwargs)
     converged = norm(residual.Rv, Inf) < tol
     # Off the fused path, defer the Jacobian fill past the convergence check: a 0-iteration
     # warm start must not pay for it. `nothing` lets the caller rebuild only if it needs J.
@@ -1892,16 +1886,10 @@ function _restart_from!(
     return
 end
 
-function _evaluate_start!(residual, J, data::ACPowerFlowData, x0::Vector{Float64},
-    time_step::Int64, ::Bool)
-    residual(data, x0, time_step)
-    J(data, time_step)
-    return
-end
-
+# `fused` is only ever true on the polar path.
 function _evaluate_start!(
-    residual::ACPowerFlowResidual,
-    J::ACPowerFlowJacobian,
+    residual,
+    J,
     data::ACPowerFlowData,
     x0::Vector{Float64},
     time_step::Int64,
