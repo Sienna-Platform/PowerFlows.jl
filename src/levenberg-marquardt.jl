@@ -143,7 +143,7 @@ function _lm_qr_fallback(
 end
 
 """Default `marquardt_scaling` per formulation type: on for rectangular, whose state columns
-`(e, f, Q, P_gen)` differ in scale; off for polar and mixed."""
+`(e, f, P_net, Q_net)` differ in scale; off for polar and mixed."""
 _default_marquardt_scaling(::Type{<:AbstractACPowerFlow}) = false
 _default_marquardt_scaling(::Type{<:ACRectangularPowerFlow}) = true
 

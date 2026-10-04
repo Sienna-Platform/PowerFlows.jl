@@ -1,4 +1,4 @@
-@testset "Rectangular CI Power Flow: convergence" begin
+@testset "Rectangular Power Flow: convergence" begin
     @testset "c_sys5 converges" begin
         sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
         pf_rect = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
@@ -14,7 +14,40 @@
     end
 end
 
-@testset "Rectangular CI Power Flow: non-convergence returns missing" begin
+# Power mismatch is unchanged by a common rotation of all bus angles; the former current-injection
+# rows were not, and Newton failed from flat on ACTIVSg2000 (solution angles down to −1.29 rad).
+@testset "Rectangular Power Flow: flat start on ACTIVSg2000" begin
+    sys = PSB.build_system(PSB.MatpowerTestSystems, "matpower_ACTIVSg2000_sys")
+    function flat_data(pf)
+        data = PF.PowerFlowData(pf, sys)
+        ref = findfirst(==(PSY.ACBusTypes.REF), data.bus_type[:, 1])
+        for i in axes(data.bus_type, 1)
+            data.bus_type[i, 1] == PSY.ACBusTypes.PQ && (data.bus_magnitude[i, 1] = 1.0)
+            data.bus_angles[i, 1] = data.bus_angles[ref, 1]
+        end
+        return data
+    end
+    settings = PF.SolutionParameters(; enhanced_flat_start = false, maxIterations = 20)
+    polar = flat_data(
+        ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+            correct_bustypes = true, solution_parameters = settings),
+    )
+    @test PF.solve_power_flow!(polar)
+    for S in (NewtonRaphsonACPowerFlow, TrustRegionACPowerFlow)
+        rect = flat_data(
+            ACRectangularPowerFlow{S}(;
+                correct_bustypes = true, solution_parameters = settings),
+        )
+        @test PF.solve_power_flow!(rect)
+        @test only(rect.iterations) <= 10
+        @test rect.bus_magnitude[:, 1] ≈ polar.bus_magnitude[:, 1] atol = 1e-7
+        @test rect.bus_angles[:, 1] ≈ polar.bus_angles[:, 1] atol = 1e-7
+        @test rect.bus_reactive_power_injections[:, 1] ≈
+              polar.bus_reactive_power_injections[:, 1] atol = 1e-6
+    end
+end
+
+@testset "Rectangular Power Flow: non-convergence returns missing" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
     # maxIterations = 1 from flat start cannot converge c_sys14; the solver must
     # report non-convergence (results = missing) rather than error or hang.
@@ -27,7 +60,7 @@ end
     )
 end
 
-@testset "Rectangular CI Power Flow (LM): non-convergence returns missing" begin
+@testset "Rectangular Power Flow (LM): non-convergence returns missing" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
     # maxIterations = 1 from flat start cannot converge c_sys14; the solver must
     # report non-convergence (results = missing) rather than error or hang.
@@ -40,7 +73,7 @@ end
     )
 end
 
-@testset "Rectangular CI Power Flow: parity with polar NR" begin
+@testset "Rectangular Power Flow: parity with polar NR" begin
     fixtures = [
         ("c_sys5", false),
         ("c_sys14", false),
@@ -66,7 +99,7 @@ end
     end
 end
 
-@testset "Rectangular CI Power Flow: unsupported config rejected" begin
+@testset "Rectangular Power Flow: unsupported config rejected" begin
     # Removed fields: passing them is a constructor MethodError.
     @test_throws MethodError ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
         robust_power_flow = true)
@@ -90,7 +123,7 @@ end
           ACRectangularPowerFlow
 end
 
-@testset "Rectangular CI Power Flow: step strategy variants" begin
+@testset "Rectangular Power Flow: step strategy variants" begin
     # Verify Iwamoto and Trust Region wrappers converge through the rectangular CI
     # residual/Jacobian. The drivers (_simple_step, _iwamoto_step, _trust_region_step)
     # are generic over the residual/Jacobian functor interface, so all four step
@@ -135,7 +168,7 @@ end
     end
 end
 
-@testset "Rectangular CI: LM matches polar LM" begin
+@testset "Rectangular: LM matches polar LM" begin
     for name in ("c_sys5", "c_sys14")
         @testset "$name" begin
             sys = PSB.build_system(PSB.PSITestSystems, name; add_forecasts = false)
@@ -196,7 +229,7 @@ end
         res_lm_polar["bus_results"].θ .- res_lm_rect["bus_results"].θ, Inf) < 1e-5
 end
 
-@testset "Rectangular CI: multi-period previous-solution warm start" begin
+@testset "Rectangular: multi-period previous-solution warm start" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
     pf = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
         time_steps = 2,
@@ -298,7 +331,7 @@ end
             x_ok, validate_offsets, range, 1)
     end
 
-    @testset "rectangular CI residual dispatch" begin
+    @testset "rectangular residual dispatch" begin
         sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
         pf = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
             solution_parameters = _rect_pf_settings())
@@ -320,7 +353,7 @@ end
     end
 end
 
-@testset "Rectangular CI: V_FLOOR2 guards degenerate (e,f)" begin
+@testset "Rectangular: V_FLOOR2 guards degenerate (e,f)" begin
     # Mirrors the mixed CPB V_FLOOR2 hardening: collapsing a PQ bus voltage to
     # zero must not produce Inf/NaN in the rectangular residual or Jacobian
     # (the 1/|V|² current-balance terms are otherwise unguarded).
@@ -342,7 +375,7 @@ end
     @test all(isfinite, J.Jv.nzval)
 end
 
-@testset "Rectangular CI Power Flow: multi-swing (two swings in one island)" begin
+@testset "Rectangular Power Flow: multi-swing (two swings in one island)" begin
     @testset "$(nameof(V))" for V in (NewtonRaphsonACPowerFlow, TrustRegionACPowerFlow)
         sys_p = _rect_two_swing_system()
         sys_r = deepcopy(sys_p)
@@ -365,5 +398,32 @@ end
         @test bus_r.θ[r1] ≈ 0.0 atol = 1e-9
         @test bus_r.Vm[r2] ≈ 1.05 atol = 1e-9
         @test bus_r.θ[r2] ≈ 0.05 atol = 1e-9
+    end
+end
+
+@testset "Rectangular Power Flow: threaded time steps equal the serial solve (T=8)" begin
+    function solved(n_threads)
+        sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+        data = PowerFlowData(
+            ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
+                time_steps = 8,
+                solution_parameters = SolutionParameters(;
+                    linear_solver = "KLU",
+                    n_threads,
+                ),
+            ),
+            sys,
+        )
+        prepare_ts_data!(data, 8)
+        @test solve_power_flow!(data)
+        return data
+    end
+    serial = solved(1)
+    for n_threads in (2, 4)
+        threaded = solved(n_threads)
+        for f in (:bus_magnitude, :bus_angles, :bus_type, :bus_active_power_injections,
+            :bus_reactive_power_injections, :converged, :iterations)
+            @test isequal(getfield(serial, f), getfield(threaded, f))
+        end
     end
 end

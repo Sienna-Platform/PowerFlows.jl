@@ -313,7 +313,7 @@ end
 Recompute `data.lcc.rectifier.phi`, `data.lcc.inverter.phi`, and
 `data.lcc.branch_admittances` for each LCC at `time_step`. Reads `|V|` at each
 AC terminal from `data.bus_magnitude` (the polar convention). The
-`(e_state, f_state)` method below covers the rectangular CI case where
+`(e_state, f_state)` method below covers the rectangular and mixed cases where
 `|V_state| = sqrt(e² + f²)` must be used instead — at PV buses,
 `data.bus_magnitude` holds `V_set` rather than the actual state magnitude.
 """
@@ -374,7 +374,7 @@ end
 
 Rectangular variant: reads `|V|` at each AC terminal from
 `sqrt(e_state[i]^2 + f_state[i]^2)` so the LCC math stays consistent with the
-rectangular CI residual / Jacobian (which operate on `(e, f)` instead of
+rectangular and mixed residuals / Jacobians (which operate on `(e, f)` instead of
 `(|V|, θ)`).
 """
 function _update_ybus_lcc!(

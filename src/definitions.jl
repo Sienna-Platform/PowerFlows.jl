@@ -138,7 +138,7 @@ const REC_INDEX_TYPE = INDEX_TYPE
 # LCC line-commutated-converter scaling factor: the fundamental component of the
 # AC-side current per unit DC current is `(√6/π)·t·I_dc`. Used in `lcc_utils.jl`,
 # `ac_power_flow_residual.jl`, `ac_power_flow_jacobian.jl`, and the rectangular
-# CI counterparts.
+# and mixed counterparts.
 const SQRT6_DIV_PI = sqrt(6) / π
 # Feasibility tolerance for the GA LCC closed form: |S| = (V·t)·K·I must be ≥ |P|
 # up to this slack; below it, `cos φ` would exceed 1 and the operating point is infeasible.

@@ -1272,7 +1272,7 @@ end
 
 # Formulation-dispatched voltage-magnitude validation, driven entirely by the
 # per-formulation index list precomputed once on the residual. Polar indexes
-# the state as `[|V|, θ, …]` (`x[2i-1]` = |V|, PQ only); rectangular CI and
+# the state as `[|V|, θ, …]` (`x[2i-1]` = |V|, PQ only); rectangular and
 # mixed CPB states are `(e, f, …)` per-bus blocks validating `e²+f² ∈
 # [min², max²]` over PQ/PV.
 function _validate_state_magnitudes(
@@ -1618,8 +1618,8 @@ function _warn_small_lcc_angles(data::ACPowerFlowData, time_step::Int)
 end
 
 """Formulation-specific post-Newton step. Polar writes the deferred iterate (|V|, θ and bus
-injections) into `data`; the rectangular CI formulation distributes the converged subnetwork
-slack into the bus injection arrays."""
+injections) into `data`; the rectangular and mixed formulations distribute the converged
+subnetwork slack into the bus injection arrays."""
 _finalize_formulation!(
     ::ACPolarPowerFlow,
     data::ACPowerFlowData,
@@ -1635,11 +1635,7 @@ function _finalize_formulation!(
     residual::ACRectangularCIResidual,
     time_step::Int64,
 )
-    rect_finalize_bus_injections!(
-        data, x, residual.bus_state_offset, residual.P_net_set,
-        residual.bus_slack_participation_factors, residual.subnetworks,
-        residual.independent_ref, time_step,
-    )
+    rect_finalize_bus_injections!(data, x, residual, time_step)
     return
 end
 
@@ -1912,10 +1908,10 @@ function _build_rect_mixed_cache!(
     return linSolveCache, stateVector
 end
 
-# A bus-type change resizes a rect state block, or moves a mixed one's entries, so rect/mixed
-# cannot take polar's flat plan with column swaps: the plan is built on the Jacobian a fresh cache
-# is built for (at the solve's start) and used only while the bus types are the plan's. A
-# re-plan per type change (a Q-limit flip) costs more than the lean steps it saves.
+# A bus-type change rewrites a rect bus's second row (ΔQ ↔ |V|²) or moves a mixed block's entries,
+# so rect/mixed cannot take polar's flat plan with column swaps: the plan is built on the Jacobian a
+# fresh cache is built for (at the solve's start) and used only while the bus types are the plan's.
+# A re-plan per type change (a Q-limit flip) costs more than the lean steps it saves.
 function _rect_mixed_symbolic!(
     c,
     Jv::SparseMatrixCSC{Float64},
@@ -2023,7 +2019,7 @@ function _get_or_build_rect_mixed_cache!(
         _reset_for_reuse!(stateVector)
         return cache.linSolveCache, stateVector
     end
-    # A new pattern on a reused slot (a rect Q-limit flip, a contingency branch outage) is not
+    # A new pattern on a reused slot (a mixed Q-limit flip, a contingency branch outage) is not
     # planned: the plan costs a factorization and an extract that its few remaining steps do not
     # repay.
     return _build_rect_mixed_cache!(data, time_step, backend, Jv, x0, r0, false)

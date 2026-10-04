@@ -29,7 +29,8 @@ DC node the DC voltage $V_{dc}$. Each converter contributes two control rows ($r
 DC node one DC-KCL row, matching the added states. VSC extensions are implemented for all three AC
 formulations — [`ACPolarPowerFlow`](@ref), [`ACRectangularPowerFlow`](@ref), and
 [`ACMixedPowerFlow`](@ref) — sharing the same converter-physics kernels; only the bus-coupling rows
-differ (polar uses the bus power balance; rectangular/mixed use the bus current-injection balance).
+differ (polar and rectangular use the bus power balance; mixed uses the current-injection balance at
+PQ and REF buses).
 
 ### Control modes
 

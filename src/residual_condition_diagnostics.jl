@@ -166,12 +166,15 @@ end
 function _describe_residual_entry(
     r::ACRectangularCIResidual,
     data::ACPowerFlowData,
-    ::Int,
+    time_step::Int,
     ix::Int,
 )
     if ix <= r.total_bus_state
         b, row = _locate_variable_block(r.bus_state_offset, ix)
-        labels = ("ΔI_re", "ΔI_im", "|V|²−V_set²")   # PV uses the 3rd row
+        labels = ("ΔP", "ΔQ")
+        if data.bus_type[b, time_step] == PSY.ACBusTypes.PV
+            labels = ("ΔP", "|V|²−V_set²")
+        end
         return "bus $(_diag_bus_number(data, b)) ($(labels[row]))"
     end
     return _describe_tail_residual_entry(data, ix - r.total_bus_state)

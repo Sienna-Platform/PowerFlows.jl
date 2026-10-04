@@ -38,20 +38,20 @@ state vector, residual, and Jacobian structure:
     mismatch. This is the formulation used by the classic Newton power flow and
     is the only one that currently supports the loss-factor, voltage-stability,
     and DC-fallback post-processing options.
-  - [`ACRectangularPowerFlow`](@ref): per-bus state is `(eᵢ, fᵢ)` (with an extra
-    `Qᵢ` at PV buses); the residual is the complex *current* mismatch
-    `ΔIᵢ = I_specᵢ − Y_bus·V`. Off-diagonal Jacobian blocks are constant 2×2
-    real blocks of `Y_bus`, which makes refactorization cheap. Pick this
-    formulation if you want the current-injection structure or are integrating
-    with code that expects rectangular coordinates.
+  - [`ACRectangularPowerFlow`](@ref): per-bus state is `(eᵢ, fᵢ)`; the residual
+    is the active/reactive power mismatch `ΔSᵢ = Vᵢ·conj((Y_bus·V)ᵢ) − S_specᵢ`
+    in rectangular coordinates (MATPOWER's `newtonpf_S_cart`), with the PV
+    reactive row replaced by `|Vᵢ|² − V_setᵢ²`. Like polar, it converges from a
+    flat start; the additive Cartesian update can cost one more iteration than
+    polar from a start far from the solution. Pick this formulation if you are
+    integrating with code that expects rectangular coordinates.
   - [`ACMixedPowerFlow`](@ref): per-bus state is `(eᵢ, fᵢ)` with exactly `2n`
     unknowns — no auxiliary reactive-power variable at PV buses. The residual
     mixes divided current balance at PQ buses with real power balance plus a
-    `|Vᵢ|²` constraint at PV buses. It does not outperform
-    [`ACRectangularPowerFlow`](@ref) on speed, but its minimal state vector and
-    predictable timing make it attractive for memory-bound large-scale studies;
-    it is also the best-scaling LM formulation at 10k buses and above. Like
-    rectangular, it lacks the polar-only post-processing options. See
+    `|Vᵢ|²` constraint at PV buses. Its minimal state vector and predictable
+    timing make it attractive for memory-bound large-scale studies; it is also
+    the best-scaling LM formulation at 10k buses and above. Like rectangular, it
+    lacks the polar-only post-processing options. See
     [Mixed Current-Power Balance Formulation](@ref) for the full derivation.
 
 All three formulations support the LCC (line-commutated converter) HVDC model.
