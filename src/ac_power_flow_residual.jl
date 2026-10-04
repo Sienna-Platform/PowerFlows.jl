@@ -523,31 +523,6 @@ function _finish_residual!(
     return
 end
 
-function _find_subnetworks_for_reference_buses(
-    Ybus::SparseMatrixCSC,
-    bus_type::AbstractArray{PSY.ACBusTypes.Value},
-)
-    subnetworks = PNM.find_subnetworks(Ybus, collect(eachindex(bus_type)))
-    bus_groups = Dict{Int, Vector{Int}}()
-    for (bus_key, subnetwork_buses) in subnetworks
-        buses = sort!(collect(subnetwork_buses))
-        ref_bus = 0
-        for ix in buses
-            if bus_type[ix] == PSY.ACBusTypes.REF
-                ref_bus = ix
-                break
-            end
-        end
-        iszero(ref_bus) && throw(
-            ArgumentError(
-                "No REF bus found in the subnetwork with $(length(buses)) buses defined by bus key $bus_key",
-            ),
-        )
-        bus_groups[ref_bus] = buses
-    end
-    return bus_groups
-end
-
 """Union-find and bucket buffers for [`_find_subnetworks_for_reference_buses!`](@ref). `roots`
 holds each island's union-find root, then its REF bus; `pool` keeps the bus vectors of earlier
 partitions for reuse."""
@@ -563,10 +538,10 @@ SubnetworkScratch(n_buses::Int) = SubnetworkScratch(
     Vector{Int}(undef, n_buses), Vector{Int}(undef, n_buses), Int[], Vector{Int}[],
     Vector{Int}[])
 
-"""[`_find_subnetworks_for_reference_buses`](@ref) into `subnetworks`, reusing its bus vectors
-and `s`: the same islands, REF keys and sorted members (same warnings and error), allocating
-nothing once `s` has seen as many islands. Only the dictionary's iteration order may differ,
-which no consumer depends on."""
+"""Partition the buses into Ybus islands, keyed by each island's first REF bus, with sorted
+members, into `subnetworks`, reusing its bus vectors and `s`; allocates nothing once `s` has
+seen as many islands. Warns on islanded buses like `PNM.find_subnetworks` and throws an
+`ArgumentError` for an island without a REF bus."""
 function _find_subnetworks_for_reference_buses!(
     subnetworks::Dict{Int64, Vector{Int64}},
     s::SubnetworkScratch,
@@ -624,6 +599,12 @@ function _find_subnetworks_for_reference_buses!(
     end
     return subnetworks
 end
+
+_find_subnetworks_for_reference_buses(
+    Ybus::SparseMatrixCSC,
+    bus_type::AbstractArray{PSY.ACBusTypes.Value},
+) = _find_subnetworks_for_reference_buses!(
+    Dict{Int, Vector{Int}}(), SubnetworkScratch(length(bus_type)), Ybus, bus_type)
 
 """
     _fill_bus_slack_participation_factors!(spf, data, bus_type, subnetworks, time_step)
