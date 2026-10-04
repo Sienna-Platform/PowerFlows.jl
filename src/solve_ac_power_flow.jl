@@ -504,12 +504,31 @@ _prepare_lean_plan!(
 ) =
     nothing
 
-function _prepare_lean_plan!(
+_prepare_lean_plan!(
     ::ACPolarPowerFlow{<:Union{NewtonRaphsonACPowerFlow, TrustRegionACPowerFlow}},
     data::ACPowerFlowData,
     time_step::Int,
     ::PNM.KLUSolver,
-)
+) = _prepare_newton_plan!(data, time_step)
+
+# A staged solver's NR/TR handoff runs on the lean plan too (`_new_handoff_cache`).
+_prepare_lean_plan!(
+    pf::ACPolarPowerFlow{
+        <:Union{FastDecoupledACPowerFlow, GeneralizedAdmittanceACPowerFlow},
+    },
+    data::ACPowerFlowData,
+    time_step::Int,
+    ::PNM.KLUSolver,
+) = _prepare_handoff_plan!(get_solution_parameters(pf).handoff_solver, data, time_step)
+
+_prepare_handoff_plan!(::Type, ::ACPowerFlowData, ::Int) = nothing
+_prepare_handoff_plan!(
+    ::Type{<:Union{NewtonRaphsonACPowerFlow, TrustRegionACPowerFlow}},
+    data::ACPowerFlowData,
+    time_step::Int,
+) = _prepare_newton_plan!(data, time_step)
+
+function _prepare_newton_plan!(data::ACPowerFlowData, time_step::Int)
     _USE_LEAN_LU[] || return
     _lean_plan_tried(data.ac_jacobian_structure_cache[], data) && return
     _lean_plan_slot!(data, time_step)
