@@ -62,8 +62,8 @@ take effect.
   Iterates outside it only warn. `validate_voltage_magnitudes = false` turns both off.
 - `check_root_type::Bool`: also reject an in-band converged step that is not on the
   operable (high-voltage) branch: one whose V-Q self-sensitivity ∂|V|/∂Q is negative at one
-  of the lowest-|V| PQ buses that carry power. Off by default: it costs one extra
-  factorization per converged step.
+  of the lowest-|V| PQ buses that carry power. Off by default: every converged step builds a
+  polar residual and Jacobian and factors them from scratch (KLU symbolic and numeric).
 
 # Newton / trust region / Levenberg-Marquardt
 - `refinement_threshold`, `refinement_eps`, `iwamoto`, `stop_at_fold`.

@@ -15,7 +15,7 @@ the distributed-slack cross-terms follow the participation factors. Per-iteratio
 - `yb_nz::Matrix{Int}` — `4 × nnz(Y_bus_eff)`: the `Jv` entries `(P,e) (P,f) (Q,e) (Q,f)` of
   each Y-bus nonzero's block (row bus, column bus)
 - `diag_nz::Matrix{Int}` — `4 × n_buses`, same order, for each bus's own block
-- `slack_nz_idx_e`, `slack_nz_idx_f`, `slack_bus_k`, `slack_c_k` — distributed-slack
+- `slack_nz_idx_e`, `slack_nz_idx_f`, `slack_c_k` — distributed-slack
   cross-terms (see [`_build_slack_nz_cache`](@ref))
 - `lcc_nz::Matrix{Int}`, `vsc_nz::VSCJacobianNZCache` — tail entries
 """
@@ -37,7 +37,6 @@ struct ACRectangularCIJacobian
     diag_nz::Matrix{Int}
     slack_nz_idx_e::Vector{Int}
     slack_nz_idx_f::Vector{Int}
-    slack_bus_k::Vector{Int}
     slack_c_k::Vector{Float64}
     lcc_nz::Matrix{Int}
     vsc_nz::VSCJacobianNZCache
@@ -55,8 +54,9 @@ function ACRectangularCIJacobian(
     @inbounds for i in 1:n_buses
         Y_diag[i] = Y[i, i]
     end
-    yb_nz, diag_nz = _build_rect_yb_nz_cache(Jv0, Y, residual.bus_state_offset)
-    slack_nz_idx_e, slack_nz_idx_f, slack_bus_k, slack_c_k =
+    yb_nz = _build_rect_yb_nz_cache(Jv0, Y, residual.bus_state_offset)
+    diag_nz = _build_mixed_diag_nz_cache(Jv0, residual.bus_state_offset)
+    slack_nz_idx_e, slack_nz_idx_f, _, slack_c_k =
         _build_slack_nz_cache(
             Jv0, residual.bus_state_offset, residual.subnetworks,
             residual.bus_slack_participation_factors, residual.independent_ref,
@@ -87,7 +87,6 @@ function ACRectangularCIJacobian(
         diag_nz,
         slack_nz_idx_e,
         slack_nz_idx_f,
-        slack_bus_k,
         slack_c_k,
         lcc_nz,
         vsc_nz,
@@ -181,36 +180,29 @@ function _create_rect_ci_jacobian_structure(
 end
 
 """
-    _build_rect_yb_nz_cache(Jv, Y_bus_eff, bus_state_offset) -> (yb_nz, diag_nz)
+    _build_rect_yb_nz_cache(Jv, Y_bus_eff, bus_state_offset) -> yb_nz
 
-`nonzeros(Jv)` indices of the 2×2 block of every Y-bus nonzero (`yb_nz`, by the nonzero's
-index in `Y_bus_eff`) and of every bus's own block (`diag_nz`), each in the order
-`(P,e) (P,f) (Q,e) (Q,f)`.
+`nonzeros(Jv)` indices of the 2×2 block of every Y-bus nonzero, by the nonzero's index in
+`Y_bus_eff`, in the order `(P,e) (P,f) (Q,e) (Q,f)`.
 """
 function _build_rect_yb_nz_cache(
     Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
     Y_bus_eff::SparseMatrixCSC{ComplexF64, Int},
     bus_state_offset::Vector{REC_INDEX_TYPE},
 )
-    n_buses = size(Y_bus_eff, 2)
     yb_nz = Matrix{Int}(undef, 4, SparseArrays.nnz(Y_bus_eff))
-    diag_nz = Matrix{Int}(undef, 4, n_buses)
     Yrows = SparseArrays.rowvals(Y_bus_eff)
-    function block!(M::Matrix{Int}, k::Int, r::Int, c::Int)
-        M[1, k] = _jv_nz_index(Jv, r, c)
-        M[2, k] = _jv_nz_index(Jv, r, c + 1)
-        M[3, k] = _jv_nz_index(Jv, r + 1, c)
-        M[4, k] = _jv_nz_index(Jv, r + 1, c + 1)
-        return
-    end
-    for col in 1:n_buses
+    for col in 1:size(Y_bus_eff, 2)
         c = Int(bus_state_offset[col])
-        block!(diag_nz, col, c, c)
         for k in SparseArrays.nzrange(Y_bus_eff, col)
-            block!(yb_nz, k, Int(bus_state_offset[Yrows[k]]), c)
+            r = Int(bus_state_offset[Yrows[k]])
+            yb_nz[1, k] = _jv_nz_index(Jv, r, c)
+            yb_nz[2, k] = _jv_nz_index(Jv, r, c + 1)
+            yb_nz[3, k] = _jv_nz_index(Jv, r + 1, c)
+            yb_nz[4, k] = _jv_nz_index(Jv, r + 1, c + 1)
         end
     end
-    return yb_nz, diag_nz
+    return yb_nz
 end
 
 """Update every Jacobian entry from the residual's state caches (`e_state`, `f_state`, `Ir_acc`,
