@@ -655,23 +655,14 @@ function make_and_initialize_power_flow_data(
     return data
 end
 
-# `PNM.find_subnetworks(sys)` builds a second, default Ybus only to find the islands; read
-# them off the one already built. A reduced Ybus has reduced bus axes, so reductions keep
-# the `sys` path.
+# `PNM.find_subnetworks(sys)` builds a second, default Ybus only to find the islands; the one
+# already built stores them, keyed by reference bus. A reduced Ybus has reduced bus axes, so
+# reductions keep the `sys` path.
 function _subnetworks(pf::PowerFlowEvaluationModel, sys::PSY.System, ybus::PNM.Ybus)
     if !isempty(get_network_reductions(pf))
         return PNM.find_subnetworks(sys)
     end
-    ref_angles = Dict{Int, Float64}(
-        PSY.get_number(b) => PSY.get_angle(b) for
-        b in PSY.get_components(PSY.ACBus, sys) if
-        PSY.get_bustype(b) == PSY.ACBusTypes.REF
-    )
-    return PNM.assign_reference_buses!(
-        PNM.find_subnetworks(ybus),
-        Set(PNM.get_ref_bus(ybus)),
-        ref_angles,
-    )
+    return Dict{Int, Set{Int}}(k => Set(first(ax)) for (k, ax) in ybus.subnetwork_axes)
 end
 
 # Build the signed arc-bus incidence from PNM's `IncidenceMatrix`, permuted to align its rows/cols
