@@ -112,7 +112,11 @@ end
 
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
     plain = PowerFlowData(ACPowerFlow{NewtonRaphsonACPowerFlow}(; time_steps = 2), sys)
-    @test_throws r"KLU" solve_power_flow!(plain; threads = 2, linear_solver = "MKLPardiso")
+    # AppleAccelerateLU resolves only on Apple; elsewhere every non-KLU backend fails to load first.
+    if Sys.isapple()
+        @test_throws r"KLU" solve_power_flow!(
+            plain; threads = 2, linear_solver = "AppleAccelerateLU")
+    end
     # One step never reaches the threaded path.
     @test solve_power_flow!(lcc; threads = 2, time_steps = [1])
 end
