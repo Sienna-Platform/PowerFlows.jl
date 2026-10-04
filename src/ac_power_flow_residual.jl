@@ -31,6 +31,7 @@ A struct to keep track of the residuals in the Newton-Raphson AC power flow calc
 - `subnetworks::Dict{Int64, Vector{Int64}}`: The dictionary that identifies subnetworks (connected components), with the key defining the REF bus, values defining the corresponding (sorted) buses in the subnetwork.
 - `validate_indices::Vector{Int}`: precomputed `x`-indices of PQ-bus |V| entries for the per-iteration voltage-magnitude diagnostic.
 - `bus_state::PolarBusState`: per-bus |V|, θ and `cis(θ)` of the last evaluated iterate, shared with the `ACPowerFlowJacobian`.
+- `solve_start::Matrix{Float64}`: `P_net`, `Q_net`, |V| and θ at a solve's start, by column, for a rerun from the same start.
 """
 struct ACPowerFlowResidual
     Rv::Vector{Float64}
@@ -45,6 +46,7 @@ struct ACPowerFlowResidual
     bus_reactive_constant_Z::Vector{Float64}
     validate_indices::Vector{Int}
     bus_state::PolarBusState
+    solve_start::Matrix{Float64}
 end
 
 """
@@ -86,6 +88,7 @@ function ACPowerFlowResidual(data::ACPowerFlowData, time_step::Int64)
         Vector{Float64}(undef, n_buses),
         validate_indices,
         PolarBusState(n_buses),
+        Matrix{Float64}(undef, n_buses, 4),
     )
     _refresh_residual_setpoints!(residual, data, time_step)
     return residual

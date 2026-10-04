@@ -56,19 +56,54 @@ function _reset_for_reuse!(stateVector::StateVectorCache)
     return
 end
 
+"""Arc→bus index maps and branch-flow buffers for `solve_power_flow!`. Valid while `arcs` is
+(by identity) the arc axis of `data`'s arc admittance matrices."""
+struct ArcFlowScratch
+    arcs::Vector{Tuple{Int, Int}}
+    fb_ix::Vector{Int}
+    tb_ix::Vector{Int}
+    V::Vector{ComplexF64}
+    Sft::Vector{ComplexF64}
+    Stf::Vector{ComplexF64}
+end
+
+function ArcFlowScratch(data::ACPowerFlowData)
+    Yft = data.power_network_matrix.arc_admittance_from_to
+    Ytf = data.power_network_matrix.arc_admittance_to_from
+    @assert PNM.get_bus_lookup(Yft) == get_bus_lookup(data)
+    arcs = PNM.get_arc_axis(Yft)
+    @assert arcs == PNM.get_arc_axis(Ytf)
+    n_bus = size(data.bus_angles, 1)
+    @assert length(PNM.get_bus_axis(Yft)) == n_bus
+    bus_lookup = get_bus_lookup(data)
+    fb_ix = [bus_lookup[first(arc)] for arc in arcs]
+    tb_ix = [bus_lookup[last(arc)] for arc in arcs]
+    n_arc = length(arcs)
+    return ArcFlowScratch(
+        arcs, fb_ix, tb_ix,
+        Vector{ComplexF64}(undef, n_bus),
+        Vector{ComplexF64}(undef, n_arc),
+        Vector{ComplexF64}(undef, n_arc),
+    )
+end
+
 """Polar NR/TR workspace stored in `data.polar_nr_cache`, reused across Q-limit retries, time
 steps and contingencies. `bus_type_snapshot` holds the bus types the residual's partition was
 last derived for (emptied by [`_invalidate_partition!`](@ref)). `residual` and `J` do not store
 `data`: this
-cache hangs off `data`, so a back-reference would form a cycle. `x0` and `partition` are the
-reuse path's start-point and island-partition buffers."""
-struct PolarNRCache{C <: PFLinearSolverCache} <: AbstractNRCache
+cache hangs off `data`, so a back-reference would form a cycle. `arc_flows` lets a reused
+`solve_power_flow!` skip rebuilding its branch-flow scratch. `lean` is the slot whose plan the
+KLU cache was given, for [`_align_lean_plan!`](@ref). `x0` and `partition` are the reuse path's
+start-point and island-partition buffers."""
+struct PolarNRCache{C <: PNM.LinearSolverCache} <: AbstractNRCache
     residual::ACPowerFlowResidual
     J::ACPowerFlowJacobian
     linSolveCache::C
     stateVector::StateVectorCache
     backend::PNM.LinearSolverType
     bus_type_snapshot::Vector{PSY.ACBusTypes.Value}
+    arc_flows::ArcFlowScratch
+    lean::LeanPlanSlot
     x0::Vector{Float64}
     partition::SubnetworkScratch
 end
@@ -86,7 +121,8 @@ end
 
 # After a bus-type or partition change, `klu_refactor` on the inherited pivot order can hit a zero
 # pivot (a PV bus's |V| column holds a single -1 where a PQ bus's holds dP/dV, dQ/dV). Free only
-# the Numeric: the next `numeric_refactor!` then runs a fresh `klu_factor` on the kept Symbolic.
+# the Numeric: the next `numeric_refactor!` then runs a fresh `klu_factor` on the kept Symbolic,
+# or, with a lean plan, a lean refactor whose pivot-ratio check falls back to `klu_factor`.
 function _drop_numeric!(c::PNM.KLULinSolveCache)
     PNM.KLUWrapper.drop_numeric!(c)
     return
@@ -94,6 +130,189 @@ end
 # These backends pivot afresh on every numeric factorization.
 _drop_numeric!(::PNM.AAFactorCache) = nothing
 _drop_numeric!(::PardisoLinSolveCache) = nothing
+
+# Test-only switch: `false` keeps every polar NR cache on plain KLU, for comparing against it.
+const _USE_LEAN_LU = Ref(true)
+
+"""The [`LeanPlanSlot`](@ref) of the Jacobian structure `data` uses at `time_step`, building
+its plan on first use. The plan is factored from a separately built Jacobian evaluated at
+|V| = 1, θ = 0 (as p3s does), so it depends only on the network, bus types, slack factors and
+ZIP loads at `time_step`, never on an iterate: every cache, task and contingency sharing the
+slot pivots identically."""
+function _lean_plan_slot!(data::ACPowerFlowData, time_step::Int64)
+    residual = ACPowerFlowResidual(data, time_step)
+    J = ACPowerFlowJacobian(data, residual, time_step)
+    # J's structure was just taken from (or stored into) this memo.
+    slot = (data.ac_jacobian_structure_cache[]::ACJacobianStructureCache).lean
+    slot.tried && return slot
+    slot.tried = true
+    slot.bus_types = data.bus_type[:, time_step]
+    s = J.bus_state
+    fill!(s.Vm, 1.0)
+    fill!(s.θ, 0.0)
+    fill!(s.phasor, one(ComplexF64))
+    _update_jacobian_matrix_values!(J, data, time_step)
+    _build_lean_plan!(slot, J.Jv, time_step)
+    return slot
+end
+
+function _build_lean_plan!(
+    slot::LeanPlanSlot,
+    Jv::SparseMatrixCSC{Float64},
+    time_step::Int64,
+)
+    try
+        slot.plan = PNM.KLUWrapper.build_lean_plan(Jv)
+        slot.valid = true
+    catch e
+        e isa LinearAlgebra.SingularException || rethrow()
+        n = Threads.atomic_add!(_LEAN_SINGULAR_PLANS, 1) + 1
+        @warn "The flat-start Jacobian is singular; this Jacobian structure solves without " *
+              "the lean LU ($n such structures so far)." time_step
+    end
+    return
+end
+
+"""Flat-start Jacobians found singular by [`_lean_plan_slot!`](@ref), each a structure memo
+whose solves run without the lean LU."""
+const _LEAN_SINGULAR_PLANS = Threads.Atomic{Int}(0)
+
+# Symbolic step of a fresh polar NR cache. On a lean plan the cache's own klu_analyze waits for
+# its first KLU factorization (a reject, a re-pivot, or a diagnostic `pivoted_factor!`), which a
+# solve that stays lean never reaches.
+_symbolic_step!(::AbstractACPowerFlow, c, A, ::ACPowerFlowData, ::Int64) =
+    symbolic_factor!(c, A)
+
+function _symbolic_step!(
+    ::ACPolarPowerFlow,
+    c::PNM.KLULinSolveCache{Float64},
+    A::SparseMatrixCSC{Float64},
+    data::ACPowerFlowData,
+    time_step::Int64,
+)
+    if !_USE_LEAN_LU[]
+        PNM.symbolic_factor!(c, A)
+        return
+    end
+    slot = (data.ac_jacobian_structure_cache[]::ACJacobianStructureCache).lean
+    if !slot.tried
+        slot = _lean_plan_slot!(data, time_step)
+    end
+    if slot.valid
+        PNM.KLUWrapper.defer_symbolic!(c, A)
+        PNM.KLUWrapper.set_lean_plan!(c, slot.plan)
+        _align_lean_plan!(c, slot, view(data.bus_type, :, time_step))
+    else
+        PNM.symbolic_factor!(c, A)
+    end
+    return
+end
+
+# Each solve starts on the lean path, whatever paused it in the last one (`numeric_refactor!`).
+function _resume_lean!(c::PNM.KLULinSolveCache)
+    PNM.KLUWrapper.pause_lean!(c, false)
+    return
+end
+_resume_lean!(::Union{PNM.AAFactorCache, PardisoLinSolveCache}) = nothing
+
+# The plan pivots a PV bus's Q column on its Q row (that column's only entry) and a REF bus's P
+# column on its P row. A bus promoted from PV to REF since the plan was built (an island
+# reference), or demoted from REF to PV, puts an exact zero on a planned pivot: a certain lean
+# reject and a fresh klu_factor. Exchanging the bus's two state columns in the lean steps keeps
+# every pivot on its planned row.
+function _align_lean_plan!(
+    c::PNM.KLULinSolveCache{Float64},
+    slot::LeanPlanSlot,
+    bus_type::AbstractVector{PSY.ACBusTypes.Value},
+)
+    PNM.KLUWrapper.has_lean_plan(c) || return
+    plan_types = slot.bus_types
+    swaps(i) = _swaps_state_columns(plan_types[i], bus_type[i])
+    pairs = ((2i - 1, 2i) for i in eachindex(bus_type, plan_types) if swaps(i))
+    PNM.KLUWrapper.swap_lean_columns!(c, slot.plan, pairs)
+    return
+end
+_align_lean_plan!(
+    ::Union{PNM.AAFactorCache, PardisoLinSolveCache},
+    ::LeanPlanSlot,
+    ::AbstractVector{PSY.ACBusTypes.Value},
+) = nothing
+
+function _swaps_state_columns(planned::PSY.ACBusTypes.Value, now::PSY.ACBusTypes.Value)
+    return (planned == PSY.ACBusTypes.PV && now == PSY.ACBusTypes.REF) ||
+           (planned == PSY.ACBusTypes.REF && now == PSY.ACBusTypes.PV)
+end
+
+_lean_slot(memo::ACJacobianStructureCache) = memo.lean
+_lean_slot(::Nothing) = LeanPlanSlot()
+
+const _NO_LEAN_COUNTS = (;
+    attempts = 0, rejects = 0, solve_failures = 0, late_analyses = 0, cold_retries = 0)
+
+"""Lean-LU counters of `data`'s polar NR cache, `PNM.KLUWrapper.lean_counts`: refactors
+attempted, rejected by the pivot-ratio test, accepted but failing their solve (re-pivoted), and
+deferred analyses needed later; plus the solves rerun cold after failing on a reused pivot order
+([`_newton_power_flow`](@ref)). Zeros without a cache, or on a non-KLU backend."""
+_lean_counts(data::ACPowerFlowData) = _lean_counts(data.polar_nr_cache[])
+_lean_counts(::Nothing) = _NO_LEAN_COUNTS
+_lean_counts(entry::PolarNRCache) = _lean_counts(entry.linSolveCache)
+_lean_counts(c::PNM.KLULinSolveCache) = merge(
+    PNM.KLUWrapper.lean_counts(c), (; cold_retries = PNM.KLUWrapper.cold_retries(c)))
+_lean_counts(::Union{PNM.AAFactorCache, PardisoLinSolveCache}) = _NO_LEAN_COUNTS
+
+_cold_retries(data::ACPowerFlowData) = _lean_counts(data).cold_retries
+
+# A solve starting on a lean plan or on a KLU numeric kept from an earlier solve pivots on an
+# order chosen for other values; only such a solve is rerun cold when it fails.
+_reuses_pivot_order(c::PNM.KLULinSolveCache) =
+    PNM.KLUWrapper.has_lean_plan(c) || PNM.is_factored(c)
+_reuses_pivot_order(::Union{PNM.AAFactorCache, PardisoLinSolveCache}) = false
+
+# p3s accepts a lean factor on its pivot ratio alone (nr_klu.cpp:582-588). A poor lean step costs
+# iterations, never a wrong answer: convergence is judged on the residual, and a solve that fails
+# on lean factors is rerun cold.
+_skips_refinement(c::PNM.KLULinSolveCache) = PNM.KLUWrapper.lean_active(c)
+_skips_refinement(::Union{PNM.AAFactorCache, PardisoLinSolveCache}) = false
+
+"""Seed `work`'s Jacobian-structure memo, and with it the lean-LU plan, from `base`'s. For a
+working copy whose Ybus is a value copy of `base`'s with the same pattern (PowerTransmission-
+SecurityAnalysis), so every copy pivots like `base` instead of on whatever it solves first. An
+unbuilt plan is not shared: the copies would race to build it."""
+_inherit_jacobian_structure!(work::ACPowerFlowData, base::ACPowerFlowData) =
+    _inherit_jacobian_structure!(work, base.ac_jacobian_structure_cache[])
+_inherit_jacobian_structure!(::ACPowerFlowData, ::Nothing) = nothing
+
+function _inherit_jacobian_structure!(work::ACPowerFlowData, memo::ACJacobianStructureCache)
+    y = work.power_network_matrix.data
+    y0 = memo.matrix.data
+    (
+        SparseArrays.getcolptr(y) == SparseArrays.getcolptr(y0) &&
+        SparseArrays.rowvals(y) == SparseArrays.rowvals(y0)
+    ) ||
+        error(
+            "The working copy's Ybus pattern differs from the base's; cannot share its " *
+            "Jacobian structure.",
+        )
+    lean = memo.lean
+    if !lean.tried
+        lean = LeanPlanSlot()
+    end
+    work.ac_jacobian_structure_cache[] = ACJacobianStructureCache(
+        work.power_network_matrix, memo.slack_slots, memo.structure,
+        work.area_interchange,
+        lean)
+    return
+end
+
+_arc_flow_scratch(::Nothing, data::ACPowerFlowData) = ArcFlowScratch(data)
+
+function _arc_flow_scratch(entry::PolarNRCache, data::ACPowerFlowData)
+    arcs = PNM.get_arc_axis(data.power_network_matrix.arc_admittance_from_to)
+    if entry.arc_flows.arcs === arcs
+        return entry.arc_flows
+    end
+    return ArcFlowScratch(data)
+end
 
 function _ref_set_changed(
     before::Vector{PSY.ACBusTypes.Value},
@@ -144,7 +363,7 @@ end
 
 """Solve for the Newton-Raphson step, given the factorization object for `J.Jv`
 (if non-singular) or its stand-in (if singular)."""
-function _solve_Δx_nr!(stateVector::StateVectorCache, cache::PFLinearSolverCache)
+function _solve_Δx_nr!(stateVector::StateVectorCache, cache::PNM.LinearSolverCache)
     copyto!(stateVector.Δx_nr, stateVector.r)
     solve!(cache, stateVector.Δx_nr)
     return
@@ -156,7 +375,7 @@ exceeds `refinement_threshold`, run iterative refinement and recompute it. Retur
 signal (see [`_set_Δx_nr!`](@ref))."""
 function _do_refinement!(stateVector::StateVectorCache,
     A::SparseMatrixCSC{Float64, J_INDEX_TYPE},
-    cache::PFLinearSolverCache,
+    cache::PNM.LinearSolverCache,
     refinement_threshold::Float64,
     refinement_eps::Float64,
 )
@@ -187,7 +406,7 @@ factorization is singular or the residual stays above `refinement_threshold`."""
 function _factor_solve_ok!(factor!,
     stateVector::StateVectorCache,
     J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
-    linSolveCache::PFLinearSolverCache,
+    linSolveCache::PNM.LinearSolverCache,
     refinement_threshold::Float64,
     refinement_eps::Float64)
     try
@@ -201,6 +420,7 @@ function _factor_solve_ok!(factor!,
         return false
     end
     _solve_Δx_nr!(stateVector, linSolveCache)
+    _skips_refinement(linSolveCache) && return true
     # Backend-agnostic singular-Jacobian guard: refinement returns the relative residual
     # and rescues merely ill-conditioned solves; KLU throws above, AA/Pardiso need this.
     residual = _do_refinement!(
@@ -218,7 +438,7 @@ end
 function _set_Δx_nr!(stateVector::StateVectorCache,
     J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
     data::ACPowerFlowData,
-    linSolveCache::PFLinearSolverCache,
+    linSolveCache::PNM.LinearSolverCache,
     solver::ACPowerFlowSolverType,
     refinement_threshold::Float64,
     refinement_eps::Float64)
@@ -229,9 +449,9 @@ function _set_Δx_nr!(stateVector::StateVectorCache,
     )
     if !ok && _repivots(linSolveCache)
         @debug "stale KLU pivot order; re-pivoting with a fresh factorization"
-        _count_symbolic_factor!(data)
+        _count_numeric_refactor!(data)
         ok = _factor_solve_ok!(
-            full_factor!, stateVector, J, linSolveCache,
+            _repivot!, stateVector, J, linSolveCache,
             refinement_threshold, refinement_eps,
         )
     end
@@ -258,7 +478,7 @@ function _set_Δx_nr!(stateVector::StateVectorCache,
         _do_refinement!(stateVector, M, cache, refinement_threshold, refinement_eps)
     end
     # Not rmul!: BLAS dscal wakes OpenBLAS's thread pool every Newton step, which then spins on
-    # the cores that threaded callers run their workers on.
+    # the cores PTSA and threaded time steps run their workers on.
     stateVector.Δx_nr .= .-stateVector.Δx_nr
     return
 end
@@ -426,7 +646,7 @@ the value of the Jacobian at the new `x`, if needed. Unlike
 `_simple_step`, this has a return value, the updated value of `delta``."""
 function _trust_region_step(time_step::Int,
     stateVector::StateVectorCache,
-    linSolveCache::PFLinearSolverCache,
+    linSolveCache::PNM.LinearSolverCache,
     residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
     J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
     data::ACPowerFlowData,
@@ -672,7 +892,7 @@ end
  if it reads it again."""
 function _simple_step(time_step::Int,
     stateVector::StateVectorCache,
-    linSolveCache::PFLinearSolverCache,
+    linSolveCache::PNM.LinearSolverCache,
     residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
     J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
     data::ACPowerFlowData,
@@ -729,7 +949,7 @@ should terminate early. Like [`_simple_step`](@ref), it leaves the Jacobian at t
 pre-step iterate; the caller refills it after an accepted step."""
 function _iwamoto_step(time_step::Int,
     stateVector::StateVectorCache,
-    linSolveCache::PFLinearSolverCache,
+    linSolveCache::PNM.LinearSolverCache,
     residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
     J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
     data::ACPowerFlowData,
@@ -834,7 +1054,7 @@ end
     $DEFAULT_REFINEMENT_EPS """
 function _run_power_flow_method(time_step::Int,
     stateVector::StateVectorCache,
-    linSolveCache::PFLinearSolverCache,
+    linSolveCache::PNM.LinearSolverCache,
     residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
     J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
     data::ACPowerFlowData,
@@ -931,7 +1151,7 @@ end
     damping to salvage the step before reverting. Default: $DEFAULT_IWAMOTO_FALLBACK."""
 function _run_power_flow_method(time_step::Int,
     stateVector::StateVectorCache,
-    linSolveCache::PFLinearSolverCache,
+    linSolveCache::PNM.LinearSolverCache,
     residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
     J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
     data::ACPowerFlowData,
@@ -1020,6 +1240,7 @@ function _finalize_power_flow(
     ::Nothing,
     time_step::Int64,
 )
+    data.iterations[time_step] += i
     return _report_power_flow_convergence(converged, i, solver_name, residual)
 end
 
@@ -1032,6 +1253,7 @@ function _finalize_power_flow(
     Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
     time_step::Int64,
 )
+    data.iterations[time_step] += i
     if converged
         _warn_small_lcc_angles(data, time_step)
         if get_calculate_loss_factors(data)
@@ -1257,7 +1479,7 @@ function _fresh_newton_workspace(
     converged && return residual, J_deferred, x0_init, nothing, nothing, true
     J = _nr_build_jacobian(pf, data, residual, J_deferred, time_step)
     linSolveCache = make_linear_solver_cache(backend, J.Jv)
-    symbolic_factor!(linSolveCache, J.Jv)
+    _symbolic_step!(pf, linSolveCache, J.Jv, data, time_step)
     _count_symbolic_factor!(data)
     stateVector = StateVectorCache(x0_init, residual.Rv)
     return residual, J, x0_init, linSolveCache, stateVector, false
@@ -1266,7 +1488,7 @@ end
 """Rectangular/mixed NR/TR linear-solver cache stored in `data.solver_cache`. Reused when the
 rebuilt Jacobian has the recorded sparsity pattern (`colptr`, `rowval`, `m`, `n`);
 `bus_type_snapshot` holds the bus types of the last factorization."""
-mutable struct RectMixedNRCache{C <: PFLinearSolverCache} <: SolverCache
+mutable struct RectMixedNRCache{C <: PNM.LinearSolverCache} <: SolverCache
     colptr::Vector{J_INDEX_TYPE}
     rowval::Vector{J_INDEX_TYPE}
     m::Int
@@ -1390,6 +1612,9 @@ function _polar_newton_workspace!(
         PolarNRCache(
             residual, J, linSolveCache, stateVector, backend,
             copy(view(data.bus_type, :, time_step)),
+            # A rebuild keeps the replaced entry's scratch while the arc axis is the same.
+            _arc_flow_scratch(data.polar_nr_cache[], data),
+            _lean_slot(data.ac_jacobian_structure_cache[]),
             # A copy: `x0_init` may be the caller's `x0`.
             copy(x0_init),
             SubnetworkScratch(size(data.bus_type, 1)))
@@ -1450,11 +1675,57 @@ function _polar_newton_workspace!(
     # Reuse the linear-solver cache (the Symbolic holds: the pattern is bus-type-agnostic) and the
     # state-vector buffers; refresh only the per-solve values.
     linSolveCache = entry.linSolveCache
+    _resume_lean!(linSolveCache)
+    _align_lean_plan!(linSolveCache, entry.lean, view(data.bus_type, :, time_step))
     stateVector = entry.stateVector
     copyto!(stateVector.x, x0_init)
     copyto!(stateVector.r, residual.Rv)
     _reset_for_reuse!(stateVector)
     return residual, J, x0_init, linSolveCache, stateVector, false
+end
+
+# The PQ ZIP update telescopes `P_net`/`Q_net` from the previous |V|, so after a diverged attempt
+# re-evaluating at x0 alone leaves cancellation error in the loads: restore them with |V| and θ.
+function _save_solve_start!(R::ACPowerFlowResidual)
+    S = R.solve_start
+    copyto!(view(S, :, 1), R.P_net)
+    copyto!(view(S, :, 2), R.Q_net)
+    copyto!(view(S, :, 3), R.bus_state.Vm)
+    copyto!(view(S, :, 4), R.bus_state.θ)
+    return
+end
+
+function _restore_solve_start!(R::ACPowerFlowResidual)
+    S = R.solve_start
+    copyto!(R.P_net, view(S, :, 1))
+    copyto!(R.Q_net, view(S, :, 2))
+    copyto!(R.bus_state.Vm, view(S, :, 3))
+    copyto!(R.bus_state.θ, view(S, :, 4))
+    # The restored state, not `data` (holding the failed iterate), is authoritative.
+    R.bus_state.data_stale = true
+    return
+end
+
+# These residuals rebuild every injection from `data` on each evaluation.
+_save_solve_start!(::Union{ACRectangularCIResidual, ACMixedCPBResidual}) = nothing
+_restore_solve_start!(::Union{ACRectangularCIResidual, ACMixedCPBResidual}) = nothing
+
+# Residual, Jacobian and state back at `x0`, every buffer as a reused workspace starts a solve.
+function _restart_from!(
+    stateVector::StateVectorCache,
+    residual,
+    J,
+    data::ACPowerFlowData,
+    x0::Vector{Float64},
+    time_step::Int64,
+)
+    _restore_solve_start!(residual)
+    residual(data, x0, time_step)
+    J(data, time_step)
+    copyto!(stateVector.x, x0)
+    copyto!(stateVector.r, residual.Rv)
+    _reset_for_reuse!(stateVector)
+    return
 end
 
 function _newton_power_flow(
@@ -1502,7 +1773,7 @@ function _newton_power_flow(
     x_final = x0_init
     if !converged
         J = J_or_nothing
-        converged, i = _run_power_flow_method(
+        run_method() = _run_power_flow_method(
             time_step,
             stateVector,
             linSolveCache,
@@ -1523,6 +1794,19 @@ function _newton_power_flow(
             iwamoto_fallback,
             stop_at_fold,
         )
+        reused = _reuses_pivot_order(linSolveCache)
+        reused && _save_solve_start!(residual)
+        converged, i = run_method()
+        if !converged && reused
+            # p3s nr_klu.cpp:798-820: rerun once from x0 as a fresh KLU solve would, so a reused
+            # pivot order never changes a solve's status.
+            @debug "solve failed on a reused pivot order; retrying on a fresh factorization" time_step
+            PNM.KLUWrapper.cold_restart!(linSolveCache)
+            _restart_from!(stateVector, residual, J, data, x0_init, time_step)
+            failed = i
+            converged, i = run_method()
+            i += failed
+        end
         x_final = stateVector.x
         _finalize_formulation!(pf, data, x_final, residual, time_step)
         return _finalize_power_flow(

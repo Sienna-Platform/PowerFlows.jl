@@ -13,7 +13,7 @@ function _mixed_perturb!(sys::PSY.System; vm = 0.7, apq = -0.7, apv = 0.6)
     for b in PSY.get_components(PSY.ACBus, sys)
         bt = PSY.get_bustype(b)
         if bt == PSY.ACBusTypes.PQ
-            PSY.set_magnitude!(b, vm)
+            PSY.set_magnitude!(b, vm * PSY.CU)
             PSY.set_angle!(b, apq)
         elseif bt == PSY.ACBusTypes.PV
             PSY.set_angle!(b, apv)
@@ -74,7 +74,7 @@ end
     pq = findall(==(PSY.ACBusTypes.PQ), bt)
     @test !isempty(ref) && !isempty(pv) && !isempty(pq)
     ref_angle = sum(data.bus_angles[r, 1] for r in ref) / length(ref)
-    target_vm = sum(data.bus_magnitude[p, 1] for p in pv) / length(pv)
+    target_vm = sum(data.bus_magnitude[p, 1] for p in vcat(pv, ref)) / length(vcat(pv, ref))
 
     # Mirror the rect rule exactly: when the subnetwork REF angle is identically
     # 0.0 the bus keeps its own angle (rect/polar heuristic — a flat REF angle

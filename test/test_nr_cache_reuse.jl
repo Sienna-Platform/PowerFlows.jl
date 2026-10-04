@@ -292,21 +292,31 @@ end
     for (label, set, name, buses, correct, kwargs) in cases
         sys = PSB.build_system(set, name; kwargs...)
         for ACSolver in (NewtonRaphsonACPowerFlow, TrustRegionACPowerFlow),
-            bus_number in buses, hide_flip in (false, true)
+            bus_number in buses, hide_flip in (false, true), lean in (false, true)
 
-            @testset "$label bus $bus_number $ACSolver hide_flip=$hide_flip" begin
+            @testset "$label bus $bus_number $ACSolver hide_flip=$hide_flip lean=$lean" begin
                 pf = ACPowerFlow{ACSolver}(;
                     check_reactive_power_limits = false,
                     correct_bustypes = correct,
                     solution_parameters = SolutionParameters(; linear_solver = "KLU"),
                 )
-                data, converged_pq, converged, logs, c0 =
+                # The lean LU refactors on its own frozen order, never on the stale KLU one.
+                PF._USE_LEAN_LU[] = lean
+                data, converged_pq, converged, logs, c0 = try
                     _stale_pivot_flip(pf, sys, bus_number; hide_flip)
+                finally
+                    PF._USE_LEAN_LU[] = true
+                end
                 @test converged_pq
                 @test PF._repivots(c0.linSolveCache)
                 @test data.polar_nr_cache[] === c0
-                @test (_count_logs(logs, Logging.Debug, "stale KLU pivot order") > 0) ==
-                      hide_flip
+                @test PNM.KLUWrapper.has_lean_plan(c0.linSolveCache) == lean
+                if lean
+                    @test PF._lean_counts(data)[1] > 0
+                else
+                    @test (_count_logs(logs, Logging.Debug, "stale KLU pivot order") > 0) ==
+                          hide_flip
+                end
                 @test converged
                 @test _count_logs(logs, Logging.Warn, "Jacobian is singular") == 0
 

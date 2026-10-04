@@ -119,10 +119,13 @@ end
                 typeof(init_kwargs),
             )),
     )
-    @test rt.parameters[1] === PF.ACPowerFlowResidual
-    @test rt.parameters[3] === Vector{Float64}
-    @test rt.parameters[5] <: Union{Nothing, PF.StateVectorCache}
-    @test rt.parameters[6] === Bool
+    # The fresh-build and reuse branches may infer as separate tuple types; check each.
+    for t in Base.uniontypes(rt)
+        @test t.parameters[1] === PF.ACPowerFlowResidual
+        @test t.parameters[3] === Vector{Float64}
+        @test t.parameters[5] <: Union{Nothing, PF.StateVectorCache}
+        @test t.parameters[6] === Bool
+    end
 
     data.bus_active_power_injections[:, 1] .*= 1.001  # must iterate, not a 0-iteration warm start
     PF._newton_workspace!(pf, data, 1, backend, PF.DEFAULT_NR_TOL, init_kwargs)  # warm the reuse branch
@@ -137,7 +140,7 @@ end
 end
 
 @testset "Polar NR refresh after a bus-type and partition change: allocation" begin
-    # A per-contingency pattern on one reused `data`: bus types change and the island
+    # PTSA's per-contingency pattern on one reused `data`: bus types change and the island
     # partition is invalidated before every solve. The refresh rebuilds the partition, the PQ
     # index set and the start point in the cache's own buffers: 1.8 KB/call, against more than
     # 160 KB when the partition and PQ index set were rebuilt from fresh containers.
@@ -173,6 +176,33 @@ end
     @test entry.residual.validate_indices == PF._pq_validate_indices(bus_type)
     @test entry.J.independent_ref ==
           PF._multi_swing_ref_indices(data.bus_type, entry.residual.subnetworks, 1)
+end
+
+@testset "AC reused solve_power_flow! allocation regression" begin
+    # PTSA calls `solve_power_flow!` once per contingency on a reused `data`: the arc→bus maps
+    # and branch-flow buffers come from the `PolarNRCache`, not a per-call rebuild.
+    sys = PSB.build_system(PSB.MatpowerTestSystems, "matpower_ACTIVSg2000_sys")
+    pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(; correct_bustypes = true)
+    data = PF.PowerFlowData(pf, sys)
+    vm0, va0 = copy(data.bus_magnitude), copy(data.bus_angles)
+    p0, q0 =
+        copy(data.bus_active_power_injections), copy(data.bus_reactive_power_injections)
+    function reset!()
+        copyto!(data.bus_magnitude, vm0)
+        copyto!(data.bus_angles, va0)
+        copyto!(data.bus_active_power_injections, p0)
+        copyto!(data.bus_reactive_power_injections, q0)
+        return
+    end
+    @test solve_power_flow!(data)
+    reset!()
+    @test solve_power_flow!(data)
+    reset!()
+    a = Logging.with_logger(Logging.NullLogger()) do
+        @allocated solve_power_flow!(data)
+    end
+    @test data.converged[1]
+    @test a < 128 * 1024
 end
 
 @testset "DC PCM-reuse allocation regression" begin

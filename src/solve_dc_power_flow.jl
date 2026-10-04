@@ -158,7 +158,7 @@ end
 # let Julia specialize the body on concrete types — one dynamic dispatch at the boundary.
 function _run_ptdf_solve!(
     data::PTDFPowerFlowData,
-    solver_cache::PFLinearSolverCache,
+    solver_cache::PNM.LinearSolverCache,
     scratch::DCSolveScratch,
 )
     power_injections = scratch.power_injections
@@ -192,7 +192,7 @@ end
 
 function _run_vptdf_solve!(
     data::vPTDFPowerFlowData,
-    solver_cache::PFLinearSolverCache,
+    solver_cache::PNM.LinearSolverCache,
     scratch::DCSolveScratch,
 )
     power_injections = scratch.power_injections
@@ -200,21 +200,22 @@ function _run_vptdf_solve!(
         data.bus_active_power_injections - data.bus_active_power_withdrawals
     power_injections .+= data.bus_hvdc_net_power
     power_injections .+= data.bus_phase_shift_injections
-    # Use in-place multiply to avoid per-solve allocation
-    my_mul_mt!(
-        data.arc_active_power_flow_from_to,
-        data.power_network_matrix,
-        power_injections,
-    )
-    data.arc_active_power_flow_from_to .-= data.arc_phase_shift_flow_offsets
-    @. data.arc_active_power_flow_to_from = -data.arc_active_power_flow_from_to
-    # HVDC flows stored separately and already calculated: see initialize_power_flow_data!
     valid_ix = scratch.valid_ix
     p_inj = scratch.p_inj
     @views p_inj .= power_injections[valid_ix, :]
     solve!(solver_cache, p_inj)
     @views data.bus_angles[valid_ix, :] .= p_inj
     _shift_angles_to_stored_reference!(data)
+    # Flows from the one angle solve, as in `_run_aba_solve!`: PTDF rows would cost one
+    # single-RHS solve per arc.
+    mul!(
+        data.arc_active_power_flow_from_to,
+        transpose(PNM.get_core(data.power_network_matrix).BA),
+        data.bus_angles,
+    )
+    data.arc_active_power_flow_from_to .-= data.arc_phase_shift_flow_offsets
+    @. data.arc_active_power_flow_to_from = -data.arc_active_power_flow_from_to
+    # HVDC flows stored separately and already calculated: see initialize_power_flow_data!
     # Use pre-cached fb_ix/tb_ix to avoid per-call allocation
     @views data.arc_angle_differences .=
         data.bus_angles[scratch.fb_ix, :] .- data.bus_angles[scratch.tb_ix, :]
@@ -222,14 +223,14 @@ function _run_vptdf_solve!(
     data.converged .= true
     _adjust_dc_slack_injections!(data, power_injections)
     if get_calculate_loss_factors(data)
-        data.loss_factors .= dc_loss_factors(data, scratch.rs)
+        data.loss_factors .= _vptdf_loss_factors(data, scratch.rs, solver_cache, valid_ix)
     end
     return
 end
 
 function _run_aba_solve!(
     data::ABAPowerFlowData,
-    solver_cache::PFLinearSolverCache,
+    solver_cache::PNM.LinearSolverCache,
     scratch::DCSolveScratch,
 )
     power_injections = scratch.power_injections
@@ -632,23 +633,24 @@ function dc_loss_factors(data::PTDFPowerFlowData, Rs::Vector{Float64})
 end
 
 function dc_loss_factors(data::vPTDFPowerFlowData, Rs::Vector{Float64})
-    ptdf = data.power_network_matrix
-    arc_ax = get_arc_axis(data)
-    n_buses = length(get_bus_axis(data))
-    n_ts = size(data.arc_active_power_flow_from_to, 2)
-    result = zeros(n_buses, n_ts)
-    cache = PNM.get_ptdf_data(ptdf)
-    arc_lookup = PNM.get_arc_lookup(ptdf)
-    for (k, arc) in enumerate(arc_ax)
-        row_k = _ptdf_cached_row(ptdf, cache, arc_lookup, arc)
-        r_k = Rs[k]
-        for t in 1:n_ts
-            @inbounds w = 2.0 * r_k * data.arc_active_power_flow_from_to[k, t]
-            @inbounds @simd for j in 1:n_buses
-                result[j, t] += row_k[j] * w
-            end
-        end
-    end
+    valid_ix = collect(1:length(get_bus_axis(data)))[get_valid_ix(data)]
+    return _vptdf_loss_factors(data, Rs, data.aux_network_matrix.K, valid_ix)
+end
+
+# `PTDFᵀ w = B⁻¹ BA w` on the non-reference buses (the REF-relative PTDF has zero reference
+# columns), so one ABA solve replaces a PTDF row per arc.
+function _vptdf_loss_factors(
+    data::vPTDFPowerFlowData,
+    Rs::Vector{Float64},
+    solver_cache::PNM.LinearSolverCache,
+    valid_ix::Vector{Int},
+)
+    BA = PNM.get_core(data.power_network_matrix).BA
+    result = BA * (2.0 .* Rs .* data.arc_active_power_flow_from_to)
+    rhs = result[valid_ix, :]
+    solve!(solver_cache, rhs)
+    fill!(result, 0.0)
+    result[valid_ix, :] .= rhs
     return result
 end
 

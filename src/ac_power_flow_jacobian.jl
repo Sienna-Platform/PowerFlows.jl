@@ -199,7 +199,7 @@ end
 # once and reused across the Q-limit inner loop, repeated PCM solves and contingencies that only
 # change values. The key is the network-matrix identity + area interchange data, and the memo's
 # slots must cover `_extra_slack_slots` (as `_slack_slots_cover` does for a polar cache), so an
-# outage that drops a slot keeps the shared structure. Returns a full `copy` so
+# outage that drops a slot keeps the shared structure and its lean plan. Returns a full `copy` so
 # each `ACPowerFlowJacobian` owns a fresh mutable buffer, or `nothing` to signal a rebuild. Lives
 # in its own `data.ac_jacobian_structure_cache` field ([`ACJacobianStructureCache`](@ref)) so it
 # never collides with the FastDecoupled/DC caches in `data.solver_cache[]`.
@@ -228,7 +228,8 @@ function _get_or_build_jacobian_structure(
     # reuse still works.
     data.ac_jacobian_structure_cache[] =
         ACJacobianStructureCache(
-            data.power_network_matrix, slots, copy(Jv0), data.area_interchange)
+            data.power_network_matrix, slots, copy(Jv0), data.area_interchange,
+            LeanPlanSlot())
     return Jv0
 end
 

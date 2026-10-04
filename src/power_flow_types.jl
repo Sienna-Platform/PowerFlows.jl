@@ -28,17 +28,34 @@ discriminates which path populated it — no sentinel tag is needed and a cross-
 `MethodError` rather than a silent reuse."""
 abstract type SolverCache end
 
+"""One frozen KLU pivot order (`PNM.KLUWrapper.LeanLUPlan`) for a Jacobian structure, built
+once on the operating-point-free Jacobian (|V| = 1, θ = 0) by [`_lean_plan_slot!`](@ref).
+`tried` is set by the first build attempt, so tasks sharing the slot never write it; `valid` is
+false when that attempt found the Jacobian singular. `bus_types` are the bus types that Jacobian
+was built with, for comparing a solve's bus types against the plan's."""
+mutable struct LeanPlanSlot
+    plan::PNM.KLUWrapper.LeanLUPlan
+    tried::Bool
+    valid::Bool
+    bus_types::Vector{PSY.ACBusTypes.Value}
+end
+
+LeanPlanSlot() =
+    LeanPlanSlot(PNM.KLUWrapper.LeanLUPlan(), false, false, PSY.ACBusTypes.Value[])
+
 """Memoized AC-Jacobian sparse structure, stored in its OWN `PowerFlowData` field (not the shared
 `solver_cache` slot): the NR/TR AC Jacobian and a [`SolverCache`](@ref) can both be live in one
 solve — e.g. a FastDecoupled solve that hands off to NR uses a `FastDecoupledCache` *and* this
 structure — so the two must not contend for a single slot. Cache key is the network-matrix
 identity + the distributed-slack slots the Ybus pattern lacks (`_extra_slack_slots`); see
-`_get_or_build_jacobian_structure`."""
+`_get_or_build_jacobian_structure`. `lean` holds the KLU lean-LU pivot order shared by every
+polar NR cache built on `structure` ([`LeanPlanSlot`](@ref))."""
 struct ACJacobianStructureCache
     matrix::PNM.AC_Ybus_Matrix
     slack_slots::Vector{Tuple{Int, Int}}
     structure::SparseMatrixCSC{Float64, J_INDEX_TYPE}
     area_data::AreaInterchangeData
+    lean::LeanPlanSlot
 end
 
 # Centralized so the multi-line warning text can't drift between the two

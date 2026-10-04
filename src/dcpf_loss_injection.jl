@@ -63,7 +63,7 @@ function _populate_loss_injections!(data::ABAPowerFlowData, sys::PSY.System)
     # Build bus_number → complex voltage map from the system's current AC state.
     bus_voltage = Dict{Int, ComplexF64}()
     for bus in PSY.get_components(PSY.ACBus, sys)
-        V = PSY.get_magnitude(bus)
+        V = PSY.get_magnitude(bus, PSY.CU)
         θ = PSY.get_angle(bus)
         bus_voltage[PSY.get_number(bus)] = V * exp(1im * θ)
     end
@@ -107,10 +107,9 @@ Precompute the DC phase-shifter terms: per-arc flow offsets `b_eq·α_eq` and th
 injections (`+b·α` at from, `−b·α` at to). Zero on α-free systems. Computed once at data
 construction from the stored circuit angles — mutating a circuit's α afterwards requires
 rebuilding the `PowerFlowData` (same staleness contract as the cached arc resistances).
+AC data reads the bus injections only in the DC-angle warm start (`_dc_power_flow_fallback!`).
 """
-function _populate_phase_shift_terms!(
-    data::Union{PTDFPowerFlowData, vPTDFPowerFlowData, ABAPowerFlowData},
-)
+function _populate_phase_shift_terms!(data::PowerFlowData)
     nrd = get_network_reduction_data(data)
     bus_lookup = get_bus_lookup(data)
     for (ix, arc) in enumerate(get_arc_axis(data))
@@ -122,5 +121,3 @@ function _populate_phase_shift_terms!(
     end
     return
 end
-
-_populate_phase_shift_terms!(::PowerFlowData) = nothing
