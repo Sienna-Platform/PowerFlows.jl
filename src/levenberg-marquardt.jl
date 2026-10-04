@@ -148,7 +148,7 @@ _default_marquardt_scaling(::Type{<:AbstractACPowerFlow}) = false
 _default_marquardt_scaling(::Type{<:ACRectangularPowerFlow}) = true
 
 # The ‖F‖ in λ = μ‖F‖. Polar caps it at 1: at a huge ‖F‖ (near-zero-impedance branches),
-# μ‖F‖ damps away the Newton step that converges. Capping breaks mixed from flat starts.
+# μ‖F‖ suppresses the Newton step that converges. Capping breaks mixed from flat starts.
 _lm_damping_norm(_, sumsq::Float64) = sqrt(sumsq)
 _lm_damping_norm(::ACPowerFlowResidual, sumsq::Float64) = min(sqrt(sumsq), 1.0)
 

@@ -448,7 +448,6 @@ end
     @test h.lean_plan === _lean_slot(fd).plan
     @test isapprox(fd.bus_magnitude, nr.bus_magnitude; atol = 1e-9, rtol = 0)
     @test isapprox(fd.bus_angles, nr.bus_angles; atol = 1e-9, rtol = 0)
-    # A re-solve keeps the cache and stays on the lean path.
     (; attempts) = PF._lean_counts(h)
     copyto!(fd.bus_magnitude, vm0)
     copyto!(fd.bus_angles, va0)
@@ -462,7 +461,6 @@ end
     @test _lean_slot(ga).tried
     @test isapprox(ga.bus_magnitude, nr.bus_magnitude; atol = 1e-9, rtol = 0)
 
-    # Planned up front only when a Newton handoff will use it.
     for (handoff, planned) in ((NewtonRaphsonACPowerFlow, true), (PF.NoHandoff, false))
         data = staged(PF.FastDecoupledXB, handoff)
         PF._prepare_lean_plan!(PF.get_pf(data), data, 1, PNM.KLUSolver())

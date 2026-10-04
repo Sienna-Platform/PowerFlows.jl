@@ -34,7 +34,7 @@ _finalize_jv(J) = J.Jv
 
 """A handoff's linear-solver cache, kept by a stage cache across solves of the same data. Valid
 while the Jacobian comes from the `structure` memo it was analyzed for, so repeated solves skip
-the symbolic analysis (~3 ms at 10k buses)."""
+the symbolic analysis."""
 struct HandoffLinearCache{C <: PNM.LinearSolverCache}
     structure::ACJacobianStructureCache
     cache::C

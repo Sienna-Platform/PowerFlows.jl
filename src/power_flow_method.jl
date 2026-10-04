@@ -181,7 +181,7 @@ end
 
 """A polar NR cache's island partition and the bus types it was derived for, from
 [`_snapshot_partition`](@ref). It holds no Jacobian offsets, so [`_restore_partition!`](@ref) can
-put it back into any polar cache built on the same network."""
+restore it into any polar cache built on the same network."""
 struct PartitionSnapshot
     bus_type::Vector{PSY.ACBusTypes.Value}
     subnetworks::Dict{Int64, Vector{Int64}}
@@ -207,7 +207,7 @@ function _snapshot_partition(entry)
     )
 end
 
-"""Put `snap` back into `data`'s polar NR cache instead of [`_invalidate_partition!`](@ref), so
+"""Restore `snap` into `data`'s polar NR cache instead of [`_invalidate_partition!`](@ref), so
 its next reuse skips re-deriving the islands. The caller guarantees that `data`'s Ybus is again
 the one `snap` was taken on. The cache is left as a re-derivation for `snap.bus_type` would leave
 it: partition, slack slots, PQ indices, and a dropped KLU Numeric. Worker slots are invalidated."""
@@ -280,8 +280,8 @@ function _plan_at_flat!(
     return
 end
 
-# A solve's own `J`, already evaluated at its start: plan at flat, then put `J` and the bus state
-# it shares with the residual back, sparing `_lean_plan_slot!`'s second residual and Jacobian.
+# A solve's own `J`, already evaluated at its start: plan at flat, then restore `J` and the bus
+# state it shares with the residual, sparing `_lean_plan_slot!`'s second residual and Jacobian.
 function _plan_at_flat_in_place!(
     slot::LeanPlanSlot,
     J::ACPowerFlowJacobian,
@@ -1136,8 +1136,8 @@ function _simple_step(time_step::Int,
     return J_filled, factored
 end
 
-# Chord steps: once ‖F‖∞ < CHORD_TRIGGER, NR reuses its last LU and keeps a step only if ‖F‖∞
-# falls by CHORD_CONTRACTION (about three chord steps replace one refactor near the solution).
+# Chord steps: once ‖F‖∞ < CHORD_TRIGGER, NR reuses its last LU while each step cuts ‖F‖∞ to at
+# most CHORD_CONTRACTION times its value (see `_chord_step!`).
 const CHORD_TRIGGER = 1e-2
 const CHORD_CONTRACTION = 0.1
 # Test/bench switch: `false` refactors on every NR step.
@@ -1957,9 +1957,8 @@ function _set_rect_mixed_plan!(
     return
 end
 
-# Off the plan's bus types the lean path waits and KLU pivots afresh (the pre-lean cost). A plan
-# once rejected was built at a start unlike these solves (a flat one, rcond0 ~1e-5 on c_sys14
-# rect) and would be rejected again each solve, so it is retired.
+# Off the plan's bus types the lean path pauses and KLU pivots afresh. A rejected plan was built
+# at a start unlike these solves (a flat start) and would fail again each solve, so it is retired.
 function _set_lean_for_types!(
     cache::RectMixedNRCache,
     bus_type::AbstractVector{PSY.ACBusTypes.Value},

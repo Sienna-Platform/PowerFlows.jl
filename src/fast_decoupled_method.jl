@@ -249,7 +249,7 @@ _fd_needs_handoff_jacobian(::Type{NoHandoff}) = false
 _fd_needs_handoff_jacobian(::Type{<:ACPowerFlowSolverType}) = true
 
 # FD converges linearly: once a cycle cuts ‖Rv‖∞ by less than half, the handoff's Newton steps
-# are cheaper than more cycles (10k flat: 150 cycles to no tolerance vs 1–8 cycles + 4–5 NR).
+# cost less than more cycles.
 const FD_HANDOFF_CONTRACTION = 0.5
 _fd_stage_stalled(::Type{NoHandoff}, ::Float64, ::Float64) = false
 _fd_stage_stalled(::Type{<:ACPowerFlowSolverType}, rinf::Float64, rinf_prev::Float64) =
@@ -456,7 +456,7 @@ function _fd_fixed_jacobian_power_flow(
             if fd_non_divergent && !(ss < fd_ndvfct * sg.prev_ss)
                 # A step from a stale J failed: refreeze at the cycle start and retry before
                 # halving. The mixed PV power rows rotate with the bus angle, so J frozen at x0
-                # diverges outright once angles move (ACTIVSg2000).
+                # diverges once the angles move.
                 if refreeze_on_stall && !fresh
                     copyto!(sv.x, sg.cycle_x)
                     residual(data, sv.x, time_step)
@@ -1337,7 +1337,8 @@ function _fd_decoupled_power_flow(
             break
         end
 
-        # A non-finite cycle diverged: the non-divergent branch below backtracks it.
+        # Without fd_non_divergent, a BLOWUP or a non-finite cycle stops here. With it, the branch
+        # below backtracks the cycle.
         if diverged || (!fd_non_divergent && !isfinite(ss))
             _fd_restore_best!(sv, residual, sg, data, time_step)
             ss = sg.best_ss
