@@ -831,11 +831,15 @@ end
 # non-transformer branch writer. The absent extra ratings must export as numeric 0.0.
 @testset "PSSE Exporter issue #361: v35 Line with no RATE4..RATE12 data" begin
     sys = System(100.0)
-    b1 = ACBus(; number = 1, name = "b1", available = true, bustype = ACBusTypes.REF,
-        angle = 0.0, magnitude = 1.0, voltage_limits = (0.0, 2.0), base_voltage = 138.0,
+    b1 = ACBus(; input_basis = PSY.CU, number = 1, name = "b1", available = true,
+        bustype = ACBusTypes.REF,
+        angle = 0.0, magnitude = 1.0, voltage_limits = (min = 0.0, max = 2.0),
+        base_voltage = 138.0,
     )
-    b2 = ACBus(; number = 2, name = "b2", available = true, bustype = ACBusTypes.PV,
-        angle = 0.0, magnitude = 1.0, voltage_limits = (0.0, 2.0), base_voltage = 138.0,
+    b2 = ACBus(; input_basis = PSY.CU, number = 2, name = "b2", available = true,
+        bustype = ACBusTypes.PV,
+        angle = 0.0, magnitude = 1.0, voltage_limits = (min = 0.0, max = 2.0),
+        base_voltage = 138.0,
     )
     add_component!(sys, b1)
     add_component!(sys, b2)
@@ -877,8 +881,10 @@ end
 # produce an empty branch mapping.
 @testset "PSSE Exporter issue #361: v35 system with no non-transformer branches" begin
     sys = System(100.0)
-    b1 = ACBus(; number = 1, name = "b1", available = true, bustype = ACBusTypes.REF,
-        angle = 0.0, magnitude = 1.0, voltage_limits = (0.0, 2.0), base_voltage = 138.0,
+    b1 = ACBus(; input_basis = PSY.CU, number = 1, name = "b1", available = true,
+        bustype = ACBusTypes.REF,
+        angle = 0.0, magnitude = 1.0, voltage_limits = (min = 0.0, max = 2.0),
+        base_voltage = 138.0,
     )
     add_component!(sys, b1)
     @test isempty(PSY.get_components(PSY.ACBranch, sys))
