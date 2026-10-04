@@ -53,15 +53,13 @@ function _newton_power_flow(pf::ACPolarPowerFlow{<:RobustHomotopyPowerFlow},
     data.iterations[time_step] += total_iters
     r_L2 = norm(homHess.pfResidual.Rv, 2)
     r_Linf = norm(homHess.pfResidual.Rv, Inf)
-    @debug("Final residual size: $(r_L2) L2, $(r_Linf) L∞.")
+    @info("Final residual size: $(r_L2) L2, $(r_Linf) L∞.")
     if !success
         @error(
             "The RobustHomotopyPowerFlow solver failed to converge after $total_iters iterations."
         )
     else
-        @debug(
-            "The RobustHomotopyPowerFlow solver converged after $total_iters iterations."
-        )
+        @info("The RobustHomotopyPowerFlow solver converged after $total_iters iterations.")
         if get_calculate_loss_factors(data)
             _calculate_loss_factors(data, homHess.J.Jv, time_step)
         end
@@ -96,7 +94,7 @@ _rethrow_unless_line_search_failure(::Any) = rethrow()
 
 function info_helper(homHess::HomotopyHessian, t_k::Float64, F_val::Float64, msg::String)
     r_val = norm(homHess.pfResidual.Rv, Inf)
-    @debug "t_k = $(sig3(t_k)): $msg, F_k $(sig3(F_val)), residual $(sig3(r_val))"
+    @info "t_k = $(sig3(t_k)): $msg, F_k $(sig3(F_val)), residual $(sig3(r_val))"
 end
 
 function _second_order_newton(homHess::HomotopyHessian,

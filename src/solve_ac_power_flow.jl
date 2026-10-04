@@ -27,8 +27,7 @@ setting and cannot round-trip a per-time-step schedule — use
 
 ## Keyword Arguments
 - `tol`: Infinite norm of residuals under which convergence is declared. Default is `1e-9`.
-- `maxIterations`: Maximum number of Newton-Raphson iterations. Default is
-  `$DEFAULT_NR_MAX_ITER`.
+- `maxIterations`: Maximum number of Newton-Raphson iterations. Default is `30`.
 
 # Returns
 - `converged::Bool`: Indicates whether the power flow solution converged.
@@ -271,6 +270,7 @@ function solve_power_flow!(
             maxlog = 1,
         )
     end
+    # preallocate results
     ts_converged = fill(false, length(sorted_time_steps))
     validate_device_store_width(get_controlled_devices(data), get_time_steps(data))
     n_work = min(get_n_threads(pf), length(sorted_time_steps))
@@ -355,14 +355,15 @@ function _solve_column!(
         data.bus_angles[:, time_step] .= NaN
     elseif get_lcc_count(data) > 0 && converged
         # calculate branch flows for LCCs: their self-admittances may change.
+        V =
+            data.bus_magnitude[:, time_step] .*
+            exp.(1im .* data.bus_angles[:, time_step])
         for (i, (bus_indices, self_admittances)) in
             enumerate(zip(data.lcc.bus_indices, data.lcc.branch_admittances))
             (rectifier_ix, inverter_ix) = bus_indices
             (rectifier_y, inverter_y) = self_admittances
-            V_inverter = _bus_voltage_phasor(data, inverter_ix, time_step)
-            V_rectifier = _bus_voltage_phasor(data, rectifier_ix, time_step)
-            S_inverter = V_inverter * conj(inverter_y * V_inverter)
-            S_rectifier = V_rectifier * conj(rectifier_y * V_rectifier)
+            S_inverter = V[inverter_ix] * conj(inverter_y * V[inverter_ix])
+            S_rectifier = V[rectifier_ix] * conj(rectifier_y * V[rectifier_ix])
             data.lcc.arc_active_power_flow_from_to[i, time_step] =
                 real(S_rectifier)
             data.lcc.arc_reactive_power_flow_from_to[i, time_step] =
@@ -643,9 +644,6 @@ function _check_concurrent_factorization(backend::PNM.LinearSolverType)
     )
 end
 
-_bus_voltage_phasor(data::ACPowerFlowData, ix::Int, time_step::Int) =
-    data.bus_magnitude[ix, time_step] * exp(1im * data.bus_angles[ix, time_step])
-
 function _solve_with_q_limits!(
     pf::AbstractACPowerFlow{<:ACPowerFlowSolverType},
     data::ACPowerFlowData,
@@ -797,7 +795,7 @@ function _check_q_limit_bounds!(
         Q_min = data.bus_reactive_power_bounds[ix, time_step][1]
 
         if !(Q_min - BOUNDS_TOLERANCE <= Q_gen <= Q_max + BOUNDS_TOLERANCE)
-            @debug "Bus $(bus_names[ix]) changed to PSY.ACBusTypes.PQ"
+            @info "Bus $(bus_names[ix]) changed to PSY.ACBusTypes.PQ"
             within_limits = false
             data.bus_type[ix, time_step] = PSY.ACBusTypes.PQ
             data.bus_reactive_power_injections[ix, time_step] =

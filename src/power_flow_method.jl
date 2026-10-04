@@ -684,7 +684,7 @@ function _set_Δx_nr!(stateVector::StateVectorCache,
         _do_refinement!(stateVector, M, cache, refinement_threshold, refinement_eps)
     end
     # Not rmul!: BLAS dscal wakes OpenBLAS's thread pool every Newton step, which then spins on
-    # the cores threaded callers run their workers on.
+    # the cores that threaded callers run their workers on.
     stateVector.Δx_nr .= .-stateVector.Δx_nr
     return ok
 end
@@ -1677,6 +1677,9 @@ function _nr_linear_solver_cache!(
     return linSolveCache
 end
 
+# Polar: defer the Jacobian entirely — a 0-iteration warm start must not pay for a
+# Jacobian evaluation + sparse-structure copy. The caller builds J only when the
+# convergence check fails.
 function _nr_initialize_with_jacobian_deferred(
     pf::ACPolarPowerFlow, data::ACPowerFlowData, time_step::Int64; kwargs...,
 )

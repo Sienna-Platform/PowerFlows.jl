@@ -140,7 +140,7 @@ end
 end
 
 @testset "Polar NR refresh after a bus-type and partition change: allocation" begin
-    # One outage per solve on a reused `data`: bus types change and the island
+    # A per-contingency pattern on one reused `data`: bus types change and the island
     # partition is invalidated before every solve. The refresh rebuilds the partition, the PQ
     # index set and the start point in the cache's own buffers: 1.8 KB/call, against more than
     # 160 KB when the partition and PQ index set were rebuilt from fresh containers.
