@@ -187,6 +187,9 @@ _ga_partition(data::ACPowerFlowData, time_step::Int) =
     GAPartition(data, time_step, _ga_vsc_ac_voltage_targets(data, time_step))
 
 # Builds the converter terms and shunts for `time_step` and runs the stage on `cache`.
+# The first iterate is the voltages in `data`, as for every other solver: from the
+# zero-current u0 (|u| ≈ 0.3, rotated by the PV stiffening on resistive ties) Anderson can
+# carry a near-unit-gain PV angle to another power flow root.
 function _ga_stage!(
     data::ACPowerFlowData,
     part::GAPartition,
@@ -207,7 +210,13 @@ function _ga_stage!(
     ws = cache.ws
     u_s = _ga_slack_voltages(data, part, time_step)
     _ga_u0!(ws, cache, u_s)
-    fill!(ws.i, zero(ComplexF64))
+    for (j, ix) in enumerate(part.l_ix)
+        ws.u[j] =
+            get_bus_magnitude(data)[ix, time_step] *
+            cis(get_bus_angles(data)[ix, time_step])
+    end
+    mul!(ws.i, cache.blocks.Yll, ws.u)
+    mul!(ws.i, cache.blocks.Yls, u_s, 1.0, 1.0)
     exit, iters, best_gap, refreshes = _ga_run_stage!(
         cache, np, y, part, dc, conv, u_s, bus_lookup, time_step,
         max_iter, stage_tol, handoff_solver,
