@@ -16,8 +16,8 @@ abstract type ACPowerFlowSolverType end
 
 """An abstract supertype for AC power flow evaluation models, parametrized by the
 solver type `S <: ACPowerFlowSolverType`. Concrete subtypes select the *formulation*:
-[`ACPolarPowerFlow`](@ref) uses the polar voltage state; rectangular and mixed formulations
-are provided separately. The solver and the
+[`ACPolarPowerFlow`](@ref) uses the polar voltage state; a rectangular
+formulation is provided separately. The solver and the
 formulation are orthogonal."""
 abstract type AbstractACPowerFlow{S <: ACPowerFlowSolverType} <: PowerFlowEvaluationModel end
 
@@ -249,8 +249,8 @@ This is more robust than the basic Newton-Raphson method, but also more computat
 intensive. Due to the difficulty of tuning meta parameters, this method may occasionally
 fail to converge where other methods would succeed.
 
-Works with the polar ([`ACPolarPowerFlow`](@ref)), rectangular
-([`ACRectangularPowerFlow`](@ref)) and mixed ([`ACMixedPowerFlow`](@ref)) formulations.
+Works with both the polar ([`ACPolarPowerFlow`](@ref)) and rectangular
+([`ACRectangularPowerFlow`](@ref)) formulations.
 
 Marquardt diagonal column scaling (`√λ·D` damping instead of `√λ·I`) can be
 toggled via the `marquardt_scaling` keyword on the formulation constructor

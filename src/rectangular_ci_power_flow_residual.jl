@@ -62,6 +62,7 @@ end
 
 function ACRectangularCIResidual(data::ACPowerFlowData, time_step::Int64)
     n_buses = first(size(data.bus_type))
+    n_lccs = size(data.lcc.p_set, 1)
     bus_type = view(data.bus_type, :, time_step)
 
     offsets, block_sizes, total_bus_state = compute_bus_state_offsets(bus_type)
@@ -76,9 +77,12 @@ function ACRectangularCIResidual(data::ACPowerFlowData, time_step::Int64)
 
     subnetworks =
         _find_subnetworks_for_reference_buses(data.power_network_matrix.data, bus_type)
+    # REF status is fixed for the life of a solve, so this is computed once here
+    # rather than per-iteration (see the `independent_ref` field docstring).
     independent_ref = _multi_swing_ref_indices(data.bus_type, subnetworks, time_step)
 
     for ix in 1:n_buses
+        # Constant-power net injection (no |V| dependence)
         P_net_const[ix] =
             data.bus_active_power_injections[ix, time_step] -
             data.bus_active_power_withdrawals[ix, time_step] +
@@ -86,10 +90,12 @@ function ACRectangularCIResidual(data::ACPowerFlowData, time_step::Int64)
         Q_net_const[ix] =
             data.bus_reactive_power_injections[ix, time_step] -
             data.bus_reactive_power_withdrawals[ix, time_step]
+        # ZIP constant-current coefficients (carried as withdrawals)
         const_I_P[ix] =
             data.bus_active_power_constant_current_withdrawals[ix, time_step]
         const_I_Q[ix] =
             data.bus_reactive_power_constant_current_withdrawals[ix, time_step]
+        # P_net_set tracks the initial P injection at setup (for slack delta)
         P_net_set[ix] = P_net_const[ix] -
                         const_I_P[ix] * data.bus_magnitude[ix, time_step]
     end
@@ -97,6 +103,7 @@ function ACRectangularCIResidual(data::ACPowerFlowData, time_step::Int64)
     bus_slack_participation_factors =
         _build_bus_slack_participation_factors(data, bus_type, subnetworks, time_step)
 
+    # Build Y_bus_eff: copy Y_bus + fold constant-Z ZIP loads
     Y = data.power_network_matrix.data
     Y_bus_eff = SparseArrays.sparse(ComplexF64.(Y))
     fold_zip_constant_z!(Y_bus_eff, data, time_step)
@@ -178,9 +185,11 @@ function _update_rect_ci_residual_values!(
 
     # 1) Push state into data (only PQ updates bus_magnitude; PV preserves V_set).
     rect_update_data!(data, x, bus_state_offset, R.bus_block_size, time_step)
+    # Populate state caches before LCC admittance refresh (LCC needs |V_state|).
     @inbounds for i in 1:n_buses
         off = Int(bus_state_offset[i])
-        if bus_types[i] == PSY.ACBusTypes.REF
+        bt = bus_types[i]
+        if bt == PSY.ACBusTypes.REF
             Vm = data.bus_magnitude[i, time_step]
             θ = data.bus_angles[i, time_step]
             e_state[i] = Vm * cos(θ)
@@ -191,25 +200,35 @@ function _update_rect_ci_residual_values!(
         end
     end
     if n_lccs > 0
-        # PV buses store V_set in data.bus_magnitude; the LCC math needs |V_state|.
+        # PV buses store V_set in data.bus_magnitude; use the rect form so LCC math
+        # sees |V_state| = sqrt(e² + f²), matching the rectangular Jacobian.
         _update_ybus_lcc!(data, time_step, e_state, f_state)
     end
 
-    # 2) Specified net injection: constant power, constant current at |V_state|, and the
-    #    distributed slack share.
+    # 2) Compute P_eff / Q_eff (slack distribution + ZIP constant-current correction).
+    # ZIP constant-Z is folded into `Y_bus_eff` at setup (see `fold_zip_constant_z!`
+    # in `rectangular_ci_setup.jl`), so only constant-P and constant-I appear here.
     @inbounds for i in 1:n_buses
-        # V_FLOOR2 (1e-16) only trips at a degenerate |V| < 1e-8 pu, never near a solution.
+        # ZIP const-I uses |V_state|; V_FLOOR2 (1e-16) guards 1/|V|². The floor only
+        # trips at degenerate |V| < 1e-8 pu (never near a solution), where the Jacobian
+        # keeps the unfloored derivative: inexact but finite and |V|-restoring, and
+        # harmless since the iteration never converges there.
         Vm = sqrt(max(e_state[i]^2 + f_state[i]^2, V_FLOOR2))
         P_eff_cache[i] = R.P_net_const[i] - const_I_P[i] * Vm
         Q_eff_cache[i] = R.Q_net_const[i] - const_I_Q[i] * Vm
     end
     for (ref_bus, subnetwork_buses) in R.subnetworks
-        # A multi-swing island's swings each carry their own slack (REF branch below).
+        # An island with more than one swing (REF) bus holds each swing at its own
+        # fixed complex voltage, so each swing carries its OWN slack (handled in the
+        # REF branch below, using x[off] directly); no slack is distributed to any
+        # other bus in that island. Single-swing islands keep the distributed path.
         ref_bus in R.independent_ref && continue
-        P_slack_total = x[Int(bus_state_offset[ref_bus])] - P_net_set[ref_bus]
+        ref_off = Int(bus_state_offset[ref_bus])
+        P_slack_total = x[ref_off] - P_net_set[ref_bus]
         for bus_k in subnetwork_buses
             c_k = spf[bus_k]
-            (iszero(c_k) || bus_k == ref_bus) && continue
+            c_k == 0.0 && continue
+            bus_k == ref_bus && continue
             P_eff_cache[bus_k] += c_k * P_slack_total
         end
     end

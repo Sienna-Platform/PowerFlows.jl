@@ -45,7 +45,7 @@ constant-power load). Constant-impedance ZIP load is folded into the
 admittance matrix diagonal; constant-current ZIP load is subtracted as
 $-\,\mathrm{const\_I}\cdot|V_i|$ — identical to the
 [`ACRectangularPowerFlow`](@ref) treatment, which gives full ZIP and LCC
-feature parity.
+feature parity for free.
 
 ### PQ buses — current balance (divided form)
 

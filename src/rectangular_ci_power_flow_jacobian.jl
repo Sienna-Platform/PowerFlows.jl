@@ -22,15 +22,15 @@ the distributed-slack cross-terms follow the participation factors. Per-iteratio
 struct ACRectangularCIJacobian
     Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE}
     Y_bus_eff::SparseMatrixCSC{ComplexF64, Int}
-    Y_diag::Vector{ComplexF64}
-    e_state::Vector{Float64}
-    f_state::Vector{Float64}
+    Y_diag::Vector{ComplexF64}     # cached Y_bus_eff diagonal; avoids O(log nnz) sparse access per iteration
+    e_state::Vector{Float64}       # shared view into residual's e_state
+    f_state::Vector{Float64}       # shared view into residual's f_state
     Ir_acc::Vector{Float64}
     Ii_acc::Vector{Float64}
-    const_I_P::Vector{Float64}
-    const_I_Q::Vector{Float64}
+    const_I_P::Vector{Float64}     # shared view into residual's const_I_P; needed for ∂P_eff/∂(e,f) chain rule
+    const_I_Q::Vector{Float64}     # shared view into residual's const_I_Q
     bus_slack_participation_factors::SparseVector{Float64, Int}
-    independent_ref::Set{Int}
+    independent_ref::Set{Int}      # shared view into residual's independent_ref
     bus_state_offset::Vector{REC_INDEX_TYPE}
     total_bus_state::Int
     yb_nz::Matrix{Int}
@@ -48,13 +48,12 @@ function ACRectangularCIJacobian(
     time_step::Int64,
 )
     Jv0 = _create_rect_ci_jacobian_structure(data, residual)
-    Y = residual.Y_bus_eff
     n_buses = first(size(data.bus_type))
     Y_diag = Vector{ComplexF64}(undef, n_buses)
     @inbounds for i in 1:n_buses
-        Y_diag[i] = Y[i, i]
+        Y_diag[i] = residual.Y_bus_eff[i, i]
     end
-    yb_nz = _build_rect_yb_nz_cache(Jv0, Y, residual.bus_state_offset)
+    yb_nz = _build_rect_yb_nz_cache(Jv0, residual.Y_bus_eff, residual.bus_state_offset)
     diag_nz = _build_mixed_diag_nz_cache(Jv0, residual.bus_state_offset)
     slack_nz_idx_e, slack_nz_idx_f, _, slack_c_k =
         _build_slack_nz_cache(
@@ -63,7 +62,8 @@ function ACRectangularCIJacobian(
         )
     n_lccs = size(data.lcc.p_set, 1)
     lcc_nz = _build_lcc_nz_cache(
-        Jv0, data, residual.bus_state_offset, residual.total_bus_state, n_lccs,
+        Jv0, data, residual.bus_state_offset,
+        residual.total_bus_state, n_lccs,
     )
     vsc_nz = _build_vsc_nz_cache(
         Jv0, get_dc_network(data), residual.bus_state_offset,
@@ -71,7 +71,7 @@ function ACRectangularCIJacobian(
     )
     J = ACRectangularCIJacobian(
         Jv0,
-        Y,
+        residual.Y_bus_eff,
         Y_diag,
         residual.e_state,
         residual.f_state,
@@ -129,10 +129,11 @@ function _create_rect_ci_jacobian_structure(
     n_lccs = size(data.lcc.p_set, 1)
     dcn = get_dc_network(data)
     total_state = total_bus_state + state_tail_length(data, dcn)
-    n_hint = 4 * (SparseArrays.nnz(Y_bus_eff) + n_buses) + 26 * n_lccs
-    sizehint!(rows, n_hint)
-    sizehint!(cols, n_hint)
-    sizehint!(vals, n_hint)
+
+    sizehint!(rows, 4 * SparseArrays.nnz(Y_bus_eff) + 17 * n_lccs + 4 * n_buses)
+    sizehint!(cols, 4 * SparseArrays.nnz(Y_bus_eff) + 17 * n_lccs + 4 * n_buses)
+    sizehint!(vals, 4 * SparseArrays.nnz(Y_bus_eff) + 17 * n_lccs + 4 * n_buses)
+
     function push_block!(r_off::Int, c_off::Int)
         for r in 0:1, c in 0:1
             push!(rows, J_INDEX_TYPE(r_off + r))
@@ -159,23 +160,32 @@ function _create_rect_ci_jacobian_structure(
         ref_bus in residual.independent_ref && continue
         ref_off = Int(bus_state_offset[ref_bus])
         for bus_k in subnetwork_buses
-            (iszero(spf[bus_k]) || bus_k == ref_bus) && continue
+            spf[bus_k] == 0.0 && continue
+            bus_k == ref_bus && continue
             k_off = Int(bus_state_offset[bus_k])
-            push!(rows, J_INDEX_TYPE(k_off), J_INDEX_TYPE(k_off + 1))
-            push!(cols, J_INDEX_TYPE(ref_off), J_INDEX_TYPE(ref_off))
-            push!(vals, 0.0, 0.0)
+            push!(rows, J_INDEX_TYPE(k_off))
+            push!(cols, J_INDEX_TYPE(ref_off))
+            push!(vals, 0.0)
+            push!(rows, J_INDEX_TYPE(k_off + 1))
+            push!(cols, J_INDEX_TYPE(ref_off))
+            push!(vals, 0.0)
         end
     end
+
+    # LCC tail entries, mirror polar structure.
     if n_lccs > 0
         _create_rect_ci_lcc_structure!(
             rows, cols, vals, data, bus_state_offset, total_bus_state,
         )
     end
+
+    # VSC / DC-network tail entries.
     if has_dc_network(dcn)
         _create_rect_ci_vsc_structure!(
             rows, cols, vals, dcn, bus_state_offset, total_bus_state, n_lccs,
         )
     end
+
     return SparseArrays.sparse(rows, cols, vals, total_state, total_state)
 end
 
@@ -816,7 +826,8 @@ end
     # Residual at REF uses P_gen = P_net_set[ref] + c_ref · (x[off] - P_net_set[ref]).
     # ∂P_gen/∂x[off] = c_ref. So ∂I_spec_r/∂x[off] = c_ref · e_r/V², etc.
     # For default (c_ref = 1.0), this collapses to the original e_r/V² etc.
-    # V_FLOOR2 floor; REF |V| is fixed near V_set so this never triggers in practice.
+    # V_FLOOR2 floor (see rectangular_ci_power_flow_residual.jl); REF |V| is
+    # fixed near V_set so this never triggers in practice.
     V_sq = max(e_r^2 + f_r^2, V_FLOOR2)
     inv_V_sq = 1.0 / V_sq
     @inbounds Jvnz[diag_base_nz[1, i]] = c_ref * e_r * inv_V_sq

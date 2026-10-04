@@ -143,7 +143,7 @@ end
 
 Write the state-derived voltage fields (`bus_magnitude`, `bus_angles`) and
 LCC taps/angles from `x` back into `data`. Per-iteration helper invoked by
-the rectangular residual.
+the rectangular CI residual.
 
 Does NOT write `bus_active_power_injections` / `bus_reactive_power_injections`:
 those are finalized once after convergence with the correct distributed-slack
@@ -210,10 +210,12 @@ construction.
 
 A multi-swing island (REF bus in `independent_ref`) holds each swing at its own
 fixed voltage and self-balances its own P-slot instead of sharing the island's
-distributed scalar: such a REF's net active power is `x[off]` directly.
+distributed scalar (see `ACRectangularCIResidual`'s REF branch): such a REF's
+net active power is `x[off]` directly, bypassing `c_k`/`P_slack_total` entirely.
 
-Called once per time step after the NR loop converges, with the residual last
-evaluated at `x`.
+Called once per time step after the NR loop converges (not on every iteration),
+because the slack distribution is only meaningful at the converged x. The residual must
+have been last evaluated at `x`.
 """
 function rect_finalize_bus_injections!(
     data::ACPowerFlowData,
@@ -235,6 +237,8 @@ function rect_finalize_bus_injections!(
             off = Int(residual.bus_state_offset[bus_k])
             if bt == PSY.ACBusTypes.REF
                 if bus_k in residual.independent_ref
+                    # Multi-swing island: this swing self-balances at its own
+                    # P-slot; x[off] is already the whole net power (no c_k share).
                     P_net_cp = x[off]
                 else
                     P_net_cp = P_net_set[bus_k] + c_k * P_slack_total

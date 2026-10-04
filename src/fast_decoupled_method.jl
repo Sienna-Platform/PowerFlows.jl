@@ -235,7 +235,7 @@ end
 
 """The `x`-indices that hold a scalar voltage magnitude (the DVLIM "ΔV portion"). For the
 polar formulation these are the PQ-bus |V| entries (precomputed on the residual as
-`validate_indices`). The rectangular / mixed-CPB formulations carry `(e, f)` voltage
+`validate_indices`). The rectangular-CI / mixed-CPB formulations carry `(e, f)` voltage
 state with no scalar |V| entry, so DVLIM voltage clamping does not apply there (returns an
 empty vector); their blowup / non-divergent / V≈0 safeguards still operate on the full
 step."""

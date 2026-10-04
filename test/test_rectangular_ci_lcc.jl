@@ -2,7 +2,7 @@ function _rect_lcc_settings()
     return SolutionParameters(; validate_voltage_magnitudes = false)
 end
 
-@testset "Rectangular LCC: residual zero at polar-converged state" begin
+@testset "Rectangular CI LCC: residual zero at polar-converged state" begin
     raw_path = joinpath(TEST_DATA_DIR, "case5_2_lcc.raw")
     sys = system_from_openapi(PFP.PowerModelsData(raw_path); runchecks = false)
     pf_p = ACPowerFlow{NewtonRaphsonACPowerFlow}()
@@ -34,7 +34,7 @@ function _rect_lcc_verify(sys::System; label::String, perturbation::Float64 = 0.
     verify_jacobian_asymptotic(R, data, copy(J.Jv), x, 1; label = label)
 end
 
-@testset "Rectangular LCC: asymptotic verification, nonzero xc (interior)" begin
+@testset "Rectangular CI LCC: asymptotic verification, nonzero xc (interior)" begin
     # Simple 3-bus LCC system with x_t > 0 and ϕ_i kept off the clamp by a
     # moderate extinction angle. This is the regime where rect's old
     # α-approximation Jacobian disagreed with the true-ϕ residual.
@@ -49,10 +49,10 @@ end
     _add_simple_source!(sys, b1, 0.0, 0.0)
     lcc = _add_simple_lcc!(sys, b2, b3, 0.05, 0.05, 0.08)
     PSY.set_inverter_extinction_angle!(lcc, 1.0)   # well clear of ϕ-clamp
-    _rect_lcc_verify(sys; label = "rect LCC nonzero-xc interior")
+    _rect_lcc_verify(sys; label = "rect CI LCC nonzero-xc interior")
 end
 
-@testset "Rectangular LCC: asymptotic verification, inverter-side setpoint" begin
+@testset "Rectangular CI LCC: asymptotic verification, inverter-side setpoint" begin
     # Negative transfer setpoint → F_t_fb = −P_lcc_to − P_set, so the F_t_fb
     # tail row depends on the inverter-side state (e_tb, f_tb, tap_i, α_i)
     # rather than the rectifier side. Exercises the widened lcc_nz cache
@@ -69,10 +69,10 @@ end
     lcc = _add_simple_lcc!(sys, b2, b3, 0.05, 0.05, 0.08)
     PSY.set_inverter_extinction_angle!(lcc, 1.0)   # interior, off the ϕ clamp
     PSY.set_transfer_setpoint!(lcc, -0.5)          # setpoint at inverter
-    _rect_lcc_verify(sys; label = "rect LCC inverter-side setpoint")
+    _rect_lcc_verify(sys; label = "rect CI LCC inverter-side setpoint")
 end
 
-@testset "Rectangular LCC: asymptotic verification at inverter ϕ clamp" begin
+@testset "Rectangular CI LCC: asymptotic verification at inverter ϕ clamp" begin
     # Same fixture as the polar inverter-ϕ-clamp test: large x_t_i + small
     # extinction angle pushes raw_i < -1 and clamps ϕ_i at π. Exercises the
     # sin(ϕ) → 0 boundary guards in the ∂ϕ helpers.
@@ -88,11 +88,11 @@ end
     lcc = _add_simple_lcc!(sys, b2, b3, 0.05, 0.05, 0.20)
     PSY.set_inverter_extinction_angle!(lcc, 0.1)
     PSY.set_rectifier_delay_angle!(lcc, 0.1)
-    _rect_lcc_verify(sys; label = "rect LCC inverter ϕ-clamp",
+    _rect_lcc_verify(sys; label = "rect CI LCC inverter ϕ-clamp",
         perturbation = 0.01)
 end
 
-@testset "Rectangular LCC: asymptotic Jacobian verification on case5_2_lcc" begin
+@testset "Rectangular CI LCC: asymptotic Jacobian verification on case5_2_lcc" begin
     raw_path = joinpath(TEST_DATA_DIR, "case5_2_lcc.raw")
     sys = system_from_openapi(PFP.PowerModelsData(raw_path); runchecks = false)
     pf_p = ACPowerFlow{NewtonRaphsonACPowerFlow}()
@@ -113,10 +113,10 @@ end
     x .+= 0.02 .* randn(length(x))
     R(data, x, 1)
     J(data, 1)
-    verify_jacobian_asymptotic(R, data, copy(J.Jv), x, 1; label = "rect LCC case5_2")
+    verify_jacobian_asymptotic(R, data, copy(J.Jv), x, 1; label = "rect CI LCC case5_2")
 end
 
-@testset "Rectangular LCC: solve parity with polar" begin
+@testset "Rectangular CI LCC: solve parity with polar" begin
     raw_path = joinpath(TEST_DATA_DIR, "case5_2_lcc.raw")
     sys = system_from_openapi(PFP.PowerModelsData(raw_path); runchecks = false)
     sys_p = deepcopy(sys)
@@ -132,7 +132,7 @@ end
     @test maximum(abs.(res_p["bus_results"].θ - res_r["bus_results"].θ)) < 1e-7
 end
 
-@testset "Rectangular LCC: step strategy variants" begin
+@testset "Rectangular CI LCC: step strategy variants" begin
     raw_path = joinpath(TEST_DATA_DIR, "case5_2_lcc.raw")
     sys = system_from_openapi(PFP.PowerModelsData(raw_path); runchecks = false)
     pf_p = ACPowerFlow{NewtonRaphsonACPowerFlow}()

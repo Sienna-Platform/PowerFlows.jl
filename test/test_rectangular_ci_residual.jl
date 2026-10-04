@@ -1,4 +1,4 @@
-@testset "Rectangular Residual: parity with polar" begin
+@testset "Rectangular CI Residual: parity with polar" begin
     @testset "c_sys5: residual zero at polar-converged state" begin
         sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
         pf_polar = ACPowerFlow{NewtonRaphsonACPowerFlow}()
@@ -26,7 +26,7 @@
     end
 end
 
-@testset "Rectangular Residual: flat start has nonzero residual" begin
+@testset "Rectangular CI Residual: flat start has nonzero residual" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
     pf_rect = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}()
     data = PF.PowerFlowData(pf_rect, sys)
@@ -41,7 +41,7 @@ end
     @test LinearAlgebra.norm(R.Rv, Inf) > 1e-3
 end
 
-@testset "Rectangular Residual: state layout sanity" begin
+@testset "Rectangular CI Residual: state layout sanity" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
     pf_rect = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}()
     data = PF.PowerFlowData(pf_rect, sys)

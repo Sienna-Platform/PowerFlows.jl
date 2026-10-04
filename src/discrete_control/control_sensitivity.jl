@@ -170,7 +170,7 @@ function _linear_plant_sign(d, data, ts::Int, ctx::_SensitivityContext)
     return _dVm_from_sol(ctx.residual, ctx.sol, cbus, data, ts), true
 end
 
-# ── Rectangular and MCPB ──────────────────────────────────────────────────────────────────
+# ── Rectangular CI and MCPB ───────────────────────────────────────────────────────────────
 # Shared primitive: ΔI_i = ∂(Y_bus_eff·V)_i/∂p, from which each formulation's rows follow.
 # Power rows (polar, rect, MCPB PV) take V_i·conj(ΔI_i); MCPB current rows take −ΔI_i.
 

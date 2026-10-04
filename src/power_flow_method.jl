@@ -1277,7 +1277,7 @@ end
 
 # Formulation-dispatched voltage-magnitude validation, driven entirely by the
 # per-formulation index list precomputed once on the residual. Polar indexes
-# the state as `[|V|, θ, …]` (`x[2i-1]` = |V|, PQ only); rectangular and
+# the state as `[|V|, θ, …]` (`x[2i-1]` = |V|, PQ only); rectangular CI and
 # mixed CPB states are `(e, f, …)` per-bus blocks validating `e²+f² ∈
 # [min², max²]` over PQ/PV.
 function _validate_state_magnitudes(
@@ -1631,8 +1631,8 @@ function _warn_small_lcc_angles(data::ACPowerFlowData, time_step::Int)
 end
 
 """Formulation-specific post-Newton step. Polar writes the deferred iterate (|V|, θ and bus
-injections) into `data`; the rectangular and mixed formulations distribute the converged
-subnetwork slack into the bus injection arrays."""
+injections) into `data`; the rectangular CI formulation distributes the converged subnetwork
+slack into the bus injection arrays."""
 _finalize_formulation!(
     ::ACPolarPowerFlow,
     data::ACPowerFlowData,

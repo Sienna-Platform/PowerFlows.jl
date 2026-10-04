@@ -1,4 +1,4 @@
-@testset "Rectangular Power Flow: convergence" begin
+@testset "Rectangular CI Power Flow: convergence" begin
     @testset "c_sys5 converges" begin
         sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
         pf_rect = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
@@ -47,7 +47,7 @@ end
     end
 end
 
-@testset "Rectangular Power Flow: non-convergence returns missing" begin
+@testset "Rectangular CI Power Flow: non-convergence returns missing" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
     # maxIterations = 1 from flat start cannot converge c_sys14; the solver must
     # report non-convergence (results = missing) rather than error or hang.
@@ -60,7 +60,7 @@ end
     )
 end
 
-@testset "Rectangular Power Flow (LM): non-convergence returns missing" begin
+@testset "Rectangular CI Power Flow (LM): non-convergence returns missing" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
     # maxIterations = 1 from flat start cannot converge c_sys14; the solver must
     # report non-convergence (results = missing) rather than error or hang.
@@ -73,7 +73,7 @@ end
     )
 end
 
-@testset "Rectangular Power Flow: parity with polar NR" begin
+@testset "Rectangular CI Power Flow: parity with polar NR" begin
     fixtures = [
         ("c_sys5", false),
         ("c_sys14", false),
@@ -99,7 +99,7 @@ end
     end
 end
 
-@testset "Rectangular Power Flow: unsupported config rejected" begin
+@testset "Rectangular CI Power Flow: unsupported config rejected" begin
     # Removed fields: passing them is a constructor MethodError.
     @test_throws MethodError ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
         robust_power_flow = true)
@@ -123,7 +123,7 @@ end
           ACRectangularPowerFlow
 end
 
-@testset "Rectangular Power Flow: step strategy variants" begin
+@testset "Rectangular CI Power Flow: step strategy variants" begin
     # Verify Iwamoto and Trust Region wrappers converge through the rectangular CI
     # residual/Jacobian. The drivers (_simple_step, _iwamoto_step, _trust_region_step)
     # are generic over the residual/Jacobian functor interface, so all four step
@@ -168,7 +168,7 @@ end
     end
 end
 
-@testset "Rectangular: LM matches polar LM" begin
+@testset "Rectangular CI: LM matches polar LM" begin
     for name in ("c_sys5", "c_sys14")
         @testset "$name" begin
             sys = PSB.build_system(PSB.PSITestSystems, name; add_forecasts = false)
@@ -229,7 +229,7 @@ end
         res_lm_polar["bus_results"].θ .- res_lm_rect["bus_results"].θ, Inf) < 1e-5
 end
 
-@testset "Rectangular: multi-period previous-solution warm start" begin
+@testset "Rectangular CI: multi-period previous-solution warm start" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
     pf = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
         time_steps = 2,
@@ -331,7 +331,7 @@ end
             x_ok, validate_offsets, range, 1)
     end
 
-    @testset "rectangular residual dispatch" begin
+    @testset "rectangular CI residual dispatch" begin
         sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
         pf = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
             solution_parameters = _rect_pf_settings())
@@ -353,7 +353,7 @@ end
     end
 end
 
-@testset "Rectangular: V_FLOOR2 guards degenerate (e,f)" begin
+@testset "Rectangular CI: V_FLOOR2 guards degenerate (e,f)" begin
     # Mirrors the mixed CPB V_FLOOR2 hardening: collapsing a PQ bus voltage to
     # zero must not produce Inf/NaN in the rectangular residual or Jacobian
     # (the 1/|V|² current-balance terms are otherwise unguarded).
@@ -375,7 +375,7 @@ end
     @test all(isfinite, J.Jv.nzval)
 end
 
-@testset "Rectangular Power Flow: multi-swing (two swings in one island)" begin
+@testset "Rectangular CI Power Flow: multi-swing (two swings in one island)" begin
     @testset "$(nameof(V))" for V in (NewtonRaphsonACPowerFlow, TrustRegionACPowerFlow)
         sys_p = _rect_two_swing_system()
         sys_r = deepcopy(sys_p)

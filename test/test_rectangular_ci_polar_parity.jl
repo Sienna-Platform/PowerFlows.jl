@@ -1,11 +1,11 @@
-# Solve representative scenarios with both polar NR and rectangular; assert
+# Solve representative scenarios with both polar NR and rectangular CI; assert
 # Vm/θ parity within RECT_PARITY_ATOL.
 #
 # `RECT_PARITY_ATOL`, `_rect_parity_settings`, `_rect_polar_parity`,
 # `_rect_polar_parity_data` and `_build_zip_2bus_system` live in
 # `test_utils/cross_file_fixtures.jl` (also used by test_mixed_cpb_*.jl).
 
-@testset "Rectangular polar parity: ZIP loads (constant current)" begin
+@testset "Rectangular CI polar parity: ZIP loads (constant current)" begin
     sys_p = _build_zip_2bus_system(; current_pq = (2.0, 1.0))
     sys_r = _build_zip_2bus_system(; current_pq = (2.0, 1.0))
     _rect_polar_parity(
@@ -15,7 +15,7 @@
     )
 end
 
-@testset "Rectangular polar parity: ZIP-I load at REF bus" begin
+@testset "Rectangular CI polar parity: ZIP-I load at REF bus" begin
     sys_p = _build_zip_2bus_system(; current_pq = (2.0, 1.0), zip_on_ref = true)
     sys_r = _build_zip_2bus_system(; current_pq = (2.0, 1.0), zip_on_ref = true)
     pf_p = ACPowerFlow{NewtonRaphsonACPowerFlow}(; correct_bustypes = true)
@@ -37,7 +37,7 @@ end
     @test maximum(abs.(bus_p.Q_gen - bus_r.Q_gen)) < RECT_PARITY_ATOL
 end
 
-@testset "Rectangular polar parity: ZIP loads (constant impedance)" begin
+@testset "Rectangular CI polar parity: ZIP loads (constant impedance)" begin
     sys_p = _build_zip_2bus_system(; impedance_pq = (2.0, 1.0))
     sys_r = _build_zip_2bus_system(; impedance_pq = (2.0, 1.0))
     _rect_polar_parity(
@@ -47,7 +47,7 @@ end
     )
 end
 
-@testset "Rectangular polar parity: ZIP loads (full P+I+Z combination)" begin
+@testset "Rectangular CI polar parity: ZIP loads (full P+I+Z combination)" begin
     sys_p = _build_zip_2bus_system(;
         power_pq = (0.5, 0.2),
         current_pq = (2.0, 1.0),
@@ -65,7 +65,7 @@ end
     )
 end
 
-@testset "Rectangular polar parity: headroom-proportional distributed slack" begin
+@testset "Rectangular CI polar parity: headroom-proportional distributed slack" begin
     sys_p = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
     sys_r = deepcopy(sys_p)
     # With distribute_slack_proportional_to_headroom, PV/REF generators share
@@ -79,7 +79,7 @@ end
     )
 end
 
-@testset "Rectangular polar parity: explicit generator participation factors" begin
+@testset "Rectangular CI polar parity: explicit generator participation factors" begin
     sys_p = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
     sys_r = deepcopy(sys_p)
     spf = Dict{Tuple{DataType, String}, Float64}(
@@ -93,7 +93,7 @@ end
     )
 end
 
-@testset "Rectangular polar parity: ACTIVSg2000 (large-scale)" begin
+@testset "Rectangular CI polar parity: ACTIVSg2000 (large-scale)" begin
     sys_p = build_system(MatpowerTestSystems, "matpower_ACTIVSg2000_sys")
     sys_r = build_system(MatpowerTestSystems, "matpower_ACTIVSg2000_sys")
     _rect_polar_parity(
@@ -103,7 +103,7 @@ end
     )
 end
 
-@testset "Rectangular polar parity: Q-limit enforcement (PV → PQ switching)" begin
+@testset "Rectangular CI polar parity: Q-limit enforcement (PV → PQ switching)" begin
     sys_p = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
     sys_r = deepcopy(sys_p)
     _rect_polar_parity(
@@ -113,7 +113,7 @@ end
     )
 end
 
-@testset "Rectangular polar parity: Q-limit enforcement (c_sys5)" begin
+@testset "Rectangular CI polar parity: Q-limit enforcement (c_sys5)" begin
     sys_p = PSB.build_system(PSB.PSITestSystems, "c_sys5")
     sys_r = deepcopy(sys_p)
     _rect_polar_parity(
@@ -123,7 +123,7 @@ end
     )
 end
 
-@testset "Rectangular polar parity: radial network reduction" begin
+@testset "Rectangular CI polar parity: radial network reduction" begin
     sys_p = PSB.build_system(
         PSB.PSSEParsingTestSystems, "psse_14_network_reduction_test_system")
     sys_r = deepcopy(sys_p)
@@ -135,7 +135,7 @@ end
     )
 end
 
-@testset "Rectangular polar parity: generator reactive redistribution" begin
+@testset "Rectangular CI polar parity: generator reactive redistribution" begin
     sys_p = PSB.build_system(PSB.PSITestSystems, "c_sys5")
     sys_r = deepcopy(sys_p)
     @test PF.solve_and_store_power_flow!(
@@ -151,7 +151,7 @@ end
     end
 end
 
-@testset "Rectangular polar parity: multi-period (same network, no time-varying loads)" begin
+@testset "Rectangular CI polar parity: multi-period (same network, no time-varying loads)" begin
     sys_p = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
     sys_r = deepcopy(sys_p)
     pf_p = ACPowerFlow{NewtonRaphsonACPowerFlow}(; time_steps = 3)
@@ -161,7 +161,7 @@ end
     _rect_polar_parity_data(pf_p, pf_r, sys_p, sys_r)
 end
 
-@testset "Rectangular polar parity: multi-period time-varying distributed slack" begin
+@testset "Rectangular CI polar parity: multi-period time-varying distributed slack" begin
     sys_p = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
     sys_r = deepcopy(sys_p)
     gens = collect(get_components(ThermalStandard, sys_p))
@@ -197,7 +197,7 @@ function _pv_zip_drift_system()
     return sys
 end
 
-@testset "Rectangular: repeated solves on the same data do not drift ZIP-PV injections" begin
+@testset "Rectangular CI: repeated solves on the same data do not drift ZIP-PV injections" begin
     sys_r = _pv_zip_drift_system()
     sys_p = deepcopy(sys_r)
     pf_r = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;

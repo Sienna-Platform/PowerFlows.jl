@@ -1,4 +1,4 @@
-@testset "Rectangular Jacobian: asymptotic verification" begin
+@testset "Rectangular CI Jacobian: asymptotic verification" begin
     @testset "c_sys5 at polar-converged + perturbation" begin
         sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
         pf_polar = ACPowerFlow{NewtonRaphsonACPowerFlow}()
@@ -15,7 +15,7 @@
         x .+= 0.02 .* randn(length(x))
         R(data, x, 1)
         J(data, 1)
-        verify_jacobian_asymptotic(R, data, copy(J.Jv), x, 1; label = "rect c_sys5")
+        verify_jacobian_asymptotic(R, data, copy(J.Jv), x, 1; label = "rect CI c_sys5")
     end
 
     @testset "c_sys14 at polar-converged + perturbation" begin
@@ -32,7 +32,7 @@
         x .+= 0.02 .* randn(length(x))
         R(data, x, 1)
         J(data, 1)
-        verify_jacobian_asymptotic(R, data, copy(J.Jv), x, 1; label = "rect c_sys14")
+        verify_jacobian_asymptotic(R, data, copy(J.Jv), x, 1; label = "rect CI c_sys14")
     end
 
     @testset "ZIP constant-current load at perturbed state" begin
@@ -69,7 +69,7 @@
             copy(J.Jv),
             x,
             1;
-            label = "rect ZIP perturbed",
+            label = "rect CI ZIP perturbed",
         )
     end
 
@@ -93,7 +93,7 @@
             copy(J.Jv),
             x,
             1;
-            label = "rect c_sys5 perturbed",
+            label = "rect CI c_sys5 perturbed",
         )
     end
 end
@@ -121,7 +121,7 @@ end
     @test J_pq[2 * pv, 2 * pv - 1] != J_pv[2 * pv, 2 * pv - 1]
 end
 
-@testset "Rectangular Jacobian: two swings in one island (multi-swing)" begin
+@testset "Rectangular CI Jacobian: two swings in one island (multi-swing)" begin
     # `_rect_two_swing_system` / `_rect_pf_settings` live in test_utils/cross_file_fixtures.jl.
     sys = _rect_two_swing_system()
     pf_rect = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
@@ -137,5 +137,5 @@ end
     x .+= 0.01 .* randn(length(x))
     R(data, x, 1)
     J(data, 1)
-    verify_jacobian_asymptotic(R, data, copy(J.Jv), x, 1; label = "rect two-swing")
+    verify_jacobian_asymptotic(R, data, copy(J.Jv), x, 1; label = "rect CI two-swing")
 end
