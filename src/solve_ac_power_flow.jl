@@ -343,9 +343,12 @@ function _solve_column!(
 
     load_device_state!(cd, data, time_step)
     data.iterations[time_step] = 0
-    # Before the solve, so serial and threaded runs build the lean plan at the same step.
-    _prepare_lean_plan!(pf, data, time_step,
-        resolve_linear_solver_backend(get(merged_kwargs, :linear_solver, nothing)))
+    # The LCC Jacobian tails read LCC state that the solve's start residual rewrites, so an LCC
+    # system plans before the solve, as a threaded run does.
+    if get_lcc_count(data) > 0
+        _prepare_lean_plan!(pf, data, time_step,
+            resolve_linear_solver_backend(get(merged_kwargs, :linear_solver, nothing)))
+    end
     converged = _ac_power_flow_with_area_relax!(data, pf, time_step; merged_kwargs...)
     save_device_state!(cd, data, time_step)
     converged && _warn_vsc_limit_violations(data, time_step)
@@ -490,6 +493,7 @@ function _seed_workers!(
     for i in 2:length(workers)
         worker = workers[i]
         _seed_worker!(worker, worker.polar_nr_cache[], seed, memo, steps[first(chunks[i])])
+        _seed_rect_mixed!(worker, worker.solver_cache[], workers[1].solver_cache[])
     end
     return
 end
