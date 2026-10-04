@@ -1154,7 +1154,8 @@ const _CHORD_STEPS = Threads.Atomic{Int}(0)
 """A step from the last factorization in `linSolveCache`, kept when `‖F‖∞` falls to
 `CHORD_CONTRACTION` of `residual_norm`; `J` is then left where it was. A rejected step that still
 lowers `‖F‖∞` is kept with `J` refilled there; any other is undone with `F` and `J` refilled at
-the restored `x`. Returns `(‖F(x)‖∞, accepted)`."""
+the restored `x`. Returns `(‖F(x)‖∞, accepted)`; on an undone step the norm is `residual_norm`,
+since the caller's Newton step recomputes it."""
 function _chord_step!(time_step::Int,
     stateVector::StateVectorCache,
     linSolveCache::PNM.LinearSolverCache,
@@ -1179,7 +1180,7 @@ function _chord_step!(time_step::Int,
     stateVector.x .-= stateVector.Δx_nr
     # After an accepted chord step `J` is older than the restored `x`.
     _residual_at_step!(residual, J, data, stateVector.x, time_step) || J(data, time_step)
-    return norm(residual.Rv, Inf), false
+    return residual_norm, false
 end
 
 function _residual_at_step!(
@@ -1899,7 +1900,7 @@ function _build_rect_mixed_cache!(
     linSolveCache = _polar_jacobian_cache(backend, Jv)
     bus_type = view(data.bus_type, :, time_step)
     lean = LeanPlanSlot()
-    if plan
+    if plan && _USE_LEAN_LU[]
         lean = _rect_mixed_symbolic!(linSolveCache, Jv, bus_type, time_step)
     else
         symbolic_factor!(linSolveCache, Jv)
@@ -1934,10 +1935,6 @@ function _rect_mixed_symbolic!(
     time_step::Int64,
 )
     slot = LeanPlanSlot()
-    if !_USE_LEAN_LU[]
-        PNM.symbolic_factor!(c, Jv)
-        return slot
-    end
     slot.tried = true
     slot.bus_types = collect(bus_type)
     _build_lean_plan!(slot, Jv, time_step)
