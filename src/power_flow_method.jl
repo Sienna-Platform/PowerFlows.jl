@@ -559,7 +559,7 @@ function _set_Δx_nr!(stateVector::StateVectorCache,
         _do_refinement!(stateVector, M, cache, refinement_threshold, refinement_eps)
     end
     # Not rmul!: BLAS dscal wakes OpenBLAS's thread pool every Newton step, which then spins on
-    # the cores threaded callers run their workers on.
+    # the cores that threaded callers run their workers on.
     stateVector.Δx_nr .= .-stateVector.Δx_nr
     return
 end

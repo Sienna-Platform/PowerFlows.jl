@@ -54,7 +54,7 @@ NR/TR via the shared `_run_power_flow_method(::StateVectorCache, ::PNM.LinearSol
 LM via its workspace-based `_run_power_flow_method(x0::Vector, ::LMWorkspace, ...)` adapter.
 All paths mutate `sv.x` / `residual` / `J` in place (the SAME objects the stage loop used), so the
 caller's subsequent `J(time_step)` / `_finalize_*` see the refined solution. `stage_iters` and
-`solver_name` are used only for the `@debug` handoff log line.
+`solver_name` are used only for the `@info` handoff log line.
 """
 function _maybe_handoff!(
     ::Type{NoHandoff},
@@ -105,7 +105,7 @@ function _maybe_handoff!(
             tol, maxIterations = DEFAULT_NR_MAX_ITER,
         )
     end
-    @debug "$solver_name: stage $stage_iters iters → handoff $(handoff_solver) " *
-           "$(converged ? "converged" : "did NOT converge") in $i2 iters."
+    @info "$solver_name: stage $stage_iters iters → handoff $(handoff_solver) " *
+          "$(converged ? "converged" : "did NOT converge") in $i2 iters."
     return (converged, i2)
 end

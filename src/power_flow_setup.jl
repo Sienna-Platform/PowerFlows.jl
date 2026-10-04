@@ -1,7 +1,7 @@
 _log_initial_residual(residual) =
-    @debug "Initial residual size: " *
-           "$(norm(residual.Rv, 2)) L2, " *
-           "$(norm(residual.Rv, Inf)) L∞"
+    @info "Initial residual size: " *
+          "$(norm(residual.Rv, 2)) L2, " *
+          "$(norm(residual.Rv, Inf)) L∞"
 
 improve_x0(
     pf::ACPolarPowerFlow,
@@ -154,12 +154,11 @@ function _pick_better_x0(x0::Vector{Float64},
     residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
     data::ACPowerFlowData,
     improvement_method::String,
-    success_level::Logging.LogLevel = Logging.Debug,
 )
     residualSize = sum(abs, residual.Rv)
     residual(data, newx0, time_step)
     if sum(abs, residual.Rv) < residualSize
-        Logging.@logmsg success_level "success: $improvement_method yields smaller residual"
+        @info "success: $improvement_method yields smaller residual"
         copyto!(x0, newx0)
         return true
     end
@@ -180,8 +179,7 @@ function dc_power_flow_start!(x0::Vector{Float64},
     newx0 = calculate_x0(data, time_step)
     # The fallback overwrote `data`'s angles, so re-establish `_pick_better_x0`'s precondition.
     residual(data, x0, time_step)
-    _pick_better_x0(
-        x0, newx0, time_step, residual, data, "DC power flow fallback", Logging.Info)
+    _pick_better_x0(x0, newx0, time_step, residual, data, "DC power flow fallback")
     return
 end
 
@@ -217,27 +215,23 @@ function _enhanced_flat_start(
 )
     newx0 = copy(x0)
     bus_lookup = get_bus_lookup(data)
-    bus_types = view(data.bus_type, :, time_step)
     for subnetwork_bus_axes in values(data.power_network_matrix.subnetwork_axes)
-        members = [bus_lookup[ix] for ix in subnetwork_bus_axes[1]]
-        ref = [i for i in members if bus_types[i] == PSY.ACBusTypes.REF]
-        pv = [i for i in members if bus_types[i] == PSY.ACBusTypes.PV]
-        pq = [i for i in members if bus_types[i] == PSY.ACBusTypes.PQ]
-        if !isempty(ref)
-            ref_bus_angle = sum(data.bus_angles[ref, time_step]) / length(ref)
-            if !iszero(ref_bus_angle)
-                newx0[2 .* vcat(pv, pq)] .= ref_bus_angle
-            end
+        subnetwork_indices = [bus_lookup[ix] for ix in subnetwork_bus_axes[1]]
+        ref_bus = subnetwork_indices[data.bus_type[:, time_step] .== (PSY.ACBusTypes.REF,)]
+        pv = subnetwork_indices[data.bus_type[:, time_step] .== (PSY.ACBusTypes.PV,)]
+        pq = subnetwork_indices[data.bus_type[:, time_step] .== (PSY.ACBusTypes.PQ,)]
+        ref_bus_angle = sum(data.bus_angles[ref_bus, time_step]) / length(ref_bus)
+        if ref_bus_angle != 0.0
+            newx0[2 .* vcat(pv, pq)] .= ref_bus_angle
         end
-        sources = vcat(pv, ref)
-        (isempty(pq) || isempty(sources)) && continue
-        newx0[2 .* pq .- 1] .= sum(data.bus_magnitude[sources, time_step]) / length(sources)
+        length(pv) == 0 && length(pq) == 0 && continue
+        newx0[2 .* pq .- 1] .= sum(data.bus_magnitude[pv, time_step]) / length(pv)
     end
     return newx0
 end
 
 """Rectangular/MCPB analog of [`_enhanced_flat_start`](@ref): per subnetwork,
-set PV/PQ bus angles to the mean REF-bus angle and PQ magnitudes to the mean PV and REF
+set PV/PQ bus angles to the mean REF-bus angle and PQ magnitudes to the mean PV
 setpoint magnitude, written back as `(e, f) = (Vm·cosθ, Vm·sinθ)`. PV buses
 keep their setpoint magnitude (only the angle changes); REF blocks and the
 PV `Q` / REF `(P,Q)` slots are left as in `x0`. Uses `residual.subnetworks`
@@ -263,11 +257,13 @@ function _enhanced_flat_start(
             else
                 sum(data.bus_angles[r, time_step] for r in ref) / length(ref)
             end
-        sources = vcat(pv, ref)
-        pq_vm = 0.0
-        if !isempty(sources)
-            pq_vm = sum(data.bus_magnitude[s, time_step] for s in sources) / length(sources)
-        end
+        has_pv = !isempty(pv)
+        # Guard the no-PV-with-PQ case (polar divides by zero here and gets
+        # NaN); fall back to the per-bus base magnitude instead.
+        pq_vm =
+            has_pv ?
+            sum(data.bus_magnitude[p, time_step] for p in pv) / length(pv) :
+            0.0
         for i in pv
             off = Int(residual.bus_state_offset[i])
             θ = ref_angle != 0.0 ? ref_angle : data.bus_angles[i, time_step]
@@ -278,10 +274,7 @@ function _enhanced_flat_start(
         for i in pq
             off = Int(residual.bus_state_offset[i])
             θ = ref_angle != 0.0 ? ref_angle : data.bus_angles[i, time_step]
-            Vm = data.bus_magnitude[i, time_step]
-            if !isempty(sources)
-                Vm = pq_vm
-            end
+            Vm = has_pv ? pq_vm : data.bus_magnitude[i, time_step]
             newx0[off] = Vm * cos(θ)
             newx0[off + 1] = Vm * sin(θ)
         end
@@ -303,8 +296,7 @@ function _dc_power_flow_fallback!(data::ACPowerFlowData, time_step::Int)
     p_inj =
         data.bus_active_power_injections[valid_ix, time_step] -
         data.bus_active_power_withdrawals[valid_ix, time_step] +
-        data.bus_hvdc_net_power[valid_ix, time_step] +
-        data.bus_phase_shift_injections[valid_ix]
+        data.bus_hvdc_net_power[valid_ix, time_step]
     # PNM's KLUWrapper.KLULinSolveCache exposes solve! (in-place) instead of ldiv!.
     # The factored ABA is shared by every threaded time-step worker and KLU solves through
     # its numeric workspace. ponytail: one global lock; the fallback only runs on a large residual.
