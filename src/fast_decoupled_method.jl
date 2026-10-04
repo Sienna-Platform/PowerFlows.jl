@@ -701,16 +701,17 @@ mutable struct FastDecoupledCache{S <: FDScheme, C <: PNM.LinearSolverCache} <: 
 end
 
 function _handoff_linear_cache!(
-    stage::FastDecoupledCache,
+    stage::FastDecoupledCache{S, C},
     pf::AbstractACPowerFlow,
     data::ACPowerFlowData,
     J,
     time_step::Int64,
     linear_solver,
-)
+) where {S, C}
     structure = data.ac_jacobian_structure_cache[]
     return _reuse_handoff_cache!(
-        stage.handoff, structure, pf, data, J, time_step, linear_solver)
+        stage.handoff, stage.handoff[], structure, pf, data, J, time_step, linear_solver,
+    )::C
 end
 
 """
