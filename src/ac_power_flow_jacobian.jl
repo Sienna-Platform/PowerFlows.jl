@@ -121,11 +121,11 @@ J(data, time_step)  # Updates the Jacobian matrix stored internally in J.
 J.Jv  # Access the Jacobian matrix stored internally in J.
 ```
 """
-# The distributed-slack slots the Ybus pattern lacks: `(bus_k, ref)` for each bus with a nonzero
-# participation factor in `data` (whatever its bus type, so a PV→PQ flip keeps the pattern) that
-# is not a neighbour of its island's REF. With the Ybus pattern (fixed, since contingencies write
-# zeros), LCC/VSC and area data, this is all the polar J pattern depends on. Sorted, so it
-# compares as a cache key.
+# The distributed-slack slots that the Ybus pattern lacks: `(bus_k, ref)` for each bus with a
+# nonzero participation factor in `data` that is not a neighbor of its island's REF. Bus type is
+# ignored, so a PV→PQ flip keeps the pattern. The polar J pattern depends only on these slots,
+# the Ybus pattern (network edits write zeros, so it does not change) and the LCC/VSC/area data.
+# The result is sorted, so it compares as a cache key.
 function _extra_slack_slots(
     data::ACPowerFlowData,
     subnetworks::Dict{Int64, Vector{Int64}},
@@ -194,13 +194,13 @@ function _slack_slots_cover(
 end
 
 # Memoize the expensive Jacobian sparse-structure build (~3.2 MB on 2000 buses) so it is built
-# once and reused across the Q-limit inner loop, repeated PCM solves and contingencies that only
-# change values. The key is the network-matrix identity + area interchange data, and the memo's
-# slots must cover `_extra_slack_slots` (as `_slack_slots_cover` does for a polar cache), so an
-# outage that drops a slot keeps the shared structure and its lean plan. Returns a full `copy` so
-# each `ACPowerFlowJacobian` owns a fresh mutable buffer, or `nothing` to signal a rebuild. Lives
-# in its own `data.ac_jacobian_structure_cache` field ([`ACJacobianStructureCache`](@ref)) so it
-# never collides with the FastDecoupled/DC caches in `data.solver_cache[]`.
+# once and reused across the Q-limit loop, repeated solves and value-only network edits. The key
+# is the network-matrix identity and the area interchange data. The cached slack slots must cover
+# `_extra_slack_slots`, so an outage that drops a slot still reuses the structure and its lean
+# plan. Returns a full `copy` so each `ACPowerFlowJacobian` owns its buffer, or `nothing` to
+# signal a rebuild. Lives in its own `data.ac_jacobian_structure_cache` field
+# ([`ACJacobianStructureCache`](@ref)) so it never collides with the FastDecoupled/DC caches in
+# `data.solver_cache[]`.
 _reuse_ac_jac_structure(::Nothing, matrix, slots, area_data) = nothing
 function _reuse_ac_jac_structure(e::ACJacobianStructureCache, matrix, slots, area_data)
     if e.matrix === matrix && e.area_data === area_data && issubset(slots, e.slack_slots)
@@ -590,8 +590,9 @@ J = \\begin{bmatrix}
 In reality, for large networks, this matrix would be sparse, and each 2×2 block would only be nonzero
 when there's a line between the respective buses.
 
-The bus blocks are written straight into CSC arrays (`_bus_block_pattern`); the few slack, LCC,
-VSC and area tail entries are assembled with `sparse` and merged in (`_merge_patterns`).
+The function writes the bus blocks directly into CSC arrays (`_bus_block_pattern`),
+assembles the few slack, LCC, VSC and area tail entries with `sparse`, and merges the two
+(`_merge_patterns`).
 """
 function _create_jacobian_matrix_structure(
     data::ACPowerFlowData,
@@ -1004,19 +1005,15 @@ function _update_jacobian_matrix_values!(
     return
 end
 
-"""Fill the Ybus part of Jv (and the distributed-slack cross-terms) from `J.bus_state` (|V| and
-cis(θ), refilled by the caller); with `F::Vector{Float64}` also write
-the Ybus part of the residual bus rows.
+"""Fill the Ybus part of Jv and the distributed-slack cross-terms from `J.bus_state` (|V| and
+cis(θ), refilled by the caller). With `F::Vector{Float64}`, also write the Ybus part of the
+residual bus rows.
 
-INVARIANT (Phase 3 depends on this): every structural nonzero produced by the
-Ybus sweep is written on every call — including the slots that are genuinely 0
-for PV/REF neighbors and the constant REF/PV diagonal-block entries the old fill
-only set at construction. The hot path writes `nonzeros(Jv)` through the
-construction-time offset caches (`od_jnz`, `diag_jnz`); no setindex/getindex on
-sparse matrices and no trig per Ybus nonzero: cis(θ_from − θ_to) is
-`phasor[from] * conj(phasor[to])`.
-Slack cross-terms go through `slack_jnz`; LCC tail entries are a small,
-structural-only set and stay on the setindex path."""
+INVARIANT: every call writes every structural nonzero of the sweep, also the slots that are 0
+for PV/REF neighbors and the constant REF/PV diagonal-block entries. A reused `Jv` depends on
+this after a bus-type change. All writes go through the offset caches (`od_jnz`, `diag_jnz`,
+`slack_jnz`). cis(θ_from − θ_to) is `phasor[from] * conj(phasor[to])`, so the sweep does no
+trig per Ybus nonzero."""
 function _polar_ybus_sweep!(
     J::ACPowerFlowJacobian,
     F::Union{Vector{Float64}, NoResidualRows},

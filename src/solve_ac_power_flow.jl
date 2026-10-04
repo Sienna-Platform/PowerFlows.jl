@@ -313,7 +313,7 @@ end
 # Fetched after the solve, so a first solve's fresh polar cache lends its scratch instead of a
 # second one being built.
 function _column_arc_flows!(slot::Base.RefValue, data::ACPowerFlowData)
-    arcs = PNM.get_arc_axis(data.power_network_matrix.arc_admittance_from_to)
+    arcs = get_arc_axis(data)
     if !isassigned(slot) || slot[].arcs !== arcs
         slot[] = _arc_flow_scratch(data.polar_nr_cache[], data)
     end
@@ -343,7 +343,6 @@ function _solve_column!(
     converged && _warn_vsc_limit_violations(data, time_step)
 
     if OVERWRITE_NON_CONVERGED && !converged
-        # set values to NaN for not converged time steps
         data.bus_active_power_injections[:, time_step] .= NaN
         data.bus_active_power_withdrawals[:, time_step] .= NaN
         data.bus_active_power_constant_current_withdrawals[:, time_step] .= NaN
@@ -379,11 +378,8 @@ function _solve_column!(
     flows = _column_arc_flows!(flows_slot, data)
     (; fb_ix, tb_ix, Sft, Stf) = flows
     step_V = flows.V
-    # Per-step branch flows so a future per-step Yft/Ytf (e.g. varying tap positions) is used
-    # correctly.
-    # NOTE PNM's structs use ComplexF32, while the system objects store Float64's.
-    #      so if you set the system bus angles/voltages to match these fields, then repeat
-    #      this math using the system voltages, you'll see differences in the flows, ~1e-4.
+    # PNM's structs use ComplexF32 and the System stores Float64. Flows computed again from the
+    # System voltages differ from these flows by approximately 1e-4.
     _fill_flow_voltages!(step_V, data.polar_nr_cache[], data, time_step)
     mul!(Sft, Yft.data, step_V)
     mul!(Stf, Ytf.data, step_V)

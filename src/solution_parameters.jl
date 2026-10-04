@@ -1,10 +1,8 @@
-
-"""Sentinel [`ACPowerFlowSolverType`](@ref)-shaped marker for "no fast-decoupled handoff
-solver configured" — the [`SolutionParameters`](@ref) `handoff_solver` default. A concrete
-singleton type (not `nothing`) keeps the field concretely typed; FD dispatches on the value
-(`_maybe_handoff!(::Type{NoHandoff}, …)` vs. the solver-type method) instead of an
-`isnothing` check."""
+"""Default [`SolutionParameters`](@ref) `handoff_solver`: the staged solver (fast decoupled or
+generalized admittance) runs without a handoff. A singleton type, not `nothing`, keeps the
+field concrete."""
 struct NoHandoff end
+
 """
     SolutionParameters(; kwargs...)
 
