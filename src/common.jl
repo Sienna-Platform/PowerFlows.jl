@@ -124,20 +124,6 @@ function _exponential_zip_slot(load::PSY.ExponentialLoad, exponent::Float64)
     )
 end
 
-function _add_exponential_withdrawal!(
-    constant_power::Vector{Float64},
-    constant_current::Vector{Float64},
-    constant_impedance::Vector{Float64},
-    bus_ix::Int,
-    value::Float64,
-    exponent::Float64,
-    load::PSY.ExponentialLoad,
-)
-    parts = (constant_power, constant_current, constant_impedance)
-    parts[_exponential_zip_slot(load, exponent)][bus_ix] += value
-    return
-end
-
 function _get_withdrawals!(
     pf::PowerFlowEvaluationModel,
     bus_active_power_withdrawals::Vector{Float64},
@@ -190,24 +176,19 @@ function _get_withdrawals!(
         bus = PSY.get_bus(l)
         PSY.get_number(bus) in removed_buses && continue
         bus_ix = _get_bus_ix(bus_lookup, reverse_bus_search_map, PSY.get_number(bus))
-        _add_exponential_withdrawal!(
+        p = (
             bus_active_power_withdrawals,
             bus_active_power_constant_current_withdrawals,
             bus_active_power_constant_impedance_withdrawals,
-            bus_ix,
-            PSY.get_active_power(l, PSY.SU),
-            PSY.get_α(l),
-            l,
         )
-        _add_exponential_withdrawal!(
+        q = (
             bus_reactive_power_withdrawals,
             bus_reactive_power_constant_current_withdrawals,
             bus_reactive_power_constant_impedance_withdrawals,
-            bus_ix,
-            PSY.get_reactive_power(l, PSY.SU),
-            PSY.get_β(l),
-            l,
         )
+        p[_exponential_zip_slot(l, PSY.get_α(l))][bus_ix] += PSY.get_active_power(l, PSY.SU)
+        q[_exponential_zip_slot(l, PSY.get_β(l))][bus_ix] +=
+            PSY.get_reactive_power(l, PSY.SU)
     end
     # FixedAdmittance components are already included in the Ybus matrix.
     for sa in PSY.get_available_components(PSY.SwitchedAdmittance, sys)

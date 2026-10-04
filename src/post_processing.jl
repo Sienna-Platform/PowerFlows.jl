@@ -64,16 +64,17 @@ function _assign_residual!(
     quantity::String,
 )
     function headroom(d)
-        limits = get_limits(d)
+        lim = get_limits(d)
         if residual > 0.0
-            return limits.max - get_power(d, PSY.SU)
+            return lim.max - get_power(d, PSY.SU)
         end
-        return get_power(d, PSY.SU) - limits.min
+        return get_power(d, PSY.SU) - lim.min
     end
     at_limit = filter(d -> headroom(d) <= BOUNDS_TOLERANCE, devices)
-    device = argmax(headroom, devices)
     if length(at_limit) == length(devices)
         device = argmax(d -> get_limits(d).max - get_limits(d).min, devices)
+    else
+        device = argmax(headroom, devices)
     end
     set_point = get_power(device, PSY.SU) + residual
     set_power!(device, set_point * PSY.SU)
