@@ -182,7 +182,7 @@ const OVERWRITE_NON_CONVERGED = true # overwrite non-converged time steps with N
 # Adam / gradient descent power flow
 const ADAM_BACKTRACK_FACTOR = 0.5
 const ADAM_MAX_BACKTRACKS = 10
-const DEFAULT_GD_MAX_ITER = 10_000 # c_sys14 converges in 5049 Adam steps; NR's 50 never converges
+const DEFAULT_GD_MAX_ITER = 10_000
 
 # robust homotopy method constants
 const β = 10.0^-3

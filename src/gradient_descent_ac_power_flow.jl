@@ -13,9 +13,8 @@ the Adam optimizer and backtracking line search.
 | `:epsilon`       | `1e-8`  | Numerical stability ε                |
 
 `maxIterations` defaults to `$DEFAULT_GD_MAX_ITER`, not Newton's `$DEFAULT_NR_MAX_ITER`: Adam
-converges linearly at best. Measured Adam steps to `tol = 1e-9` from the default start:
-`c_sys14` 5049, `c_sys5` 5505, `matpower_case14` 2242; `matpower_case30` does not converge
-within 200 000. This solver is a demonstrator, not a production solver.
+converges linearly at best and needs thousands of steps on small test systems. This solver is a
+demonstrator, not a production solver.
 
 See also: [`ACPowerFlow`](@ref).
 """

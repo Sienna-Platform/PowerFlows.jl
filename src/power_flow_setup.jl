@@ -40,8 +40,8 @@ function improve_x0!(x0::Vector{Float64},
     else
         @debug "skipping running DC power flow fallback"
     end
-    # GA from DC angles stagnates where NR from them converges (ACTIVSg10k flat: 40 GA
-    # iterations, gap 1.6), so GA is the rescue for a start the DC stage did not improve.
+    # GA from DC angles stagnates where NR from them converges, so GA runs only on a start that
+    # the DC stage did not improve.
     handoff_tol = get_solution_parameters(pf).handoff_tol
     if get_ga_flat_start(pf) && cold && !dc_taken && norm(residual.Rv, Inf) > handoff_tol
         newx0 = _ga_flat_start(x0, data, residual, time_step, handoff_tol)
