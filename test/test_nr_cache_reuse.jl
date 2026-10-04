@@ -241,9 +241,8 @@ end
 end
 
 function _solve_logged!(data)
-    local converged
-    logs, _ = Test.collect_test_logs(; min_level = Logging.Debug) do
-        converged = solve_power_flow!(data)
+    logs, converged = Test.collect_test_logs(; min_level = Logging.Debug) do
+        solve_power_flow!(data)
     end
     return converged, logs
 end
@@ -251,9 +250,8 @@ end
 _count_logs(logs, level, pattern) =
     count(l -> l.level == level && occursin(pattern, string(l.message)), logs)
 
-# Solve with `bus_number` as PQ, then flip it back to PV on the same data and cache. A visible
-# flip drops the KLU Numeric; `hide_flip` updates the cache's bus-type snapshot so the solve
-# refactors on the stale PQ pivot order and must go through the re-pivot guard.
+# A visible PQ→PV flip drops the KLU Numeric. `hide_flip` updates the cache's bus-type snapshot,
+# so the solve refactors on the stale PQ pivot order and must use the re-pivot guard.
 function _stale_pivot_flip(pf, sys, bus_number; hide_flip = false)
     data = PowerFlowData(pf, sys)
     i = PF.get_bus_lookup(data)[bus_number]
@@ -308,7 +306,7 @@ end
                 @test (_count_logs(logs, Logging.Debug, "stale KLU pivot order") > 0) ==
                       hide_flip
                 @test converged
-                @test _count_logs(logs, Logging.Warn, "Jacobian is singular") == 0
+                @test iszero(_count_logs(logs, Logging.Warn, "Jacobian is singular"))
 
                 fresh = PowerFlowData(pf, sys)
                 @test solve_power_flow!(fresh)
@@ -345,7 +343,8 @@ end
 
     pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
         correct_bustypes = true, solution_parameters = sp)
-    # Trans4 (7-8) is bus 8's only connection: its outage islands bus 8, made its own REF.
+    # Trans4 (7-8) is bus 8's only connection: its outage islands bus 8, which becomes its
+    # own REF.
     function outage_trans4!(d)
         ybus = d.power_network_matrix
         i, j = PF.get_bus_lookup(d)[7], PF.get_bus_lookup(d)[8]
@@ -387,7 +386,7 @@ end
     @test data_d.polar_nr_cache[] === c2
     data_q, c3 = solved(pf_d, d -> (d.bus_type[k, 1] = PSY.ACBusTypes.PQ))
     @test data_q.polar_nr_cache[] === c3
-    # Bus 8's slot to the main REF is orphaned by the outage and must be zeroed.
+    # The outage orphans bus 8's slot to the main REF, so the refresh must zero it.
     data_b, c4 = solved(pf_d, outage_trans4!)
     @test data_b.polar_nr_cache[] === c4
     fresh_res = PF.ACPowerFlowResidual(data_b, 1)
