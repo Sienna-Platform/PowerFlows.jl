@@ -5,19 +5,18 @@ power flow formulation in rectangular coordinates. This MCPB formulation
 adapts the *Hybrid Current-Power Balance* method of Abhyankar, Cui & Flueck,
 *"Fast Power Flow Analysis using a Hybrid Current-Power Balance Formulation in
 Rectangular Coordinates"*, with implementation differences from that paper
-(the residual sign convention is aligned with
-[`ACRectangularPowerFlow`](@ref), and the PQ rows use an
+(the residual sign convention is `I_spec − I_network`, and the PQ rows use an
 imaginary-current-balance-first ordering), which is why this implementation is
 named "Mixed" rather than "Hybrid". It is the third AC formulation in
 PowerFlows.jl, alongside [`ACPolarPowerFlow`](@ref) (power balance, polar
-state) and [`ACRectangularPowerFlow`](@ref) (augmented Da Costa current
-injection).
+state) and [`ACRectangularPowerFlow`](@ref) (power balance, rectangular
+state).
 
 The voltage at each bus is expressed in rectangular coordinates,
 $V_i = e_i + j f_i$, and the state vector groups the two unknowns per bus as
 $[e_i, f_i]$. The system has exactly $2n$ equations and unknowns — the
-smallest state vector of the three AC formulations (the Da Costa rectangular
-form adds a third variable per PV bus).
+smallest state vector of the three AC formulations, shared with
+[`ACRectangularPowerFlow`](@ref).
 
 ## Motivation
 
@@ -46,7 +45,7 @@ constant-power load). Constant-impedance ZIP load is folded into the
 admittance matrix diagonal; constant-current ZIP load is subtracted as
 $-\,\mathrm{const\_I}\cdot|V_i|$ — identical to the
 [`ACRectangularPowerFlow`](@ref) treatment, which gives full ZIP and LCC
-feature parity for free.
+feature parity.
 
 ### PQ buses — current balance (divided form)
 
@@ -80,10 +79,9 @@ the network current at the solved voltage.
 ### Reference bus
 
 The slack-bus voltage is fixed; its two state slots carry $(P_{gen},
-Q_{gen})$ and the residual is the divided current balance, identical to the
-[`ACRectangularPowerFlow`](@ref) reference treatment, including the
-distributed-slack convention in which the reference state variable carries the
-whole subnetwork slack.
+Q_{gen})$ and the residual is the divided current balance, with the
+distributed-slack convention (shared with polar and [`ACRectangularPowerFlow`](@ref))
+in which the reference state variable carries the whole subnetwork slack.
 
 ## Jacobian structure
 
@@ -117,13 +115,20 @@ Region converge on systems up to 10 000 buses with the same iteration count
 as the polar formulation and a near-degenerate-voltage guard
 (`V_FLOOR2 = 1e-16`, floored $|V_i|^2$) preventing blow-up.
 
+The PQ current rows are not invariant to a common rotation of the bus angles,
+so a Newton step from a flat start can throw PV magnitudes far off their
+setpoints (ACTIVSg2000 then diverges). After each Newton, chord and Iwamoto
+step, every PV bus whose $|V|$ is off its setpoint by more than 5 % is scaled
+back onto it, keeping its angle. Trust Region and Levenberg-Marquardt steps
+are not projected.
+
 Benchmarking on the 2 000- and 10 000-bus ACTIVSg systems shows the mixed
 form is roughly **1.4–1.8× faster than the polar power-balance form** (and
 ~1.7–1.8× per Newton iteration) under flat starts — consistent with, though
 at the lower end of, the original paper's range (the gap narrows because KLU
 already gives the polar formulation a reused symbolic factorization). It does
-**not** outperform the existing [`ACRectangularPowerFlow`](@ref), which is
-also a current-balance form; the practical value of `ACMixedPowerFlow` is its
+**not** outperform [`ACRectangularPowerFlow`](@ref) as it was then, a
+current-balance form; the practical value of `ACMixedPowerFlow` is its
 minimal $2n$ state vector for memory-bound very-large-scale studies and as a
 validated reference implementation of the paper.
 

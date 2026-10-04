@@ -192,3 +192,41 @@ end
     J(data, 1)
     @test all(isfinite, SparseArrays.nonzeros(J.Jv))
 end
+
+# PQ current rows are not rotation invariant: from a plain flat start the first Newton step
+# throws ACTIVSg2000's PV magnitudes far off their setpoints and NR diverges unless each step
+# projects them back (`_project_pv_setpoints!`).
+@testset "Mixed CPB flat start: PV setpoint projection (ACTIVSg2000)" begin
+    sys = PSB.build_system(PSB.MatpowerTestSystems, "matpower_ACTIVSg2000_sys")
+    params = SolutionParameters(; tol = 1e-8, enhanced_flat_start = false)
+    polar = PowerFlowData(
+        ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+            correct_bustypes = true, solution_parameters = params), sys)
+    @test PF.solve_power_flow!(polar)
+    mixed = PowerFlowData(
+        ACMixedPowerFlow{NewtonRaphsonACPowerFlow}(;
+            correct_bustypes = true, solution_parameters = params), sys)
+    bt = mixed.bus_type[:, 1]
+    ref = findfirst(==(PSY.ACBusTypes.REF), bt)
+    for i in eachindex(bt)
+        bt[i] == PSY.ACBusTypes.PQ && (mixed.bus_magnitude[i, 1] = 1.0)
+        bt[i] == PSY.ACBusTypes.REF || (mixed.bus_angles[i, 1] = mixed.bus_angles[ref, 1])
+    end
+    @test PF.solve_power_flow!(mixed)
+    @test maximum(abs.(mixed.bus_magnitude .- polar.bus_magnitude)) < 1e-7
+    θ(d) = d.bus_angles[:, 1] .- d.bus_angles[ref, 1]
+    @test maximum(abs.(θ(mixed) .- θ(polar))) < 1e-7
+
+    # The shift is folded into the step, so `x .-= Δx` still restores the iterate.
+    residual = PF.ACMixedCPBResidual(mixed, 1)
+    x = zeros(length(residual.Rv))
+    PF.mixed_initial_state!(x, mixed, residual.bus_state_offset, residual.bus_block_size, 1)
+    x_old = copy(x)
+    Δx = 0.3 .* x
+    x .+= Δx
+    PF._project_pv_setpoints!(residual, mixed, x, Δx, 1)
+    pv = findall(==(PSY.ACBusTypes.PV), bt)
+    offs = Int.(residual.bus_state_offset[pv])
+    @test hypot.(x[offs], x[offs .+ 1]) ≈ mixed.bus_magnitude[pv, 1]
+    @test x .- Δx ≈ x_old
+end

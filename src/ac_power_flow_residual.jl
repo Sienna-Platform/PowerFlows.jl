@@ -702,7 +702,7 @@ end
     _build_bus_slack_participation_factors(data, bus_type, subnetworks, time_step)
 
 [`_fill_bus_slack_participation_factors!`](@ref) as a `SparseVector{Float64, Int}` of length
-`n_buses`, for the rectangular current-injection and mixed CPB residuals.
+`n_buses`, for the rectangular and mixed CPB residuals.
 """
 function _build_bus_slack_participation_factors(
     data::ACPowerFlowData,

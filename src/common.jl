@@ -739,7 +739,7 @@ end
 end
 
 """Precompute, once per solve, the `x`-offsets of PQ/PV buses for the per-bus
-block (rectangular CI / mixed CPB) state layout. Bus types and the state
+block (rectangular / mixed CPB) state layout. Bus types and the state
 layout are invariant across NR/TR iterations, so this filtering is hoisted out
 of the per-iteration validator. `offsets[i]` is the start of bus `i`'s block;
 `(e, f) = (x[off], x[off + 1])`. REF is fixed and excluded here."""
@@ -790,7 +790,7 @@ function validate_voltage_magnitudes(
     return
 end
 
-"""Validate squared voltage magnitudes for the per-bus-block (rectangular CI /
+"""Validate squared voltage magnitudes for the per-bus-block (rectangular /
 mixed CPB) state layout, scanning the precomputed PQ/PV offset list
 ([`_pqpv_validate_offsets`](@ref)) instead of re-filtering all buses every
 iteration. Unlike the polar check (PQ only), PV is included: `(e, f)` are

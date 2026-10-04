@@ -1,31 +1,25 @@
 """
     compute_bus_state_offsets(bus_type)
 
-Compute per-bus state-vector offsets and block sizes for the augmented
-current-injection (rectangular) formulation. PQ and REF buses occupy 2 entries
-each `(e, f)` or `(P_gen, Q_gen)`; PV buses occupy 3 entries `(e, f, Q)`.
+Per-bus state-vector offsets and block sizes for the rectangular power-mismatch
+formulation. Every bus occupies 2 slots: `(e, f)` at PQ and PV, `(P_net, Q_net)` at REF.
 
 Returns `(offsets, block_sizes, total_bus_state)` where
 - `offsets[i]` is the 1-based start index of bus `i`'s block in the state vector
 - `offsets[end]` is the start of the LCC tail (`== total_bus_state + 1`)
-- `block_sizes[i] ∈ {2, 3}`
-- `total_bus_state` is the total count of bus-state slots (excluding LCC tail)
+- `block_sizes[i] == 2`
+- `total_bus_state` is the total count of bus-state slots (excluding the tail)
 """
 function compute_bus_state_offsets(
     bus_type::AbstractVector{PSY.ACBusTypes.Value},
 )
     n_buses = length(bus_type)
     offsets = Vector{REC_INDEX_TYPE}(undef, n_buses + 1)
-    block_sizes = Vector{Int8}(undef, n_buses)
-    pos = REC_INDEX_TYPE(1)
-    for i in 1:n_buses
-        offsets[i] = pos
-        bs = bus_type[i] == PSY.ACBusTypes.PV ? Int8(3) : Int8(2)
-        block_sizes[i] = bs
-        pos += bs
+    block_sizes = fill(Int8(2), n_buses)
+    for i in 1:(n_buses + 1)
+        offsets[i] = REC_INDEX_TYPE(2 * i - 1)
     end
-    offsets[n_buses + 1] = pos
-    return offsets, block_sizes, Int(pos - 1)
+    return offsets, block_sizes, 2 * n_buses
 end
 
 """
@@ -56,15 +50,14 @@ end
 """
     _rect_fill_state!(x, data, bus_state_offset, type_time_step, value_time_step)
 
-Fill the rectangular state vector `x`. The state-block *layout* (which buses
-are REF/PV/PQ and therefore the 2- vs 3-slot blocks) is taken from
-`data.bus_type[:, type_time_step]`; the *values* (voltages, injections, LCC
-taps/angles) are read from `*[:, value_time_step]`.
+Fill the rectangular state vector `x`. The block *meaning* (REF `(P_net, Q_net)`,
+otherwise `(e, f)`) is taken from `data.bus_type[:, type_time_step]`; the *values*
+(voltages, injections, LCC taps/angles) are read from `*[:, value_time_step]`.
 
 With `type_time_step == value_time_step` this is the plain flat start. With
 `value_time_step` pointing at a previously converged step it produces the
 previous-solution warm-start candidate while keeping the offsets valid for the
-current step (the rectangular analog of polar `_previous_solution_start` /
+current step's bus types (the rectangular analog of polar `_previous_solution_start` /
 `update_state!`).
 """
 function _rect_fill_state!(
@@ -91,15 +84,6 @@ function _rect_fill_state!(
             θ = data.bus_angles[i, value_time_step]
             x[off] = Vm * cos(θ)
             x[off + 1] = Vm * sin(θ)
-            if bt == PSY.ACBusTypes.PV
-                # The residual uses PV's Q slot as-is, with no `const_I_Q`
-                # correction (unlike REF above), so net it out here.
-                x[off + 2] =
-                    data.bus_reactive_power_injections[i, value_time_step] -
-                    get_bus_reactive_power_non_impedance_withdrawals(
-                        data, i, value_time_step,
-                    )
-            end
         end
     end
     n_lccs = size(data.lcc.p_set, 1)
@@ -140,9 +124,8 @@ end
 
 Initialize the state vector `x` from `data.bus_magnitude`, `data.bus_angles`,
 and the bus power-injection fields, plus the LCC tap/angle fields. Counterpart
-of [`rect_update_data!`](@ref). At REF buses, the first two slots hold
-`(P_gen, Q_gen)` (including any distributed-slack increment); elsewhere
-the first two slots hold `(e, f)`, and PV buses' third slot holds `Q_gen`.
+of [`rect_update_data!`](@ref). At REF buses the two slots hold the net
+`(P, Q)` injection (the P slot carries the whole island slack); elsewhere `(e, f)`.
 """
 function rect_initial_state!(
     x::Vector{Float64},
@@ -160,13 +143,13 @@ end
 
 Write the state-derived voltage fields (`bus_magnitude`, `bus_angles`) and
 LCC taps/angles from `x` back into `data`. Per-iteration helper invoked by
-the rectangular CI residual.
+the rectangular residual.
 
 Does NOT write `bus_active_power_injections` / `bus_reactive_power_injections`:
 those are finalized once after convergence with the correct distributed-slack
 share by [`rect_finalize_bus_injections!`](@ref). At REF buses `x[off]` carries
-the entire subnetwork slack and would over-attribute it; at PV buses the gen
-Q has not yet been combined with the per-bus slack share.
+the entire subnetwork slack and would over-attribute it; a PV bus's reactive
+power is not a state and is only recovered at the converged voltages.
 
 Counterpart of [`rect_initial_state!`](@ref).
 """
@@ -209,51 +192,49 @@ function rect_update_data!(
 end
 
 """
-    rect_finalize_bus_injections!(data, x, bus_state_offset, P_net_set,
-                                  bus_slack_participation_factors, subnetworks,
-                                  independent_ref, time_step)
+    rect_finalize_bus_injections!(data, x, residual, time_step)
 
 Distribute the converged subnetwork slack across participating buses and write
 `bus_active_power_injections` and `bus_reactive_power_injections` accordingly.
 
 Mirrors polar `_set_state_variables_at_bus!` semantics: at every participating
 REF and PV bus the solved net active power is `P_net_set[i] + c_i · P_slack_total`,
-where `P_slack_total = x[ref_off] - P_net_set[ref_bus]`; net reactive is `x[off + 1]`
-at REF, `x[off + 2]` at PV. Both are net, not generation — the withdrawal is added back
-below, differently per bus type (see the branch comments). At PQ buses no slack
-attribution is needed: `bus_active_power_injections` / `bus_reactive_power_injections`
-already hold the load setpoint from `PowerFlowData` construction.
+where `P_slack_total = x[ref_off] - P_net_set[ref_bus]`. Net reactive power is
+`x[off + 1]` at REF; at PV it is the calculated injection `Im(V·conj(I))` of the last
+residual evaluation (`residual.Ir_acc`/`Ii_acc`, Y-bus with constant-Z folded in plus the
+LCC terminals) less the VSC converters' `Q_c`. Both are net, not generation — the
+withdrawal is added back below, differently per bus type (see the branch comments). At PQ
+buses no slack attribution is needed: `bus_active_power_injections` /
+`bus_reactive_power_injections` already hold the load setpoint from `PowerFlowData`
+construction.
 
 A multi-swing island (REF bus in `independent_ref`) holds each swing at its own
 fixed voltage and self-balances its own P-slot instead of sharing the island's
-distributed scalar (see `ACRectangularCIResidual`'s REF branch): such a REF's
-net active power is `x[off]` directly, bypassing `c_k`/`P_slack_total` entirely.
+distributed scalar: such a REF's net active power is `x[off]` directly.
 
-Called once per time step after the NR loop converges (not on every iteration),
-because the slack distribution is only meaningful at the converged x.
+Called once per time step after the NR loop converges, with the residual last
+evaluated at `x`.
 """
 function rect_finalize_bus_injections!(
     data::ACPowerFlowData,
     x::Vector{Float64},
-    bus_state_offset::Vector{REC_INDEX_TYPE},
-    P_net_set::Vector{Float64},
-    bus_slack_participation_factors::SparseVector{Float64, Int},
-    subnetworks::Dict{Int64, Vector{Int64}},
-    independent_ref::Set{Int},
+    residual::ACRectangularCIResidual,
     time_step::Int64,
 )
     bus_types = view(data.bus_type, :, time_step)
-    for (ref_bus, subnetwork_buses) in subnetworks
-        ref_off = Int(bus_state_offset[ref_bus])
+    P_net_set = residual.P_net_set
+    spf = residual.bus_slack_participation_factors
+    e_state = residual.e_state
+    f_state = residual.f_state
+    for (ref_bus, subnetwork_buses) in residual.subnetworks
+        ref_off = Int(residual.bus_state_offset[ref_bus])
         P_slack_total = x[ref_off] - P_net_set[ref_bus]
         for bus_k in subnetwork_buses
-            c_k = bus_slack_participation_factors[bus_k]
+            c_k = spf[bus_k]
             bt = bus_types[bus_k]
-            off = Int(bus_state_offset[bus_k])
+            off = Int(residual.bus_state_offset[bus_k])
             if bt == PSY.ACBusTypes.REF
-                if bus_k in independent_ref
-                    # Multi-swing island: this swing self-balances at its own
-                    # P-slot; x[off] is already the whole net power (no c_k share).
+                if bus_k in residual.independent_ref
                     P_net_cp = x[off]
                 else
                     P_net_cp = P_net_set[bus_k] + c_k * P_slack_total
@@ -267,18 +248,26 @@ function rect_finalize_bus_injections!(
                 data.bus_reactive_power_injections[bus_k, time_step] =
                     Q_net_cp + data.bus_reactive_power_withdrawals[bus_k, time_step]
             elseif bt == PSY.ACBusTypes.PV
-                # PV slots get no such correction in the residual, so they are also
-                # net of constant current — the residual's `P_eff`/`Q_eff`.
+                # Net of constant power and constant current (constant-Z is in the Y-bus).
                 P_eff = P_net_set[bus_k] + c_k * P_slack_total
-                Q_eff = x[off + 2]
                 data.bus_active_power_injections[bus_k, time_step] =
                     P_eff +
                     get_bus_active_power_non_impedance_withdrawals(data, bus_k, time_step) -
                     data.bus_hvdc_net_power[bus_k, time_step]
+                Q_net =
+                    f_state[bus_k] * residual.Ir_acc[bus_k] -
+                    e_state[bus_k] * residual.Ii_acc[bus_k]
                 data.bus_reactive_power_injections[bus_k, time_step] =
-                    Q_eff +
+                    Q_net +
                     get_bus_reactive_power_non_impedance_withdrawals(data, bus_k, time_step)
             end
+        end
+    end
+    dcn = get_dc_network(data)
+    @inbounds for c in 1:n_vsc_converters(dcn)
+        ix = dcn.converter_ac_bus_ix[c]
+        if bus_types[ix] == PSY.ACBusTypes.PV
+            data.bus_reactive_power_injections[ix, time_step] -= dcn.q_c[c, time_step]
         end
     end
     return

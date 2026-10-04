@@ -1,4 +1,4 @@
-@testset "Rectangular CI: compute_bus_state_offsets" begin
+@testset "Rectangular: compute_bus_state_offsets" begin
     @testset "all PQ" begin
         bt = fill(PSY.ACBusTypes.PQ, 5)
         off, bs, total = PF.compute_bus_state_offsets(bt)
@@ -16,22 +16,14 @@
             PSY.ACBusTypes.PQ,
         ]
         off, bs, total = PF.compute_bus_state_offsets(bt)
-        # REF=2, PV=3, PQ=2, PV=3, PQ=2 ⇒ 12 total
-        @test off == Int32[1, 3, 6, 8, 11, 13]
-        @test bs == Int8[2, 3, 2, 3, 2]
-        @test total == 12
-    end
-
-    @testset "all PV" begin
-        bt = fill(PSY.ACBusTypes.PV, 4)
-        off, bs, total = PF.compute_bus_state_offsets(bt)
-        @test off == Int32[1, 4, 7, 10, 13]
-        @test bs == fill(Int8(3), 4)
-        @test total == 12
+        # Every bus is a 2-slot block: a PV bus has no reactive-power state.
+        @test off == Int32[1, 3, 5, 7, 9, 11]
+        @test bs == fill(Int8(2), 5)
+        @test total == 10
     end
 end
 
-@testset "Rectangular CI: fold_zip_constant_z!" begin
+@testset "Rectangular: fold_zip_constant_z!" begin
     @testset "sign convention" begin
         sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
         pf = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}()
@@ -65,7 +57,7 @@ end
     end
 end
 
-@testset "Rectangular CI: rect_initial_state! / rect_update_data! roundtrip" begin
+@testset "Rectangular: rect_initial_state! / rect_update_data! roundtrip" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
     pf = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}()
     data = PF.PowerFlowData(pf, sys)
@@ -103,7 +95,7 @@ end
     end
 end
 
-@testset "Rectangular CI: _pick_better_x0 accepts rectangular residual" begin
+@testset "Rectangular: _pick_better_x0 accepts rectangular residual" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
     pf = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}()
     data = PF.PowerFlowData(pf, sys)
@@ -122,7 +114,7 @@ end
     @test x0 != worse
 end
 
-@testset "Rectangular CI: _rect_fill_state! type/value time-step split" begin
+@testset "Rectangular: _rect_fill_state! type/value time-step split" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
     pf = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}()
     data = PF.PowerFlowData(pf, sys)
@@ -150,7 +142,7 @@ end
     data.bus_magnitude[nonref, 1] = saved_mag
 end
 
-@testset "Rectangular CI: _enhanced_flat_start" begin
+@testset "Rectangular: _enhanced_flat_start" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
     pf = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}()
     data = PF.PowerFlowData(pf, sys)
@@ -187,7 +179,7 @@ end
     end
 end
 
-@testset "Rectangular CI: improve_x0" begin
+@testset "Rectangular: improve_x0" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
 
     @testset "returns a usable x0 and respects enhanced_flat_start flag" begin
@@ -210,7 +202,7 @@ end
 
     # Smoke check that improve_x0 in the solve path produces a converged,
     # finite end-to-end result. Numerical parity with polar is covered by
-    # "Rectangular CI Power Flow: parity with polar NR".
+    # "Rectangular Power Flow: parity with polar NR".
     @testset "improve_x0 in the solve path yields a converged result" begin
         pf = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}()
         res = solve_power_flow(pf, sys)

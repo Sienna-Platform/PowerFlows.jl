@@ -198,14 +198,17 @@ function _maybe_handoff!(
     sv::StateVectorCache,
     residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
     J::Union{Nothing, ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
-    ::ACPowerFlowData,
+    data::ACPowerFlowData,
     time_step::Int64,
     tol::Float64,
     linear_solver::Union{Nothing, AbstractString},
     solver_name::String,
     stage_iters::Int,
 )
-    return (norm(residual.Rv, Inf) < tol, 0)
+    converged =
+        norm(residual.Rv, Inf) < tol &&
+        _converged_at_setpoints!(residual, data, sv.x, time_step, tol)
+    return (converged, 0)
 end
 
 function _maybe_handoff!(
@@ -221,7 +224,9 @@ function _maybe_handoff!(
     solver_name::String,
     stage_iters::Int,
 )
-    stage_met_tol = norm(residual.Rv, Inf) < tol
+    stage_met_tol =
+        norm(residual.Rv, Inf) < tol &&
+        _converged_at_setpoints!(residual, data, sv.x, time_step, tol)
     stage_met_tol && return (stage_met_tol, 0)
     J(data, time_step)           # refresh Jacobian VALUES at the stage state
     if handoff_solver === LevenbergMarquardtACPowerFlow

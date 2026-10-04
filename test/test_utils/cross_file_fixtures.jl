@@ -315,7 +315,7 @@ function _two_swing_mixed_system()
     return sys
 end
 
-# --- Rectangular CI polar parity (test_rectangular_ci_polar_parity, test_mixed_cpb_polar_parity,
+# --- Rectangular polar parity (test_rectangular_ci_polar_parity, test_mixed_cpb_polar_parity,
 # test_mixed_cpb_jacobian, test_mixed_cpb_residual) ---
 
 const RECT_PARITY_ATOL = 1e-7
@@ -403,7 +403,7 @@ function _build_zip_2bus_system(;
     return sys
 end
 
-# --- Rectangular CI power flow (test_rectangular_ci_power_flow, test_rectangular_ci_jacobian) ---
+# --- Rectangular power flow (test_rectangular_ci_power_flow, test_rectangular_ci_jacobian) ---
 
 function _rect_pf_settings()
     return SolutionParameters(; validate_voltage_magnitudes = false)

@@ -104,8 +104,7 @@ end
 """Rectangular analog of the polar [`improve_x0`](@ref): base flat start →
 previous-converged-timestep warm start → enhanced flat start (gated on
 `get_enhanced_flat_start(pf)`) → large-residual warning. No DC robust
-fallback: `ACRectangularPowerFlow` has no `robust_power_flow` field and a
-CI-aware DC fallback is out of scope (see the formulation/solver-split spec)."""
+fallback: `ACRectangularPowerFlow` has no `robust_power_flow` field."""
 function improve_x0(pf::ACRectangularPowerFlow,
     data::ACPowerFlowData,
     residual::ACRectangularCIResidual,
@@ -133,7 +132,7 @@ function improve_x0(pf::ACRectangularPowerFlow,
         lg_res, ix = findmax(abs.(residual.Rv))
         lg_res_rounded = round(lg_res; sigdigits = 3)
         @warn "Initial guess provided results in a large initial residual of " *
-              "$lg_res_rounded (rectangular current-injection residual index $ix)."
+              "$lg_res_rounded (rectangular residual index $ix)."
     end
     return x0
 end
@@ -272,11 +271,10 @@ end
 """Rectangular/MCPB analog of [`_enhanced_flat_start`](@ref): per subnetwork,
 set PV/PQ bus angles to the mean REF-bus angle and PQ magnitudes to the mean PV and REF
 setpoint magnitude, written back as `(e, f) = (Vm·cosθ, Vm·sinθ)`. PV buses
-keep their setpoint magnitude (only the angle changes); REF blocks and the
-PV `Q` / REF `(P,Q)` slots are left as in `x0`. Uses `residual.subnetworks`
-(ref-bus index → member bus indices) for the partition. Identical for the
-rectangular and MCPB layouts (both use 2-slot `(e, f)` PV/PQ blocks and never
-touch a PV `Q` slot)."""
+keep their setpoint magnitude (only the angle changes); REF `(P, Q)` blocks are
+left as in `x0`. Uses `residual.subnetworks` (ref-bus index → member bus indices)
+for the partition. Identical for the rectangular and MCPB layouts (both use 2-slot
+`(e, f)` PV/PQ blocks)."""
 function _enhanced_flat_start(
     x0::Vector{Float64},
     data::ACPowerFlowData,

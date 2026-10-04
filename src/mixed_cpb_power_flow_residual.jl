@@ -367,3 +367,56 @@ function _converged_at_setpoints!(
     residual(data, x, time_step)
     return false
 end
+
+# Relative |V| − V_set at a PV bus above which a step is projected. Projecting every step costs
+# warm starts an iteration (ACTIVSg2000: 5 → 6); above ~0.07 flat ACTIVSg2000 needs 21 or fails.
+const PV_PROJECTION_THRESHOLD = 0.05
+
+"""
+    _project_pv_setpoints!(residual, data, x, Δx, time_step)
+
+Called right after an iterate moved by `x .+= Δx`, before `F` is evaluated there. The mixed
+form scales each PV `(e, f)` whose magnitude is off its setpoint by more than
+`PV_PROJECTION_THRESHOLD` back onto it, keeping the angle, and adds the shift to `Δx` so
+`x .-= Δx` still undoes the move. Its PQ current rows are not rotation invariant, and without
+this a flat start on ACTIVSg2000 diverges. No-op for the other forms. NR, chord and Iwamoto
+steps call it; trust-region and Levenberg-Marquardt steps do not, since a projected trial point
+leaves their step model (with it, LM stalls from flat on ACTIVSg2000 and TR fails on
+`psse_14_zero_impedance_branch_test_system`).
+"""
+function _project_pv_setpoints!(
+    ::Union{ACPowerFlowResidual, ACRectangularCIResidual},
+    ::ACPowerFlowData,
+    ::Vector{Float64},
+    ::Vector{Float64},
+    ::Int64,
+)
+    return
+end
+
+function _project_pv_setpoints!(
+    residual::ACMixedCPBResidual,
+    data::ACPowerFlowData,
+    x::Vector{Float64},
+    Δx::Vector{Float64},
+    time_step::Int64,
+)
+    bus_types = view(data.bus_type, :, time_step)
+    @inbounds for i in eachindex(bus_types)
+        bus_types[i] == PSY.ACBusTypes.PV || continue
+        off = Int(residual.bus_state_offset[i])
+        vm = hypot(x[off], x[off + 1])
+        v_set = data.bus_magnitude[i, time_step]
+        abs(vm - v_set) > PV_PROJECTION_THRESHOLD * v_set || continue
+        # No angle to keep at the origin; the next step moves the bus off it.
+        iszero(vm) && continue
+        scale = v_set / vm
+        e = x[off] * scale
+        f = x[off + 1] * scale
+        Δx[off] += e - x[off]
+        Δx[off + 1] += f - x[off + 1]
+        x[off] = e
+        x[off + 1] = f
+    end
+    return
+end

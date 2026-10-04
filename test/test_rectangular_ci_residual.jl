@@ -1,4 +1,4 @@
-@testset "Rectangular CI Residual: parity with polar" begin
+@testset "Rectangular Residual: parity with polar" begin
     @testset "c_sys5: residual zero at polar-converged state" begin
         sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
         pf_polar = ACPowerFlow{NewtonRaphsonACPowerFlow}()
@@ -26,7 +26,7 @@
     end
 end
 
-@testset "Rectangular CI Residual: flat start has nonzero residual" begin
+@testset "Rectangular Residual: flat start has nonzero residual" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
     pf_rect = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}()
     data = PF.PowerFlowData(pf_rect, sys)
@@ -41,14 +41,12 @@ end
     @test LinearAlgebra.norm(R.Rv, Inf) > 1e-3
 end
 
-@testset "Rectangular CI Residual: state layout sanity" begin
+@testset "Rectangular Residual: state layout sanity" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
     pf_rect = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}()
     data = PF.PowerFlowData(pf_rect, sys)
     R = PF.ACRectangularCIResidual(data, 1)
-    # Block sizes: 2 for PQ/REF, 3 for PV
-    bt = view(data.bus_type, :, 1)
-    expected = sum(b == PSY.ACBusTypes.PV ? 3 : 2 for b in bt) +
-               4 * size(data.lcc.p_set, 1)
+    # Every bus is a 2-slot block (a PV bus has no reactive-power state).
+    expected = 2 * size(data.bus_type, 1) + 4 * size(data.lcc.p_set, 1)
     @test length(R.Rv) == expected
 end

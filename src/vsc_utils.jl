@@ -906,28 +906,24 @@ function _vsc_pdc_derivatives(dcn::DCNetwork, c::Int, Vm_ac::Float64, time_step:
     return (P + Ploss, 1.0 + dloss_dIc * dIc_dP, dloss_dIc * dIc_dQ, dloss_dIc * dIc_dVm)
 end
 
-# ── Rectangular / MCPB kernels (bus balance is current injection conj(S/V)) ───────────────────
+# ── Rectangular / MCPB kernels ──────────────────────────────────────────────────────────────
 
-# Add each converter's current injection to the bus current-balance rows (real, imag). Mirrors the
-# per-bus I_spec term `(P·e + Q·f)/D, (P·f − Q·e)/D` used for ordinary injections.
+# Add each converter's (P_c, Q_c) injection to the rectangular bus power-mismatch rows. A PV
+# bus's second row is the |V|² pin, so Q_c enters only at PQ and REF buses.
 function _apply_vsc_bus_injections_rect!(
     F::Vector{Float64},
     dcn::DCNetwork,
-    e_state::Vector{Float64},
-    f_state::Vector{Float64},
     bus_state_offset::AbstractVector,
+    bus_types::AbstractVector,
     time_step::Int,
 )
     @inbounds for c in 1:n_vsc_converters(dcn)
         ix = dcn.converter_ac_bus_ix[c]
         off = Int(bus_state_offset[ix])
-        e = e_state[ix]
-        f = f_state[ix]
-        D = max(e * e + f * f, V_FLOOR2)
-        P = dcn.p_c[c, time_step]
-        Q = dcn.q_c[c, time_step]
-        F[off] += (P * e + Q * f) / D
-        F[off + 1] += (P * f - Q * e) / D
+        F[off] -= dcn.p_c[c, time_step]
+        if bus_types[ix] != PSY.ACBusTypes.PV
+            F[off + 1] -= dcn.q_c[c, time_step]
+        end
     end
     return
 end
@@ -967,7 +963,7 @@ function _set_vsc_tail_residuals_rect!(
 end
 
 # MCPB bus injection. PQ buses use divided current with imag-first row order (the two current
-# slots swapped); REF keeps rect's current rows verbatim. PV rows are (real-power balance, |V|²
+# slots swapped); REF uses real-first current rows. PV rows are (real-power balance, |V|²
 # pin): the converter enters the power balance as its injection P_c and must not touch the pin
 # row (Q_c has no bus row at a PV bus — the generator absorbs it).
 function _apply_vsc_bus_injections_mixed!(
@@ -1003,12 +999,11 @@ function _apply_vsc_bus_injections_mixed!(
     return
 end
 
-# Shared VSC tail Jacobian writer for the rectangular-CI and MCPB formulations. The two are
-# identical except that MCPB uses the imag-first slot order for the bus current-injection rows at
-# PQ buses (`imag_first_pq = true`); rectangular CI always uses real-first (`imag_first_pq = false`).
-# The control + DC-KCL tail rows (and their e,f columns) are the same for both. All writes go through
-# the pre-built `vsc_nz` nzval-index cache (and `diag_base_nz` for the current-injection coupling), so
-# the hot path is `O(n_conv + n_node + n_branch)` with no `O(log nnz)` `Jv[r,c]` setindex.
+# VSC Jacobian writer for the MCPB current-injection rows (`imag_first_pq = true`: imag-first slot
+# order at PQ buses; `false`: real-first current rows). The control + DC-KCL tail rows are
+# [`_set_vsc_tail_entries_rect!`](@ref), shared with the rectangular power-mismatch form. All writes
+# go through the pre-built `vsc_nz` nzval-index cache (and `diag_base_nz` for the current-injection
+# coupling), so the hot path is `O(n_conv + n_node + n_branch)` with no `O(log nnz)` setindex.
 function _set_entries_for_vsc_rect_mcpb!(
     Jvnz::Vector{Float64},
     diag_base_nz::Matrix{Int},
@@ -1019,6 +1014,74 @@ function _set_entries_for_vsc_rect_mcpb!(
     bus_types::AbstractVector,
     time_step::Int,
     imag_first_pq::Bool,
+)
+    conv = vsc_nz.conv
+    @inbounds for c in 1:n_vsc_converters(dcn)
+        ix = dcn.converter_ac_bus_ix[c]
+        e = e_state[ix]
+        f = f_state[ix]
+        D = max(e * e + f * f, V_FLOOR2)
+        P = dcn.p_c[c, time_step]
+        Q = dcn.q_c[c, time_step]
+        num_r = P * e + Q * f
+        num_i = P * f - Q * e
+        D2 = D * D
+        dIr_de = (P * D - num_r * 2.0 * e) / D2
+        dIr_df = (Q * D - num_r * 2.0 * f) / D2
+        dIi_de = (-Q * D - num_i * 2.0 * e) / D2
+        dIi_df = (P * D - num_i * 2.0 * f) / D2
+        bt = bus_types[ix]
+        if bt == PSY.ACBusTypes.REF
+            # REF bus: e,f are fixed and columns off/off+1 are the (P_gen, Q_gen) states — the
+            # converter couples to neither (skip the diag block). The current-injection
+            # derivatives w.r.t. (P_c, Q_c) still apply: MCPB's REF rows are current balance.
+            Jvnz[conv[1, c]] = e / D
+            Jvnz[conv[2, c]] = f / D
+            Jvnz[conv[3, c]] = f / D
+            Jvnz[conv[4, c]] = -e / D
+        elseif imag_first_pq && bt == PSY.ACBusTypes.PV
+            # MCPB PV rows are (real-power balance, |V|² pin): the converter contributes −P_c to
+            # the power row (constant in e,f — no diag coupling) and nothing to the pin row.
+            Jvnz[conv[1, c]] = -1.0
+            Jvnz[conv[2, c]] = 0.0
+            Jvnz[conv[3, c]] = 0.0
+            Jvnz[conv[4, c]] = 0.0
+        elseif imag_first_pq && bt == PSY.ACBusTypes.PQ
+            # imag-first (MCPB PQ): F[off] = Ii, F[off+1] = Ir
+            Jvnz[diag_base_nz[1, ix]] += dIi_de
+            Jvnz[diag_base_nz[2, ix]] += dIi_df
+            Jvnz[diag_base_nz[3, ix]] += dIr_de
+            Jvnz[diag_base_nz[4, ix]] += dIr_df
+            Jvnz[conv[1, c]] = f / D
+            Jvnz[conv[2, c]] = -e / D
+            Jvnz[conv[3, c]] = e / D
+            Jvnz[conv[4, c]] = f / D
+        else
+            # real-first current rows: F[off] = Ir, F[off+1] = Ii
+            Jvnz[diag_base_nz[1, ix]] += dIr_de
+            Jvnz[diag_base_nz[2, ix]] += dIr_df
+            Jvnz[diag_base_nz[3, ix]] += dIi_de
+            Jvnz[diag_base_nz[4, ix]] += dIi_df
+            Jvnz[conv[1, c]] = e / D
+            Jvnz[conv[2, c]] = f / D
+            Jvnz[conv[3, c]] = f / D
+            Jvnz[conv[4, c]] = -e / D
+        end
+    end
+    _set_vsc_tail_entries_rect!(Jvnz, vsc_nz, dcn, e_state, f_state, bus_types, time_step)
+    return
+end
+
+# Control + DC-KCL tail rows of the VSC Jacobian in the Cartesian layouts (rectangular and MCPB):
+# the rows are formulation-agnostic; their bus columns are the `(e, f)` states, absent at REF.
+function _set_vsc_tail_entries_rect!(
+    Jvnz::Vector{Float64},
+    vsc_nz::VSCJacobianNZCache,
+    dcn::DCNetwork,
+    e_state::Vector{Float64},
+    f_state::Vector{Float64},
+    bus_types::AbstractVector,
+    time_step::Int,
 )
     nconv = n_vsc_converters(dcn)
     nnode = n_dc_nodes(dcn)
@@ -1048,57 +1111,9 @@ function _set_entries_for_vsc_rect_mcpb!(
         mode = dcn.converter_mode[c]
         e = e_state[ix]
         f = f_state[ix]
-        D = max(e * e + f * f, V_FLOOR2)
-        Vm = sqrt(D)
-        P = dcn.p_c[c, time_step]
-        Q = dcn.q_c[c, time_step]
+        Vm = sqrt(max(e * e + f * f, V_FLOOR2))
         Vdc = dcn.node_vdc[k, time_step]
-        num_r = P * e + Q * f
-        num_i = P * f - Q * e
-        D2 = D * D
-        dIr_de = (P * D - num_r * 2.0 * e) / D2
-        dIr_df = (Q * D - num_r * 2.0 * f) / D2
-        dIi_de = (-Q * D - num_i * 2.0 * e) / D2
-        dIi_df = (P * D - num_i * 2.0 * f) / D2
         bt = bus_types[ix]
-        if bt == PSY.ACBusTypes.REF
-            # REF bus: e,f are fixed and columns off/off+1 are the (P_gen, Q_gen) states — the
-            # converter couples to neither (skip the diag block; conv[12,13] stay pre-zeroed).
-            # The current-injection derivatives w.r.t. (P_c, Q_c) still apply: REF rows are
-            # current balance in both rect and MCPB.
-            Jvnz[conv[1, c]] = e / D
-            Jvnz[conv[2, c]] = f / D
-            Jvnz[conv[3, c]] = f / D
-            Jvnz[conv[4, c]] = -e / D
-        elseif imag_first_pq && bt == PSY.ACBusTypes.PV
-            # MCPB PV rows are (real-power balance, |V|² pin): the converter contributes −P_c to
-            # the power row (constant in e,f — no diag coupling) and nothing to the pin row.
-            Jvnz[conv[1, c]] = -1.0
-            Jvnz[conv[2, c]] = 0.0
-            Jvnz[conv[3, c]] = 0.0
-            Jvnz[conv[4, c]] = 0.0
-        elseif imag_first_pq && bt == PSY.ACBusTypes.PQ
-            # imag-first (MCPB PQ): F[off] = Ii, F[off+1] = Ir
-            Jvnz[diag_base_nz[1, ix]] += dIi_de
-            Jvnz[diag_base_nz[2, ix]] += dIi_df
-            Jvnz[diag_base_nz[3, ix]] += dIr_de
-            Jvnz[diag_base_nz[4, ix]] += dIr_df
-            Jvnz[conv[1, c]] = f / D
-            Jvnz[conv[2, c]] = -e / D
-            Jvnz[conv[3, c]] = e / D
-            Jvnz[conv[4, c]] = f / D
-        else
-            # real-first (rect PQ and rect PV): F[off] = Ir, F[off+1] = Ii
-            Jvnz[diag_base_nz[1, ix]] += dIr_de
-            Jvnz[diag_base_nz[2, ix]] += dIr_df
-            Jvnz[diag_base_nz[3, ix]] += dIi_de
-            Jvnz[diag_base_nz[4, ix]] += dIi_df
-            Jvnz[conv[1, c]] = e / D
-            Jvnz[conv[2, c]] = f / D
-            Jvnz[conv[3, c]] = f / D
-            Jvnz[conv[4, c]] = -e / D
-        end
-        # control + DC-KCL tail rows (columns are bus e,f states — no imag-first swap)
         Jvnz[conv[5, c]] = _vsc_dr1_dP(mode, dcn, c)
         Jvnz[conv[6, c]] = _vsc_dr1_dVdc(mode)
         Jvnz[conv[7, c]] = _vsc_dr2_dQ(mode)

@@ -181,3 +181,26 @@ end
         end
     end
 end
+
+@testset "Rect/Mixed: converged means the published state meets tol (ACTIVSg2000)" begin
+    # PV magnitudes are published at the setpoint, not the solver's |e + jf|; near a
+    # low-impedance branch that gap moved neighbouring rows well past a loose tol.
+    sys = PSB.build_system(PSB.MatpowerTestSystems, "matpower_ACTIVSg2000_sys")
+    cases = (
+        (ACRectangularPowerFlow, PF.ACRectangularCIResidual, PF.rect_initial_state!, 1e-3),
+        (ACMixedPowerFlow, PF.ACMixedCPBResidual, PF.mixed_initial_state!, 1e-6),
+    )
+    @testset "$F" for (F, R, initial_state!, tol) in cases
+        pf = F{NewtonRaphsonACPowerFlow}(;
+            correct_bustypes = true,
+            solution_parameters = SolutionParameters(; tol),
+        )
+        data = PF.PowerFlowData(pf, sys)
+        @test PF.solve_power_flow!(data)
+        residual = R(data, 1)
+        x = zeros(length(residual.Rv))
+        initial_state!(x, data, residual.bus_state_offset, residual.bus_block_size, 1)
+        residual(data, x, 1)
+        @test norm(residual.Rv, Inf) < tol
+    end
+end
