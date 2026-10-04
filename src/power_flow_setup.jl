@@ -23,7 +23,8 @@ function improve_x0!(x0::Vector{Float64},
         newx0 = _previous_solution_start(x0, data, prev)
         _pick_better_x0(x0, newx0, time_step, residual, data, "previous converged solution")
     end
-    if _large_residual(residual) && get_enhanced_flat_start(pf)
+    if sum(abs, residual.Rv) > LARGE_RESIDUAL * length(residual.Rv) &&
+       get_enhanced_flat_start(pf)
         newx0 = _enhanced_flat_start(x0, data, time_step)
         _pick_better_x0(x0, newx0, time_step, residual, data, "enhanced flat start")
     else
@@ -37,7 +38,8 @@ function improve_x0!(x0::Vector{Float64},
         _pick_better_x0(x0, newx0, time_step, residual, data,
             "generalized-admittance flat start")
     end
-    if _large_residual(residual) && get_robust_power_flow(pf)
+    if sum(abs, residual.Rv) > LARGE_RESIDUAL * length(residual.Rv) &&
+       get_robust_power_flow(pf)
         dc_power_flow_start!(x0, data, time_step, residual)
     else
         @debug "skipping running DC power flow fallback"

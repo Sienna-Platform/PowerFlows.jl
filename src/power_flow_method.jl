@@ -1466,6 +1466,9 @@ function _nr_linear_solver_cache!(
     return linSolveCache
 end
 
+# Polar: defer the Jacobian entirely — a 0-iteration warm start must not pay for a
+# Jacobian evaluation + sparse-structure copy. The caller builds J only when the
+# convergence check fails.
 function _nr_initialize_with_jacobian_deferred(
     pf::ACPolarPowerFlow, data::ACPowerFlowData, time_step::Int64; kwargs...,
 )
