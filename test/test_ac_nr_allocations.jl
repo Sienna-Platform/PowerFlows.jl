@@ -140,7 +140,7 @@ end
 end
 
 @testset "Polar NR refresh after a bus-type and partition change: allocation" begin
-    # PTSA's per-contingency pattern on one reused `data`: bus types change and the island
+    # One outage per solve on a reused `data`: bus types change and the island
     # partition is invalidated before every solve. The refresh rebuilds the partition, the PQ
     # index set and the start point in the cache's own buffers: 1.8 KB/call, against more than
     # 160 KB when the partition and PQ index set were rebuilt from fresh containers.
@@ -179,7 +179,7 @@ end
 end
 
 @testset "AC reused solve_power_flow! allocation regression" begin
-    # PTSA calls `solve_power_flow!` once per contingency on a reused `data`: the arc→bus maps
+    # One `solve_power_flow!` per outage on a reused `data`: the arc→bus maps
     # and branch-flow buffers come from the `PolarNRCache`, not a per-call rebuild.
     sys = PSB.build_system(PSB.MatpowerTestSystems, "matpower_ACTIVSg2000_sys")
     pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(; correct_bustypes = true)

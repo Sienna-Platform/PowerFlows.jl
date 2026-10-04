@@ -267,6 +267,10 @@ end
         () -> solve_power_flow!(klu))
 end
 
+_with_a_row(plan, a_row) =
+    _KW.LeanLUPlan(plan.n, 1e-300, plan.p, plan.q, plan.cp, plan.dpos,
+        plan.row, a_row, plan.dep_lb, plan.dep_le, plan.a_colptr, plan.a_rowval)
+
 # The plan's scatter map with two off-diagonal entries of each column swapped: a plan for the
 # wrong matrix whose pivots stay nonzero, accepted whatever their ratio.
 function _wrong_matrix_plan(plan)
@@ -278,8 +282,7 @@ function _wrong_matrix_plan(plan)
             a_row[off[1]], a_row[off[2]] = a_row[off[2]], a_row[off[1]]
         end
     end
-    return _KW.LeanLUPlan(plan.n, 1e-300, plan.p, plan.q, plan.cp, plan.dpos, plan.row,
-        a_row, plan.dep_lb, plan.dep_le, plan.a_colptr, plan.a_rowval)
+    return _with_a_row(plan, a_row)
 end
 
 function _wrong_plan_data(; kwargs...)
@@ -335,8 +338,7 @@ function _scrambled_plan(plan, rng)
             a_row[e] = rand(rng, 1:Int(plan.n))
         end
     end
-    return _KW.LeanLUPlan(plan.n, 1e-300, plan.p, plan.q, plan.cp, plan.dpos, plan.row,
-        a_row, plan.dep_lb, plan.dep_le, plan.a_colptr, plan.a_rowval)
+    return _with_a_row(plan, a_row)
 end
 
 function _zip_sys14_data(; kwargs...)
