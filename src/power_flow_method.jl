@@ -1435,8 +1435,8 @@ function _polar_newton_workspace!(
     # pay for it. `nothing` lets the caller rebuild only if it actually needs J.
     converged && return residual, nothing, x0_init, nothing, nothing, true
     J(data, time_step)
-    # Reuse the linear-solver cache (the Symbolic holds: the pattern is bus-type-agnostic) and the
-    # state-vector buffers; refresh only the per-solve values.
+    # Reuse the linear-solver cache (symbolic factorization holds: pattern is bus-type-agnostic)
+    # and the state-vector buffers; refresh only the per-solve values.
     linSolveCache = entry.linSolveCache
     stateVector = entry.stateVector
     copyto!(stateVector.x, x0_init)
