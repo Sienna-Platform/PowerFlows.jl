@@ -816,6 +816,29 @@ where the quadratic formula gives `I = 0/0 = NaN` instead of `I = p`.
 _lcc_i_dc_from_p_set(r::Float64, p::Float64) =
     iszero(r) ? p : (-1.0 + sqrt(1.0 + 4.0 * r * p)) / (2.0 * r)
 
+# PowerSystems stores the LCC impedances in ohms. The solver works per unit on the bases
+# PowerSystems used before: the DC line on `scheduled_dc_voltage^2 / base`, each converter on
+# its own commutating `base_voltage^2 / base`.
+_lcc_ohm_to_pu(z_ohm::Float64, base_kv::Float64, base_mva::Float64) =
+    z_ohm * base_mva / base_kv^2
+
+"""
+Signed power schedule of `lcc` in MW: positive at the rectifier bus, negative at the inverter
+bus. A `BLOCKED` line holds no schedule and transfers no power.
+"""
+function _lcc_power_setpoint_mw(lcc::PSY.TwoTerminalLCCLine)
+    mode = PSY.get_control_mode(lcc)
+    if mode == PSY.LCCControlMode.POWER
+        return PSY.get_power_transfer_setpoint(lcc, u"NU")
+    elseif mode == PSY.LCCControlMode.BLOCKED
+        return 0.0
+    end
+    error(
+        "TwoTerminalLCCLine $(PSY.get_name(lcc)) uses the $(mode) control mode. " *
+        "PowerFlows supports only the POWER and BLOCKED modes.",
+    )
+end
+
 function initialize_LCCParameters!(
     data::ACPowerFlowData,
     sys::PSY.System,
@@ -853,19 +876,27 @@ function initialize_LCCParameters!(
 
     lcc_arcs = PSY.get_arc.(lccs)
 
-    base_power = PSY.get_base_power(sys, PSY.NU)
-    # todo: if current set point, transform into p set point
-    # lcc_p_set = I_dc_A * V_dc_V / system_base_MVA
-
-    lcc_setpoint_at_rectifier .= (PSY.get_transfer_setpoint.(lccs) .>= 0.0)
-    lcc_p_set .= abs.(PSY.get_transfer_setpoint.(lccs, PSY.NU) ./ base_power) # only one direction is supported, no reverse flow possible
+    base_power = PSY.get_base_power(sys, u"NU")
+    lcc_setpoint_mw = _lcc_power_setpoint_mw.(lccs)
+    lcc_setpoint_at_rectifier .= (lcc_setpoint_mw .>= 0.0)
+    lcc_p_set .= abs.(lcc_setpoint_mw ./ base_power) # only one direction is supported, no reverse flow possible
     lcc_rectifier_tap .= PSY.get_rectifier_tap_setting.(lccs)
     lcc_inverter_tap .= PSY.get_inverter_tap_setting.(lccs)
     # Fixed tap targets used to pin the tap state for 0-current (0-MW) converters.
     data.lcc.rectifier.tap_setpoint .= PSY.get_rectifier_tap_setting.(lccs)
     data.lcc.inverter.tap_setpoint .= PSY.get_inverter_tap_setting.(lccs)
     lcc_dc_line_resistance .=
-        PSY.get_r.(lccs) .+ PSY.get_rectifier_rc.(lccs) .+ PSY.get_inverter_rc.(lccs)
+        _lcc_ohm_to_pu.(
+            PSY.get_r.(lccs),
+            PSY.get_scheduled_dc_voltage.(lccs),
+            base_power,
+        ) .+
+        _lcc_ohm_to_pu.(
+            PSY.get_rectifier_rc.(lccs), PSY.get_rectifier_base_voltage.(lccs), base_power,
+        ) .+
+        _lcc_ohm_to_pu.(
+            PSY.get_inverter_rc.(lccs), PSY.get_inverter_base_voltage.(lccs), base_power,
+        )
     lcc_i_dc .= _lcc_i_dc_from_p_set.(lcc_dc_line_resistance, lcc_p_set)
     lcc_rectifier_delay_angle .= PSY.get_rectifier_delay_angle.(lccs)
     lcc_inverter_extinction_angle .= PSY.get_inverter_extinction_angle.(lccs)
@@ -877,8 +908,14 @@ function initialize_LCCParameters!(
         _get_bus_ix(bus_lookup, reverse_bus_search_map, x) for
         x in PSY.get_number.(PSY.get_to.(lcc_arcs))
     ]
-    lcc_rectifier_transformer_reactance .= PSY.get_rectifier_xc.(lccs)
-    lcc_inverter_transformer_reactance .= PSY.get_inverter_xc.(lccs)
+    lcc_rectifier_transformer_reactance .=
+        _lcc_ohm_to_pu.(
+            PSY.get_rectifier_xc.(lccs), PSY.get_rectifier_base_voltage.(lccs), base_power,
+        )
+    lcc_inverter_transformer_reactance .=
+        _lcc_ohm_to_pu.(
+            PSY.get_inverter_xc.(lccs), PSY.get_inverter_base_voltage.(lccs), base_power,
+        )
     lcc_rectifier_min_alpha .=
         [x.min for x in PSY.get_rectifier_delay_angle_limits.(lccs)]
     lcc_inverter_min_gamma .=

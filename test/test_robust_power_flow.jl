@@ -23,7 +23,10 @@ function _case5_lcc_system(; setpoint_at_inverter::Bool = false)
     sys = system_from_openapi(PFP.PowerModelsData(raw_path); runchecks = false)
     if setpoint_at_inverter
         for lcc in get_components(PSY.TwoTerminalLCCLine, sys)
-            set_transfer_setpoint!(lcc, -abs(get_transfer_setpoint(lcc)))
+            set_power_transfer_setpoint!(
+                lcc,
+                (-abs(get_power_transfer_setpoint(lcc, u"CU"))) * u"CU",
+            )
         end
     end
     return sys

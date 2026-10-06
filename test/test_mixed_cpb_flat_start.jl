@@ -13,7 +13,7 @@ function _mixed_perturb!(sys::PSY.System; vm = 0.7, apq = -0.7, apv = 0.6)
     for b in PSY.get_components(PSY.ACBus, sys)
         bt = PSY.get_bustype(b)
         if bt == PSY.ACBusTypes.PQ
-            PSY.set_magnitude!(b, vm)
+            PSY.set_magnitude!(b, vm * u"CU")
             PSY.set_angle!(b, apq)
         elseif bt == PSY.ACBusTypes.PV
             PSY.set_angle!(b, apv)

@@ -55,7 +55,7 @@ end
 
 @testset "Validation test: Ward Reduction and DC Power Flow" begin
     sys = build_system(PSITestSystems, "c_sys5")
-    b6 = ACBus(;
+    b6 = ACBus(; input_basis = u"CU",
         number = 6,
         name = "b6",
         available = true,
@@ -80,7 +80,7 @@ end
         x = 0.2,
         b = (from = 0.0, to = 0.0),
         rating = 0.0,
-        angle_limits = (min = -pi, max = pi), input_basis = PSY.CU,
+        angle_limits = (min = -pi, max = pi), input_basis = u"CU",
     )
     line_4_6 = Line(;
         name = "l_4_6",
@@ -92,7 +92,7 @@ end
         x = 0.2,
         b = (from = 0.0, to = 0.0),
         rating = 0.0,
-        angle_limits = (min = -pi, max = pi), input_basis = PSY.CU,
+        angle_limits = (min = -pi, max = pi), input_basis = u"CU",
     )
     add_component!(sys, line_2_6)
     add_component!(sys, line_4_6)

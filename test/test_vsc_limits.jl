@@ -45,7 +45,7 @@ end
     sys = _build_vsc_pq_system(;
         name = "vsc_limits",
         p_set = 0.4,
-        active_power_limits_to = (min = -0.2, max = 0.2),
+        rating_to = 0.2,
     )
     data = PowerFlowData(
         ACPowerFlow{NewtonRaphsonACPowerFlow}(;

@@ -123,35 +123,35 @@ end
                         im * sum(arc_flows[ix, "Q_from_to"])
                 end
                 @test solve_and_store_power_flow!(pf, sys)
-                base_power = PSY.get_base_power(sys, PSY.NU)
+                base_power = PSY.get_base_power(sys, u"NU")
                 # check that transformer bus-to-star entries are there.
                 @test isapprox(
-                    PSY.get_active_power_flow(PSY.get_circuits(test_trf)[1], PSY.SU),
+                    PSY.get_active_power_flow(PSY.get_circuits(test_trf)[1], u"SU"),
                     real(trf_arc_flows[1]) / base_power;
                     atol = 1e-5,
                 )
                 @test isapprox(
-                    PSY.get_reactive_power_flow(PSY.get_circuits(test_trf)[1], PSY.SU),
+                    PSY.get_reactive_power_flow(PSY.get_circuits(test_trf)[1], u"SU"),
                     imag(trf_arc_flows[1]) / base_power;
                     atol = 1e-5,
                 )
                 @test isapprox(
-                    PSY.get_active_power_flow(PSY.get_circuits(test_trf)[2], PSY.SU),
+                    PSY.get_active_power_flow(PSY.get_circuits(test_trf)[2], u"SU"),
                     real(trf_arc_flows[2]) / base_power;
                     atol = 1e-5,
                 )
                 @test isapprox(
-                    PSY.get_reactive_power_flow(PSY.get_circuits(test_trf)[2], PSY.SU),
+                    PSY.get_reactive_power_flow(PSY.get_circuits(test_trf)[2], u"SU"),
                     imag(trf_arc_flows[2]) / base_power;
                     atol = 1e-5,
                 )
                 @test isapprox(
-                    PSY.get_active_power_flow(PSY.get_circuits(test_trf)[3], PSY.SU),
+                    PSY.get_active_power_flow(PSY.get_circuits(test_trf)[3], u"SU"),
                     real(trf_arc_flows[3]) / base_power;
                     atol = 1e-5,
                 )
                 @test isapprox(
-                    PSY.get_reactive_power_flow(PSY.get_circuits(test_trf)[3], PSY.SU),
+                    PSY.get_reactive_power_flow(PSY.get_circuits(test_trf)[3], u"SU"),
                     imag(trf_arc_flows[3]) / base_power;
                     atol = 1e-5,
                 )
@@ -173,7 +173,7 @@ function compare_voltages(
     unreduced_Va = unreduced.bus_angles[bus_lookup[bus_no], 1]
     bus_name = temp_bus_map[bus_no]
     bus = PSY.get_component(PSY.ACBus, sys, bus_name)
-    reduced_Vm = PSY.get_magnitude(bus)
+    reduced_Vm = PSY.get_magnitude(bus, u"CU")
     reduced_Va = PSY.get_angle(bus)
     @test isapprox(unreduced_Vm, reduced_Vm; atol = 1e-6)
     @test isapprox(unreduced_Va, reduced_Va; atol = 1e-6)
@@ -192,12 +192,12 @@ function compare_power_flows(
     reduced_active_flow =
         PSY.get_active_power_flow(
             flow_holder(PSY.get_component(PSY.Branch, sys, name)),
-            PSY.SU,
+            u"SU",
         )
     reduced_reactive_flow =
         PSY.get_reactive_power_flow(
             flow_holder(PSY.get_component(PSY.Branch, sys, name)),
-            PSY.SU,
+            u"SU",
         )
     @test isapprox(unreduced_active_flow, reduced_active_flow; atol = 1e-3)
     @test isapprox(unreduced_reactive_flow, reduced_reactive_flow; atol = 1e-3)
@@ -253,8 +253,8 @@ end
         for br in branches
             @assert PNM.get_arc_tuple(br) == (from_bus_no, to_bus_no)
             total_flow +=
-                PSY.get_active_power_flow(flow_holder(br), PSY.SU) +
-                im * PSY.get_reactive_power_flow(flow_holder(br), PSY.SU)
+                PSY.get_active_power_flow(flow_holder(br), u"SU") +
+                im * PSY.get_reactive_power_flow(flow_holder(br), u"SU")
         end
         if reversed
             @test isapprox(net_from_to_from, total_flow; atol = 1e-3)
@@ -417,7 +417,11 @@ end
     for bus_number in 1:6
         expected = get_component(ACBus, sys_unreduced, "bus_$bus_number")
         actual = get_component(ACBus, sys_reduced, "bus_$bus_number")
-        @test isapprox(get_magnitude(actual), get_magnitude(expected); atol = 1e-5)
+        @test isapprox(
+            get_magnitude(actual, u"CU"),
+            get_magnitude(expected, u"CU");
+            atol = 1e-5,
+        )
         @test isapprox(get_angle(actual), get_angle(expected); atol = 1e-5)
     end
 end
@@ -431,7 +435,7 @@ function _zir_merge_test_sys(lines, nbus)
     sys = System(100.0)
     buses = Dict{Int, ACBus}()
     for n in 1:nbus
-        b = ACBus(; number = n, name = "zbus_$n", available = true,
+        b = ACBus(; input_basis = u"CU", number = n, name = "zbus_$n", available = true,
             bustype = n == 1 ? ACBusTypes.REF : ACBusTypes.PQ,
             angle = 0.0, magnitude = 1.0, voltage_limits = (min = 0.9, max = 1.1),
             base_voltage = 230.0)
@@ -446,14 +450,14 @@ function _zir_merge_test_sys(lines, nbus)
             Line(; name = name, available = true,
                 active_power_flow = 0.0, reactive_power_flow = 0.0, arc = arc, r = r, x = x,
                 b = (from = 0.0, to = 0.0), rating = 4.0,
-                angle_limits = (min = -pi, max = pi), input_basis = PSY.CU),
+                angle_limits = (min = -pi, max = pi), input_basis = u"CU"),
         )
     end
     add_component!(
         sys,
         PowerLoad(; name = "zload2", available = true,
             bus = buses[2], active_power = 1.0, reactive_power = 0.2, base_power = 100.0,
-            max_active_power = 1.0, max_reactive_power = 0.2, input_basis = PSY.CU),
+            max_active_power = 1.0, max_reactive_power = 0.2, input_basis = u"CU"),
     )
     add_component!(
         sys,
@@ -464,7 +468,7 @@ function _zir_merge_test_sys(lines, nbus)
             reactive_power_limits = (min = -5.0, max = 5.0), ramp_limits = nothing,
             operation_cost = ThermalGenerationCost(nothing), base_power = 100.0,
             time_limits = nothing, prime_mover_type = PrimeMovers.OT,
-            fuel = ThermalFuels.OTHER, input_basis = PSY.CU),
+            fuel = ThermalFuels.OTHER, input_basis = u"CU"),
     )
     return sys
 end

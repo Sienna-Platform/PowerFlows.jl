@@ -23,7 +23,7 @@ function _get_injections!(
         if contributes_active_power(source) &&
            active_power_contribution_type(source) == PowerContributionType.INJECTION
             bus_ix = _get_bus_ix(bus_lookup, reverse_bus_search_map, PSY.get_number(bus))
-            bus_active_power_injections[bus_ix] += PSY.get_active_power(source, PSY.SU)
+            bus_active_power_injections[bus_ix] += PSY.get_active_power(source, u"SU")
         end
         if considers_reactive_power(pf) && contributes_reactive_power(source) &&
            reactive_power_contribution_type(source) == PowerContributionType.INJECTION
@@ -34,7 +34,7 @@ function _get_injections!(
                     PSY.get_reactive_power_required(source)
             else
                 bus_reactive_power_injections[bus_ix] +=
-                    PSY.get_reactive_power(source, PSY.SU)
+                    PSY.get_reactive_power(source, u"SU")
             end
         end
     end
@@ -69,7 +69,7 @@ function _compute_bus_active_power_range!(
         PSY.get_bustype(bus) ∈
         (PSY.ACBusTypes.REF, PSY.ACBusTypes.PV, PSY.ACBusTypes.SLACK) || continue
         limits = get_active_power_limits_for_power_flow(source)
-        range_k = limits.max - PSY.get_active_power(source, PSY.SU)
+        range_k = limits.max - PSY.get_active_power(source, u"SU")
         range_k <= 0.0 && continue
         isfinite(range_k) || continue
         bus_ix = _get_bus_ix(bus_lookup, reverse_bus_search_map, PSY.get_number(bus))
@@ -120,12 +120,12 @@ function _get_withdrawals!(
         if contributes_active_power(l) &&
            active_power_contribution_type(l) == PowerContributionType.WITHDRAWAL
             bus_ix = _get_bus_ix(bus_lookup, reverse_bus_search_map, PSY.get_number(bus))
-            bus_active_power_withdrawals[bus_ix] += PSY.get_active_power(l, PSY.SU)
+            bus_active_power_withdrawals[bus_ix] += PSY.get_active_power(l, u"SU")
         end
         if considers_reactive_power(pf) && contributes_reactive_power(l) &&
            reactive_power_contribution_type(l) == PowerContributionType.WITHDRAWAL
             bus_ix = _get_bus_ix(bus_lookup, reverse_bus_search_map, PSY.get_number(bus))
-            bus_reactive_power_withdrawals[bus_ix] += PSY.get_reactive_power(l, PSY.SU)
+            bus_reactive_power_withdrawals[bus_ix] += PSY.get_reactive_power(l, u"SU")
         end
     end
     # handle StandardLoad: they have constant current and constant impedance withdrawals,
@@ -137,16 +137,16 @@ function _get_withdrawals!(
         bus = PSY.get_bus(l)
         PSY.get_number(bus) in removed_buses && continue
         bus_ix = _get_bus_ix(bus_lookup, reverse_bus_search_map, PSY.get_number(bus))
-        bus_active_power_withdrawals[bus_ix] += PSY.get_constant_active_power(l, PSY.SU)
-        bus_reactive_power_withdrawals[bus_ix] += PSY.get_constant_reactive_power(l, PSY.SU)
+        bus_active_power_withdrawals[bus_ix] += PSY.get_constant_active_power(l, u"SU")
+        bus_reactive_power_withdrawals[bus_ix] += PSY.get_constant_reactive_power(l, u"SU")
         bus_active_power_constant_current_withdrawals[bus_ix] +=
-            PSY.get_current_active_power(l, PSY.SU)
+            PSY.get_current_active_power(l, u"SU")
         bus_active_power_constant_impedance_withdrawals[bus_ix] +=
-            PSY.get_impedance_active_power(l, PSY.SU)
+            PSY.get_impedance_active_power(l, u"SU")
         bus_reactive_power_constant_current_withdrawals[bus_ix] +=
-            PSY.get_current_reactive_power(l, PSY.SU)
+            PSY.get_current_reactive_power(l, u"SU")
         bus_reactive_power_constant_impedance_withdrawals[bus_ix] +=
-            PSY.get_impedance_reactive_power(l, PSY.SU)
+            PSY.get_impedance_reactive_power(l, u"SU")
     end
     # FixedAdmittance components are already included in the Ybus matrix.
     for sa in PSY.get_available_components(PSY.SwitchedAdmittance, sys)
@@ -170,7 +170,7 @@ function _get_withdrawals!(
         bus = PSY.get_bus(sc)
         PSY.get_number(bus) in removed_buses && continue
         bus_ix = _get_bus_ix(bus_lookup, reverse_bus_search_map, PSY.get_number(bus))
-        bus_active_power_withdrawals[bus_ix] += PSY.get_active_power_losses(sc, PSY.SU)
+        bus_active_power_withdrawals[bus_ix] += PSY.get_active_power_losses(sc, u"SU")
         # reactive power handled already:
         # contributes_reactive_power(PSY.SynchronousCondenser) is true.
     end
@@ -253,7 +253,7 @@ function _set_bus_angles_and_magnitudes!(
         if bus_no in subnetwork_keys && bus_no != main_ref_bus
             bus_angles[ix] = 0.0
         end
-        bus_vm = PSY.get_magnitude(bus)
+        bus_vm = PSY.get_magnitude(bus, u"CU")
         # prevent unfeasible starting values for voltage magnitude at PQ buses (for PV and REF buses we cannot do this):
         if bus_type[ix] == PSY.ACBusTypes.PQ &&
            bus_vm < BUS_VOLTAGE_MAGNITUDE_CUTOFF_MIN
