@@ -200,10 +200,10 @@ end
     sys = _make_tap_shunt_system()
     tx = first(PSY.get_components(PSY.TwoWindingTransformer, sys))
     PSY.set_regulated_bus_number!(PSY.get_circuit(tx), 3)
-    PSY.set_control_limits!(PSY.get_circuit(tx), (min = 0.88, max = 1.12))
+    PSY.set_tap_ratio_limits!(PSY.get_circuit(tx), (min = 0.88, max = 1.12))
     PSY.set_number_of_tap_positions!(PSY.get_circuit(tx), 25)
     # A degenerate band pins the regulation target to a single voltage.
-    PSY.set_controlled_quantity_limits!(PSY.get_circuit(tx), (min = 1.03, max = 1.03))
+    PSY.set_controlled_voltage_limits!(PSY.get_circuit(tx), (min = 1.03, max = 1.03))
     data = PowerFlowData(ACPolarPowerFlow(), sys)
     bl = PF.get_bus_lookup(data)
     set = PowerFlows.build_controlled_device_set(
@@ -240,7 +240,7 @@ end
     # must de-enroll it with a warning instead of regulating |V| toward ~0.
     sys = _make_tap_shunt_system()
     sa = first(PSY.get_components(PSY.SwitchedAdmittance, sys))
-    PSY.set_admittance_limits!(sa, (min = -0.3, max = 0.3))
+    PSY.set_voltage_limits!(sa, (min = -0.3, max = 0.3))
     data = PowerFlowData(ACPolarPowerFlow(), sys)
     set = @test_logs (:warn, r"voltage setpoint") match_mode = :any (
         PowerFlows.build_controlled_device_set(
@@ -341,7 +341,7 @@ end
     sys = _make_tap_shunt_system()
     tx = first(PSY.get_components(PSY.TwoWindingTransformer, sys))
     circuit = PSY.get_circuit(tx)
-    PSY.set_control_limits!(circuit, (min = 0.9, max = 1.1))
+    PSY.set_tap_ratio_limits!(circuit, (min = 0.9, max = 1.1))
     md = PowerFlows._tap_metadata(circuit, 2)
     @test md.pmin ≈ 0.9
     @test md.pmax ≈ 1.1
@@ -1247,13 +1247,15 @@ end
                         arc = Arc(; from = ref, to = bl), r = 0.01, x = 0.10,
                         tap = 1.0, rating = 1.0, base_power = 100.0,
                         control_objective = PSY.TransformerControlObjective.VOLTAGE,
+                        controlled_voltage_limits = (min = 0.9, max = 1.1),
+                        tap_ratio_limits = (min = 0.9, max = 1.1),
                         input_basis = u"CU"), input_basis = u"CU"),
             )
             add_component!(
                 sys,
                 SwitchedAdmittance(; name = "sh$k", available = true,
                     bus = bs, number_engaged = [0], number_of_steps = [4],
-                    Y_increase = [0.0 + 0.05im], admittance_limits = (min = 0.9, max = 1.1),
+                    Y_increase = [0.0 + 0.05im],
                 ),
             )
         end
@@ -1397,7 +1399,7 @@ end
     # needing a real restore — while p_c/node_vdc stay checked too (they should never move).
     sys = _build_vsc_pq_system(;
         ac_control_to = PSY.VSCACControlModes.AC_VOLTAGE,
-        ac_setpoint_to = 1.0,
+        ac_voltage_setpoint_to = 1.0,
     )
     pq = sort!(
         collect(

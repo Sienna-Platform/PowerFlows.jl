@@ -77,6 +77,26 @@ function expected_reimported_objective(objective::PSY.TransformerControlObjectiv
     return objective
 end
 
+# The control bands follow the same lossy mapping: a re-imported `FIXED` circuit carries the
+# PSS/E (0.9, 1.1) default for a band the original never set. Any other change is an export bug.
+const _CIRCUIT_CONTROL_BANDS = (
+    PSY.get_tap_ratio_limits,
+    PSY.get_phase_angle_limits,
+    PSY.get_controlled_voltage_limits,
+    circuit -> PSY.get_controlled_reactive_power_flow_limits(circuit, u"NU"),
+    circuit -> PSY.get_controlled_active_power_flow_limits(circuit, u"NU"),
+)
+_band_round_trips(::Any, ::Nothing, ::Nothing) = true
+_band_round_trips(::Any, ::Nothing, band) = band == (min = 0.9, max = 1.1)
+function _band_round_trips(getter, original, actual)
+    if isapprox(original.min, actual.min; atol = 1e-6) &&
+       isapprox(original.max, actual.max; atol = 1e-6)
+        return true
+    end
+    @error "$(getter) did not round-trip: expected $original, got $actual"
+    return false
+end
+
 function _circuit_objective_round_trips(
     circuit1::PSY.TransformerCircuit,
     circuit2::PSY.TransformerCircuit,
@@ -86,12 +106,16 @@ function _circuit_objective_round_trips(
     # This helper also compares a system against itself, where nothing was exported and the
     # objective is untouched. So accept the original, or the one documented lossy mapping a
     # re-import applies. Any other objective is a genuine COD export bug.
-    if actual == original || actual == expected_reimported_objective(original)
-        return true
+    if actual != original && actual != expected_reimported_objective(original)
+        @error "control_objective did not round-trip: expected $original or \
+            $(expected_reimported_objective(original)), got $actual"
+        return false
     end
-    @error "control_objective did not round-trip: expected $original or \
-        $(expected_reimported_objective(original)), got $actual"
-    return false
+    result = true
+    for getter in _CIRCUIT_CONTROL_BANDS
+        result &= _band_round_trips(getter, getter(circuit1), getter(circuit2))
+    end
+    return result
 end
 
 # `compare_systems_loosely` excludes `:control_objective` because `IS.compare_values` matches
@@ -168,14 +192,25 @@ function compare_systems_loosely(sys1::PSY.System, sys2::PSY.System;
             # PSS/E's COD field can't spell "no control block" (`UNDEFINED`), so it exports
             # blank and re-parses as `FIXED`. Excluded here only because IS matches
             # exclusions by name recursively; `_control_objectives_round_trip` asserts the
-            # exact mapping instead, so the other objectives are still checked.
+            # exact mapping instead, so the other objectives are still checked. The control
+            # bands follow the same mapping and are checked there too.
             :control_objective,
+            :tap_ratio_limits,
+            :phase_angle_limits,
+            :controlled_voltage_limits,
+            :controlled_reactive_power_flow_limits,
+            :controlled_active_power_flow_limits,
         ]),
         PSY.ThreeWindingTransformer => Set([
             :active_power_flow,
             :reactive_power_flow,
             :rating,  # TODO why don't ratings match?
             :control_objective,  # same UNDEFINED→FIXED mapping; see the 2W note above
+            :tap_ratio_limits,
+            :phase_angle_limits,
+            :controlled_voltage_limits,
+            :controlled_reactive_power_flow_limits,
+            :controlled_active_power_flow_limits,
         ]),
         # PSS/E's two-terminal DC records do not contain PSY's active/reactive power limit
         # tuples, so those fields cannot be recovered by a raw-file round trip.
@@ -574,13 +609,16 @@ end
             arc = arc,
             active_power_flow = 0.2,
             rating = 1.5,
-            active_power_limits_from = (min = -1.5, max = 1.5),
-            active_power_limits_to = (min = -1.5, max = 1.5),
             g = 40.0,
+            ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
+            power_factor_setpoint_from = 1.0,
+            ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
+            power_factor_setpoint_to = 1.0,
             dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
-            dc_setpoint_from = 1.0,
+            dc_voltage_setpoint_from = 1.0,
+            rated_dc_voltage = 1.0,
             dc_control_to = PSY.VSCDCControlModes.DC_POWER,
-            dc_setpoint_to = 0.2, input_basis = u"CU",
+            dc_power_setpoint_to = 0.2, input_basis = u"CU",
         ),
     )
     export_location = joinpath(test_psse_export_dir, "v33", "case16_vsc_no_ext")
@@ -654,7 +692,7 @@ end
         number_engaged = [1],
         number_of_steps = [4],
         Y_increase = [0.0 + 0.05im],
-        admittance_limits = (min = 0.9, max = 1.1),
+        voltage_limits = (min = 0.9, max = 1.1),
         control_mode = PSY.SwitchedAdmittanceControlMode.DISCRETE_VOLTAGE,
         regulated_bus_number = 7,
     )
@@ -712,7 +750,8 @@ end
             rating = 1.0,
             base_power = 100.0,
             control_objective = PSY.TransformerControlObjective.ACTIVE_POWER_FLOW,
-            control_limits = (min = deg2rad(-30), max = deg2rad(30)),
+            phase_angle_limits = (min = deg2rad(-30), max = deg2rad(30)),
+            controlled_active_power_flow_limits = (min = 0.9, max = 1.1),
             input_basis = u"CU",
         ), input_basis = u"CU",
     )
@@ -737,7 +776,7 @@ end
 
     sys2 = read_system_with_metadata(raw_path, metadata_path)
     tx2 = only(collect(PSY.get_components(PSY.TwoWindingTransformer, sys2)))
-    control_limits2 = PSY.get_control_limits(PSY.get_circuit(tx2))
+    control_limits2 = PSY.get_phase_angle_limits(PSY.get_circuit(tx2))
     @test isapprox(control_limits2.min, deg2rad(-30); atol = 1e-8)
     @test isapprox(control_limits2.max, deg2rad(30); atol = 1e-8)
 end
@@ -1119,7 +1158,7 @@ end
     b2 = _add_simple_bus!(sys, 2, ACBusTypes.PQ, 230.0)
     _add_simple_source!(sys, b1, 0.0, 0.0)
     _add_simple_load!(sys, b2, 0.1, 0.05)
-    lcc = _add_simple_lcc!(sys, b1, b2, 0.01, 0.01, 0.01)  # transfer_setpoint = 0.5 pu
+    lcc = _add_simple_lcc!(sys, b1, b2, 0.01, 0.01, 0.01)  # power_transfer_setpoint = 0.5 pu
 
     export_location = joinpath(test_psse_export_dir, "v35", "lcc_setvl")
     exporter = PSSEExporter(sys, :v35, export_location; overwrite = true)
@@ -1131,7 +1170,8 @@ end
 
     sys2 = read_system_with_metadata(joinpath(export_location, "lcc_setvl"))
     lcc2 = only(PSY.get_components(PSY.TwoTerminalLCCLine, sys2))
-    @test PSY.get_transfer_setpoint(lcc2) ≈ PSY.get_transfer_setpoint(lcc)
+    @test PSY.get_power_transfer_setpoint(lcc2, u"CU") ≈
+          PSY.get_power_transfer_setpoint(lcc, u"CU")
 end
 
 @testset "PSSE Exporter: 3W transformer built from star circuits writes no `nothing` field" begin
@@ -1164,8 +1204,7 @@ end
         available = true,
         active_power_flow = 30.0,
         arc = Arc(b1, b2),
-        active_power_limits_from = (min = -100.0, max = 100.0),
-        active_power_limits_to = (min = -100.0, max = 100.0),
+        rating = 100.0,
         reactive_power_limits_from = (min = 0.0, max = 0.0),
         reactive_power_limits_to = (min = 0.0, max = 0.0),
         base_power = 100.0, input_basis = u"CU",
@@ -1212,7 +1251,7 @@ end
     # terminal and re-parsing rejects it; only the `to` side is droop, the case under test.
     PSY.set_dc_control_from!(vsc, PSY.VSCDCControlModes.DC_VOLTAGE)
     PSY.set_rated_dc_voltage!(vsc, 300.0)
-    PSY.set_dc_setpoint_from!(vsc, 1.0)
+    PSY.set_dc_voltage_setpoint_from!(vsc, 1.0)
     PSY.set_dc_control_to!(vsc, PSY.VSCDCControlModes.DC_VOLTAGE_DROOP)
 
     export_location = joinpath(test_psse_export_dir, "v35", "vsc_droop_dcset")
@@ -1224,7 +1263,7 @@ end
     # convention is positive == supplies the AC network at that bus. Flow is FROM -> TO
     # (positive), so `to` supplies its AC network: the setpoint must be positive.
     @test PSY.get_dc_control_to(vsc2) == PSY.VSCDCControlModes.DC_POWER
-    @test PSY.get_dc_setpoint_to(vsc2) > 0.0
+    @test PSY.get_dc_power_setpoint_to(vsc2, u"NU") > 0.0
 end
 
 @testset "PSSE Exporter: switching-device RATE1 round-trips in MVA" begin

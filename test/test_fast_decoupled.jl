@@ -417,7 +417,7 @@ function _pst_line_parallel_degree_two_system()
             α = 0.15,
             rating = 2.0,
             base_power = 100.0,
-            control_limits = (min = -0.7, max = 0.7), input_basis = u"CU",
+            input_basis = u"CU",
         ), input_basis = u"CU",
     )
     add_component!(sys, pst12)
@@ -695,7 +695,7 @@ function _phase_shifter_system()
             rating = 2.0,
             base_power = 100.0,
             # Phase-angle bounds (rad) live in the circuit's control band.
-            control_limits = (min = -0.7, max = 0.7), input_basis = u"CU",
+            input_basis = u"CU",
         ), input_basis = u"CU",
     )
     add_component!(sys, pst)
