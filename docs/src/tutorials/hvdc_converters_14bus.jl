@@ -97,7 +97,7 @@ lcc_results["lcc_results"]
 # physical limits (`rectifier_delay_angle_limits`/
 # `inverter_extinction_angle_limits` on the component) and instead uses the
 # tap ratios to hold the line's scheduled DC power transfer — here the
-# line's `transfer_setpoint` of 50 MW appears directly as `P_from_to`.
+# line's `power_transfer_setpoint` of 50 MW appears directly as `P_from_to`.
 #
 # Because thyristors can only be switched on, not off, on demand, an LCC
 # always draws reactive power from the AC system at both ends to commutate —
