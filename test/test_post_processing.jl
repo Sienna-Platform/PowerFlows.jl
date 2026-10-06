@@ -157,7 +157,7 @@ end
         )],
     )
     solve_and_store_power_flow!(pf2, sys2)
-    base_power = PSY.get_base_power(sys2, PSY.NU)
+    base_power = PSY.get_base_power(sys2, u"NU")
 
     # For every series branch segment, verify that DataFrame flow matches system object.
     nrd = PNM.get_network_reduction_data(
@@ -180,8 +180,8 @@ end
                     df_row = filter(row -> row.flow_name == name, flow_df)
                     @test size(df_row, 1) == 1
                     sys_branch = PSY.get_component(PSY.Branch, sys2, name)
-                    sys_P = PSY.get_active_power_flow(flow_holder(sys_branch), PSY.SU)
-                    sys_Q = PSY.get_reactive_power_flow(flow_holder(sys_branch), PSY.SU)
+                    sys_P = PSY.get_active_power_flow(flow_holder(sys_branch), u"SU")
+                    sys_Q = PSY.get_reactive_power_flow(flow_holder(sys_branch), u"SU")
                     @test isapprox(df_row[1, :P_from_to], sys_P * base_power; atol = 1e-3)
                     @test isapprox(df_row[1, :Q_from_to], sys_Q * base_power; atol = 1e-3)
                 end
@@ -191,8 +191,8 @@ end
                 df_row = filter(row -> row.flow_name == name, flow_df)
                 @test size(df_row, 1) == 1
                 sys_branch = PSY.get_component(PSY.Branch, sys2, name)
-                sys_P = PSY.get_active_power_flow(flow_holder(sys_branch), PSY.SU)
-                sys_Q = PSY.get_reactive_power_flow(flow_holder(sys_branch), PSY.SU)
+                sys_P = PSY.get_active_power_flow(flow_holder(sys_branch), u"SU")
+                sys_Q = PSY.get_reactive_power_flow(flow_holder(sys_branch), u"SU")
                 # DataFrame is in MW/MVAr, system is in p.u.
                 @test isapprox(df_row[1, :P_from_to], sys_P * base_power; atol = 1e-3)
                 @test isapprox(df_row[1, :Q_from_to], sys_Q * base_power; atol = 1e-3)
@@ -360,8 +360,8 @@ end
         PF._build_bus_injector_map(sys), gspf,
     )
     # No generator's active power was corrupted to NaN before the error.
-    @test !isnan(get_active_power(g1, PSY.SU))
-    @test !isnan(get_active_power(g2, PSY.SU))
+    @test !isnan(get_active_power(g1, u"SU"))
+    @test !isnan(get_active_power(g2, u"SU"))
 end
 
 function _ref_bus_with_units(limits)

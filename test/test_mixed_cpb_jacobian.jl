@@ -151,7 +151,7 @@ end
         sys, _ = simple_lcc_system()
         b2 = PSY.get_component(ACBus, sys, "bus_2")
         PSY.set_bustype!(b2, ACBusTypes.PV)
-        PSY.set_magnitude!(b2, 1.05 * PSY.CU)
+        PSY.set_magnitude!(b2, 1.05 * u"CU")
         _add_simple_thermal_standard!(sys, b2, 0.3, 0.0)
         R, data, x = _build_mixed_lcc_x(sys)
         Random.seed!(2024)
@@ -164,7 +164,7 @@ end
         # state; exercises the widened lcc_nz cache (rows 21–24) in MCPB.
         sys, lcc = simple_lcc_system()
         PSY.set_inverter_extinction_angle!(lcc, 1.0)   # interior, off ϕ clamp
-        PSY.set_transfer_setpoint!(lcc, -0.5)          # setpoint at inverter
+        PSY.set_power_transfer_setpoint!(lcc, -0.5 * u"CU")          # setpoint at inverter
         R, data, x = _build_mixed_lcc_x(sys)
         Random.seed!(2024)
         x .+= 1e-3 .* randn(length(x))

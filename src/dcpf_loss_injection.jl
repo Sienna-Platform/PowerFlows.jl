@@ -63,7 +63,7 @@ function _populate_loss_injections!(data::ABAPowerFlowData, sys::PSY.System)
     # Build bus_number → complex voltage map from the system's current AC state.
     bus_voltage = Dict{Int, ComplexF64}()
     for bus in PSY.get_components(PSY.ACBus, sys)
-        V = PSY.get_magnitude(bus, PSY.CU)
+        V = PSY.get_magnitude(bus, u"CU")
         θ = PSY.get_angle(bus)
         bus_voltage[PSY.get_number(bus)] = V * exp(1im * θ)
     end
