@@ -447,10 +447,10 @@ false in `converged`, so `improve_x0` never warm-starts from a column that anoth
 A first solve matches the serial one. A re-solve can pick a different warm start at the first
 step of a chunk."""
 function _column_worker(
-    data::ACPowerFlowData,
+    data::D,
     steps::AbstractVector{Int},
     positions::UnitRange{Int},
-)
+) where {D <: ACPowerFlowData}
     converged = copy(data.converged)
     for (pos, t) in enumerate(steps)
         if !(pos in positions)
@@ -467,8 +467,8 @@ function _column_worker(
         ),
         polar_nr_cache = Base.RefValue{Union{Nothing, AbstractNRCache}}(nothing),
     )
-    args = map(f -> get(fresh, f, getfield(data, f)), fieldnames(typeof(data)))
-    return typeof(data)(args...)
+    args = map(f -> get(fresh, f, getfield(data, f)), fieldnames(D))
+    return D(args...)
 end
 
 # Anything holding per-solve state outside the time-step columns cannot be split across tasks.
@@ -485,7 +485,7 @@ function _check_threadable(data::ACPowerFlowData, merged_kwargs::NamedTuple)
     backend = resolve_linear_solver_backend(
         get(merged_kwargs, :linear_solver, nothing))
     _concurrent_factorization_safe(backend) || error(
-        "threads > 1 requires the KLU linear solver; $(nameof(typeof(backend))) is not " *
+        "threads > 1 requires the KLU linear solver; $(backend) is not " *
         "verified safe under concurrent factorization. Pass linear_solver = \"KLU\" or " *
         "threads = 1.",
     )
