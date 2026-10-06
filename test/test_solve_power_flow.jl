@@ -947,7 +947,7 @@ end
             sign = -1.0
         end
         s_set[ybus_lookup[get_number(get_bus(d))]] +=
-            sign * (get_active_power(d, SU) + im * get_reactive_power(d, SU))
+            sign * (get_active_power(d, u"SU") + im * get_reactive_power(d, u"SU"))
     end
     for F in (PF.ACPolarPowerFlow, PF.ACRectangularPowerFlow, PF.ACMixedPowerFlow)
         data = PowerFlowData(F{NewtonRaphsonACPowerFlow}(; correct_bustypes = true), sys)
