@@ -131,7 +131,7 @@ end
                 fuel = ThermalFuels.OTHER,
                 services = Device[],
                 dynamic_injector = nothing,
-                ext = Dict{String, Any}(), input_basis = PSY.CU,
+                ext = Dict{String, Any}(), input_basis = u"CU",
             )
             add_component!(sys, g2)
 
@@ -372,7 +372,7 @@ end
                 fuel = ThermalFuels.OTHER,
                 services = Device[],
                 dynamic_injector = nothing,
-                ext = Dict{String, Any}(), input_basis = PSY.CU,
+                ext = Dict{String, Any}(), input_basis = u"CU",
             )
             add_component!(sys, g2)
 
@@ -388,16 +388,16 @@ end
 
             # Record original generator powers and headroom (in natural units) before solving
             original_gen_power = [
-                get_active_power(g, PSY.NU) for
+                get_active_power(g, u"NU") for
                 g in get_components(Union{Generator, Source}, sys)
             ]
             original_gen_headroom = Dict{String, Float64}()
             original_gen_p = Dict{String, Float64}()
             for g in get_components(ThermalStandard, sys)
-                limits = get_active_power_limits(g, PSY.NU)
+                limits = get_active_power_limits(g, u"NU")
                 original_gen_headroom[get_name(g)] =
-                    limits.max - get_active_power(g, PSY.NU)
-                original_gen_p[get_name(g)] = get_active_power(g, PSY.NU)
+                    limits.max - get_active_power(g, u"NU")
+                original_gen_p[get_name(g)] = get_active_power(g, u"NU")
             end
 
             pf = ACPowerFlow{ACSolver}(;
@@ -442,7 +442,7 @@ end
             for g in gens_at_bus
                 h = original_gen_headroom[get_name(g)]
                 h <= 0.0 && continue
-                slack = get_active_power(g, PSY.NU) - original_gen_p[get_name(g)]
+                slack = get_active_power(g, u"NU") - original_gen_p[get_name(g)]
                 push!(ratios, slack / h)
             end
             @test length(ratios) >= 2

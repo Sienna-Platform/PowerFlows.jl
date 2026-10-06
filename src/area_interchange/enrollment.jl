@@ -55,13 +55,13 @@ end
 
 # Net-interchange target and incidence count per PSY area name, aggregated over ALL
 # `PSY.AreaInterchange` records (regardless of enrollment): PDES_a = Σ_{from=a} flow −
-# Σ_{to=a} flow. Read explicitly in system base (`PSY.SU`), the unit convention of the
+# Σ_{to=a} flow. Read explicitly in system base (`u"SU"`), the unit convention of the
 # whole power-flow layer — no division by base power.
 function _area_pdes(sys::PSY.System)
     pdes = Dict{String, Float64}()
     incident = Dict{String, Int}()
     for ai in PSY.get_available_components(PSY.AreaInterchange, sys)
-        flow = PSY.get_active_power_flow(ai, PSY.SU)
+        flow = PSY.get_active_power_flow(ai, u"SU")
         from_name = PSY.get_name(PSY.get_from_area(ai))
         to_name = PSY.get_name(PSY.get_to_area(ai))
         pdes[from_name] = get(pdes, from_name, 0.0) + flow

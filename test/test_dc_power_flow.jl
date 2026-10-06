@@ -39,7 +39,7 @@ end
     ref_bus_angles[valid_ix] = matrix_data \ power_injections[valid_ix]
     ref_flow_values = transpose(aux_network_matrix.data) * ref_bus_angles
 
-    basepower = PSY.get_base_power(sys, PSY.NU)
+    basepower = PSY.get_base_power(sys, u"NU")
     arc_lookup = PF.get_arc_lookup(data)
     # CASE 1: ABA and BA matrices
     solved_data_ABA = solve_power_flow(
@@ -101,13 +101,13 @@ end
 
 @testset "DC power flow with an LCC" begin
     sys, lcc = simple_lcc_system()
-    @assert get_base_power(sys, PSY.NU) == 100.0 "Test system base power changed."
-    set_active_power_flow!(lcc, 0.3 * PSY.SU)
+    @assert get_base_power(sys, u"NU") == 100.0 "Test system base power changed."
+    set_active_power_flow!(lcc, 0.3 * u"SU")
     for T in (DCPowerFlow, PTDFDCPowerFlow, vPTDFDCPowerFlow)
         results =
             solve_power_flow(T(; correct_bustypes = true), sys, PF.FlowReporting.ARC_FLOWS)
         lcc_flow = results["1"]["lcc_results"][1, :P_from_to]
-        @test lcc_flow == get_active_power_flow(lcc, PSY.NU)
+        @test lcc_flow == get_active_power_flow(lcc, u"NU")
     end
 end
 
@@ -117,7 +117,7 @@ end
 
     # In the normalized initialization equation R * I_dc^2 + I_dc - P_set = 0,
     # zero resistance reduces to I_dc = P_set.
-    PSY.set_transfer_setpoint!(lcc, 0.25)
+    PSY.set_power_transfer_setpoint!(lcc, 0.25 * u"CU")
     for T in (DCPowerFlow, PTDFDCPowerFlow, vPTDFDCPowerFlow)
         data = PowerFlowData(T(; correct_bustypes = true), sys)
         @test !isnan(data.lcc.i_dc[1, 1])
@@ -125,7 +125,7 @@ end
     end
 
     # Zero setpoint should also initialize safely (no NaN).
-    PSY.set_transfer_setpoint!(lcc, 0.0)
+    PSY.set_power_transfer_setpoint!(lcc, 0.0 * u"CU")
     data = PowerFlowData(DCPowerFlow(; correct_bustypes = true), sys)
     @test !isnan(data.lcc.i_dc[1, 1])
     @test iszero(data.lcc.i_dc[1, 1])
@@ -165,27 +165,27 @@ end
         PF.FlowReporting.ARC_FLOWS,
     )
     load = first(get_components(PowerLoad, sys))
-    P = PSY.get_active_power(load, PSY.NU)
+    P = PSY.get_active_power(load, u"NU")
     println("original load draws: ", P, " MVA")
     remove_component!(sys, load)
     new_load = PSY.StandardLoad(;
         name = get_name(load),
         available = true,
         bus = PSY.get_bus(load),
-        base_power = PSY.get_base_power(load, PSY.NU),
+        base_power = PSY.get_base_power(load, u"NU"),
         constant_active_power = 0.0,
         constant_reactive_power = 0.0,
         impedance_active_power = 0.0,
         impedance_reactive_power = 0.0,
         current_active_power = 0.0,
         current_reactive_power = 0.0,
-        max_constant_active_power = PSY.get_max_active_power(load, PSY.NU),
-        max_constant_reactive_power = PSY.get_max_reactive_power(load, PSY.NU),
-        max_impedance_active_power = PSY.get_max_active_power(load, PSY.NU),
-        max_impedance_reactive_power = PSY.get_max_reactive_power(load, PSY.NU),
-        max_current_active_power = PSY.get_max_active_power(load, PSY.NU),
-        max_current_reactive_power = PSY.get_max_reactive_power(load, PSY.NU),
-        input_basis = PSY.CU,
+        max_constant_active_power = PSY.get_max_active_power(load, u"NU"),
+        max_constant_reactive_power = PSY.get_max_reactive_power(load, u"NU"),
+        max_impedance_active_power = PSY.get_max_active_power(load, u"NU"),
+        max_impedance_reactive_power = PSY.get_max_reactive_power(load, u"NU"),
+        max_current_active_power = PSY.get_max_active_power(load, u"NU"),
+        max_current_reactive_power = PSY.get_max_reactive_power(load, u"NU"),
+        input_basis = u"CU",
     )
     add_component!(sys, new_load)
     set_zip_load_in_mva!(sys, (0.0, P, 0.0))
@@ -232,7 +232,7 @@ end
 
 @testset "DC branch losses estimation" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
-    base_power = PSY.get_base_power(sys, PSY.NU)
+    base_power = PSY.get_base_power(sys, u"NU")
 
     for T in (DCPowerFlow, PTDFDCPowerFlow, vPTDFDCPowerFlow)
         data = PowerFlowData(T(; correct_bustypes = true), sys)
@@ -276,7 +276,7 @@ end
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
     # Introduce a deliberate imbalance by scaling one load up.
     load = first(get_components(PSY.PowerLoad, sys))
-    set_active_power!(load, 2.0 * get_active_power(load, PSY.SU) * PSY.SU)
+    set_active_power!(load, 2.0 * get_active_power(load, u"SU") * u"SU")
 
     for T in (DCPowerFlow, PTDFDCPowerFlow, vPTDFDCPowerFlow)
         results =
@@ -298,7 +298,7 @@ end
 
 @testset "DC branch-level losses with BRANCH_FLOWS reporting" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
-    base_power = PSY.get_base_power(sys, PSY.NU)
+    base_power = PSY.get_base_power(sys, u"NU")
 
     for T in (DCPowerFlow, PTDFDCPowerFlow, vPTDFDCPowerFlow)
         results = solve_power_flow(

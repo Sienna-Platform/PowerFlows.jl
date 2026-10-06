@@ -15,7 +15,10 @@ const _ZERO_SP_FORMULATIONS = (
 function _zero_setpoint_lcc_system()
     raw_path = joinpath(TEST_DATA_DIR, "case5_2_lcc.raw")
     sys = system_from_openapi(PFP.PowerModelsData(raw_path); runchecks = false)
-    set_transfer_setpoint!(first(get_components(TwoTerminalLCCLine, sys)), 0.0)
+    set_power_transfer_setpoint!(
+        first(get_components(TwoTerminalLCCLine, sys)),
+        0.0 * u"CU",
+    )
     return sys
 end
 

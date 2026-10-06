@@ -456,7 +456,7 @@ end
     # An absurd schedule makes each area's NI−PDES row dwarf every bus mismatch, so the mean
     # test trips and the largest entry lands in the tail.
     for ai in PSY.get_components(PSY.AreaInterchange, sys)
-        PSY.set_active_power_flow!(ai, 5.0e4 * PSY.SU)
+        PSY.set_active_power_flow!(ai, 5.0e4 * u"SU")
     end
     pf = ACPolarPowerFlow(; area_interchange_control = true)
     data = PowerFlowData(pf, sys)

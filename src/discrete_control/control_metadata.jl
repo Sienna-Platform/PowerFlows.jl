@@ -60,7 +60,7 @@ function _validate_vset(kind::String, name::String, vset::Float64)::Bool
     if !(CONTROL_VSET_MIN <= vset <= CONTROL_VSET_MAX)
         @warn "$kind \"$name\": voltage setpoint $vset p.u. is outside \
             [$CONTROL_VSET_MIN, $CONTROL_VSET_MAX] — implausible control data (for parsed \
-            systems PSY's admittance_limits holds the PSS/E VSWLO/VSWHI voltage band; \
+            systems PSY's voltage_limits holds the PSS/E VSWLO/VSWHI voltage band; \
             other sources may not). Leaving the device locked at its current setting."
         return false
     end
@@ -109,11 +109,19 @@ function _voltage_controlled_tap_candidates(sys)
     return candidates
 end
 
+# A voltage-regulating device must carry the band its control mode selects.
+_required_band(band, ::Any, ::Symbol) = band
+function _required_band(::Nothing, device, field::Symbol)
+    error(
+        "$(typeof(device)) $(PSY.get_name(device)) regulates a voltage but has no $(field).",
+    )
+end
+
 """Tap-control metadata for one regulating `PSY.TransformerCircuit`, of either arity.
-`control_limits` is the tap-ratio band `[pmin, pmax]`, on the same basis as `PSY.get_tap`.
+`tap_ratio_limits` is the tap-ratio band `[pmin, pmax]`, on the same basis as `PSY.get_tap`.
 `get_regulated_bus_number` is 0 for local (to-bus) control."""
 function _tap_metadata(circuit::PSY.TransformerCircuit, to_bus::Int)
-    lims = PSY.get_control_limits(circuit)
+    lims = _required_band(PSY.get_tap_ratio_limits(circuit), circuit, :tap_ratio_limits)
     reg = PSY.get_regulated_bus_number(circuit)
     cbus = to_bus
     if !iszero(reg)
@@ -122,7 +130,9 @@ function _tap_metadata(circuit::PSY.TransformerCircuit, to_bus::Int)
     end
     # The tap is held anywhere inside the VMA/VMI band and regulates toward its midpoint on
     # an excursion — the same posture as a switched shunt's VSWLO/VSWHI.
-    vlims = PSY.get_controlled_quantity_limits(circuit)
+    vlims = _required_band(
+        PSY.get_controlled_voltage_limits(circuit), circuit, :controlled_voltage_limits,
+    )
     return (
         cbus = cbus,
         pmin = lims.min,
@@ -286,7 +296,7 @@ function build_controlled_device_set(
                 the (reduced) network; leaving the shunt locked."
             continue
         end
-        lims = PSY.get_admittance_limits(sa)
+        lims = _required_band(PSY.get_voltage_limits(sa), sa, :voltage_limits)
         vset = (lims.min + lims.max) / 2.0
         _validate_vset("ControlledSwitchedShunt", name, vset) || continue
         solved = PSY.get_solved_admittance(sa)
@@ -364,8 +374,8 @@ function _enroll_facts!(
         end
         # `rating` (SHMX) is MVA at unity voltage ⇒ the SVC susceptance-at-unity bound or
         # the STATCOM current limit, on system base. `q_cap` is an independent MVA ceiling.
-        rating = PSY.get_max_shunt_current(fd, PSY.SU)
-        q_cap = PSY.get_max_reactive_power(fd, PSY.SU)
+        rating = PSY.get_max_shunt_current(fd, u"SU")
+        q_cap = PSY.get_max_reactive_power(fd, u"SU")
         svc = PSY.get_shunt_control_type(fd) == PSY.FACTSShuntControlType.SVC
         if rating <= 0.0
             @warn "ControlledFACTS \"$name\": max_shunt_current must be positive \
