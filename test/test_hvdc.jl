@@ -334,8 +334,12 @@ end
             for (setpoint, P_from_to, P_to_from) in
                 ((0.3, 0.3, -(0.3 - loss)), (-0.3, 0.3 + loss, -0.3))
                 sys, lcc = simple_lcc_system()
-                set_r!(lcc, r)
-                set_transfer_setpoint!(lcc, setpoint)
+                # `r` is per unit; PowerSystems stores the LCC resistance in ohms.
+                set_r!(
+                    lcc,
+                    r * PSY.get_scheduled_dc_voltage(lcc)^2 / get_base_power(sys, u"NU"),
+                )
+                set_power_transfer_setpoint!(lcc, setpoint * u"SU")
                 pf = DC_type(; correct_bustypes = true)
                 data = PowerFlowData(pf, sys)
                 @test isapprox(data.lcc.arc_active_power_flow_from_to[1, 1], P_from_to)

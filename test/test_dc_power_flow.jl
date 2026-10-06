@@ -107,7 +107,8 @@ end
     set_active_power_flow!(lcc, 0.1 * u"SU")
     ac = PowerFlowData(ACPowerFlow(; correct_bustypes = true), sys)
     @test solve_power_flow!(ac)
-    @test ac.lcc.arc_active_power_flow_from_to[1, 1] ≈ get_power_transfer_setpoint(lcc, u"SU")
+    @test ac.lcc.arc_active_power_flow_from_to[1, 1] ≈
+          get_power_transfer_setpoint(lcc, u"SU")
     for T in (DCPowerFlow, PTDFDCPowerFlow, vPTDFDCPowerFlow)
         results =
             solve_power_flow(T(; correct_bustypes = true), sys, PF.FlowReporting.ARC_FLOWS)

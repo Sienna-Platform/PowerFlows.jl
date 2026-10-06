@@ -372,7 +372,7 @@ function _ref_bus_with_units(limits)
     _add_simple_load!(sys, b2, 10.0, 2.0)
     gens = map(limits) do (lo, hi)
         g = _add_simple_thermal_standard!(sys, b1, 0.1, 0.0)
-        PSY.set_active_power_limits!(g, (min = lo * PSY.SU, max = hi * PSY.SU))
+        PSY.set_active_power_limits!(g, (min = lo * u"SU", max = hi * u"SU"))
         return g
     end
     return sys, b1, gens
@@ -387,10 +387,10 @@ end
         sys, P_gen, 0.0, b1, PF.DEFAULT_MAX_REDISTRIBUTION_ITERATIONS,
         PF._build_bus_injector_map(sys); skip_reactive = true,
     )
-    p = get_active_power.(gens, (PSY.SU,))
+    p = get_active_power.(gens, (u"SU",))
     @test isapprox(sum(p), P_gen; atol = 1e-9)
     for (g, pg) in zip(gens, p)
-        lim = get_active_power_limits(g, PSY.SU)
+        lim = get_active_power_limits(g, u"SU")
         @test lim.min - 1e-9 <= pg <= lim.max + 1e-9
     end
 end
@@ -402,15 +402,15 @@ end
         sys, -0.3, 0.0, b1, PF.DEFAULT_MAX_REDISTRIBUTION_ITERATIONS, bus_injectors;
         skip_reactive = true,
     )
-    @test isapprox(sum(get_active_power.(gens, (PSY.SU,))), -0.3; atol = 1e-9)
+    @test isapprox(sum(get_active_power.(gens, (u"SU",))), -0.3; atol = 1e-9)
     # The widest-range unit takes the residual.
-    @test isapprox(get_active_power(gens[2], PSY.SU), -0.3; atol = 1e-9)
+    @test isapprox(get_active_power(gens[2], u"SU"), -0.3; atol = 1e-9)
 
-    set_active_power!.(gens, (0.5 * PSY.SU,))
+    set_active_power!.(gens, (0.5 * u"SU",))
     @test_logs (:warn, r"Q residual .* exceeds") match_mode = :any PF._reactive_power_redistribution_pv(
         sys, 3.0, b1, PF.DEFAULT_MAX_REDISTRIBUTION_ITERATIONS, bus_injectors,
     )
-    @test isapprox(sum(get_reactive_power.(gens, (PSY.SU,))), 3.0; atol = 1e-9)
+    @test isapprox(sum(get_reactive_power.(gens, (u"SU",))), 3.0; atol = 1e-9)
 end
 
 @testset "solve_and_store_power_flow! when the REF bus must absorb below its units' P_min" begin

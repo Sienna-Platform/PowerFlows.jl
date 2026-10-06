@@ -186,9 +186,9 @@ function _get_withdrawals!(
         bus = PSY.get_bus(l)
         PSY.get_number(bus) in removed_buses && continue
         bus_ix = _get_bus_ix(bus_lookup, reverse_bus_search_map, PSY.get_number(bus))
-        p[_exponential_zip_slot(l, PSY.get_α(l))][bus_ix] += PSY.get_active_power(l, PSY.SU)
+        p[_exponential_zip_slot(l, PSY.get_α(l))][bus_ix] += PSY.get_active_power(l, u"SU")
         q[_exponential_zip_slot(l, PSY.get_β(l))][bus_ix] +=
-            PSY.get_reactive_power(l, PSY.SU)
+            PSY.get_reactive_power(l, u"SU")
     end
     # FixedAdmittance components are already included in the Ybus matrix.
     for sa in PSY.get_available_components(PSY.SwitchedAdmittance, sys)

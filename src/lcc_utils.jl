@@ -834,7 +834,11 @@ end
 
 _lcc_dc_resistance(lcc::PSY.TwoTerminalLCCLine, base_power::Float64) =
     _lcc_ohm_to_pu(PSY.get_r(lcc), PSY.get_scheduled_dc_voltage(lcc), base_power) +
-    _lcc_ohm_to_pu(PSY.get_rectifier_rc(lcc), PSY.get_rectifier_base_voltage(lcc), base_power) +
+    _lcc_ohm_to_pu(
+        PSY.get_rectifier_rc(lcc),
+        PSY.get_rectifier_base_voltage(lcc),
+        base_power,
+    ) +
     _lcc_ohm_to_pu(PSY.get_inverter_rc(lcc), PSY.get_inverter_base_voltage(lcc), base_power)
 
 """

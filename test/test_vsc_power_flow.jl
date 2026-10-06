@@ -1059,7 +1059,7 @@ end
             by = PSY.get_number,
         )
         pv = first(buses(PSY.ACBusTypes.PV))
-        v_pv = PSY.get_magnitude(pv, PSY.SU)
+        v_pv = PSY.get_magnitude(pv, u"SU")
         arc = _get_or_make_arc(sys, first(buses(PSY.ACBusTypes.PQ)), pv)
         PSY.add_component!(
             sys,
@@ -1069,18 +1069,18 @@ end
                 arc = arc,
                 active_power_flow = 0.3,
                 rating = 2.0,
-                active_power_limits_from = (min = -2.0, max = 2.0),
-                active_power_limits_to = (min = -2.0, max = 2.0),
                 g = 45.0,
                 dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
                 ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
-                dc_setpoint_from = 1.03,
+                power_factor_setpoint_from = 1.0,
+                dc_voltage_setpoint_from = 1.03,
+                rated_dc_voltage = 1.0,
                 dc_control_to = PSY.VSCDCControlModes.DC_POWER,
                 ac_control_to = PSY.VSCACControlModes.AC_VOLTAGE,
-                dc_setpoint_to = 0.3,
-                ac_setpoint_to = vac_set(v_pv),
+                dc_power_setpoint_to = 0.3,
+                ac_voltage_setpoint_to = vac_set(v_pv),
                 reactive_power_to = 0.05,
-                input_basis = PSY.CU,
+                input_basis = u"CU",
             ),
         )
         pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
@@ -1097,7 +1097,7 @@ end
     @test all(data.converged)
     @test data.bus_magnitude[PF.get_bus_lookup(data)[pv_number], 1] ≈ v_pv
     vsc = PSY.get_component(PSY.TwoTerminalVSCLine, sys, "vsc_pv")
-    @test dcn.q_c[2, 1] ≈ PSY.get_reactive_power_to(vsc, PSY.SU)
+    @test dcn.q_c[2, 1] ≈ PSY.get_reactive_power_to(vsc, u"SU")
     @test !iszero(dcn.q_c[2, 1])
 
     sys_bad, pf_bad, pv_bad, v_bad = vac_at_pv(v -> v + 0.02)

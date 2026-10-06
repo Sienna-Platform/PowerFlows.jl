@@ -364,7 +364,7 @@ function _push_converter!(
     # A V_dc target ≤ 0 makes the DC-KCL term P_dc/V_dc non-finite at the seed.
     if uses_vdc_setpoint(mode) && !(dc_set > 0.0)
         error(
-            "VSC converter $(name) controls its DC voltage ($(mode)) but its dc_setpoint is " *
+            "VSC converter $(name) controls its DC voltage ($(mode)) but its dc_voltage_setpoint is " *
             "$(dc_set); a DC-voltage setpoint must be > 0 p.u.",
         )
     end
