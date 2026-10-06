@@ -34,8 +34,8 @@ using PowerFlows
 function build_stressed_system(load_scale::Float64)
     sys = build_system(PSITestSystems, "c_sys14"; force_build = true, add_forecasts = false)
     for load in get_components(PowerLoad, sys)
-        set_active_power!(load, get_active_power(load, SU) * load_scale * SU)
-        set_reactive_power!(load, get_reactive_power(load, SU) * load_scale * SU)
+        set_active_power!(load, get_active_power(load, u"SU") * load_scale * u"SU")
+        set_reactive_power!(load, get_reactive_power(load, u"SU") * load_scale * u"SU")
     end
     return sys
 end
@@ -81,7 +81,7 @@ facts = FACTSControlDevice(;
     voltage_setpoint = 1.0,
     max_shunt_current = 100.0,
     shunt_control_type = FACTSShuntControlType.STATCOM,
-    input_basis = CU,
+    input_basis = u"CU",
 )
 add_component!(sys, facts)
 
@@ -121,7 +121,7 @@ res = PowerFlows.get_controlled_device_results(data)
 # discrete increments of `Y_increase`, mirroring how a real substation shunt
 # bank is switched. Build a fresh copy of the stressed system
 # (so this device doesn't coexist with the FACTS device above), and add a
-# 60-step, 1 MVar-per-step bank at the same weak bus. `admittance_limits` is a
+# 60-step, 1 MVar-per-step bank at the same weak bus. `voltage_limits` is a
 # voltage deadband: once the bus voltage falls inside it, the continuation
 # stops switching in more blocks.
 
@@ -134,7 +134,7 @@ sa = SwitchedAdmittance(;
     number_engaged = [0],
     number_of_steps = [60],
     Y_increase = [0.0 + (1.0 / get_base_power(sys2)) * im],
-    admittance_limits = (min = 0.98, max = 1.02),
+    voltage_limits = (min = 0.98, max = 1.02),
     control_mode = SwitchedAdmittanceControlMode.DISCRETE_VOLTAGE,
 )
 add_component!(sys2, sa)
@@ -177,7 +177,7 @@ facts_tight = FACTSControlDevice(;
     voltage_setpoint = 1.0,
     max_shunt_current = 5.0,
     shunt_control_type = FACTSShuntControlType.STATCOM,
-    input_basis = CU,
+    input_basis = u"CU",
 )
 add_component!(sys3, facts_tight)
 
