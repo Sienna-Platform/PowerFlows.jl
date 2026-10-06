@@ -1025,7 +1025,7 @@ end
     # Regression coverage for the Schur bus-block partition fix: a VSC-only system
     # (n_lcc == 0) is exactly the shape the OLD formula (`n_state - 4*n_lcc`) mispartitioned,
     # folding the whole VSC tail into the "bus" block.
-    sys = _build_vsc_system(; g = 50.0)
+    sys = _build_vsc_system(; g = 1 / 32.0)
     params = PF._override(VSC_SOLUTION_PARAMETERS; linear_solver = "KLU")
     pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
         log_solver_diagnostics = true,
