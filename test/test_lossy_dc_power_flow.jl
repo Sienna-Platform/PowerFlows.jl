@@ -98,9 +98,9 @@ end
 
 function _build_arc_flow_map(data::PowerFlowData, sys::PSY.System)
     arc_tuples = PNM.get_arc_axis(data.aux_network_matrix)
-    p_from_to = data.arc_active_power_flow_from_to[:, 1] .* PSY.get_base_power(sys, PSY.NU)
-    p_to_from = data.arc_active_power_flow_to_from[:, 1] .* PSY.get_base_power(sys, PSY.NU)
-    p_losses = data.arc_active_power_losses[:, 1] .* PSY.get_base_power(sys, PSY.NU)
+    p_from_to = data.arc_active_power_flow_from_to[:, 1] .* PSY.get_base_power(sys, u"NU")
+    p_to_from = data.arc_active_power_flow_to_from[:, 1] .* PSY.get_base_power(sys, u"NU")
+    p_losses = data.arc_active_power_losses[:, 1] .* PSY.get_base_power(sys, u"NU")
     return Dict(
         arc => (
             P_from_to = p_from_to[ix],

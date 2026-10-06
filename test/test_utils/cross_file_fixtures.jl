@@ -34,7 +34,7 @@ function _add_area_interchange!(
             active_power_flow = flow,
             from_area = PSY.get_component(PSY.Area, sys, from_name),
             to_area = PSY.get_component(PSY.Area, sys, to_name),
-            flow_limits = (from_to = 0.0, to_from = 0.0), input_basis = PSY.CU,
+            flow_limits = (from_to = 0.0, to_from = 0.0), input_basis = u"CU",
         ),
     )
     return
@@ -59,7 +59,7 @@ function _three_area_transfer_fixture(; slack_area3::Bool = true)
         reactive_power_limits = (min = -1.0, max = 1.0),
         ramp_limits = nothing,
         operation_cost = PSY.ThermalGenerationCost(nothing),
-        base_power = 100.0, input_basis = PSY.CU,
+        base_power = 100.0, input_basis = u"CU",
     )
     PSY.add_component!(sys, gen9)
     _set_slack!(sys, "Bus 6")
@@ -75,8 +75,8 @@ end
 # needed here.
 function _make_3w_boundary_fixture()
     sys = System(100.0)
-    area_a = PSY.Area(; name = "AreaA", input_basis = PSY.CU)
-    area_b = PSY.Area(; name = "AreaB", input_basis = PSY.CU)
+    area_a = PSY.Area(; name = "AreaA", input_basis = u"CU")
+    area_b = PSY.Area(; name = "AreaB", input_basis = u"CU")
     PSY.add_component!(sys, area_a)
     PSY.add_component!(sys, area_b)
 
@@ -176,7 +176,7 @@ function build_lcc_control_system(; p_set_mw::Union{Nothing, Float64} = nothing)
         sys,
         SwitchedAdmittance(; name = "ctrl_shunt_101", available = true,
             bus = bus101, number_engaged = [0], number_of_steps = [8],
-            Y_increase = [0.0 + 0.5im], admittance_limits = (min = 1.05, max = 1.08),
+            Y_increase = [0.0 + 0.5im], voltage_limits = (min = 1.05, max = 1.08),
             control_mode = PSY.SwitchedAdmittanceControlMode.DISCRETE_VOLTAGE,
         ),
     )
@@ -191,14 +191,12 @@ function build_lcc_control_system(; p_set_mw::Union{Nothing, Float64} = nothing)
             max_shunt_current = 1000.0,
             max_reactive_power = 9999.0,
             shunt_control_type = PSY.FACTSShuntControlType.STATCOM,
-            regulated_bus_number = 0, input_basis = PSY.CU,
+            regulated_bus_number = 0, input_basis = u"CU",
         ),
     )
     if p_set_mw !== nothing
-        # `transfer_setpoint` is stored per-unit on the system base.
-        base = get_base_power(sys, PSY.NU)
         for l in get_components(TwoTerminalLCCLine, sys)
-            set_transfer_setpoint!(l, p_set_mw / base)
+            set_power_transfer_setpoint!(l, p_set_mw * u"MW")
         end
     end
     return sys
@@ -439,19 +437,18 @@ function _build_vsc_system(; g = 50.0)
         arc = arc,
         active_power_flow = 0.5,
         rating = 1.0,
-        active_power_limits_from = (min = -1.0, max = 1.0),
-        active_power_limits_to = (min = -1.0, max = 1.0),
         g = g,
         # from converter: DC-voltage control (DC slack), no AC-voltage control
         dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
         ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
-        dc_setpoint_from = 1.0,
-        ac_setpoint_from = 1.0,
+        dc_voltage_setpoint_from = 1.0,
+        rated_dc_voltage = 1.0,
+        power_factor_setpoint_from = 1.0,
         # to converter: power control (P, Q)
         dc_control_to = PSY.VSCDCControlModes.DC_POWER,
         ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
-        dc_setpoint_to = 0.5,
-        ac_setpoint_to = 1.0, input_basis = PSY.CU,
+        dc_power_setpoint_to = 0.5,
+        power_factor_setpoint_to = 1.0, input_basis = u"CU",
     )
     PSY.add_component!(sys, vsc)
     return sys
@@ -479,21 +476,22 @@ function _vsc_system_pv_terminal(; g = 45.0)
         arc = arc,
         active_power_flow = 0.3,
         rating = 2.0,
-        active_power_limits_from = (min = -2.0, max = 2.0),
-        active_power_limits_to = (min = -2.0, max = 2.0),
         g = g,
         dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
         ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
-        dc_setpoint_from = 1.03,
+        power_factor_setpoint_from = 1.0,
+        dc_voltage_setpoint_from = 1.03,
+        rated_dc_voltage = 1.0,
         reactive_power_from = 0.0,
         dc_control_to = PSY.VSCDCControlModes.DC_POWER,
         ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
-        dc_setpoint_to = 0.35,
+        power_factor_setpoint_to = 1.0,
+        dc_power_setpoint_to = 0.35,
         reactive_power_to = 0.05,
         converter_loss_to = PSY.LossCurve(
             PSY.QuadraticCurve(0.01, 0.02, 0.005),
             PSY.NaturalUnit(),
-        ), input_basis = PSY.CU,
+        ), input_basis = u"CU",
     )
     PSY.add_component!(sys, vsc)
     return sys
