@@ -20,17 +20,17 @@ function build_ieee14_facts_system(;
     if !isone(stress)
         for load in get_components(StandardLoad, sys)
             set_constant_active_power!(
-                load, get_constant_active_power(load, PSY.SU) * stress * PSY.SU)
+                load, get_constant_active_power(load, u"SU") * stress * u"SU")
             set_constant_reactive_power!(
-                load, get_constant_reactive_power(load, PSY.SU) * stress * PSY.SU)
+                load, get_constant_reactive_power(load, u"SU") * stress * u"SU")
             set_impedance_active_power!(
-                load, get_impedance_active_power(load, PSY.SU) * stress * PSY.SU)
+                load, get_impedance_active_power(load, u"SU") * stress * u"SU")
             set_impedance_reactive_power!(
-                load, get_impedance_reactive_power(load, PSY.SU) * stress * PSY.SU)
+                load, get_impedance_reactive_power(load, u"SU") * stress * u"SU")
             set_current_active_power!(
-                load, get_current_active_power(load, PSY.SU) * stress * PSY.SU)
+                load, get_current_active_power(load, u"SU") * stress * u"SU")
             set_current_reactive_power!(
-                load, get_current_reactive_power(load, PSY.SU) * stress * PSY.SU)
+                load, get_current_reactive_power(load, u"SU") * stress * u"SU")
         end
     end
     if shunt9_off
@@ -49,7 +49,7 @@ function build_ieee14_facts_system(;
         control_mode = PSY.FACTSOperationModes.NML,
         voltage_setpoint = vset,
         shunt_control_type = shunt_control_type,
-        regulated_bus_number = regulated_bus_number, input_basis = PSY.CU,
+        regulated_bus_number = regulated_bus_number, input_basis = u"CU",
     )
     # `max_shunt_current`/`max_reactive_power` are stored in device base; the constructor
     # kwargs take a raw CU value, so set them through the units-aware setters to honor the
@@ -200,10 +200,10 @@ end
     sys = _make_tap_shunt_system()
     tx = first(PSY.get_components(PSY.TwoWindingTransformer, sys))
     PSY.set_regulated_bus_number!(PSY.get_circuit(tx), 3)
-    PSY.set_control_limits!(PSY.get_circuit(tx), (min = 0.88, max = 1.12))
+    PSY.set_tap_ratio_limits!(PSY.get_circuit(tx), (min = 0.88, max = 1.12))
     PSY.set_number_of_tap_positions!(PSY.get_circuit(tx), 25)
     # A degenerate band pins the regulation target to a single voltage.
-    PSY.set_controlled_quantity_limits!(PSY.get_circuit(tx), (min = 1.03, max = 1.03))
+    PSY.set_controlled_voltage_limits!(PSY.get_circuit(tx), (min = 1.03, max = 1.03))
     data = PowerFlowData(ACPolarPowerFlow(), sys)
     bl = PF.get_bus_lookup(data)
     set = PowerFlows.build_controlled_device_set(
@@ -240,7 +240,7 @@ end
     # must de-enroll it with a warning instead of regulating |V| toward ~0.
     sys = _make_tap_shunt_system()
     sa = first(PSY.get_components(PSY.SwitchedAdmittance, sys))
-    PSY.set_admittance_limits!(sa, (min = -0.3, max = 0.3))
+    PSY.set_voltage_limits!(sa, (min = -0.3, max = 0.3))
     data = PowerFlowData(ACPolarPowerFlow(), sys)
     set = @test_logs (:warn, r"voltage setpoint") match_mode = :any (
         PowerFlows.build_controlled_device_set(
@@ -341,7 +341,7 @@ end
     sys = _make_tap_shunt_system()
     tx = first(PSY.get_components(PSY.TwoWindingTransformer, sys))
     circuit = PSY.get_circuit(tx)
-    PSY.set_control_limits!(circuit, (min = 0.9, max = 1.1))
+    PSY.set_tap_ratio_limits!(circuit, (min = 0.9, max = 1.1))
     md = PowerFlows._tap_metadata(circuit, 2)
     @test md.pmin ≈ 0.9
     @test md.pmax ≈ 1.1
@@ -1014,7 +1014,7 @@ end
         Line(; name = tap_name, available = true, active_power_flow = 0.0,
             reactive_power_flow = 0.0, arc = Arc(; from = b2, to = b3),
             r = 0.1, x = 0.1, b = (from = 0.0, to = 0.0), rating = 1.0,
-            angle_limits = (min = -pi / 2, max = pi / 2), input_basis = PSY.CU),
+            angle_limits = (min = -pi / 2, max = pi / 2), input_basis = u"CU"),
     )
     pf = ACPolarPowerFlow(; control_discrete_devices = true)
     @test solve_and_store_power_flow!(pf, sys)
@@ -1230,14 +1230,14 @@ end
                 PowerLoad(; name = "l$k", available = true, bus = bl,
                     active_power = 0.5, reactive_power = 0.25, base_power = 100.0,
                     max_active_power = 100.0, max_reactive_power = 100.0,
-                    input_basis = PSY.CU),
+                    input_basis = u"CU"),
             )
             add_component!(
                 sys,
                 PowerLoad(; name = "s$k", available = true, bus = bs,
                     active_power = 0.05, reactive_power = 0.025, base_power = 100.0,
                     max_active_power = 100.0, max_reactive_power = 100.0,
-                    input_basis = PSY.CU),
+                    input_basis = u"CU"),
             )
             _add_simple_line!(sys, ref, bs, 1e-2, 1e-2, 0.0)
             add_component!(
@@ -1247,13 +1247,15 @@ end
                         arc = Arc(; from = ref, to = bl), r = 0.01, x = 0.10,
                         tap = 1.0, rating = 1.0, base_power = 100.0,
                         control_objective = PSY.TransformerControlObjective.VOLTAGE,
-                        input_basis = PSY.CU), input_basis = PSY.CU),
+                        controlled_voltage_limits = (min = 0.9, max = 1.1),
+                        tap_ratio_limits = (min = 0.9, max = 1.1),
+                        input_basis = u"CU"), input_basis = u"CU"),
             )
             add_component!(
                 sys,
                 SwitchedAdmittance(; name = "sh$k", available = true,
                     bus = bs, number_engaged = [0], number_of_steps = [4],
-                    Y_increase = [0.0 + 0.05im], admittance_limits = (min = 0.9, max = 1.1),
+                    Y_increase = [0.0 + 0.05im],
                 ),
             )
         end
@@ -1395,7 +1397,7 @@ end
     # needing a real restore — while p_c/node_vdc stay checked too (they should never move).
     sys = _build_vsc_pq_system(;
         ac_control_to = PSY.VSCACControlModes.AC_VOLTAGE,
-        ac_setpoint_to = 1.0,
+        ac_voltage_setpoint_to = 1.0,
     )
     pq = sort!(
         collect(

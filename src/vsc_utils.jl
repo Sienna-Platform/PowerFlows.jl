@@ -22,7 +22,7 @@ end
 
 function _loss_coefficients(curve::PSY.LossCurve, sys_base::Float64, dev_base::Float64)
     # `PSY.LossCurve` x-axis ratio (system base / curve's own base, see `_loss_curve_own_base`)
-    # to reach `PSY.SU`. When the curve is already `SystemBaseUnit`, `convert_power_units`
+    # to reach `u"SU"`. When the curve is already `SystemBaseUnit`, `convert_power_units`
     # dispatches to its identity method and ignores this ratio entirely.
     ratio = sys_base / _loss_curve_own_base(PSY.get_power_units(curve), sys_base, dev_base)
     su_curve = IS.convert_power_units(curve, PSY.SystemBaseUnit(), ratio)
@@ -364,7 +364,7 @@ function _push_converter!(
     # A V_dc target ≤ 0 makes the DC-KCL term P_dc/V_dc non-finite at the seed.
     if uses_vdc_setpoint(mode) && !(dc_set > 0.0)
         error(
-            "VSC converter $(name) controls its DC voltage ($(mode)) but its dc_setpoint is " *
+            "VSC converter $(name) controls its DC voltage ($(mode)) but its dc_voltage_setpoint is " *
             "$(dc_set); a DC-voltage setpoint must be > 0 p.u.",
         )
     end
@@ -396,6 +396,82 @@ function _push_converter!(
     return length(b.ac_bus_ix)
 end
 
+# A converter has no active-power band of its own: its MVA rating bounds P in both directions.
+_symmetric_limits(rating::Float64) = (min = -rating, max = rating)
+
+_required_setpoint(value::Float64, ::Any, ::Symbol) = value
+function _required_setpoint(::Nothing, device, field::Symbol)
+    error(
+        "$(typeof(device)) $(PSY.get_name(device)) has no $(field) for its control mode.",
+    )
+end
+
+# `dc_set` of `_push_converter!`: the DC voltage target (per unit) when the mode holds V_dc, else
+# the DC power order (system per unit).
+function _vsc_dc_set_from(line::PSY.TwoTerminalVSCLine)
+    mode = _vsc_control_mode(PSY.get_dc_control_from(line), PSY.get_ac_control_from(line))
+    if uses_vdc_setpoint(mode)
+        return _required_setpoint(
+            PSY.get_dc_voltage_setpoint_from(line), line, :dc_voltage_setpoint_from,
+        )
+    end
+    return PSY.get_dc_power_setpoint_from(line, u"SU")
+end
+
+function _vsc_dc_set_to(line::PSY.TwoTerminalVSCLine)
+    mode = _vsc_control_mode(PSY.get_dc_control_to(line), PSY.get_ac_control_to(line))
+    if uses_vdc_setpoint(mode)
+        return _required_setpoint(
+            PSY.get_dc_voltage_setpoint_to(line), line, :dc_voltage_setpoint_to,
+        )
+    end
+    return PSY.get_dc_power_setpoint_to(line, u"SU")
+end
+
+# `ac_set` of `_push_converter!`: the AC voltage target (per unit) when the mode holds |V_ac|. The
+# other modes never read it.
+function _vsc_ac_set_from(line::PSY.TwoTerminalVSCLine)
+    mode = _vsc_control_mode(PSY.get_dc_control_from(line), PSY.get_ac_control_from(line))
+    if controls_ac_voltage(mode)
+        return _required_setpoint(
+            PSY.get_ac_voltage_setpoint_from(line), line, :ac_voltage_setpoint_from,
+        )
+    end
+    return 1.0
+end
+
+function _vsc_ac_set_to(line::PSY.TwoTerminalVSCLine)
+    mode = _vsc_control_mode(PSY.get_dc_control_to(line), PSY.get_ac_control_to(line))
+    if controls_ac_voltage(mode)
+        return _required_setpoint(
+            PSY.get_ac_voltage_setpoint_to(line), line, :ac_voltage_setpoint_to,
+        )
+    end
+    return 1.0
+end
+
+# An `InterconnectingConverter` stores its voltage targets in kV; the solver works per unit of the
+# DC and AC bus base voltages.
+function _converter_dc_set(ic::PSY.InterconnectingConverter)
+    mode = _vsc_control_mode(PSY.get_dc_control(ic), PSY.get_ac_control(ic))
+    if uses_vdc_setpoint(mode)
+        vdc_kv =
+            _required_setpoint(PSY.get_dc_voltage_setpoint(ic), ic, :dc_voltage_setpoint)
+        return vdc_kv / PSY.get_base_voltage(PSY.get_dc_bus(ic))
+    end
+    return PSY.get_dc_power_setpoint(ic, u"SU")
+end
+
+function _converter_ac_set(ic::PSY.InterconnectingConverter)
+    mode = _vsc_control_mode(PSY.get_dc_control(ic), PSY.get_ac_control(ic))
+    if controls_ac_voltage(mode)
+        vac_kv =
+            _required_setpoint(PSY.get_ac_voltage_setpoint(ic), ic, :ac_voltage_setpoint)
+        return vac_kv / PSY.get_base_voltage(PSY.get_bus(ic))
+    end
+    return 1.0
+end
+
 # Lower point-to-point `TwoTerminalVSCLine`: 2 implicit DC nodes + 2 converters + 1 DC branch.
 function _lower_vsc_lines!(
     b::_DCNetworkBuilder,
@@ -418,20 +494,21 @@ function _lower_vsc_lines!(
             PSY.get_dc_control_from(line), PSY.get_ac_control_from(line),
             PSY.get_dc_voltage_droop_from(line), PSY.get_converter_loss_from(line),
             sys_base, dev_base,
-            PSY.get_rating_from(line, PSY.SU),
-            PSY.get_active_power_limits_from(line, PSY.SU),
-            PSY.get_reactive_power_limits_from(line, PSY.SU),
-            PSY.get_dc_setpoint_from(line),
-            PSY.get_ac_setpoint_from(line), PSY.get_reactive_power_from(line, PSY.SU),
+            PSY.get_rating_from(line, u"SU"),
+            _symmetric_limits(PSY.get_rating_from(line, u"SU")),
+            PSY.get_reactive_power_limits_from(line, u"SU"),
+            _vsc_dc_set_from(line),
+            _vsc_ac_set_from(line), PSY.get_reactive_power_from(line, u"SU"),
         )
         _push_converter!(
             b, "$(PSY.get_name(line)) (to)", to_ix, to_number, nt,
             PSY.get_dc_control_to(line), PSY.get_ac_control_to(line),
             PSY.get_dc_voltage_droop_to(line), PSY.get_converter_loss_to(line),
             sys_base, dev_base,
-            PSY.get_rating_to(line, PSY.SU), PSY.get_active_power_limits_to(line, PSY.SU),
-            PSY.get_reactive_power_limits_to(line, PSY.SU), PSY.get_dc_setpoint_to(line),
-            PSY.get_ac_setpoint_to(line), PSY.get_reactive_power_to(line, PSY.SU),
+            PSY.get_rating_to(line, u"SU"),
+            _symmetric_limits(PSY.get_rating_to(line, u"SU")),
+            PSY.get_reactive_power_limits_to(line, u"SU"), _vsc_dc_set_to(line),
+            _vsc_ac_set_to(line), PSY.get_reactive_power_to(line, u"SU"),
         )
         push!(b.branch_from, nf)
         push!(b.branch_to, nt)
@@ -460,9 +537,9 @@ function _lower_mtdc!(
             PSY.get_dc_control(ic), PSY.get_ac_control(ic),
             PSY.get_dc_voltage_droop(ic), PSY.get_loss_function(ic),
             sys_base, PSY.get_base_power(ic),
-            PSY.get_rating(ic, PSY.SU), PSY.get_active_power_limits(ic, PSY.SU),
-            PSY.get_reactive_power_limits(ic, PSY.SU), PSY.get_dc_setpoint(ic),
-            PSY.get_ac_setpoint(ic), 0.0,
+            PSY.get_rating(ic, u"SU"), PSY.get_active_power_limits(ic, u"SU"),
+            PSY.get_reactive_power_limits(ic, u"SU"), _converter_dc_set(ic),
+            _converter_ac_set(ic), 0.0,
         )
     end
     for dcline in PSY.get_available_components(PSY.TModelHVDCLine, sys)
