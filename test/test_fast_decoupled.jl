@@ -278,11 +278,11 @@ function _tapped_magnetizing_shunt_system()
             tap = 1.05,
             α = 0.0,
             rating = 2.0,
-            base_power = 100.0, input_basis = PSY.CU,
+            base_power = 100.0, input_basis = u"CU",
         ),
         magnetizing_shunt = 0.0 + 0.04im,
         shunt_location = PSY.TwoWindingTransformerShuntLocation.PRIMARY,
-        input_basis = PSY.CU,
+        input_basis = u"CU",
     )
     add_component!(sys, tx)
     # A FixedAdmittance at b3 so a true bus shunt is distinguished from a mis-split branch shunt.
@@ -353,8 +353,8 @@ function _zero_impedance_transformer_system()
             tap = 1.0,
             α = 0.0,
             rating = 2.0,
-            base_power = 100.0, input_basis = PSY.CU,
-        ), input_basis = PSY.CU,
+            base_power = 100.0, input_basis = u"CU",
+        ), input_basis = u"CU",
     )
     add_component!(sys, tx)
     return sys
@@ -417,8 +417,8 @@ function _pst_line_parallel_degree_two_system()
             α = 0.15,
             rating = 2.0,
             base_power = 100.0,
-            control_limits = (min = -0.7, max = 0.7), input_basis = PSY.CU,
-        ), input_basis = PSY.CU,
+            control_limits = (min = -0.7, max = 0.7), input_basis = u"CU",
+        ), input_basis = u"CU",
     )
     add_component!(sys, pst12)
     _add_simple_line!(sys, b2, b3, 0.01, 0.10, 0.0)
@@ -695,8 +695,8 @@ function _phase_shifter_system()
             rating = 2.0,
             base_power = 100.0,
             # Phase-angle bounds (rad) live in the circuit's control band.
-            control_limits = (min = -0.7, max = 0.7), input_basis = PSY.CU,
-        ), input_basis = PSY.CU,
+            control_limits = (min = -0.7, max = 0.7), input_basis = u"CU",
+        ), input_basis = u"CU",
     )
     add_component!(sys, pst)
     # A fixed-admittance shunt at b3 so the per-bus shunt-residual path is exercised too.
@@ -978,9 +978,9 @@ end
     # lands at (or below) its upper reactive limit in the NR reference solve.
     solved_nr = deepcopy(_build_sys14_qlim())
     @test solve_and_store_power_flow!(pf_nr, solved_nr)
-    @test get_reactive_power(get_component(ThermalStandard, solved_nr, "Bus8"), PSY.SU) <=
+    @test get_reactive_power(get_component(ThermalStandard, solved_nr, "Bus8"), u"SU") <=
           get_reactive_power_limits(
-        get_component(ThermalStandard, solved_nr, "Bus8"), PSY.SU).max + 1e-6
+        get_component(ThermalStandard, solved_nr, "Bus8"), u"SU").max + 1e-6
 
     for variant in (:decoupled, :fixed_jacobian)
         @testset "$variant" begin
@@ -1003,9 +1003,9 @@ end
             solved_fd = deepcopy(_build_sys14_qlim())
             @test solve_and_store_power_flow!(pf_fd, solved_fd)
             @test get_reactive_power(
-                get_component(ThermalStandard, solved_fd, "Bus8"), PSY.SU) <=
+                get_component(ThermalStandard, solved_fd, "Bus8"), u"SU") <=
                   get_reactive_power_limits(
-                get_component(ThermalStandard, solved_fd, "Bus8"), PSY.SU).max + 1e-6
+                get_component(ThermalStandard, solved_fd, "Bus8"), u"SU").max + 1e-6
         end
     end
 end

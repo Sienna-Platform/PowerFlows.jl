@@ -543,9 +543,9 @@ end
 #     # to a Q limit). Use fixed-Q control within limits.
 #     for vsc in PSY.get_components(PSY.TwoTerminalVSCLine, sys)
 #         PSY.set_ac_control_from!(vsc, PSY.VSCACControlModes.AC_REACTIVE_POWER)
-#         PSY.set_reactive_power_from!(vsc, -0.45 * PSY.SU)
+#         PSY.set_reactive_power_from!(vsc, -0.45 * u"SU")
 #         PSY.set_ac_control_to!(vsc, PSY.VSCACControlModes.AC_REACTIVE_POWER)
-#         PSY.set_reactive_power_to!(vsc, -0.4 * PSY.SU)
+#         PSY.set_reactive_power_to!(vsc, -0.4 * u"SU")
 #     end
 #     data = PowerFlowData(ACPowerFlow{NewtonRaphsonACPowerFlow}(), sys)
 #     dcn = PF.get_dc_network(data)
@@ -580,7 +580,7 @@ end
             dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
             dc_setpoint_from = 1.0,
             dc_control_to = PSY.VSCDCControlModes.DC_POWER,
-            dc_setpoint_to = 0.2, input_basis = PSY.CU,
+            dc_setpoint_to = 0.2, input_basis = u"CU",
         ),
     )
     export_location = joinpath(test_psse_export_dir, "v33", "case16_vsc_no_ext")
@@ -609,7 +609,7 @@ end
         voltage_setpoint = 1.0,
         regulated_bus_number = 7,
         reactive_power_required = 42.0,  # solved output; must NOT be written as RMPCT
-        ext = Dict{String, Any}("RMPCT" => 55.0), input_basis = PSY.CU,  # stale ext; the exporter must ignore it
+        ext = Dict{String, Any}("RMPCT" => 55.0), input_basis = u"CU",  # stale ext; the exporter must ignore it
     )
     # `max_shunt_current` is stored in device base; the constructor kwarg takes a raw CU
     # value, so set it through the units-aware setter to honor the MVA input.
@@ -713,8 +713,8 @@ end
             base_power = 100.0,
             control_objective = PSY.TransformerControlObjective.ACTIVE_POWER_FLOW,
             control_limits = (min = deg2rad(-30), max = deg2rad(30)),
-            input_basis = PSY.CU,
-        ), input_basis = PSY.CU,
+            input_basis = u"CU",
+        ), input_basis = u"CU",
     )
     PSY.add_component!(sys, tx)
 
@@ -831,12 +831,12 @@ end
 # non-transformer branch writer. The absent extra ratings must export as numeric 0.0.
 @testset "PSSE Exporter issue #361: v35 Line with no RATE4..RATE12 data" begin
     sys = System(100.0)
-    b1 = ACBus(; input_basis = PSY.CU, number = 1, name = "b1", available = true,
+    b1 = ACBus(; input_basis = u"CU", number = 1, name = "b1", available = true,
         bustype = ACBusTypes.REF,
         angle = 0.0, magnitude = 1.0, voltage_limits = (min = 0.0, max = 2.0),
         base_voltage = 138.0,
     )
-    b2 = ACBus(; input_basis = PSY.CU, number = 2, name = "b2", available = true,
+    b2 = ACBus(; input_basis = u"CU", number = 2, name = "b2", available = true,
         bustype = ACBusTypes.PV,
         angle = 0.0, magnitude = 1.0, voltage_limits = (min = 0.0, max = 2.0),
         base_voltage = 138.0,
@@ -846,7 +846,7 @@ end
     line = Line(; name = "L", available = true, active_power_flow = 0.0,
         reactive_power_flow = 0.0, arc = Arc(; from = b1, to = b2), r = 0.01, x = 0.1,
         b = (from = 0.0, to = 0.0), rating = 1.0,
-        angle_limits = (min = -pi / 2, max = pi / 2), input_basis = PSY.CU)
+        angle_limits = (min = -pi / 2, max = pi / 2), input_basis = u"CU")
     add_component!(sys, line)
 
     export_location = joinpath(test_psse_export_dir, "v35", "issue361_missing_rate_keys")
@@ -881,7 +881,7 @@ end
 # produce an empty branch mapping.
 @testset "PSSE Exporter issue #361: v35 system with no non-transformer branches" begin
     sys = System(100.0)
-    b1 = ACBus(; input_basis = PSY.CU, number = 1, name = "b1", available = true,
+    b1 = ACBus(; input_basis = u"CU", number = 1, name = "b1", available = true,
         bustype = ACBusTypes.REF,
         angle = 0.0, magnitude = 1.0, voltage_limits = (min = 0.0, max = 2.0),
         base_voltage = 138.0,
@@ -940,7 +940,7 @@ function test_psse_exporter_inner(
     # Updating with changed value should result in a different reimport (System version)
     sys2 = deepcopy(sys)
     line_to_change = first(get_components(Line, sys2))
-    set_rating!(line_to_change, get_rating(line_to_change, PSY.SU) * 123.4 * PSY.SU)  # careful not to exceed PF.INFINITE_BOUND
+    set_rating!(line_to_change, get_rating(line_to_change, u"SU") * 123.4 * u"SU")  # careful not to exceed PF.INFINITE_BOUND
     update_exporter!(exporter, sys2)
     write_export(exporter, "basic4"; overwrite = true)
     reread_sys2 = read_system_with_metadata(joinpath(export_location, "basic4"))
@@ -1144,7 +1144,7 @@ end
     _add_simple_load!(sys, b3, 0.05, 0.02)
     xfmr = _add_simple_transformer_3w!(sys, b1, b2, b3, 90)
     # The pairwise fields are `nothing` when a 3W is built directly from star-leg circuits.
-    @test isnothing(PSY.get_r_12(xfmr, PSY.SU))
+    @test isnothing(PSY.get_r_12(xfmr, u"SU"))
 
     export_location = joinpath(test_psse_export_dir, "v35", "xfmr3w_no_pairwise")
     exporter = PSSEExporter(sys, :v35, export_location; overwrite = true)
@@ -1168,7 +1168,7 @@ end
         active_power_limits_to = (min = -100.0, max = 100.0),
         reactive_power_limits_from = (min = 0.0, max = 0.0),
         reactive_power_limits_to = (min = 0.0, max = 0.0),
-        base_power = 100.0, input_basis = PSY.CU,
+        base_power = 100.0, input_basis = u"CU",
     )
     add_component!(sys, hvdc)
 
@@ -1197,8 +1197,8 @@ end
                 sys2,
             ),
         )
-    @test PSY.get_active_power(gen_from, PSY.SU) ≈ P_from
-    @test PSY.get_active_power(gen_to, PSY.SU) ≈ P_to
+    @test PSY.get_active_power(gen_from, u"SU") ≈ P_from
+    @test PSY.get_active_power(gen_to, u"SU") ≈ P_to
 end
 
 @testset "PSSE Exporter: droop VSC DCSET follows the AC-supply sign convention" begin
@@ -1245,15 +1245,15 @@ end
         x = 0.01,
         rating = 12.06,  # 1206 MVA on a 100 MVA system base
         discrete_branch_type = DiscreteControlledBranchType.BREAKER,
-        branch_status = DiscreteControlledBranchStatus.CLOSED, input_basis = PSY.CU,
+        branch_status = DiscreteControlledBranchStatus.CLOSED, input_basis = u"CU",
     )
     add_component!(sys, sw)
-    @test PSY.get_rating(sw, PSY.NU) ≈ 1206.0
+    @test PSY.get_rating(sw, u"NU") ≈ 1206.0
 
     export_location = joinpath(test_psse_export_dir, "v35", "breaker_rate1")
     exporter = PSSEExporter(sys, :v35, export_location; overwrite = true)
     write_export(exporter, "breaker_rate1"; overwrite = true)
     sys2 = read_system_with_metadata(joinpath(export_location, "breaker_rate1"))
     sw2 = only(PSY.get_components(PSY.DiscreteControlledACBranch, sys2))
-    @test PSY.get_rating(sw2, PSY.NU) ≈ PSY.get_rating(sw, PSY.NU)
+    @test PSY.get_rating(sw2, u"NU") ≈ PSY.get_rating(sw, u"NU")
 end

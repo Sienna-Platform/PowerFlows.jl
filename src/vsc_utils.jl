@@ -22,7 +22,7 @@ end
 
 function _loss_coefficients(curve::PSY.LossCurve, sys_base::Float64, dev_base::Float64)
     # `PSY.LossCurve` x-axis ratio (system base / curve's own base, see `_loss_curve_own_base`)
-    # to reach `PSY.SU`. When the curve is already `SystemBaseUnit`, `convert_power_units`
+    # to reach `u"SU"`. When the curve is already `SystemBaseUnit`, `convert_power_units`
     # dispatches to its identity method and ignores this ratio entirely.
     ratio = sys_base / _loss_curve_own_base(PSY.get_power_units(curve), sys_base, dev_base)
     su_curve = IS.convert_power_units(curve, PSY.SystemBaseUnit(), ratio)
@@ -382,20 +382,20 @@ function _lower_vsc_lines!(
             PSY.get_dc_control_from(line), PSY.get_ac_control_from(line),
             PSY.get_dc_voltage_droop_from(line), PSY.get_converter_loss_from(line),
             sys_base, dev_base,
-            PSY.get_rating_from(line, PSY.SU),
-            PSY.get_active_power_limits_from(line, PSY.SU),
-            PSY.get_reactive_power_limits_from(line, PSY.SU),
+            PSY.get_rating_from(line, u"SU"),
+            PSY.get_active_power_limits_from(line, u"SU"),
+            PSY.get_reactive_power_limits_from(line, u"SU"),
             PSY.get_dc_setpoint_from(line),
-            PSY.get_ac_setpoint_from(line), PSY.get_reactive_power_from(line, PSY.SU),
+            PSY.get_ac_setpoint_from(line), PSY.get_reactive_power_from(line, u"SU"),
         )
         _push_converter!(
             b, to_ix, to_number, nt,
             PSY.get_dc_control_to(line), PSY.get_ac_control_to(line),
             PSY.get_dc_voltage_droop_to(line), PSY.get_converter_loss_to(line),
             sys_base, dev_base,
-            PSY.get_rating_to(line, PSY.SU), PSY.get_active_power_limits_to(line, PSY.SU),
-            PSY.get_reactive_power_limits_to(line, PSY.SU), PSY.get_dc_setpoint_to(line),
-            PSY.get_ac_setpoint_to(line), PSY.get_reactive_power_to(line, PSY.SU),
+            PSY.get_rating_to(line, u"SU"), PSY.get_active_power_limits_to(line, u"SU"),
+            PSY.get_reactive_power_limits_to(line, u"SU"), PSY.get_dc_setpoint_to(line),
+            PSY.get_ac_setpoint_to(line), PSY.get_reactive_power_to(line, u"SU"),
         )
         push!(b.branch_from, nf)
         push!(b.branch_to, nt)
@@ -424,8 +424,8 @@ function _lower_mtdc!(
             PSY.get_dc_control(ic), PSY.get_ac_control(ic),
             PSY.get_dc_voltage_droop(ic), PSY.get_loss_function(ic),
             sys_base, PSY.get_base_power(ic),
-            PSY.get_rating(ic, PSY.SU), PSY.get_active_power_limits(ic, PSY.SU),
-            PSY.get_reactive_power_limits(ic, PSY.SU), PSY.get_dc_setpoint(ic),
+            PSY.get_rating(ic, u"SU"), PSY.get_active_power_limits(ic, u"SU"),
+            PSY.get_reactive_power_limits(ic, u"SU"), PSY.get_dc_setpoint(ic),
             PSY.get_ac_setpoint(ic), 0.0,
         )
     end

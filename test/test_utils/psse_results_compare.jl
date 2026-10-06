@@ -20,7 +20,7 @@ function psse_bus_results_compare(file_name::String, pf_results::Missing)
 end
 
 function psse_gen_results_compare(file_name, system::PSY.System)
-    base_power = get_base_power(system, PSY.NU)
+    base_power = get_base_power(system, u"NU")
     pf_result_gen = CSV.read(file_name, DataFrame)
     p_diff = Float64[]
     q_diff = Float64[]
@@ -31,8 +31,8 @@ function psse_gen_results_compare(file_name, system::PSY.System)
         end
         name = "generator-" * "$(row."Bus  Number")" * "-" * row."Id"
         gen = get_component(ThermalStandard, system, name)
-        ap = get_active_power(gen, PSY.SU)
-        rp = get_reactive_power(gen, PSY.SU)
+        ap = get_active_power(gen, u"SU")
+        rp = get_reactive_power(gen, u"SU")
         push!(p_diff, ap - row."PGen (MW)" / base_power)
         push!(q_diff, rp - row."QGen (Mvar)" / base_power)
         push!(names, name)

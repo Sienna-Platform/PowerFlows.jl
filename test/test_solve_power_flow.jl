@@ -57,26 +57,26 @@ _solved_value_matches(a, b) = isequal(a, b)
     solved2 = deepcopy(sys)
     @test solve_and_store_power_flow!(pf, solved2)
     @test IS.compare_values(_solved_value_matches, solved1, solved2)
-    @test get_reactive_power(get_component(ThermalStandard, solved2, "Bus8"), PSY.SU) >
+    @test get_reactive_power(get_component(ThermalStandard, solved2, "Bus8"), u"SU") >
           get_reactive_power_limits(
         get_component(ThermalStandard, solved2, "Bus8"),
-        PSY.SU,
+        u"SU",
     ).max
 
     # Test that passing check_reactive_power_limits=true fixes that
     solved3 = deepcopy(sys)
     @test solve_and_store_power_flow!(pf_w_limits, solved3)
-    @test get_reactive_power(get_component(ThermalStandard, solved3, "Bus8"), PSY.SU) <=
+    @test get_reactive_power(get_component(ThermalStandard, solved3, "Bus8"), u"SU") <=
           get_reactive_power_limits(
         get_component(ThermalStandard, solved3, "Bus8"),
-        PSY.SU,
+        u"SU",
     ).max
 
     # Test Newton method
     @test solve_and_store_power_flow!(pf, deepcopy(sys))
 
     # Test enforcing the reactive power limits in closer detail
-    set_reactive_power!(get_component(PowerLoad, sys, "Bus4"), 0.0 * PSY.SU)
+    set_reactive_power!(get_component(PowerLoad, sys, "Bus4"), 0.0 * u"SU")
     data = PowerFlows.PowerFlowData(pf, sys)
     converged2 = PowerFlows._ac_power_flow(data, pf_w_limits, 1)
     x2 = _calc_x(data, 1)
@@ -90,9 +90,9 @@ function test_ac_line_configurations(ACSolver)
     line = get_component(Line, sys, "Line4")
     PSY.set_available!(line, false)
     solve_and_store_power_flow!(pf, sys)
-    @test PSY.get_active_power_flow(line, PSY.SU) == 0.0
+    @test PSY.get_active_power_flow(line, u"SU") == 0.0
     test_bus = get_component(PSY.ACBus, sys, "Bus 4")
-    @test isapprox(PSY.get_magnitude(test_bus, PSY.CU), 1.002; atol = 1e-3, rtol = 0)
+    @test isapprox(PSY.get_magnitude(test_bus, u"CU"), 1.002; atol = 1e-3, rtol = 0)
 
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
     pf = ACPowerFlow{ACSolver}(; correct_bustypes = true)
@@ -136,8 +136,8 @@ function test_ac_convergence_fail(ACSolver)
     remove_component!(Line, pf_sys5_re, "1")
     remove_component!(Line, pf_sys5_re, "2")
     br = get_component(Line, pf_sys5_re, "6")
-    PSY.set_x!(br, 20.0 * PSY.SU)
-    PSY.set_r!(br, 2.0 * PSY.SU)
+    PSY.set_x!(br, 20.0 * u"SU")
+    PSY.set_r!(br, 2.0 * u"SU")
 
     pf = ACPowerFlow{ACSolver}()
 
@@ -181,7 +181,7 @@ end
     p_diff, q_diff, names = psse_gen_results_compare(pf_gen_result_file, system)
 
     # FIXME temporarily commented out failing tests: see PowerNetworkMatrices.jl issue 215.
-    base_power = get_base_power(system, PSY.NU)
+    base_power = get_base_power(system, u"NU")
     # @test norm(v_diff, Inf) < DIFF_INF_TOLERANCE # fails badly
     @test norm(v_diff, 2) / length(v_diff) < DIFF_L2_TOLERANCE
     # @test norm(angle_diff, Inf) < DIFF_INF_TOLERANCE # fails badly.
@@ -204,7 +204,7 @@ function test_ac_multiple_sources_at_ref(ACSolver)
     @test solve_and_store_power_flow!(pf, sys)
 
     #Create power mismatch, test for error
-    set_active_power!(s1, -0.4 * PSY.SU)
+    set_active_power!(s1, -0.4 * u"SU")
     @test_throws ErrorException(
         "Sources do not match P and/or Q requirements for reference bus.",
     ) solve_and_store_power_flow!(ACPowerFlow{ACSolver}(), sys)
@@ -231,7 +231,7 @@ function test_ac_multiple_sources_at_pv(ACSolver)
     @test solve_and_store_power_flow!(pf, sys)
 
     #Create power mismatch, test for error
-    set_reactive_power!(s3, -0.5 * PSY.SU)
+    set_reactive_power!(s3, -0.5 * u"SU")
     @test_throws ErrorException("Sources do not match Q requirements for PV bus.") solve_and_store_power_flow!(
         pf,
         sys,
@@ -254,8 +254,8 @@ function test_ac_source_and_non_source_at_ref(ACSolver)
     pf = ACPowerFlow{ACSolver}()
 
     @test solve_and_store_power_flow!(pf, sys)
-    @test isapprox(get_active_power(s1, PSY.SU), 0.5; atol = 0.001)
-    @test isapprox(get_reactive_power(s1, PSY.SU), 0.1; atol = 0.001)
+    @test isapprox(get_active_power(s1, u"SU"), 0.5; atol = 0.001)
+    @test isapprox(get_reactive_power(s1, u"SU"), 0.1; atol = 0.001)
 end
 
 @testset "AC PowerFlow Source + non-source at Ref" begin
@@ -277,8 +277,8 @@ function test_ac_source_and_non_source_at_pv(ACSolver)
     pf = ACPowerFlow{ACSolver}(; correct_bustypes = true)
 
     @test solve_and_store_power_flow!(pf, sys)
-    @test isapprox(get_active_power(s2, PSY.SU), 0.5; atol = 0.001)
-    @test isapprox(get_reactive_power(s2, PSY.SU), 1.1; atol = 0.001)
+    @test isapprox(get_active_power(s2, u"SU"), 0.5; atol = 0.001)
+    @test isapprox(get_reactive_power(s2, u"SU"), 1.1; atol = 0.001)
 end
 
 @testset "AC PowerFlow Source + non-source at PV" begin
@@ -504,8 +504,8 @@ end
     # get the load inputs from the load component
     load_input_power =
         (
-            get_current_active_power(lc, PSY.SU) +
-            1im * get_current_reactive_power(lc, PSY.SU)
+            get_current_active_power(lc, u"SU") +
+            1im * get_current_reactive_power(lc, u"SU")
         )
     # calculating by hand the current that corresponds to the load inputs
     # constant current load is given for 1.0 p.u. base voltage:
@@ -556,8 +556,8 @@ end
     # get the load inputs from the load component
     load_input_power =
         (
-            get_impedance_active_power(lz, PSY.SU) +
-            1im * get_impedance_reactive_power(lz, PSY.SU)
+            get_impedance_active_power(lz, u"SU") +
+            1im * get_impedance_reactive_power(lz, u"SU")
         )
     # calculating by hand the impedance that corresponds to the load inputs
     # constant impedance load is given for 1.0 p.u. base voltage:
@@ -626,8 +626,8 @@ end
             rating = 1.0,
             base_power = 100.0,
             base_voltage_primary = 230,
-            base_voltage_secondary = 110, input_basis = PSY.CU,
-        ), input_basis = PSY.CU,
+            base_voltage_secondary = 110, input_basis = u"CU",
+        ), input_basis = u"CU",
     )
     add_component!(sys, t)
 
@@ -713,7 +713,7 @@ function check_lcc_consistency(
           PSY.get_inverter_extinction_angle(lcc)
     @test lcc_results[1, :rectifier_tap] == PSY.get_rectifier_tap_setting(lcc)
     @test lcc_results[1, :inverter_tap] == PSY.get_inverter_tap_setting(lcc)
-    @test lcc_results[1, :P_from_to] == base_power .* PSY.get_active_power_flow(lcc, PSY.SU)
+    @test lcc_results[1, :P_from_to] == base_power .* PSY.get_active_power_flow(lcc, u"SU")
     return
 end
 
@@ -781,7 +781,7 @@ function test_lcc_ac_solver(ACSolver)
     )
     solve_and_store_power_flow!(pf, sys)
 
-    @test get_active_power_flow(lcc, PSY.SU) ==
+    @test get_active_power_flow(lcc, u"SU") ==
           data.lcc.arc_active_power_flow_from_to[1, 1]
 
     # The reverse-flow (p_set = -25) and zero-flow (p_set = 0) sub-cases
@@ -821,7 +821,7 @@ function test_lcc_ac_solver(ACSolver)
 
     solve_and_store_power_flow!(pf, sys)
 
-    @test get_active_power_flow(lcc, PSY.SU) ==
+    @test get_active_power_flow(lcc, u"SU") ==
           data.lcc.arc_active_power_flow_from_to[1, 1]
 
     PSY.set_transfer_setpoint!(lcc, 0.0)

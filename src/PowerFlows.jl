@@ -47,6 +47,7 @@ import DataFrames
 import DataFrames: Not
 import PowerSystems as PSY
 import PowerSystems: System
+using PowerSystems: @u_str, PerUnit
 import LinearAlgebra
 import LinearAlgebra: norm, normalize!, dot, ldiv!, mul!
 import JSON3

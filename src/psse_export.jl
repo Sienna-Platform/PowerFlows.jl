@@ -558,7 +558,7 @@ function write_to_buffers!(
 
     # Record 1
     IC = 0
-    SBASE = PSY.get_base_power(exporter.system, PSY.NU)
+    SBASE = PSY.get_base_power(exporter.system, u"NU")
     REV = version_number
     XFRRAT = 0
     NXFRAT = 1
@@ -732,10 +732,10 @@ function write_to_buffers!(
             md["zone_mapping"][PSY.get_name(PSY.get_load_zone(bus))]
         end
         OWNER = PSSE_DEFAULT
-        VM = PSY.get_magnitude(bus, PSY.CU)
+        VM = PSY.get_magnitude(bus, u"CU")
         VA = rad2deg(PSY.get_angle(bus))
-        NVHI = PSY.get_voltage_limits(bus, PSY.CU).max
-        NVLO = PSY.get_voltage_limits(bus, PSY.CU).min
+        NVHI = PSY.get_voltage_limits(bus, u"CU").max
+        NVLO = PSY.get_voltage_limits(bus, u"CU").min
         EVHI = PSSE_DEFAULT
         EVLO = PSSE_DEFAULT
 
@@ -846,7 +846,7 @@ function _write_2w_transformer_record1!(
     CW = 1
     CZ = PSSE_DEFAULT
     CM = PSSE_DEFAULT
-    MAG1, MAG2 = reim(PSY.get_magnetizing_shunt(transformer, PSY.SU))
+    MAG1, MAG2 = reim(PSY.get_magnetizing_shunt(transformer, u"SU"))
     NMETR = PSSE_DEFAULT
     VECGRP = _psse_quote_string(PSSE_DEFAULT)
     ZCOD = PSSE_DEFAULT
@@ -869,9 +869,9 @@ function _write_2w_transformer_record2!(
     io::IO,
     transformer::PSY.TwoWindingTransformer,
 )
-    SBASE1_2 = PSY.get_base_power(transformer, PSY.NU)
-    R1_2 = PSY.get_r(transformer, PSY.SU)
-    X1_2 = PSY.get_x(transformer, PSY.SU)
+    SBASE1_2 = PSY.get_base_power(transformer, u"NU")
+    R1_2 = PSY.get_r(transformer, u"SU")
+    X1_2 = PSY.get_x(transformer, u"SU")
     @fastprintdelim_unroll(io, true, R1_2, X1_2, SBASE1_2)
 end
 
@@ -947,13 +947,13 @@ function _write_2w_transformer_record3_winding1!(
     if exporter.psse_version == :v35
         # Using 0.0 as default for rating exporter, since PSSEv35 does not allow blank values
         RATA1 = _fix_3w_transformer_rating(
-            _value_or_default(PSY.get_rating(circuit, PSY.NU), 0.0),
+            _value_or_default(PSY.get_rating(circuit, u"NU"), 0.0),
         )
         RATB1 = _fix_3w_transformer_rating(
-            _value_or_default(PSY.get_rating_b(circuit, PSY.NU), 0.0),
+            _value_or_default(PSY.get_rating_b(circuit, u"NU"), 0.0),
         )
         RATC1 = _fix_3w_transformer_rating(
-            _value_or_default(PSY.get_rating_c(circuit, PSY.NU), 0.0),
+            _value_or_default(PSY.get_rating_c(circuit, u"NU"), 0.0),
         )
 
         rates_1 = [RATA1, RATB1, RATC1]
@@ -982,9 +982,9 @@ function _write_2w_transformer_record3_winding1!(
             CNXA1
         )
     else
-        RATA1 = _value_or_default(PSY.get_rating(circuit, PSY.NU), PSSE_DEFAULT)
-        RATB1 = _value_or_default(PSY.get_rating_b(circuit, PSY.NU), PSSE_DEFAULT)
-        RATC1 = _value_or_default(PSY.get_rating_c(circuit, PSY.NU), PSSE_DEFAULT)
+        RATA1 = _value_or_default(PSY.get_rating(circuit, u"NU"), PSSE_DEFAULT)
+        RATB1 = _value_or_default(PSY.get_rating_b(circuit, u"NU"), PSSE_DEFAULT)
+        RATC1 = _value_or_default(PSY.get_rating_c(circuit, u"NU"), PSSE_DEFAULT)
         @fastprintdelim_unroll(io, true, WINDV1, NOMV1, ANG1, RATA1,
             RATB1, RATC1, COD1, CONT1, RMA1, RMI1,
             VMA1, VMI1, NTP1, TAB1, CR1, CX1, CNXA1)
@@ -1012,17 +1012,17 @@ function _write_3w_transformer_record2!(
 )
     # The pairwise fields are `nothing` for a transformer built from star-leg circuits; a
     # blank field lets PSS/E apply its own default instead of printing `nothing`.
-    R1_2 = _value_or_default(PSY.get_r_12(transformer, PSY.SU), PSSE_DEFAULT)
-    X1_2 = _value_or_default(PSY.get_x_12(transformer, PSY.SU), PSSE_DEFAULT)
+    R1_2 = _value_or_default(PSY.get_r_12(transformer, u"SU"), PSSE_DEFAULT)
+    X1_2 = _value_or_default(PSY.get_x_12(transformer, u"SU"), PSSE_DEFAULT)
     SBASE1_2 = _value_or_default(PSY.get_base_power_12(transformer), PSSE_DEFAULT)
-    R2_3 = _value_or_default(PSY.get_r_23(transformer, PSY.SU), PSSE_DEFAULT)
-    X2_3 = _value_or_default(PSY.get_x_23(transformer, PSY.SU), PSSE_DEFAULT)
+    R2_3 = _value_or_default(PSY.get_r_23(transformer, u"SU"), PSSE_DEFAULT)
+    X2_3 = _value_or_default(PSY.get_x_23(transformer, u"SU"), PSSE_DEFAULT)
     SBAS2_3 = _value_or_default(PSY.get_base_power_23(transformer), PSSE_DEFAULT)
-    R3_1 = _value_or_default(PSY.get_r_31(transformer, PSY.SU), PSSE_DEFAULT)
-    X3_1 = _value_or_default(PSY.get_x_31(transformer, PSY.SU), PSSE_DEFAULT)
+    R3_1 = _value_or_default(PSY.get_r_31(transformer, u"SU"), PSSE_DEFAULT)
+    X3_1 = _value_or_default(PSY.get_x_31(transformer, u"SU"), PSSE_DEFAULT)
     SBAS3_1 = _value_or_default(PSY.get_base_power_31(transformer), PSSE_DEFAULT)
     star_bus = PSY.get_star_bus(transformer)
-    VMSTAR = PSY.get_magnitude(star_bus, PSY.CU)
+    VMSTAR = PSY.get_magnitude(star_bus, u"CU")
     ANSTAR = rad2deg(PSY.get_angle(star_bus))
 
     @fastprintdelim_unroll(io, true, R1_2, X1_2, SBASE1_2, R2_3,
@@ -1046,13 +1046,13 @@ function _collect_3w_winding_data(
             # Using 0.0 as default for rating exporter, since PSSEv35 does not allow blank values
             rates = [
                 _fix_3w_transformer_rating(
-                    _value_or_default(PSY.get_rating(circuit, PSY.NU), 0.0),
+                    _value_or_default(PSY.get_rating(circuit, u"NU"), 0.0),
                 ),
                 _fix_3w_transformer_rating(
-                    _value_or_default(PSY.get_rating_b(circuit, PSY.NU), 0.0),
+                    _value_or_default(PSY.get_rating_b(circuit, u"NU"), 0.0),
                 ),
                 _fix_3w_transformer_rating(
-                    _value_or_default(PSY.get_rating_c(circuit, PSY.NU), 0.0),
+                    _value_or_default(PSY.get_rating_c(circuit, u"NU"), 0.0),
                 ),
             ]
             for _ in 4:12
@@ -1060,9 +1060,9 @@ function _collect_3w_winding_data(
             end
             RATES = tuple(rates...)
         else
-            RATA = _value_or_default(PSY.get_rating(circuit, PSY.NU), PSSE_DEFAULT)
-            RATB = _value_or_default(PSY.get_rating_b(circuit, PSY.NU), PSSE_DEFAULT)
-            RATC = _value_or_default(PSY.get_rating_c(circuit, PSY.NU), PSSE_DEFAULT)
+            RATA = _value_or_default(PSY.get_rating(circuit, u"NU"), PSSE_DEFAULT)
+            RATB = _value_or_default(PSY.get_rating_b(circuit, u"NU"), PSSE_DEFAULT)
+            RATC = _value_or_default(PSY.get_rating_c(circuit, u"NU"), PSSE_DEFAULT)
             RATES = (RATA, RATB, RATC)
         end
 
@@ -1141,19 +1141,19 @@ _psse_get_load_data(
     exporter::PSSEExporter,
     load::Union{PSY.StandardLoad, PSY.InterruptibleStandardLoad},
 ) = (
-    PSY.get_constant_active_power(load, PSY.NU),
-    PSY.get_constant_reactive_power(load, PSY.NU),
-    PSY.get_current_active_power(load, PSY.NU),
-    PSY.get_current_reactive_power(load, PSY.NU),
-    PSY.get_impedance_active_power(load, PSY.NU),
-    PSY.get_impedance_reactive_power(load, PSY.NU),
+    PSY.get_constant_active_power(load, u"NU"),
+    PSY.get_constant_reactive_power(load, u"NU"),
+    PSY.get_current_active_power(load, u"NU"),
+    PSY.get_current_reactive_power(load, u"NU"),
+    PSY.get_impedance_active_power(load, u"NU"),
+    PSY.get_impedance_reactive_power(load, u"NU"),
 )
 
 # Fallback if not all the data is available
 # This mapping corresponds to `function make_power_load` in the parser
 _psse_get_load_data(exporter::PSSEExporter, load::PSY.StaticLoad) = (
-    PSY.get_active_power(load, PSY.NU),
-    PSY.get_reactive_power(load, PSY.NU),
+    PSY.get_active_power(load, u"NU"),
+    PSY.get_reactive_power(load, u"NU"),
     PSSE_DEFAULT,
     PSSE_DEFAULT,
     PSSE_DEFAULT,
@@ -1256,8 +1256,8 @@ function write_to_buffers!(
         ID =
             _psse_quote_string(shunt_name_mapping[(sienna_bus_number, PSY.get_name(shunt))])
         STATUS = PSY.get_available(shunt) ? 1 : 0
-        GL = real(PSY.get_Y(shunt)) * PSY.get_base_power(exporter.system, PSY.NU)
-        BL = imag(PSY.get_Y(shunt)) * PSY.get_base_power(exporter.system, PSY.NU)
+        GL = real(PSY.get_Y(shunt)) * PSY.get_base_power(exporter.system, u"NU")
+        BL = imag(PSY.get_Y(shunt)) * PSY.get_base_power(exporter.system, u"NU")
 
         @fastprintdelim_unroll(io, true, I, ID, STATUS, GL, BL)
     end
@@ -1277,7 +1277,7 @@ function _compute_generator_powers(
     hvdc_end::Union{String, Nothing},
     base_power::Float64,
 )
-    pg, qg = get_active_and_reactive_power_from_generator(generator, PSY.NU)
+    pg, qg = get_active_and_reactive_power_from_generator(generator, u"NU")
     # PF's own HVDC injection convention is negative at the FROM end (it withdraws from
     # the AC network) and positive at TO; the synthetic generator's stored power is the
     # same raw flow at both ends, so only FROM needs the flip.
@@ -1294,7 +1294,7 @@ function _compute_reactive_power_limits(
     hvdc_end::Union{String, Nothing},
     base_power::Float64,
 )
-    return get_reactive_power_limits_for_power_flow(generator, PSY.NU)
+    return get_reactive_power_limits_for_power_flow(generator, u"NU")
 end
 
 """Compute active power limits considering HVDC scaling."""
@@ -1304,7 +1304,7 @@ function _compute_active_power_limits(
     hvdc_end::Union{String, Nothing},
     base_power::Float64,
 )
-    limits = get_active_power_limits_for_power_flow(generator, PSY.NU)
+    limits = get_active_power_limits_for_power_flow(generator, u"NU")
     # Mirrors the FROM-end sign flip in `_compute_generator_powers`.
     if hvdc_end == "FR"
         return (min = -limits.max, max = -limits.min)
@@ -1426,8 +1426,8 @@ function _make_gens_from_hvdc(
             PSY.CostCurve(PSY.LinearCurve(0.0)),
             0.0, 0.0, 0.0,
         ),
-        base_power = PSY.get_base_power(exporter.system, PSY.NU),
-        input_basis = PSY.CU,
+        base_power = PSY.get_base_power(exporter.system, u"NU"),
+        input_basis = u"CU",
     )
 end
 
@@ -1457,23 +1457,23 @@ function _update_gens_from_hvdc!(
             PSY.set_status!(gen, PSY.OperationalStates.OFFLINE)
         end
         gen.bus = bus
-        gen.active_power = PSY.get_active_power_flow(hvdc_line, PSY.SU)
+        gen.active_power = PSY.get_active_power_flow(hvdc_line, u"SU")
         gen.rating = if suffix == "FR"
-            PSY.get_active_power_limits_from(hvdc_line, PSY.SU).max
+            PSY.get_active_power_limits_from(hvdc_line, u"SU").max
         else
-            PSY.get_active_power_limits_to(hvdc_line, PSY.SU).max
+            PSY.get_active_power_limits_to(hvdc_line, u"SU").max
         end
         gen.active_power_limits = if suffix == "FR"
-            PSY.get_active_power_limits_from(hvdc_line, PSY.SU)
+            PSY.get_active_power_limits_from(hvdc_line, u"SU")
         else
-            PSY.get_active_power_limits_to(hvdc_line, PSY.SU)
+            PSY.get_active_power_limits_to(hvdc_line, u"SU")
         end
         gen.reactive_power_limits = if suffix == "FR"
-            PSY.get_reactive_power_limits_from(hvdc_line, PSY.SU)
+            PSY.get_reactive_power_limits_from(hvdc_line, u"SU")
         else
-            PSY.get_reactive_power_limits_to(hvdc_line, PSY.SU)
+            PSY.get_reactive_power_limits_to(hvdc_line, u"SU")
         end
-        gen.base_power = PSY.get_base_power(exporter.system, PSY.NU)
+        gen.base_power = PSY.get_base_power(exporter.system, u"NU")
     end
 end
 
@@ -1519,18 +1519,18 @@ function _build_generator_list(exporter::PSSEExporter, md::OrderedDict{String, A
 
             gen_fr = _make_gens_from_hvdc(
                 hvdc_line, "FR", from_bus,
-                PSY.get_active_power_flow(hvdc_line, PSY.SU),
-                PSY.get_active_power_limits_from(hvdc_line, PSY.SU).max,
-                PSY.get_active_power_limits_from(hvdc_line, PSY.SU),
-                PSY.get_reactive_power_limits_from(hvdc_line, PSY.SU),
+                PSY.get_active_power_flow(hvdc_line, u"SU"),
+                PSY.get_active_power_limits_from(hvdc_line, u"SU").max,
+                PSY.get_active_power_limits_from(hvdc_line, u"SU"),
+                PSY.get_reactive_power_limits_from(hvdc_line, u"SU"),
                 exporter,
             )
             gen_to = _make_gens_from_hvdc(
                 hvdc_line, "TO", to_bus,
-                PSY.get_active_power_flow(hvdc_line, PSY.SU),
-                PSY.get_active_power_limits_to(hvdc_line, PSY.SU).max,
-                PSY.get_active_power_limits_to(hvdc_line, PSY.SU),
-                PSY.get_reactive_power_limits_to(hvdc_line, PSY.SU),
+                PSY.get_active_power_flow(hvdc_line, u"SU"),
+                PSY.get_active_power_limits_to(hvdc_line, u"SU").max,
+                PSY.get_active_power_limits_to(hvdc_line, u"SU"),
+                PSY.get_reactive_power_limits_to(hvdc_line, u"SU"),
                 exporter,
             )
             push!(synthetic_gens, gen_fr)
@@ -1603,7 +1603,7 @@ function write_to_buffers!(
 
     hvdc_generator_ends = exporter.components_cache["hvdc_generator_ends"]
 
-    base_power = PSY.get_base_power(exporter.system, PSY.NU)
+    base_power = PSY.get_base_power(exporter.system, u"NU")
     for generator in generators
         sienna_bus_number = PSY.get_number(PSY.get_bus(generator))
         hvdc_end = get(hvdc_generator_ends, PSY.get_name(generator), nothing)
@@ -1642,8 +1642,8 @@ function write_to_buffers!(
         )
 
         # Get common fields
-        VS = PSY.get_magnitude(PSY.get_bus(generator), PSY.CU)
-        MBASE = PSY.get_base_power(generator, PSY.NU)
+        VS = PSY.get_magnitude(PSY.get_bus(generator), u"CU")
+        MBASE = PSY.get_base_power(generator, u"NU")
         STAT = 0
         if PSY.get_available(generator)
             STAT = 1
@@ -1684,7 +1684,7 @@ end
 # Helpers for branch writing will be added before the transformer section
 
 """
-Collects all AC branches (Line, MonitoredLine, DiscreteControlledACBranch) from the system,
+Collects all AC branches (Line, DiscreteControlledACBranch) from the system,
 sorts them by their bus numbers, and returns a vector of tuples (branch, bus_numbers).
 
 # Arguments
@@ -1695,12 +1695,11 @@ sorts them by their bus numbers, and returns a vector of tuples (branch, bus_num
 """
 function get_branches_with_numbers(exporter::PSSEExporter)
     lines = collect(PSY.get_components(PSY.Line, exporter.system))
-    mon_lines = collect(PSY.get_components(PSY.MonitoredLine, exporter.system))
     discrete_ac_branches =
         collect(PSY.get_components(PSY.DiscreteControlledACBranch, exporter.system))
 
     # Merge all branch variables into a single vector
-    branches = vcat(lines, mon_lines, discrete_ac_branches)
+    branches = vcat(lines, discrete_ac_branches)
     # Sort branches by their bus numbers to order them at exporting
     sort!(branches; by = branch_to_bus_numbers)
     # Pair each branch with its bus numbers.
@@ -1731,7 +1730,7 @@ end
 _psse_branch_name(branch::PSY.ACBranch) =
     _psse_quote_string(first(PSY.get_name(branch), 40))
 
-"""Write a regular (Line/MonitoredLine) branch record to the buffer."""
+"""Write a regular (Line) branch record to the buffer."""
 function _write_regular_branch_record!(
     io::IO,
     exporter::PSSEExporter,
@@ -1743,11 +1742,11 @@ function _write_regular_branch_record!(
     ST = PSY.get_available(branch) ? 1 : 0
     MET = PSSE_DEFAULT
     LEN = PSSE_DEFAULT
-    R = PSY.get_r(branch, PSY.SU)
-    X = PSY.get_x(branch, PSY.SU)
-    b = PSY.get_b(branch, PSY.SU)
+    R = PSY.get_r(branch, u"SU")
+    X = PSY.get_x(branch, u"SU")
+    b = PSY.get_b(branch, u"SU")
     B = b.from + b.to
-    g = PSY.get_g(branch, PSY.SU)
+    g = PSY.get_g(branch, u"SU")
     GI = g.from
     GJ = g.to
     # The line-end susceptances are folded into the branch's `b`, which B already carries in
@@ -1755,9 +1754,9 @@ function _write_regular_branch_record!(
     BI = 0.0
     BJ = 0.0
 
-    RATEA = _value_or_default(PSY.get_rating(branch, PSY.NU), PSSE_DEFAULT)
-    RATEB = _value_or_default(PSY.get_rating_b(branch, PSY.NU), PSSE_DEFAULT)
-    RATEC = _value_or_default(PSY.get_rating_c(branch, PSY.NU), PSSE_DEFAULT)
+    RATEA = _value_or_default(PSY.get_rating(branch, u"NU"), PSSE_DEFAULT)
+    RATEB = _value_or_default(PSY.get_rating_b(branch, u"NU"), PSSE_DEFAULT)
+    RATEC = _value_or_default(PSY.get_rating_c(branch, u"NU"), PSSE_DEFAULT)
     (RATEA, RATEB, RATEC) =
         (_fix_3w_transformer_rating(x) for x in (RATEA, RATEB, RATEC))
 
@@ -1795,8 +1794,8 @@ function _write_discrete_branch_record!(
     ST = PSY.get_available(branch) ? 1 : 0
     MET = PSSE_DEFAULT
     LEN = PSSE_DEFAULT
-    R = PSY.get_r(branch, PSY.SU)
-    X = PSY.get_x(branch, PSY.SU)
+    R = PSY.get_r(branch, u"SU")
+    X = PSY.get_x(branch, u"SU")
     B = 0.0
     # Emit numeric zeros instead of PSSE_DEFAULT blanks because the parser checks these fields
     # with iszero, and blank values are represented as SubString{String}.
@@ -1805,7 +1804,7 @@ function _write_discrete_branch_record!(
     GJ = 0.0
     BJ = 0.0
 
-    RATEA = _value_or_default(PSY.get_rating(branch, PSY.NU), PSSE_DEFAULT)
+    RATEA = _value_or_default(PSY.get_rating(branch, u"NU"), PSSE_DEFAULT)
     RATEB = 0.0
     RATEC = 0.0
     if RATEA >= INFINITE_BOUND
@@ -1942,8 +1941,8 @@ function write_to_buffers!(
         end
         CKT = _psse_quote_string(CKT)
 
-        X = PSY.get_x(branch, PSY.SU)
-        RATE1 = _value_or_default(PSY.get_rating(branch, PSY.NU), PSSE_DEFAULT)
+        X = PSY.get_x(branch, u"SU")
+        RATE1 = _value_or_default(PSY.get_rating(branch, u"NU"), PSSE_DEFAULT)
         if RATE1 >= INFINITE_BOUND
             RATE1 = 0.0
         end
@@ -2257,12 +2256,12 @@ function _compute_dcline_common_fields(
     NAME = _psse_quote_string(NAME)
     MDC = Int(PSY.get_power_mode(dcline))
     # SETVL is MW (power mode) or A (current mode).
-    SETVL = PSY.get_transfer_setpoint(dcline, PSY.NU)
+    SETVL = PSY.get_transfer_setpoint(dcline, u"NU")
     VSCHD = PSY.get_scheduled_dc_voltage(dcline)
     # RDC and RCOMP are DC-circuit resistances: PSY per-unitizes them against the DC base
     # (VSCHD^2 / baseMVA), not the rectifier AC commutating base, so the inverse conversion
     # must use the same base.
-    dc_zbase = VSCHD^2 / PSY.get_base_power(exporter.system, PSY.NU)
+    dc_zbase = VSCHD^2 / PSY.get_base_power(exporter.system, u"NU")
     RDC = PSY.get_r(dcline) * dc_zbase
     VCMOD = PSY.get_switch_mode_voltage(dcline)
     RCOMP = PSY.get_compounding_resistance(dcline) * dc_zbase
@@ -2283,7 +2282,7 @@ function _compute_dcline_rectifier_fields(
     dcline::PSY.TwoTerminalLCCLine,
     I::Int,
 )
-    base_power = PSY.get_base_power(exporter.system, PSY.NU)
+    base_power = PSY.get_base_power(exporter.system, u"NU")
     IPR = I
     NBR = PSY.get_rectifier_bridges(dcline)
     ANMXR = rad2deg(PSY.get_rectifier_delay_angle_limits(dcline).max)
@@ -2321,7 +2320,7 @@ function _compute_dcline_inverter_fields(
     dcline::PSY.TwoTerminalLCCLine,
     J::Int,
 )
-    base_power = PSY.get_base_power(exporter.system, PSY.NU)
+    base_power = PSY.get_base_power(exporter.system, u"NU")
     IPI = J
     NBI = PSY.get_inverter_bridges(dcline)
     ANMXI = rad2deg(PSY.get_inverter_extinction_angle_limits(dcline).max)
@@ -2466,7 +2465,7 @@ function _vsc_export_dcset(
         flow_sign = 1.0
     end
     if dc_control == PSY.VSCDCControlModes.DC_VOLTAGE_DROOP
-        return flow_sign * PSY.get_active_power_flow(vscline, PSY.SU) * base_power
+        return flow_sign * PSY.get_active_power_flow(vscline, u"SU") * base_power
     end
     if dc_control == PSY.VSCDCControlModes.DC_VOLTAGE
         vdc_base = PSY.get_rated_dc_voltage(vscline)
@@ -2484,7 +2483,7 @@ function _compute_vsc_converter_fields(
     type_org::Int,
     side::Symbol,
 )
-    base_power = PSY.get_base_power(exporter.system, PSY.NU)
+    base_power = PSY.get_base_power(exporter.system, u"NU")
     suffix = side == :from ? "FROM" : "TO"
 
     IBUS = bus_number
@@ -2500,7 +2499,7 @@ function _compute_vsc_converter_fields(
         get_rating = PSY.get_rating_from
         get_imax = PSY.get_max_dc_current_from
         PWF = PSY.get_power_factor_weighting_fraction_from(vscline)
-        q_limits = PSY.get_reactive_power_limits_from(vscline, PSY.SU)
+        q_limits = PSY.get_reactive_power_limits_from(vscline, u"SU")
         # PSY spells local (terminal-bus) regulation as `nothing`; PSS/E as REMOT = 0.
         REMOT = _value_or_default(PSY.get_remote_bus_control_from(vscline), 0)
         RMPCT = PSY.get_rmpct_from(vscline)
@@ -2513,7 +2512,7 @@ function _compute_vsc_converter_fields(
         get_rating = PSY.get_rating_to
         get_imax = PSY.get_max_dc_current_to
         PWF = PSY.get_power_factor_weighting_fraction_to(vscline)
-        q_limits = PSY.get_reactive_power_limits_to(vscline, PSY.SU)
+        q_limits = PSY.get_reactive_power_limits_to(vscline, u"SU")
         REMOT = _value_or_default(PSY.get_remote_bus_control_to(vscline), 0)
         RMPCT = PSY.get_rmpct_to(vscline)
     end
@@ -2533,7 +2532,7 @@ function _compute_vsc_converter_fields(
     ALOSS = PSY.get_constant_term(fd) * 1e3 * base_power
     MINLOSS = 0.0
 
-    SMAX = get_rating(vscline, PSY.SU)
+    SMAX = get_rating(vscline, u"SU")
     # Revert parser transformation: SMAX == 0.0 ? PSSE_INFINITY : SMAX / baseMVA
     SMAX = if SMAX == PSSE_INFINITY
         0.0
@@ -2617,7 +2616,7 @@ function write_to_buffers!(
                 g_base_voltage = PSY.get_dc_setpoint_to(vscline)
             end
         end
-        Zbase = g_base_voltage^2 / PSY.get_base_power(exporter.system, PSY.NU)
+        Zbase = g_base_voltage^2 / PSY.get_base_power(exporter.system, u"NU")
         RDC = if iszero(PSY.get_g(vscline))
             0.0
         else
@@ -2828,8 +2827,8 @@ function write_to_buffers!(
         PDES = PSSE_DEFAULT
         QDES = PSSE_DEFAULT
         VSET = PSY.get_voltage_setpoint(facts)
-        SHMX = PSY.get_max_shunt_current(facts, PSY.NU)
-        TRMX = PSY.get_max_reactive_power(facts, PSY.NU)
+        SHMX = PSY.get_max_shunt_current(facts, u"NU")
+        TRMX = PSY.get_max_reactive_power(facts, u"NU")
         VTMX = PSSE_DEFAULT
         VTMN = PSSE_DEFAULT
         VSMX = PSSE_DEFAULT
@@ -2951,7 +2950,7 @@ function write_to_buffers!(
         end
 
     bus_id_counters = Dict{Int, Int}()
-    base_power = PSY.get_base_power(exporter.system, PSY.NU)
+    base_power = PSY.get_base_power(exporter.system, u"NU")
 
     for shunt in switched_shunts
         sienna_bus_number = PSY.get_number(PSY.get_bus(shunt))
