@@ -122,10 +122,14 @@ end
 const _USE_LEAN_LU = Ref(true)
 
 """The [`LeanPlanSlot`](@ref) of the Jacobian structure `data` uses at `time_step`, building
-its plan on first use. The plan is factored from a separately built Jacobian evaluated at
-|V| = 1, θ = 0, so it depends only on the network, bus types, slack factors and ZIP loads at
-`time_step`, never on an iterate: every cache, task and contingency sharing the slot pivots
-identically."""
+its plan on first use. The plan is factored from a separately built Jacobian with the AC block
+evaluated at |V| = 1, θ = 0. The LCC and area-interchange entries read the state in `data` at
+`time_step`, so the plan depends on that state at the first build. Every cache, task and
+contingency that shares the slot uses the same pivot order. The pivot-ratio check and the cold
+retry keep a plan that fits a later state badly from changing a result.
+
+It writes the slot without a lock. Build the slot before you spawn tasks that share it, as
+`_solve_columns_threaded!` does. The tasks then only read it."""
 function _lean_plan_slot!(data::ACPowerFlowData, time_step::Int64)
     residual = ACPowerFlowResidual(data, time_step)
     J = ACPowerFlowJacobian(data, residual, time_step)
@@ -153,16 +157,11 @@ function _build_lean_plan!(
         slot.valid = true
     catch e
         e isa LinearAlgebra.SingularException || rethrow()
-        n = Threads.atomic_add!(_LEAN_SINGULAR_PLANS, 1) + 1
         @warn "The flat-start Jacobian is singular; this Jacobian structure solves without " *
-              "the lean LU ($n such structures so far)." time_step
+              "the lean LU." time_step
     end
     return
 end
-
-"""Flat-start Jacobians found singular by [`_lean_plan_slot!`](@ref), each a structure memo
-whose solves run without the lean LU."""
-const _LEAN_SINGULAR_PLANS = Threads.Atomic{Int}(0)
 
 # Symbolic step of a fresh polar NR cache. On a lean plan the cache's own klu_analyze waits for
 # its first KLU factorization (a reject, a re-pivot, or a diagnostic `pivoted_factor!`), which a

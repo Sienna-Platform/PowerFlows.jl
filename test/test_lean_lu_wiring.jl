@@ -228,16 +228,14 @@ end
     @test_throws ErrorException PF._inherit_jacobian_structure!(c5, base)
 end
 
-@testset "lean LU: a singular flat-start Jacobian is counted and warned every time" begin
+@testset "lean LU: a singular flat-start Jacobian is warned every time" begin
     J = SparseArrays.sparse(
         PF.J_INDEX_TYPE[1, 2, 1, 2], PF.J_INDEX_TYPE[1, 1, 2, 2], [1.0, 0.0, 0.0, 0.0])
     for _ in 1:2
         slot = PF.LeanPlanSlot()
-        n0 = PF._LEAN_SINGULAR_PLANS[]
         warned = (:warn, r"flat-start Jacobian is singular")
         @test_logs warned PF._build_lean_plan!(slot, J, 1)
         @test !slot.valid
-        @test PF._LEAN_SINGULAR_PLANS[] == n0 + 1
     end
 end
 
