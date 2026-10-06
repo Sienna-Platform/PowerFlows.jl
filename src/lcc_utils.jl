@@ -796,7 +796,7 @@ function initialize_LCCParameters!(
 
     initialize_LCC_arcs_and_buses!(data, lccs, bus_lookup, reverse_bus_search_map)
 
-    base_power = PSY.get_base_power(sys, PSY.NU)
+    base_power = PSY.get_base_power(sys, u"NU")
     for (i, lcc_branch) in enumerate(lccs)
         (P_from_to, P_to_from) = _lcc_scheduled_flows(lcc_branch, base_power)
         data.lcc.arc_active_power_flow_from_to[i, :] .= P_from_to
@@ -810,25 +810,36 @@ end
 # neither model uses the LCC `loss` curve.
 function _lcc_scheduled_flows(lcc::PSY.TwoTerminalLCCLine, base_power::Float64)
     (at_rectifier, p_set) = _lcc_schedule(lcc, base_power)
-    r = _lcc_dc_resistance(lcc)
+    r = _lcc_dc_resistance(lcc, base_power)
     return _ga_lcc_powers(at_rectifier, p_set, r, _lcc_i_dc_from_p_set(r, p_set))
 end
 
-# PSS/E MDC=1 (power mode): |SETVL| MW at the rectifier when SETVL ≥ 0, else at the inverter.
-# MDC=2 (current mode): SETVL is Amperes with VSCHD held at the inverter, so the inverter takes
+# POWER mode (PSS/E MDC=1): |SETVL| MW at the rectifier when SETVL ≥ 0, else at the inverter.
+# CURRENT mode (MDC=2): SETVL is Amperes with VSCHD held at the inverter, so the inverter takes
 # I·VSCHD and the rectifier I·VSCHD + R·I²; scheduling that rectifier power makes
-# `_lcc_i_dc_from_p_set` return exactly I.
+# `_lcc_i_dc_from_p_set` return exactly I. A BLOCKED line transfers no power.
 function _lcc_schedule(lcc::PSY.TwoTerminalLCCLine, base_power::Float64)
-    setpoint = PSY.get_transfer_setpoint(lcc, PSY.NU)
-    if PSY.get_power_mode(lcc)
+    mode = PSY.get_control_mode(lcc)
+    if mode == PSY.LCCControlMode.POWER
+        setpoint = PSY.get_power_transfer_setpoint(lcc, u"NU")
         return (setpoint >= 0.0, abs(setpoint) / base_power)
+    elseif mode == PSY.LCCControlMode.CURRENT
+        i_dc =
+            abs(PSY.get_current_transfer_setpoint(lcc)) *
+            PSY.get_scheduled_dc_voltage(lcc) / 1000.0 / base_power
+        return (true, i_dc + _lcc_dc_resistance(lcc, base_power) * i_dc^2)
     end
-    i_dc = abs(setpoint) * PSY.get_scheduled_dc_voltage(lcc) / 1000.0 / base_power
-    return (true, i_dc + _lcc_dc_resistance(lcc) * i_dc^2)
+    return (true, 0.0)
 end
 
-_lcc_dc_resistance(lcc::PSY.TwoTerminalLCCLine) =
-    PSY.get_r(lcc) + PSY.get_rectifier_rc(lcc) + PSY.get_inverter_rc(lcc)
+_lcc_dc_resistance(lcc::PSY.TwoTerminalLCCLine, base_power::Float64) =
+    _lcc_ohm_to_pu(PSY.get_r(lcc), PSY.get_scheduled_dc_voltage(lcc), base_power) +
+    _lcc_ohm_to_pu(
+        PSY.get_rectifier_rc(lcc),
+        PSY.get_rectifier_base_voltage(lcc),
+        base_power,
+    ) +
+    _lcc_ohm_to_pu(PSY.get_inverter_rc(lcc), PSY.get_inverter_base_voltage(lcc), base_power)
 
 """
     _lcc_i_dc_from_p_set(r, p) -> Float64
@@ -839,6 +850,12 @@ where the quadratic formula gives `I = 0/0 = NaN` instead of `I = p`.
 """
 _lcc_i_dc_from_p_set(r::Float64, p::Float64) =
     iszero(r) ? p : (-1.0 + sqrt(1.0 + 4.0 * r * p)) / (2.0 * r)
+
+# PowerSystems stores the LCC impedances in ohms. The solver works per unit on the bases
+# PowerSystems used before: the DC line on `scheduled_dc_voltage^2 / base`, each converter on
+# its own commutating `base_voltage^2 / base`.
+_lcc_ohm_to_pu(z_ohm::Float64, base_kv::Float64, base_mva::Float64) =
+    z_ohm * base_mva / base_kv^2
 
 function initialize_LCCParameters!(
     data::ACPowerFlowData,
@@ -877,7 +894,7 @@ function initialize_LCCParameters!(
 
     lcc_arcs = PSY.get_arc.(lccs)
 
-    base_power = PSY.get_base_power(sys, PSY.NU)
+    base_power = PSY.get_base_power(sys, u"NU")
     schedules = _lcc_schedule.(lccs, base_power)
     lcc_setpoint_at_rectifier .= first.(schedules)
     lcc_p_set .= last.(schedules) # only one direction is supported, no reverse flow possible
@@ -887,7 +904,17 @@ function initialize_LCCParameters!(
     data.lcc.rectifier.tap_setpoint .= PSY.get_rectifier_tap_setting.(lccs)
     data.lcc.inverter.tap_setpoint .= PSY.get_inverter_tap_setting.(lccs)
     lcc_dc_line_resistance .=
-        PSY.get_r.(lccs) .+ PSY.get_rectifier_rc.(lccs) .+ PSY.get_inverter_rc.(lccs)
+        _lcc_ohm_to_pu.(
+            PSY.get_r.(lccs),
+            PSY.get_scheduled_dc_voltage.(lccs),
+            base_power,
+        ) .+
+        _lcc_ohm_to_pu.(
+            PSY.get_rectifier_rc.(lccs), PSY.get_rectifier_base_voltage.(lccs), base_power,
+        ) .+
+        _lcc_ohm_to_pu.(
+            PSY.get_inverter_rc.(lccs), PSY.get_inverter_base_voltage.(lccs), base_power,
+        )
     lcc_i_dc .= _lcc_i_dc_from_p_set.(lcc_dc_line_resistance, lcc_p_set)
     lcc_rectifier_delay_angle .= PSY.get_rectifier_delay_angle.(lccs)
     lcc_inverter_extinction_angle .= PSY.get_inverter_extinction_angle.(lccs)
@@ -899,8 +926,14 @@ function initialize_LCCParameters!(
         _get_bus_ix(bus_lookup, reverse_bus_search_map, x) for
         x in PSY.get_number.(PSY.get_to.(lcc_arcs))
     ]
-    lcc_rectifier_transformer_reactance .= PSY.get_rectifier_xc.(lccs)
-    lcc_inverter_transformer_reactance .= PSY.get_inverter_xc.(lccs)
+    lcc_rectifier_transformer_reactance .=
+        _lcc_ohm_to_pu.(
+            PSY.get_rectifier_xc.(lccs), PSY.get_rectifier_base_voltage.(lccs), base_power,
+        )
+    lcc_inverter_transformer_reactance .=
+        _lcc_ohm_to_pu.(
+            PSY.get_inverter_xc.(lccs), PSY.get_inverter_base_voltage.(lccs), base_power,
+        )
     lcc_rectifier_min_alpha .=
         [x.min for x in PSY.get_rectifier_delay_angle_limits.(lccs)]
     lcc_inverter_min_gamma .=

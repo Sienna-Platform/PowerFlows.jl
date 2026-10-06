@@ -48,8 +48,8 @@ end
         sys = PSB.build_system(PSB.PSITestSystems, "c_sys5"; add_forecasts = false)
         load = first(PSY.get_components(PSY.PowerLoad, sys))
         bus = PSY.get_bus(load)
-        P0 = PSY.get_active_power(load, PSY.SU)
-        Q0 = PSY.get_reactive_power(load, PSY.SU)
+        P0 = PSY.get_active_power(load, u"SU")
+        Q0 = PSY.get_reactive_power(load, u"SU")
         PSY.set_available!(load, false)
         PSY.add_component!(
             sys,
@@ -57,14 +57,14 @@ end
                 name = "exp_load",
                 available = true,
                 bus = bus,
-                active_power = PSY.get_active_power(load, PSY.NU),
-                reactive_power = PSY.get_reactive_power(load, PSY.NU),
+                active_power = PSY.get_active_power(load, u"NU"),
+                reactive_power = PSY.get_reactive_power(load, u"NU"),
                 α = α,
                 β = β,
-                base_power = PSY.get_base_power(load, PSY.NU),
-                max_active_power = PSY.get_max_active_power(load, PSY.NU),
-                max_reactive_power = PSY.get_max_reactive_power(load, PSY.NU),
-                input_basis = PSY.NU,
+                base_power = PSY.get_base_power(load, u"NU"),
+                max_active_power = PSY.get_max_active_power(load, u"NU"),
+                max_reactive_power = PSY.get_max_reactive_power(load, u"NU"),
+                input_basis = u"NU",
             ),
         )
         return sys, PSY.get_number(bus), P0, Q0

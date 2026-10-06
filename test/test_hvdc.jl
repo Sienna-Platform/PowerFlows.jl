@@ -168,10 +168,10 @@ function add_component_with_power!(sys::PSY.System, bus::PSY.ACBus, P::Float64)
             fuel = ThermalFuels.OTHER,
             services = Device[],
             dynamic_injector = nothing,
-            ext = Dict{String, Any}(), input_basis = PSY.CU,
+            ext = Dict{String, Any}(), input_basis = u"CU",
         )
         add_component!(sys, gen)
-        @assert get_active_power(gen, PSY.SU) == P
+        @assert get_active_power(gen, u"SU") == P
     else
         load = PowerLoad(;
             name = "load_$(PSY.get_number(bus))_hvdc_$(-P)",
@@ -181,22 +181,22 @@ function add_component_with_power!(sys::PSY.System, bus::PSY.ACBus, P::Float64)
             reactive_power = 0.0, # Per-unitized by device base_power
             base_power = 100.0, # MVA
             max_active_power = -P,
-            max_reactive_power = 0.0, input_basis = PSY.CU,
+            max_reactive_power = 0.0, input_basis = u"CU",
         )
         add_component!(sys, load)
-        @assert get_active_power(load, PSY.SU) == -P
+        @assert get_active_power(load, u"SU") == -P
     end
 end
 
 function replace_generic_hvdcs!(sys)
     for hvdc in get_components(PSY.TwoTerminalGenericHVDCLine, sys)
-        if PSY.get_active_power_flow(hvdc, PSY.SU) == 0.0
-            set_active_power_flow!(hvdc, 0.1 * PSY.SU)
+        if PSY.get_active_power_flow(hvdc, u"SU") == 0.0
+            set_active_power_flow!(hvdc, 0.1 * u"SU")
         end
         (P_from, P_to) =
-            PF.hvdc_injections_natural_units(hvdc, PSY.get_base_power(sys, PSY.NU))
-        P_from /= PSY.get_base_power(sys, PSY.NU)
-        P_to /= PSY.get_base_power(sys, PSY.NU)
+            PF.hvdc_injections_natural_units(hvdc, PSY.get_base_power(sys, u"NU"))
+        P_from /= PSY.get_base_power(sys, u"NU")
+        P_to /= PSY.get_base_power(sys, u"NU")
         arc = get_arc(hvdc)
         bus_from = arc.from
         bus_to = arc.to
@@ -211,7 +211,7 @@ function test_generic_hvdc_on_big_system(pf_type::Type{<:PF.PowerFlowEvaluationM
     sys_original = build_system(PSISystems, "HVDC_TWO_RTO_RTS_1Hr_sys")
 
     for hvdc in get_components(PSY.TwoTerminalGenericHVDCLine, sys_original)
-        set_active_power_flow!(hvdc, 0.1 * PSY.SU)
+        set_active_power_flow!(hvdc, 0.1 * u"SU")
     end
 
     pf = pf_type(; correct_bustypes = true)
@@ -334,8 +334,12 @@ end
             for (setpoint, P_from_to, P_to_from) in
                 ((0.3, 0.3, -(0.3 - loss)), (-0.3, 0.3 + loss, -0.3))
                 sys, lcc = simple_lcc_system()
-                set_r!(lcc, r)
-                set_transfer_setpoint!(lcc, setpoint)
+                # `r` is per unit; PowerSystems stores the LCC resistance in ohms.
+                set_r!(
+                    lcc,
+                    r * PSY.get_scheduled_dc_voltage(lcc)^2 / get_base_power(sys, u"NU"),
+                )
+                set_power_transfer_setpoint!(lcc, setpoint * u"SU")
                 pf = DC_type(; correct_bustypes = true)
                 data = PowerFlowData(pf, sys)
                 @test isapprox(data.lcc.arc_active_power_flow_from_to[1, 1], P_from_to)

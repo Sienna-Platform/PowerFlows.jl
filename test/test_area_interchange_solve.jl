@@ -606,7 +606,7 @@ end
     gen6 = PSY.get_component(PSY.ThermalStandard, sys, "Bus6")
     # Natural (unconstrained) Q at Bus6 solves to about -0.0156 pu; this tightened min just
     # barely excludes it so `_check_q_limit_bounds!` flips the bus PV -> PQ mid-solve.
-    PSY.set_reactive_power_limits!(gen6, (min = -0.012 * PSY.SU, max = 0.24 * PSY.SU))
+    PSY.set_reactive_power_limits!(gen6, (min = -0.012 * u"SU", max = 0.24 * u"SU"))
     pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
         area_interchange_control = true,
         check_reactive_power_limits = true,
@@ -731,7 +731,7 @@ end
     # to hit PDES = 0.3 pu cannot be absorbed within its active_power_limits.
     sys = _three_area_transfer_fixture(; slack_area3 = true)
     gen6 = PSY.get_component(PSY.ThermalStandard, sys, "Bus6")
-    PSY.set_active_power_limits!(gen6, (min = 0.0 * PSY.SU, max = 0.001 * PSY.SU))
+    PSY.set_active_power_limits!(gen6, (min = 0.0 * u"SU", max = 0.001 * u"SU"))
     pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; area_interchange_control = true)
     df_results = solve_power_flow(pf, sys)
     df = df_results["area_interchange_results"]
@@ -803,9 +803,9 @@ end
 function _weak_tie_three_area_fixture(; x_weak::Float64 = 2.0, pdes2::Float64 = 0.1,
     pdes3::Float64 = 2.0)
     sys = System(100.0)
-    area1 = PSY.Area(; name = "Area1", input_basis = PSY.CU)
-    area2 = PSY.Area(; name = "Area2", input_basis = PSY.CU)
-    area3 = PSY.Area(; name = "Area3", input_basis = PSY.CU)
+    area1 = PSY.Area(; name = "Area1", input_basis = u"CU")
+    area2 = PSY.Area(; name = "Area2", input_basis = u"CU")
+    area3 = PSY.Area(; name = "Area3", input_basis = u"CU")
     PSY.add_component!(sys, area1)
     PSY.add_component!(sys, area2)
     PSY.add_component!(sys, area3)
@@ -2186,8 +2186,8 @@ genuinely merges them (`fix == tix`) -- the self-tie merge guard case, distinct 
 "interior DC link" test (same-tail on two DIFFERENT buses, not a merge)."""
 function _lcc_self_merge_fixture()
     sys = System(100.0)
-    area_a = PSY.Area(; name = "AreaA", input_basis = PSY.CU)
-    area_b = PSY.Area(; name = "AreaB", input_basis = PSY.CU)
+    area_a = PSY.Area(; name = "AreaA", input_basis = u"CU")
+    area_b = PSY.Area(; name = "AreaB", input_basis = u"CU")
     PSY.add_component!(sys, area_a)
     PSY.add_component!(sys, area_b)
 

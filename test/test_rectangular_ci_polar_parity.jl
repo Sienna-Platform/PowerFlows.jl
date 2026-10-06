@@ -146,7 +146,7 @@ end
     for g_p in get_components(Generator, sys_p)
         g_r = get_component(typeof(g_p), sys_r, get_name(g_p))
         @test isapprox(
-            get_reactive_power(g_p, PSY.SU), get_reactive_power(g_r, PSY.SU);
+            get_reactive_power(g_p, u"SU"), get_reactive_power(g_r, u"SU");
             atol = RECT_PARITY_ATOL)
     end
 end

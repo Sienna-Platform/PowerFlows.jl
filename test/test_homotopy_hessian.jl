@@ -120,7 +120,10 @@ end
     # on `setpoint_at_rectifier`.
     time_step = 1
     sys, lcc = simple_lcc_system()
-    set_transfer_setpoint!(lcc, -abs(get_transfer_setpoint(lcc)))
+    set_power_transfer_setpoint!(
+        lcc,
+        (-abs(get_power_transfer_setpoint(lcc, u"CU"))) * u"CU",
+    )
     pf = ACPowerFlow{NewtonRaphsonACPowerFlow}()
     data = PowerFlowData(pf, sys)
     solve_power_flow!(data; pf = pf)

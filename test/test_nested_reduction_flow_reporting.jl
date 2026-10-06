@@ -19,7 +19,7 @@ function _nested_reduction_system(shape::Symbol)
     sys = PSY.System(100.0)
     buses = Dict{Int, PSY.ACBus}()
     function add_bus!(number, bustype)
-        b = PSY.ACBus(; input_basis = PSY.CU,
+        b = PSY.ACBus(; input_basis = u"CU",
             number = number,
             name = "b$number",
             available = true,
@@ -52,7 +52,7 @@ function _nested_reduction_system(shape::Symbol)
                 x = x,
                 b = (from = 0.0, to = 0.0),
                 rating = 4.0,
-                angle_limits = (min = -pi, max = pi), input_basis = PSY.CU,
+                angle_limits = (min = -pi, max = pi), input_basis = u"CU",
             ),
         )
     end
@@ -86,7 +86,7 @@ function _nested_reduction_system(shape::Symbol)
             reactive_power = 0.2,
             base_power = 100.0,
             max_active_power = 1.0,
-            max_reactive_power = 0.2, input_basis = PSY.CU,
+            max_reactive_power = 0.2, input_basis = u"CU",
         ),
     )
     PSY.add_component!(
@@ -106,7 +106,7 @@ function _nested_reduction_system(shape::Symbol)
             base_power = 100.0,
             time_limits = nothing,
             prime_mover_type = PSY.PrimeMovers.OT,
-            fuel = PSY.ThermalFuels.OTHER, input_basis = PSY.CU,
+            fuel = PSY.ThermalFuels.OTHER, input_basis = u"CU",
         ),
     )
     return sys
@@ -163,7 +163,7 @@ _ac_pf(; kwargs...) = PF.ACPowerFlow(; network_reductions = _degree_two(), kwarg
         row -> row.bus_number == 3,
         solve_power_flow(PF.ACPowerFlow(), sys2)["bus_results"],
     )
-    @test isapprox(PSY.get_magnitude(b3, PSY.CU), full_b3[1, :Vm]; atol = 1e-6)
+    @test isapprox(PSY.get_magnitude(b3, u"CU"), full_b3[1, :Vm]; atol = 1e-6)
     @test isapprox(PSY.get_angle(b3), full_b3[1, :θ]; atol = 1e-6)
 end
 
@@ -226,7 +226,7 @@ _NESTED_PARALLEL_SHAPES = (:series_in_parallel, :nested)
     for name in ("b3", "b4")
         bus = PSY.get_component(PSY.ACBus, sys2, name)
         full_row = filter(row -> row.bus_number == PSY.get_number(bus), full_bus)
-        @test isapprox(PSY.get_magnitude(bus, PSY.CU), full_row[1, :Vm]; atol = 1e-6)
+        @test isapprox(PSY.get_magnitude(bus, u"CU"), full_row[1, :Vm]; atol = 1e-6)
         @test isapprox(PSY.get_angle(bus), full_row[1, :θ]; atol = 1e-6)
     end
 
