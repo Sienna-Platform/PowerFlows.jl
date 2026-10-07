@@ -148,21 +148,22 @@ const GA_DIVERGENCE_FACTOR = 1e3 # stage diverged when gap > factor × best gap 
 # Inductive shunt added at each PV bus, as a fraction of that bus's own network admittance
 # |Y_kk|. Flat-start q0 can be off by tens of p.u. at stiffly tied PV buses, which makes the
 # plain fixed point repel; the shunt lowers the PV driving-point impedance and restores
-# contraction without changing the solution.
+# contraction without changing the solution. The value is empirical; no derivation fixes it.
 const GA_PV_STIFFNESS_FRACTION = 0.5
 const GA_ANDERSON_DEPTH = 5 # Anderson-mixing history length over the corrective currents
 # Refresh the shunts from the iterate each time the per-bus gap falls by this factor.
 const GA_REFRESH_DROP = 10.0
 # A stall is GA_STALL_ITERATIONS iterations without a GA_STALL_GAIN relative gap gain. It
 # refreshes the shunts with PV stiffness max(GA_RESTIFFEN_GROWTH × current,
-# GA_RESTIFFEN_FLOOR × GA_PV_STIFFNESS_FRACTION); a gap-drop refresh sets it to zero.
+# GA_RESTIFFEN_FLOOR × GA_PV_STIFFNESS_FRACTION), capped at GA_PV_STIFFNESS_FRACTION.
+# A gap-drop refresh sets it to zero.
 const GA_STALL_ITERATIONS = 40
 const GA_STALL_GAIN = 0.1
 const GA_RESTIFFEN_FLOOR = 0.1
 const GA_RESTIFFEN_GROWTH = 4.0
 const GA_STAGNATION_WINDOW = 20 # iterations per stagnation check (only with a handoff)
 const GA_STAGNATION_RATIO = 0.1 # minimum relative per-bus-gap improvement per window
-const GA_CONSISTENCY_FACTOR = 10.0 # no-DC case: gap ≤ tol but residual > factor·tol ⇒ bug
+const GA_CONSISTENCY_FACTOR = 10.0 # no-handoff case: gap ≤ tol but residual > factor·tol ⇒ bug
 
 # voltage validation
 const DEFAULT_VALIDATE_VOLTAGES = true

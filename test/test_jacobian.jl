@@ -351,6 +351,16 @@ end
         PF.PowerFlowData(nr(; correct_bustypes = true), build_lcc_control_system()),
         "two LCCs",
     )
+    for (label, build) in (
+        ("VSC", _build_vsc_system), ("VSC PV terminal", _vsc_system_pv_terminal),
+    )
+        vsc_data = PF.PowerFlowData(
+            nr(; correct_bustypes = true, solution_parameters = VSC_SOLUTION_PARAMETERS),
+            build(),
+        )
+        @test PF.n_vsc_converters(PF.get_dc_network(vsc_data)) > 0
+        _check_fused_kernel(vsc_data, label)
+    end
     area_sys = _area_interchange_fixture()
     _check_fused_kernel(
         PF.PowerFlowData(
@@ -403,8 +413,11 @@ function _reference_jacobian_structure(data::PF.ACPowerFlowData, slots)
     values = Float64[]
     num_buses = first(size(data.bus_type))
     for bus_from in 1:num_buses, bus_to in data.neighbors[bus_from]
-        PF._create_jacobian_matrix_structure_bus!(rows, columns, values, bus_from, bus_to,
-            2 * bus_from - 1, 2 * bus_from, 2 * bus_to - 1, 2 * bus_to)
+        for row in (2 * bus_from - 1, 2 * bus_from), col in (2 * bus_to - 1, 2 * bus_to)
+            push!(rows, row)
+            push!(columns, col)
+            push!(values, 0.0)
+        end
     end
     for (bus_k, ref_bus) in slots
         push!(rows, 2 * bus_k - 1)
