@@ -128,9 +128,10 @@ function ga_check_against_dense(sys, n_iter)
     return part, np, cache, y
 end
 
-function ga_add_vsc!(sys::PSY.System, name::String; kw...)
-    pq = ga_pq_buses(sys)
-    arc = _get_or_make_arc(sys, pq[1], pq[2])
+function ga_add_vsc!(
+    sys::PSY.System, name::String; to_bus = ga_pq_buses(sys)[2], kw...,
+)
+    arc = _get_or_make_arc(sys, ga_pq_buses(sys)[1], to_bus)
     PSY.add_component!(
         sys,
         PSY.TwoTerminalVSCLine(;
@@ -274,7 +275,7 @@ end
             @test Matrix(b.Yll) ≈ Y[part.l_ix, part.l_ix] + Diagonal(scale .* y)
             @test Matrix(b.Yqq) ≈ Y[pq, pq] + Diagonal(scale .* y[(nv + 1):end])
         end
-        @test Matrix(b.Bqq) ≈ imag.(Y[pq, pq])
+        @test b.net_diag ≈ diag(Y[part.l_ix, part.l_ix])
     end
 
     @testset "VSC AC-voltage buses join set v, bus types unchanged" begin
@@ -353,7 +354,10 @@ end
             data, part, np = ga_setup(sys)
             b = PF.GABlocks(data, part)
             y = PF._ga_initial_shunts(b, np, part, data, 1)
-            q0 = only(PF._ga_flat_start_q0(b, part, y, data.bus_magnitude[part.s_ix, 1]))
+            q0 = only(
+                PF._ga_flat_start_q0(b, part, y, data.bus_magnitude[part.s_ix, 1],
+                    PF.get_bus_lookup(data)),
+            )
             q3 = data.bus_reactive_power_withdrawals[only(part.q_ix), 1]
             u3 = (10 * 1.0 + 5 * 1.05) / (15 + q3) # by hand: B33 = -15 - q3
             @test q0 ≈ 1.05 * (-15 * 1.05 + 10 * 1.0 + 5 * u3) atol = 1e-10
@@ -379,6 +383,42 @@ end
                 @test Matrix(cache.blocks.Yqq) * xq ≈ rhs[1:PF.n_q(part)]
             end
             @test PF._get_or_build_ga_cache!(data, part) === cache
+        end
+
+        @testset "flat-start q0 with a purely real PQ diagonal" begin
+            part = PF.GAPartition([1], [2], [3, 4], [2, 3, 4], [1.0], [1, 1, 1], 1)
+            lookup = Dict(10 => 1, 20 => 2, 30 => 3, 40 => 4)
+            function blocks(Y, part)
+                Yll = Y[part.l_ix, part.l_ix]
+                Yqq = Y[part.q_ix, part.q_ix]
+                Yll_diag = PF._ga_diag_positions(Yll)
+                return PF.GABlocks(Yll, Yll_diag, Yqq, PF._ga_diag_positions(Yqq),
+                    SparseArrays.nonzeros(Yll)[Yll_diag], Y[part.v_ix, part.v_ix],
+                    Y[part.v_ix, part.q_ix], Y[part.q_ix, part.v_ix],
+                    Y[part.l_ix, part.s_ix])
+            end
+            Y = SparseArrays.sparse(
+                ComplexF64[
+                    1-5im -1+5im 0 0
+                    -1+5im 3-15im -1+5im -1+5im
+                    0 -1+5im 1.0+0im -0.0+3im
+                    0 -1+5im -0.0+3im 1-8im],
+            )
+            b = blocks(Y, part)
+            y = zeros(ComplexF64, 3)
+            q0 = PF._ga_flat_start_q0(b, part, y, [1.0], lookup)
+            @test length(q0) == 1 && isfinite(only(q0))
+
+            Y1 = SparseArrays.sparse(
+                ComplexF64[
+                    1-5im -1+5im 0
+                    -1+5im 2-10im -1+5im
+                    0 -1+5im 1.0+0im],
+            )
+            part1 = PF.GAPartition([1], [2], [3], [2, 3], [1.0], [1, 1], 1)
+            b1 = blocks(Y1, part1)
+            @test_throws r"Yqq is singular at bus 30 \(index 3\)" PF._ga_flat_start_q0(
+                b1, part1, zeros(ComplexF64, 2), [1.0], Dict(10 => 1, 20 => 2, 30 => 3))
         end
 
         @testset "singular factorization error names the bus" begin
@@ -714,14 +754,14 @@ end
         residual, _ = PF._ga_polar_state(data, 1)
         @test norm(residual.Rv, Inf) > 0.1
         @test_throws r"formulation bug" PF._ga_check_consistency(
-            PF.GAConverged, PF.NoHandoff, PF.GANoDC(), residual, 1e-20)
+            PF.GAConverged, PF.NoHandoff, residual, 1e-20)
         @test PF._ga_check_consistency(
-            PF.GAMaxIter, PF.NoHandoff, PF.GANoDC(), residual, 1e-20) === nothing
+            PF.GAMaxIter, PF.NoHandoff, residual, 1e-20) === nothing
         @test PF._ga_check_consistency(
-            PF.GAConverged, NewtonRaphsonACPowerFlow, PF.GANoDC(), residual, 1e-20) ===
+            PF.GAConverged, NewtonRaphsonACPowerFlow, residual, 1e-20) ===
               nothing
         @test PF._ga_check_consistency(
-            PF.GAConverged, PF.NoHandoff, PF.GANoDC(), residual, 1.0) === nothing
+            PF.GAConverged, PF.NoHandoff, residual, 1.0) === nothing
     end
 
     @testset "multi-period solve reuses the factorization cache" begin
@@ -862,6 +902,47 @@ end
             @test report.handoff_iterations > 0
             @test report.converged
             ga_compare(data_nr, data)
+        end
+    end
+
+    @testset "multiple VSC converters at one AC bus" begin
+        function two_vsc_system(av_first::Bool)
+            sys = ga_sys14()
+            pq = ga_pq_buses(sys)
+            for (name, to_bus, av, p_to) in (
+                ("ga_vsc_shared_1", pq[2], av_first, 0.25),
+                ("ga_vsc_shared_2", pq[3], false, 0.15),
+            )
+                ga_kw = (;
+                    dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
+                    dc_voltage_setpoint_from = 1.05,
+                    rated_dc_voltage = 1.0,
+                    dc_control_to = PSY.VSCDCControlModes.DC_POWER,
+                    dc_power_setpoint_to = p_to,
+                    reactive_power_from = 0.1,
+                    reactive_power_to = 0.0,
+                )
+                if av
+                    ga_kw = (; ga_kw...,
+                        ac_control_from = PSY.VSCACControlModes.AC_VOLTAGE,
+                        ac_voltage_setpoint_from = 1.01)
+                end
+                ga_add_vsc!(sys, name; to_bus = to_bus, ga_kw...)
+            end
+            return sys
+        end
+
+        @testset "$name" for (name, av_first) in
+                             (("two Q-mode converters", false),
+            ("AC-voltage and Q-mode converters", true))
+            data_nr, data_ga = ga_parity(
+                two_vsc_system(av_first);
+                pf_kwargs = (; solution_parameters = VSC_SOLUTION_PARAMETERS),
+            )
+            dn, dg = PF.get_dc_network(data_nr), PF.get_dc_network(data_ga)
+            @test count(==(first(dg.converter_ac_bus_ix)), dg.converter_ac_bus_ix) == 2
+            @test maximum(abs.(dn.q_c .- dg.q_c)) < 1e-6
+            @test maximum(abs.(dn.p_c .- dg.p_c)) < 1e-6
         end
     end
 end

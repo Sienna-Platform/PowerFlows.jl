@@ -50,7 +50,6 @@ function _ga_run_stage!(
     y::Vector{ComplexF64},
     part::GAPartition,
     dc::GADCContext,
-    conv::GAConverterTerms,
     u_s::Vector{ComplexF64},
     bus_lookup::Dict{Int, Int},
     time_step::Int,
@@ -71,13 +70,15 @@ function _ga_run_stage!(
     κ = GA_PV_STIFFNESS_FRACTION
     refreshes = 0
     for k in 1:max_iter
+        # One GA iteration on the Anderson-mixed currents; the DC substep starts at k = 2
         dc_change = 0.0
         if k > 1
-            dc_change = _ga_dc_substep!(dc, ws, np, part, conv, time_step)
+            dc_change = _ga_dc_substep!(dc, ws, np, part, time_step)
         end
         copyto!(ws.i, aa.x)
         gap = max(_ga_iterate!(cache, np, y, part), dc_change)
         exit_gap = _ga_exit_gap(handoff_solver, gap, ws)
+        # Exit on a non-finite gap or on convergence; keep the best iterate
         if !isfinite(exit_gap)
             return (GANonFinite, k, best_gap, refreshes)
         end
@@ -88,11 +89,12 @@ function _ga_run_stage!(
         if exit_gap <= stage_tol
             return (GAConverged, k, best_gap, refreshes)
         end
+        # Diverged: gap above GA_DIVERGENCE_FACTOR times the best gap since the last refresh
         segment_best = min(segment_best, gap)
         if gap > GA_DIVERGENCE_FACTOR * segment_best
             return (GADiverged, k, best_gap, refreshes)
         end
-        # With a handoff the exit gap is the per-bus gap, so best_gap tracks it.
+        # Stagnated (handoff only; exit gap = per-bus gap): too little gain in one window
         if stagnation && iszero(k % GA_STAGNATION_WINDOW)
             if best_gap > (1.0 - GA_STAGNATION_RATIO) * window_best
                 return (GAStagnated, k, best_gap, refreshes)
@@ -102,19 +104,26 @@ function _ga_run_stage!(
         if k == 1
             refresh_gap = gap
         end
+        # Stall: GA_STALL_ITERATIONS iterations without a GA_STALL_GAIN relative gain
         if gap < (1.0 - GA_STALL_GAIN) * stall_best
             stall_best = gap
             stall = 0
         else
             stall += 1
         end
+        # Refresh on a gap drop (κ = 0) or on a stall (re-stiffen); else take an Anderson step
         dropped = GA_REFRESH_DROP * gap <= refresh_gap
         if dropped || stall >= GA_STALL_ITERATIONS
             if dropped
                 κ = 0.0
             else
-                κ = max(GA_RESTIFFEN_GROWTH * κ,
-                    GA_RESTIFFEN_FLOOR * GA_PV_STIFFNESS_FRACTION)
+                # Only NoHandoff runs get here: with a handoff, stagnation exits first.
+                # Cap at the initial stiffness: a larger κ slows the PV loop.
+                κ = min(
+                    max(GA_RESTIFFEN_GROWTH * κ,
+                        GA_RESTIFFEN_FLOOR * GA_PV_STIFFNESS_FRACTION),
+                    GA_PV_STIFFNESS_FRACTION,
+                )
             end
             _ga_refresh_shunts!(cache, np, y, part, κ, u_s, bus_lookup)
             refreshes += 1
@@ -158,8 +167,7 @@ function _ga_polar_state(data::ACPowerFlowData, time_step::Int64)
 end
 
 function _ga_check_consistency(
-    exit::GAStageExit, ::Type{NoHandoff}, ::GANoDC, residual::ACPowerFlowResidual,
-    tol::Float64,
+    exit::GAStageExit, ::Type{NoHandoff}, residual::ACPowerFlowResidual, tol::Float64,
 )
     if exit != GAConverged
         return
@@ -175,7 +183,7 @@ function _ga_check_consistency(
 end
 
 _ga_check_consistency(
-    ::GAStageExit, ::Any, ::Any, ::ACPowerFlowResidual, ::Float64,
+    ::GAStageExit, ::Any, ::ACPowerFlowResidual, ::Float64,
 ) = nothing
 
 _ga_partition(data::ACPowerFlowData, time_step::Int) =
@@ -212,7 +220,7 @@ function _ga_stage!(
     mul!(ws.i, cache.blocks.Yll, ws.u)
     mul!(ws.i, cache.blocks.Yls, u_s, 1.0, 1.0)
     exit, iters, best_gap, refreshes = _ga_run_stage!(
-        cache, np, y, part, dc, conv, u_s, bus_lookup, time_step,
+        cache, np, y, part, dc, u_s, bus_lookup, time_step,
         max_iter, stage_tol, handoff_solver,
     )
     @debug "GeneralizedAdmittance stage" exit iters best_gap refreshes
@@ -251,7 +259,7 @@ function _ga_solve(
         handoff_solver, pf, sv, residual, J, data, time_step, tol, linear_solver, name,
         iters,
     )
-    _ga_check_consistency(exit, handoff_solver, dc, residual, tol)
+    _ga_check_consistency(exit, handoff_solver, residual, tol)
     if converged && need_factors
         J(data, time_step)
     end
