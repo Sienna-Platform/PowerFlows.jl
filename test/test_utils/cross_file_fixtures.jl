@@ -422,7 +422,8 @@ end
 # Build c_sys5 and add one point-to-point VSC line: the `from` converter controls DC voltage
 # (DC slack), the `to` converter controls (P, Q). This is the physically well-posed config: one
 # terminal fixes V_dc, the other sets power.
-function _build_vsc_system(; g = 50.0)
+# `g` is the DC-line conductance in S and `rated_dc_voltage` the DC voltage base in kV.
+function _build_vsc_system(; g = 1 / 32.0, rated_dc_voltage = 400.0)
     sys = deepcopy(PSB.build_system(PSB.PSITestSystems, "c_sys5"; add_forecasts = false))
     buses = sort!(collect(PSY.get_components(PSY.ACBus, sys)); by = PSY.get_number)
     from_bus = buses[1]
@@ -439,7 +440,7 @@ function _build_vsc_system(; g = 50.0)
         dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
         ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
         dc_voltage_setpoint_from = 1.0,
-        rated_dc_voltage = 1.0,
+        rated_dc_voltage = rated_dc_voltage,
         power_factor_setpoint_from = 1.0,
         # to converter: power control (P, Q)
         dc_control_to = PSY.VSCDCControlModes.DC_POWER,
@@ -456,7 +457,8 @@ end
 # A lossy converter whose AC terminal is a PV (or REF) bus has a nonzero ∂KCL/∂|V_ac| loss term —
 # writing it into column `2ix-1` (which is not |V_ac| there) corrupts the Jacobian. |V_ac| is fixed
 # at PV/REF buses, so that derivative must not enter the Jacobian at all.
-function _vsc_system_pv_terminal(; g = 45.0)
+# `g` is the DC-line conductance in S and `rated_dc_voltage` the DC voltage base in kV.
+function _vsc_system_pv_terminal(; g = 1 / 36.0, rated_dc_voltage = 400.0)
     sys = deepcopy(PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false))
     pick(t) = first(
         sort!(
@@ -478,7 +480,7 @@ function _vsc_system_pv_terminal(; g = 45.0)
         ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
         power_factor_setpoint_from = 1.0,
         dc_voltage_setpoint_from = 1.03,
-        rated_dc_voltage = 1.0,
+        rated_dc_voltage = rated_dc_voltage,
         reactive_power_from = 0.0,
         dc_control_to = PSY.VSCDCControlModes.DC_POWER,
         ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
