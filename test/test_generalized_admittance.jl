@@ -140,7 +140,8 @@ function ga_add_vsc!(
             arc = arc,
             active_power_flow = 0.3,
             rating = 2.0,
-            g = 50.0,
+            g = 1 / 32.0, # 50 pu on the 400 kV DC base and 100 MVA
+            rated_dc_voltage = 400.0,
             ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
             power_factor_setpoint_from = 1.0,
             ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
@@ -158,7 +159,6 @@ function ga_vsc_droop_system()
         dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE_DROOP,
         dc_voltage_droop_from = 0.02,
         dc_voltage_setpoint_from = 1.05,
-        rated_dc_voltage = 1.0,
         reactive_power_from = 0.0,
         dc_control_to = PSY.VSCDCControlModes.DC_VOLTAGE_DROOP,
         dc_voltage_droop_to = 0.03,
@@ -178,7 +178,6 @@ function ga_vsc_ac_voltage_system()
         dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
         ac_control_from = PSY.VSCACControlModes.AC_VOLTAGE,
         dc_voltage_setpoint_from = 1.05,
-        rated_dc_voltage = 1.0,
         ac_voltage_setpoint_from = 1.01,
         dc_control_to = PSY.VSCDCControlModes.DC_POWER,
         ac_control_to = PSY.VSCACControlModes.AC_VOLTAGE,
@@ -188,7 +187,7 @@ function ga_vsc_ac_voltage_system()
 end
 
 # The lossy `to` terminal is on the REF bus: the DC substep must settle P_c at the fixed REF |V|.
-function ga_vsc_system_ref_terminal(; g = 45.0)
+function ga_vsc_system_ref_terminal(; g = 9 / 320.0) # 45 pu on the 400 kV DC base
     sys = ga_sys14()
     pick(t) = first(
         sort!(
@@ -210,7 +209,7 @@ function ga_vsc_system_ref_terminal(; g = 45.0)
             ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
             power_factor_setpoint_from = 1.0,
             dc_voltage_setpoint_from = 1.03,
-            rated_dc_voltage = 1.0,
+            rated_dc_voltage = 400.0,
             reactive_power_from = 0.0,
             dc_control_to = PSY.VSCDCControlModes.DC_POWER,
             ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
@@ -916,7 +915,6 @@ end
                 ga_kw = (;
                     dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
                     dc_voltage_setpoint_from = 1.05,
-                    rated_dc_voltage = 1.0,
                     dc_control_to = PSY.VSCDCControlModes.DC_POWER,
                     dc_power_setpoint_to = p_to,
                     reactive_power_from = 0.1,
