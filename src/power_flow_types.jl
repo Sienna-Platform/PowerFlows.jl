@@ -389,7 +389,8 @@ const FastDecoupledFixed = FastDecoupledACPowerFlow{FDFixedJacobian, FDSchemeXB}
 
 Sparse generalized-admittance (PFPD) AC power flow: loads and generators are fixed shunts in the
 non-slack admittance block and corrective nodal currents restore the exact power and PV
-constraints by fixed-point iteration, reusing KLU factorizations of `Yℓℓ` and its PQ block.
+constraints by fixed-point iteration, reusing factorizations of `Yℓℓ` and its PQ block.
+The `linear_solver` setting selects the backend: KLU, AppleAccelerateLU, or MKLPardiso.
 The iteration is Anderson-accelerated, starts from stiffened PV shunts, and refreshes the shunts
 from the current iterate as the mismatch falls, which makes it robust from a flat start.
 Polar only. Supports `handoff_solver` ([`NewtonRaphsonACPowerFlow`](@ref),
@@ -1228,6 +1229,14 @@ function vPTDFDCPowerFlow(;
         time_steps,
     )
     _validate_n_threads(n_threads)
+    if linear_solver == "MKLPardiso"
+        throw(
+            ArgumentError(
+                "vPTDFDCPowerFlow does not support linear_solver = \"MKLPardiso\". " *
+                "Use PTDFDCPowerFlow or another linear_solver.",
+            ),
+        )
+    end
     resolve_linear_solver_backend(linear_solver)
     return vPTDFDCPowerFlow(
         exporter,

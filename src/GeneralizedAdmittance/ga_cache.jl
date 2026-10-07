@@ -211,6 +211,8 @@ function _ga_singular_error(A::SparseMatrixCSC{ComplexF64, Int64}, block,
     )
 end
 
+# AppleAccelerate reports a singular block with `info == 0`, so `_ga_factor_error` cannot
+# index the block rows. The KLU diagnosis names the bus instead.
 _ga_on_factor_error(e, ::PNM.KLULinSolveCache, ::SparseMatrixCSC, block,
     part::GAPartition, bus_lookup::Dict{Int, Int}) =
     _ga_factor_error(e, part, bus_lookup, block)
@@ -220,8 +222,15 @@ _ga_on_factor_error(e, ::Any, A::SparseMatrixCSC, block,
 _ga_located_error(::LinearAlgebra.SingularException, A::SparseMatrixCSC, block,
     part::GAPartition, bus_lookup::Dict{Int, Int}) =
     _ga_singular_error(A, block, part, bus_lookup)
-_ga_located_error(e, ::SparseMatrixCSC, block, ::GAPartition, ::Dict{Int, Int}) =
-    throw(e)
+function _ga_located_error(e, A::SparseMatrixCSC, block, part::GAPartition,
+    bus_lookup::Dict{Int, Int})
+    try
+        PNM.klu_factorize(A)
+    catch k
+        _ga_factor_error(k, part, bus_lookup, block)
+    end
+    rethrow(e)
+end
 
 function _ga_factor_block!(F, A::SparseMatrixCSC{ComplexF64, Int64}, factored::Bool,
     block, part::GAPartition, bus_lookup::Dict{Int, Int})
