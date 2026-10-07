@@ -476,9 +476,43 @@ function _lower_vsc_lines!(
         )
         push!(b.branch_from, nf)
         push!(b.branch_to, nt)
-        push!(b.branch_g, PSY.get_g(line))
+        push!(b.branch_g, _vsc_branch_g_pu(line, sys_base))
     end
     return
+end
+
+# PowerSystems stores DC-line impedances in natural units (siemens, ohms). The DC network works
+# per unit on the system base and the line's DC voltage base, so the impedance base is
+# `V_dc^2 / sys_base` (kV^2 / MVA = ohm).
+function _vsc_branch_g_pu(line::PSY.TwoTerminalVSCLine, sys_base::Float64)
+    g_siemens = PSY.get_g(line)
+    iszero(g_siemens) && return 0.0
+    v_dc_kv = PSY.get_rated_dc_voltage(line)
+    if !(v_dc_kv > 0.0)
+        throw(
+            ArgumentError(
+                "TwoTerminalVSCLine $(PSY.get_name(line)) has a DC conductance of " *
+                "$(g_siemens) S but no rated_dc_voltage to convert it to per unit.",
+            ),
+        )
+    end
+    return g_siemens * v_dc_kv^2 / sys_base
+end
+
+# A zero-resistance line is a hard short; it gets a large per-unit conductance instead.
+function _tmodel_branch_g_pu(dcline::PSY.TModelHVDCLine, sys_base::Float64)
+    r_ohm = PSY.get_r(dcline)
+    iszero(r_ohm) && return 1.0e6
+    v_dc_kv = PSY.get_base_voltage(PSY.get_from(PSY.get_arc(dcline)))
+    if isnothing(v_dc_kv) || !(v_dc_kv > 0.0)
+        throw(
+            ArgumentError(
+                "TModelHVDCLine $(PSY.get_name(dcline)) has a series resistance of " *
+                "$(r_ohm) Ω but its from DCBus has no base_voltage to convert it to per unit.",
+            ),
+        )
+    end
+    return v_dc_kv^2 / (r_ohm * sys_base)
 end
 
 # Lower the multi-terminal DC model: `InterconnectingConverter` (AC↔DC) on `DCBus` nodes joined by
@@ -510,17 +544,10 @@ function _lower_mtdc!(
         arc = PSY.get_arc(dcline)
         nf = _dc_node!(b, PSY.get_from(arc))
         nt = _dc_node!(b, PSY.get_to(arc))
-        r = PSY.get_r(dcline)
-        # steady-state DC: only series resistance matters (l, c dropped). A zero-resistance line
-        # is a hard short; fall back to a large conductance.
-        if iszero(r)
-            g = 1.0e6
-        else
-            g = 1.0 / r
-        end
+        # steady-state DC: only series resistance matters (l, c dropped).
         push!(b.branch_from, nf)
         push!(b.branch_to, nt)
-        push!(b.branch_g, g)
+        push!(b.branch_g, _tmodel_branch_g_pu(dcline, sys_base))
     end
     return
 end
