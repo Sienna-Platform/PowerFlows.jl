@@ -58,7 +58,7 @@ function _make_dc_scratch(data::PowerFlowData)
     )
 end
 
-# The ABA matrix carries no factorization: the backend is known only here, at solve time.
+# The ABA matrix carries no factorization; the caller picks the backend.
 function _dc_initial_cache(backend, aba_matrix::PNM.ABA_Matrix)
     M = aba_matrix.data
     cache = make_linear_solver_cache(backend, M)
@@ -630,7 +630,7 @@ end
 _dc_aba_factor(::vPTDFPowerFlowData, entry::DCSolverCache) = entry.cache
 function _dc_aba_factor(data::vPTDFPowerFlowData, ::Nothing)
     return _dc_initial_cache(
-        resolve_linear_solver_backend(nothing),
+        resolve_linear_solver_backend(get_linear_solver(data.pf)),
         data.aux_network_matrix,
     )
 end
