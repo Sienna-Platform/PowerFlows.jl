@@ -26,7 +26,7 @@ end
     data = PowerFlowData(DCPowerFlow(; correct_bustypes = true), sys)
     power_injections =
         deepcopy(data.bus_active_power_injections - data.bus_active_power_withdrawals)
-    matrix_data = data.power_network_matrix.K                 # LU factorization of ABA (shared by reference; deepcopy of the KLU cache is unsafe)
+    matrix_data = PNM.klu_factorize(data.power_network_matrix.data) # LU factorization of ABA
     aux_network_matrix = deepcopy(data.aux_network_matrix)    # BA matrix
 
     valid_ix = setdiff(
@@ -399,15 +399,23 @@ _dc_test_pieces(data::PF.vPTDFPowerFlowData) =
     end
 end
 
-@testset "DC construction factors ABA once on the KLU backend" begin
-    # `aba_matrix.K` is already a KLU factorization from construction; a KLU-backend solve
-    # must reuse it rather than factoring again.
+@testset "DC solve factors ABA once, with the solve backend" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
-    for pf in (DCPowerFlow(), PTDFDCPowerFlow(), vPTDFDCPowerFlow())
+    expected = Dict{String, DataType}("KLU" => PF.PNM.KLULinSolveCache{Float64, Int64})
+    if PF.PNM._has_apple_accelerate_backend()
+        expected["AppleAccelerateLU"] = PF.PNM.AAFactorCache{Float64}
+    end
+    for pf in (DCPowerFlow(), PTDFDCPowerFlow(), vPTDFDCPowerFlow()),
+        (name, cache_type) in expected
+
         data = PowerFlowData(pf, sys)
         aba_matrix, _ = _dc_test_pieces(data)
-        solve_power_flow!(data; linear_solver = "KLU")
-        @test data.solver_cache[].cache === aba_matrix.K
+        @test !PF.PNM.is_factorized(aba_matrix)
+        solve_power_flow!(data; linear_solver = name)
+        cache = data.solver_cache[].cache
+        @test typeof(cache) == cache_type
+        solve_power_flow!(data; linear_solver = name)
+        @test data.solver_cache[].cache === cache
     end
 end
 
