@@ -22,7 +22,7 @@ abstract type AbstractNRCache end
 
 symbolic_factor!(c::PNM.KLULinSolveCache, A::SparseMatrixCSC{Float64}) =
     PNM.symbolic_factor!(c, A)
-symbolic_factor!(c::PNM.AAFactorCache, A::SparseMatrixCSC{Float64}) =
+symbolic_factor!(c::PNM.AAFactorCache, A::SparseMatrixCSC) =
     PNM.AccelerateWrapper.symbolic_factor!(c, A)
 symbolic_factor!(c::PNM.PardisoLinSolveCache, A::SparseMatrixCSC) =
     PNM.symbolic_factor!(c, A)
@@ -37,9 +37,13 @@ function numeric_refactor!(c::PNM.KLULinSolveCache, A::SparseMatrixCSC{Float64})
     end
     return c
 end
-numeric_refactor!(c::PNM.AAFactorCache, A::SparseMatrixCSC{Float64}) =
+numeric_refactor!(c::PNM.AAFactorCache, A::SparseMatrixCSC) =
     PNM.AccelerateWrapper.numeric_refactor!(c, A)
 numeric_refactor!(c::PNM.PardisoLinSolveCache, A::SparseMatrixCSC) =
+    PNM.numeric_refactor!(c, A)
+
+# The generalized-admittance solver factors ComplexF64 blocks: no lean plan, plain PNM calls.
+numeric_refactor!(c::PNM.KLULinSolveCache, A::SparseMatrixCSC{ComplexF64}) =
     PNM.numeric_refactor!(c, A)
 
 # A full factorization always pivots afresh, bypassing a lean plan, and keeps the rest of that
@@ -50,9 +54,12 @@ function full_factor!(c::PNM.KLULinSolveCache, A::SparseMatrixCSC{Float64})
     PNM.KLUWrapper.has_lean_plan(c) && PNM.KLUWrapper.pause_lean!(c, true)
     return c
 end
-full_factor!(c::PNM.AAFactorCache, A::SparseMatrixCSC{Float64}) =
+full_factor!(c::PNM.AAFactorCache, A::SparseMatrixCSC) =
     PNM.AccelerateWrapper.full_factor!(c, A)
 full_factor!(c::PNM.PardisoLinSolveCache, A::SparseMatrixCSC) = PNM.full_factor!(c, A)
+
+full_factor!(c::PNM.KLULinSolveCache, A::SparseMatrixCSC{ComplexF64}) =
+    PNM.full_factor!(c, A)
 
 # The re-pivot guard in `_set_Δx_nr!`: a fresh pivot order on the kept symbolic analysis (the
 # pattern has not changed), with the rest of that solve kept off the lean path.
@@ -77,7 +84,8 @@ _drop_numeric!(::PNM.AAFactorCache) = nothing
 _drop_numeric!(::PNM.PardisoLinSolveCache) = nothing
 
 solve!(c::PNM.KLULinSolveCache, b::StridedVecOrMat{Float64}) = PNM.solve!(c, b)
-solve!(c::PNM.AAFactorCache, b::StridedVecOrMat{Float64}) =
+solve!(c::PNM.KLULinSolveCache, b::StridedVecOrMat{ComplexF64}) = PNM.solve!(c, b)
+solve!(c::PNM.AAFactorCache, b::StridedVecOrMat) =
     PNM.AccelerateWrapper.solve!(c, b)
 solve!(c::PNM.PardisoLinSolveCache, b::StridedVecOrMat) = PNM.solve!(c, b)
 
@@ -155,6 +163,12 @@ make_linear_solver_cache(::PNM.KLUSolver, A::SparseMatrixCSC{Float64}) =
 make_linear_solver_cache(::PNM.AppleAccelerateLUSolver, A::SparseMatrixCSC{Float64}) =
     PNM.AAFactorCache(A)
 make_linear_solver_cache(::PNM.MKLPardisoSolver, A::SparseMatrixCSC{Float64}) =
+    PNM.PardisoLinSolveCache(A)
+make_linear_solver_cache(::PNM.KLUSolver, A::SparseMatrixCSC{ComplexF64}) =
+    PNM.KLULinSolveCache(A)
+make_linear_solver_cache(::PNM.AppleAccelerateLUSolver, A::SparseMatrixCSC{ComplexF64}) =
+    PNM.AAFactorCache(A)
+make_linear_solver_cache(::PNM.MKLPardisoSolver, A::SparseMatrixCSC{ComplexF64}) =
     PNM.PardisoLinSolveCache(A)
 
 # The polar Jacobian's pattern is fixed at construction (bus-type agnostic) and refactored a few
