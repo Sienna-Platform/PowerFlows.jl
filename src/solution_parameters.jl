@@ -1,3 +1,8 @@
+"""Default [`SolutionParameters`](@ref) `handoff_solver`: the staged solver (fast decoupled or
+generalized admittance) runs without a handoff. A singleton type, not `nothing`, keeps the
+field concrete."""
+struct NoHandoff end
+
 """
     SolutionParameters(; kwargs...)
 
@@ -60,7 +65,7 @@ take effect.
   keyword is given explicitly there.
 
 # Fast decoupled
-- `handoff_solver` (`Nothing` for pure FD), `handoff_tol`, `refreeze_on_stall`,
+- `handoff_solver` (`NoHandoff` for pure FD), `handoff_tol`, `refreeze_on_stall`,
   `fd_non_divergent`, `fd_blowup`, `fd_dvlim`, `fd_vm_abort`, `fd_ndvfct`,
   `fd_max_step_halvings`.
 
@@ -109,10 +114,10 @@ Base.@kwdef struct SolutionParameters
     marquardt_scaling::Bool = false
 
     # `handoff_solver` is typed as `DataType`, not `ACPowerFlowSolverType`, because that
-    # type is defined after this file in the include order; `_validate_fd_handoff_solver`
-    # checks the value anyway. Defaults to `Nothing` (not the value `nothing`) so the
-    # field stays concrete and FD dispatches on `::Type{Nothing}`.
-    handoff_solver::DataType = Nothing
+    # type is defined after this file in the include order; `_validate_handoff_solver`
+    # checks the value anyway. Defaults to the `NoHandoff` sentinel (not `nothing`) so the
+    # field stays concrete.
+    handoff_solver::DataType = NoHandoff
     handoff_tol::Float64 = DEFAULT_FD_HANDOFF_TOL
     refreeze_on_stall::Bool = DEFAULT_FD_REFREEZE_ON_STALL
     fd_non_divergent::Bool = DEFAULT_FD_NON_DIVERGENT

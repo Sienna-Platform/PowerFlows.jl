@@ -27,6 +27,7 @@ pages = OrderedDict(
         "Evaluation Models vs. Solver Algorithms" => "explanation/models-and-solvers.md",
         "Mixed Current-Power Balance Formulation" => "explanation/mixed_cpb_formulation.md",
         "Fast/Fixed Decoupled Power Flow" => "explanation/fast_decoupled.md",
+        "Generalized-Admittance Power Flow" => "explanation/generalized_admittance.md",
         "Levenberg-Marquardt vs Gauss-Seidel" => "explanation/lm_vs_gauss_seidel.md",
         "Folds, Voltage Collapse, and Solver Diagnostics" => "explanation/folds_and_diagnostics.md",
         "LCC Model Implementation" => "explanation/lcc_model.md",

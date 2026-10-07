@@ -665,9 +665,17 @@ function _dc_kcl_residual!(
 end
 
 # Warm-start residual for the VSC tail with AC voltages FIXED: per converter the active/Vdc control
-# row `r1` and a reactive pin `Q_c − q_set` (the true AC-voltage control rows constrain AC voltage,
-# which is fixed here, so they are replaced by the Q pin for the initializer); per DC node the DC-KCL
-# row. `y`-ordering: [(P_c, Q_c) per converter; V_dc per node].
+# row `r1` and a reactive row (`_vsc_warm_q_row`: `Q_c − q_set` pin, or a hold for AC-voltage
+# modes whose true row constrains the fixed AC voltage); per DC node the DC-KCL row.
+# `y`-ordering: [(P_c, Q_c) per converter; V_dc per node].
+
+# AC-voltage converters get Q_c from the AC side; the DC warm start must hold it, not reset it.
+function _vsc_warm_q_row(dcn::DCNetwork, c::Int, time_step::Int)
+    if controls_ac_voltage(dcn.converter_mode[c])
+        return 0.0
+    end
+    return dcn.q_c[c, time_step] - dcn.q_set[c, time_step]
+end
 function _vsc_warm_residual!(
     F::Vector{Float64},
     dcn::DCNetwork,
@@ -682,7 +690,7 @@ function _vsc_warm_residual!(
         P = dcn.p_c[c, time_step]
         Vdc = dcn.node_vdc[node, time_step]
         F[2 * c - 1] = _vsc_r1(mode, dcn, c, P, Vdc, time_step)
-        F[2 * c] = dcn.q_c[c, time_step] - dcn.q_set[c, time_step]
+        F[2 * c] = _vsc_warm_q_row(dcn, c, time_step)
     end
     base = 2 * nconv
     _dc_kcl_residual!(F, base, dcn, nnode, time_step)

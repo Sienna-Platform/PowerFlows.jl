@@ -43,11 +43,15 @@ end
 @testset "FastDecoupled settings validation" begin
     # The variant/scheme are now FastDecoupledACPowerFlow type parameters, so invalid values are
     # unrepresentable. Only the handoff solver still needs runtime validation.
-    @test PF._validate_fd_handoff_solver(Nothing) === nothing
-    @test PF._validate_fd_handoff_solver(NewtonRaphsonACPowerFlow) === nothing
-    @test PF._validate_fd_handoff_solver(TrustRegionACPowerFlow) === nothing
-    @test PF._validate_fd_handoff_solver(LevenbergMarquardtACPowerFlow) === nothing
-    @test_throws ArgumentError PF._validate_fd_handoff_solver(RobustHomotopyPowerFlow)
+    @test PF._validate_handoff_solver(PF.NoHandoff, "FastDecoupled") === nothing
+    @test PF._validate_handoff_solver(NewtonRaphsonACPowerFlow, "FastDecoupled") === nothing
+    @test PF._validate_handoff_solver(TrustRegionACPowerFlow, "FastDecoupled") === nothing
+    @test PF._validate_handoff_solver(LevenbergMarquardtACPowerFlow, "FastDecoupled") ===
+          nothing
+    @test_throws ArgumentError PF._validate_handoff_solver(
+        RobustHomotopyPowerFlow,
+        "FastDecoupled",
+    )
 
     # FDDecoupled is polar-only: requesting it on rectangular/mixed is rejected at construction.
     @test_throws ArgumentError ACRectangularPowerFlow{

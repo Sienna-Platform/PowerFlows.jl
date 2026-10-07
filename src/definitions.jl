@@ -63,7 +63,9 @@ const LCC_sinϕ_TOLERANCE = 1e-8 # if sin(ϕ) < this, treat dQ/dV as zero to avo
 const LCC_SMALL_ANGLE_THRESHOLD = deg2rad(5) # warn if converged LCC thyristor angle α_r/α_i falls outside (this, π/2 − this)
 
 const DEFAULT_NR_MAX_ITER = 50 # default maxIterations for the NR power flow
-const UNSET_MAX_ITERATIONS = -1 # -1 = unset; formulation constructors replace it with the solver default (see _resolved_max_iterations).
+"""`SolutionParameters.maxIterations` value for "unset": the formulation constructor replaces
+it with the solver default."""
+const UNSET_MAX_ITERATIONS = -1
 const DEFAULT_NR_TOL = 1e-9 # default tolerance for the NR power flow
 const DEFAULT_REFINEMENT_THRESHOLD = 5e-2 # do refinement if relative error > 5%.
 const DEFAULT_REFINEMENT_MAX_ITER = 10 # how many times to try iterative refinement
@@ -136,6 +138,32 @@ const REC_INDEX_TYPE = INDEX_TYPE
 # `ac_power_flow_residual.jl`, `ac_power_flow_jacobian.jl`, and the rectangular
 # CI counterparts.
 const SQRT6_DIV_PI = sqrt(6) / π
+# Feasibility tolerance for the GA LCC closed form: |S| = (V·t)·K·I must be ≥ |P|
+# up to this slack; below it, `cos φ` would exceed 1 and the operating point is infeasible.
+const GA_LCC_FEASIBILITY_TOL = 1e-12
+# Newton iteration cap for the VSC DC substep in each GA iteration.
+const GA_DC_MAX_ITER = 3
+const DEFAULT_GA_MAX_ITER = 500 # generalized-admittance fixed-point iteration cap
+const GA_DIVERGENCE_FACTOR = 1e3 # stage diverged when gap > factor × best gap since a refresh
+# Inductive shunt added at each PV bus, as a fraction of that bus's own network admittance
+# |Y_kk|. Flat-start q0 can be off by tens of p.u. at stiffly tied PV buses, which makes the
+# plain fixed point repel; the shunt lowers the PV driving-point impedance and restores
+# contraction without changing the solution. The value is empirical; no derivation fixes it.
+const GA_PV_STIFFNESS_FRACTION = 0.5
+const GA_ANDERSON_DEPTH = 5 # Anderson-mixing history length over the corrective currents
+# Refresh the shunts from the iterate each time the per-bus gap falls by this factor.
+const GA_REFRESH_DROP = 10.0
+# A stall is GA_STALL_ITERATIONS iterations without a GA_STALL_GAIN relative gap gain. It
+# refreshes the shunts with PV stiffness max(GA_RESTIFFEN_GROWTH × current,
+# GA_RESTIFFEN_FLOOR × GA_PV_STIFFNESS_FRACTION), capped at GA_PV_STIFFNESS_FRACTION.
+# A gap-drop refresh sets it to zero.
+const GA_STALL_ITERATIONS = 40
+const GA_STALL_GAIN = 0.1
+const GA_RESTIFFEN_FLOOR = 0.1
+const GA_RESTIFFEN_GROWTH = 4.0
+const GA_STAGNATION_WINDOW = 20 # iterations per stagnation check (only with a handoff)
+const GA_STAGNATION_RATIO = 0.1 # minimum relative per-bus-gap improvement per window
+const GA_CONSISTENCY_FACTOR = 10.0 # no-handoff case: gap ≤ tol but residual > factor·tol ⇒ bug
 
 # voltage validation
 const DEFAULT_VALIDATE_VOLTAGES = true
