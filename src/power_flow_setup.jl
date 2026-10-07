@@ -44,7 +44,8 @@ function improve_x0!(x0::Vector{Float64},
     # the DC stage did not improve.
     handoff_tol = get_solution_parameters(pf).handoff_tol
     if get_ga_flat_start(pf) && cold && !dc_taken && norm(residual.Rv, Inf) > handoff_tol
-        newx0 = _ga_flat_start(x0, data, residual, time_step, handoff_tol)
+        backend = resolve_linear_solver_backend(get_solution_parameters(pf).linear_solver)
+        newx0 = _ga_flat_start(x0, data, residual, time_step, handoff_tol, backend)
         # The GA stage leaves `data` and `residual` at its own iterate, not at `x0`.
         residual(data, x0, time_step)
         _pick_better_x0(x0, newx0, time_step, residual, data,

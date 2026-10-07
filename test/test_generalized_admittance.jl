@@ -431,6 +431,32 @@ end
             @test_throws ArgumentError PF._ga_factor_error(
                 ArgumentError("x"), part, lookup, PF.GABlockYll())
         end
+
+        if PF.PNM._has_apple_accelerate_backend()
+            @testset "AppleAccelerate singular block names the bus" begin
+                part = PF.GAPartition([1], [2], [3, 4], [2, 3, 4], [1.0], [1, 1, 1], 1)
+                lookup = Dict(10 => 1, 20 => 2, 30 => 3, 40 => 4)
+                A = SparseArrays.sparse(
+                    [1, 2], [1, 2], ComplexF64[1.0, 1.0], 3, 3)
+                F = PF.make_linear_solver_cache(PNM.AppleAccelerateLUSolver(), A)
+                @test_throws r"singular" PF._ga_factor_block!(
+                    F, A, false, PF.GABlockYll(), part, lookup)
+            end
+        end
+
+        @testset "non-singular factor error is rethrown" begin
+            part = PF.GAPartition([1], [2], [3, 4], [2, 3, 4], [1.0], [1, 1, 1], 1)
+            lookup = Dict(10 => 1, 20 => 2, 30 => 3, 40 => 4)
+            A = SparseArrays.sparse(
+                [1, 2, 3], [1, 2, 3], ComplexF64[1.0, 1.0, 1.0], 3, 3)
+            @test_throws ArgumentError begin
+                try
+                    throw(ArgumentError("backend failure"))
+                catch e
+                    PF._ga_on_factor_error(e, :other, A, PF.GABlockYll(), part, lookup)
+                end
+            end
+        end
     end
 
     @testset "iteration kernel matches the dense reference" begin
@@ -712,11 +738,20 @@ end
         residual = PF.ACPowerFlowResidual(data, 1)
         residual(data, x0, 1)
         r0 = norm(residual.Rv, 1)
-        x = PF._ga_flat_start(x0, data, residual, 1, 1e-3)
+        x = PF._ga_flat_start(x0, data, residual, 1, 1e-3, PNM.KLUSolver())
         @test data.solver_cache[] === slot
         @test (dcn.p_c, dcn.q_c, dcn.node_vdc) == dc_before
         residual(data, x, 1)
         @test norm(residual.Rv, 1) < r0
+        # The stage builds its cache with the backend it receives.
+        @test_throws MethodError PF._ga_flat_start(x0, data, residual, 1, 1e-3, nothing)
+        pf_klu = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+            ga_flat_start = true,
+            solution_parameters = SolutionParameters(; linear_solver = "KLU"))
+        @test PF.resolve_linear_solver_backend(
+            PF.get_solution_parameters(pf_klu).linear_solver) == PNM.KLUSolver()
+        x_klu = PF.improve_x0(pf_klu, data, residual, 1)
+        @test length(x_klu) == length(x0)
         @test solve_power_flow!(data; pf = pf)
         data_nr = PowerFlowData(
             ACPowerFlow{NewtonRaphsonACPowerFlow}(;
@@ -1007,11 +1042,11 @@ end
                 PF.full_factor!(F, L)
                 PF._ga_factor_ok(F, L)
             catch e
+                @test typeof(e) == LinearAlgebra.SingularException ||
+                      occursin("Pardiso", string(typeof(e)))
                 false
             end
             @test !ok
         end
-        K = PF.make_linear_solver_cache(PF.PNM.KLUSolver(), L)
-        @test PF._ga_factor_ok(K, L)
     end
 end

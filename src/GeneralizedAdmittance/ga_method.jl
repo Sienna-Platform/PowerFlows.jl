@@ -306,6 +306,7 @@ function _ga_flat_start(
     residual::ACPowerFlowResidual,
     time_step::Int64,
     handoff_tol::Float64,
+    backend,
 )
     dcn = get_dc_network(data)
     # Threaded solves share `dcn` across tasks: touch only this time step's column.
@@ -314,7 +315,7 @@ function _ga_flat_start(
     node_vdc = _save_column(dcn.node_vdc, time_step)
     part = _ga_partition(data, time_step)
     (; ws, exit, iters, best_gap) = _ga_stage!(
-        data, part, _build_ga_cache(data, part, resolve_linear_solver_backend(nothing)),
+        data, part, _build_ga_cache(data, part, backend),
         time_step, DEFAULT_GA_MAX_ITER,
         handoff_tol, NewtonRaphsonACPowerFlow)
     _restore_column!(dcn.p_c, p_c, time_step)
