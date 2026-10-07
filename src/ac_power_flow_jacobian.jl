@@ -98,29 +98,6 @@ function (J::ACPowerFlowJacobian)(
     return
 end
 
-"""
-    ACPowerFlowJacobian(data::ACPowerFlowData, residual::ACPowerFlowResidual, time_step::Int64) -> ACPowerFlowJacobian
-
-Constructor for `ACPowerFlowJacobian`. The returned instance has its sparsity
-pattern initialized and shares the residual's slack-participation, subnetwork,
-and ZIP-coefficient caches — the residual must be constructed first against the
-same `data` and `time_step`.
-
-# Arguments
-- `data::ACPowerFlowData`: The grid model data used for power flow calculations.
-- `residual::ACPowerFlowResidual`: The companion residual; supplies
-  `bus_slack_participation_factors`, `subnetworks`, and the per-bus ZIP load
-  coefficient vectors.
-- `time_step::Int64`: The time step for the calculations.
-
-# Example
-```julia
-residual = ACPowerFlowResidual(data, time_step)
-J = ACPowerFlowJacobian(data, residual, time_step)
-J(data, time_step)  # Updates the Jacobian matrix stored internally in J.
-J.Jv  # Access the Jacobian matrix stored internally in J.
-```
-"""
 # The distributed-slack slots that the Ybus pattern lacks: `(bus_k, ref)` for each bus with a
 # nonzero participation factor in `data` that is not a neighbor of its island's REF. Bus type is
 # ignored, so a PV→PQ flip keeps the pattern. The polar J pattern depends only on these slots,
@@ -229,6 +206,29 @@ function _get_or_build_jacobian_structure(
     return Jv0
 end
 
+"""
+    ACPowerFlowJacobian(data::ACPowerFlowData, residual::ACPowerFlowResidual, time_step::Int64) -> ACPowerFlowJacobian
+
+Constructor for `ACPowerFlowJacobian`. The returned instance has its sparsity
+pattern initialized and shares the residual's slack-participation, subnetwork,
+and ZIP-coefficient caches — the residual must be constructed first against the
+same `data` and `time_step`.
+
+# Arguments
+- `data::ACPowerFlowData`: The grid model data used for power flow calculations.
+- `residual::ACPowerFlowResidual`: The companion residual; supplies
+  `bus_slack_participation_factors`, `subnetworks`, and the per-bus ZIP load
+  coefficient vectors.
+- `time_step::Int64`: The time step for the calculations.
+
+# Example
+```julia
+residual = ACPowerFlowResidual(data, time_step)
+J = ACPowerFlowJacobian(data, residual, time_step)
+J(data, time_step)  # Updates the Jacobian matrix stored internally in J.
+J.Jv  # Access the Jacobian matrix stored internally in J.
+```
+"""
 function ACPowerFlowJacobian(
     data::ACPowerFlowData,
     residual::ACPowerFlowResidual,
@@ -324,99 +324,6 @@ function _build_polar_nz_caches(
         end
     end
     return od_ptr, od_to, od_ybus_nz, od_jnz, diag_jnz, diag_ybus_nz
-end
-
-"""
-Create the Jacobian matrix structure for a reference bus (REF). Currently unused: we \
-fill all four values even for PV buses with structiural zeros using the same function as for PQ buses.
-"""
-function _create_jacobian_matrix_structure_bus!(rows::Vector{J_INDEX_TYPE},
-    columns::Vector{J_INDEX_TYPE},
-    values::Vector{Float64},
-    bus_from::Int,
-    bus_to::Int,
-    row_from_p::Int,
-    row_from_q::Int,
-    col_to_vm::Int,
-    col_to_va::Int,
-    ::Val{PSY.ACBusTypes.REF})
-    if bus_from == bus_to
-        # Active PF w/r Local Active Power
-        push!(rows, row_from_p)
-        push!(columns, col_to_vm)
-        push!(values, 0.0)
-        # Reactive PF w/r Local Reactive Power
-        push!(rows, row_from_q)
-        push!(columns, col_to_va)
-        push!(values, 0.0)
-    end
-    return
-end
-
-"""
-Create the Jacobian matrix structure for a PV bus. Currently unused: we \
-fill all four values even for PV buses with structiural zeros using the same function as for PQ buses.
-"""
-function _create_jacobian_matrix_structure_bus!(rows::Vector{J_INDEX_TYPE},
-    columns::Vector{J_INDEX_TYPE},
-    values::Vector{Float64},
-    bus_from::Int,
-    bus_to::Int,
-    row_from_p::Int,
-    row_from_q::Int,
-    col_to_vm::Int,
-    col_to_va::Int,
-    ::Val{PSY.ACBusTypes.PV})
-    # Active PF w/r Voltage Angle
-    push!(rows, row_from_p)
-    push!(columns, col_to_va)
-    push!(values, 0.0)
-    # Reactive PF w/r Voltage Angle
-    push!(rows, row_from_q)
-    push!(columns, col_to_va)
-    push!(values, 0.0)
-    if bus_from == bus_to
-        # Reactive PF w/r Local Reactive Power
-        push!(rows, row_from_q)
-        push!(columns, col_to_vm)
-        push!(values, 0.0)
-    end
-    return
-end
-
-"""
-Create the Jacobian matrix structure for a PQ bus. Using this for all buses because
-    a) for REF buses it doesn't matter if there are 2 values or 4 values - there are not many of them in the grid
-    b) for PV buses we fill all four values because we can have a PV -> PQ transition and then we need to fill all four values
-"""
-function _create_jacobian_matrix_structure_bus!(rows::Vector{J_INDEX_TYPE},
-    columns::Vector{J_INDEX_TYPE},
-    values::Vector{Float64},
-    bus_from::Int,
-    bus_to::Int,
-    row_from_p::Int,
-    row_from_q::Int,
-    col_to_vm::Int,
-    col_to_va::Int,
-    # ::Val{PSY.ACBusTypes.PQ}
-)
-    # Active PF w/r Voltage Magnitude
-    push!(rows, row_from_p)
-    push!(columns, col_to_vm)
-    push!(values, 0.0)
-    # Reactive PF w/r Voltage Magnitude
-    push!(rows, row_from_q)
-    push!(columns, col_to_vm)
-    push!(values, 0.0)
-    # Active PF w/r Voltage Angle
-    push!(rows, row_from_p)
-    push!(columns, col_to_va)
-    push!(values, 0.0)
-    # Reactive PF w/r Voltage Angle
-    push!(rows, row_from_q)
-    push!(columns, col_to_va)
-    push!(values, 0.0)
-    return
 end
 
 """
@@ -774,7 +681,9 @@ function _set_entries_for_vsc(
     # allocated (see below), and a bus that was PQ on a previous call but is PV now must have its
     # stale contribution cleared here, since the accumulation loop below only writes it for PQ.
     for c in 1:nconv
-        Jv[base + dcn.converter_dc_node_ix[c], 2 * dcn.converter_ac_bus_ix[c] - 1] = 0.0
+        ixc = dcn.converter_ac_bus_ix[c]
+        Jv[base + dcn.converter_dc_node_ix[c], 2 * ixc - 1] = 0.0
+        Jv[vsc_off + 2 * c, 2 * ixc - 1] = 0.0
     end
     for c in 1:nconv
         ix = dcn.converter_ac_bus_ix[c]
@@ -794,10 +703,8 @@ function _set_entries_for_vsc(
         Jv[vk, pc] = dP / Vdc
         Jv[vk, qc] = dQ / Vdc
         Jv[vk, vk] += -Pdc / (Vdc * Vdc)
-        # Column `2ix-1` is the |V_ac| state only at PQ buses; at PV/REF |V_ac| is fixed, so the
-        # converter's |V_ac|-coupling derivatives (AC-voltage control + loss) do not enter the
-        # Jacobian. The structure allocates the slot as PQ regardless (PV→PQ transitions), so
-        # leaving it unwritten here keeps a correct structural zero.
+        # Column `2ix-1` is the |V_ac| state only at PQ buses. The slots are zeroed above, so a
+        # bus that is PV now does not keep a value from a previous PQ call.
         if data.bus_type[ix, time_step] == PSY.ACBusTypes.PQ
             Jv[qc, 2 * ix - 1] = _vsc_dr2_dVm(mode, Vmix)
             Jv[vk, 2 * ix - 1] += dVm / Vdc
@@ -820,6 +727,12 @@ function _set_entries_for_lcc(data::ACPowerFlowData,
         idx_tap_to = offset_lcc + 2
         idx_angle_from = offset_lcc + 3
         idx_angle_to = offset_lcc + 4
+
+        # Zeroed for every bus type so a PQ→PV flip does not keep a stale value.
+        Jv[idx_tap_from, idx_p_fb] = 0.0
+        Jv[idx_tap_to, idx_p_fb] = 0.0
+        Jv[idx_tap_from, idx_p_tb] = 0.0
+        Jv[idx_tap_to, idx_p_tb] = 0.0
 
         # F_α = α − α_min has a constant unit self-derivative; write it each iteration so
         # every nonzero is owned by the update path, not seeded only at construction.
@@ -851,14 +764,6 @@ function _set_entries_for_lcc(data::ACPowerFlowData,
             Jv[idx_p_tb, idx_angle_to] = 0.0
             Jv[idx_q_tb, idx_tap_to] = 0.0
             Jv[idx_q_tb, idx_angle_to] = 0.0
-            if bus_type_fb == PSY.ACBusTypes.PQ
-                Jv[idx_tap_from, idx_p_fb] = 0.0
-                Jv[idx_tap_to, idx_p_fb] = 0.0
-            end
-            if bus_type_tb == PSY.ACBusTypes.PQ
-                Jv[idx_tap_from, idx_p_tb] = 0.0
-                Jv[idx_tap_to, idx_p_tb] = 0.0
-            end
             Jv[idx_tap_from, idx_tap_from] = 1.0   # ∂(tap_r − tap_set)/∂tap_r
             Jv[idx_tap_from, idx_angle_from] = 0.0
             Jv[idx_tap_from, idx_tap_to] = 0.0

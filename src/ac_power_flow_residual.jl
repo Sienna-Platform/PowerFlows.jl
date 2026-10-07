@@ -2,7 +2,8 @@
 `ACPowerFlowResidual` and its `ACPowerFlowJacobian`. `data_stale` is `true` while `data` lacks
 that iterate's voltages and injections (the NR loop's fused kernel defers them to
 [`_write_back_bus_state!`](@ref)); while it is `false`, `data` is authoritative and is reloaded
-before each evaluation."""
+before each evaluation.
+Entries follow the `bus_lookup` order, which is the bus axis of the Ybus."""
 mutable struct PolarBusState
     Vm::Vector{Float64}
     θ::Vector{Float64}
