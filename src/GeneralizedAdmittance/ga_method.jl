@@ -241,8 +241,10 @@ function _ga_solve(
     name = "GeneralizedAdmittanceACPowerFlow"
     _validate_handoff_solver(handoff_solver, name)
     part = _ga_partition(data, time_step)
+    backend = resolve_linear_solver_backend(linear_solver)
     (; dc, ws, exit, iters, best_gap, refreshes) = _ga_stage!(
-        data, part, _get_or_build_ga_cache!(data, part), time_step, maxIterations,
+        data, part, _get_or_build_ga_cache!(data, part, backend), time_step,
+        maxIterations,
         _stage_tol(handoff_solver, tol, handoff_tol), handoff_solver,
     )
     if isfinite(best_gap)
@@ -312,7 +314,8 @@ function _ga_flat_start(
     node_vdc = _save_column(dcn.node_vdc, time_step)
     part = _ga_partition(data, time_step)
     (; ws, exit, iters, best_gap) = _ga_stage!(
-        data, part, _build_ga_cache(data, part), time_step, DEFAULT_GA_MAX_ITER,
+        data, part, _build_ga_cache(data, part, resolve_linear_solver_backend(nothing)),
+        time_step, DEFAULT_GA_MAX_ITER,
         handoff_tol, NewtonRaphsonACPowerFlow)
     _restore_column!(dcn.p_c, p_c, time_step)
     _restore_column!(dcn.q_c, q_c, time_step)
