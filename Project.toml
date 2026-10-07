@@ -18,12 +18,6 @@ PowerSystems = "bcd98974-b02a-5e2f-9ee0-a103f5c450dd"
 Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
 SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
 
-[weakdeps]
-Pardiso = "46dd5b70-b6fb-5a00-ae2d-e8fea33afaf2"
-
-[extensions]
-PowerFlowsPardisoExt = "Pardiso"
-
 [sources]
 InfrastructureSystems = {rev = "IS4", url = "https://github.com/Sienna-Platform/InfrastructureSystems.jl.git"}
 PowerSystems = {url = "https://github.com/Sienna-Platform/PowerSystems.jl.git", rev = "psy6"}
@@ -42,7 +36,6 @@ KrylovKit = "0.9, 0.10"
 LineSearches = "7.8"
 LinearAlgebra = "1"
 Logging = "1"
-Pardiso = "1"
 PowerNetworkMatrices = "^0.24"
 PowerSystems = "^5.10"
 Printf = "1"

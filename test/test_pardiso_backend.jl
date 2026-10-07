@@ -1,6 +1,6 @@
 # MKLPardiso backend tests.
 #
-# Loading Pardiso triggers PowerFlows' PowerFlowsPardisoExt (and PNM's MKLPardisoExt).
+# Loading Pardiso triggers PNM's MKLPardisoExt, which implements the MKLPardiso cache.
 # Pardiso.jl installs on every platform, but MKL is only functional on x86_64
 # Linux/Windows; the numeric tests are gated on `Pardiso.mkl_is_available()` so they
 # RUN on the Linux/Windows CI runners and SKIP cleanly on Apple Silicon. The
