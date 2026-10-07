@@ -209,15 +209,22 @@ end
     sys = build_system(PSITestSystems, "c_sys14"; add_forecasts = false)
     ptdf_data = PF.PowerFlowData(PTDFDCPowerFlow(; time_steps = 1), sys)
     vptdf_data = PF.PowerFlowData(vPTDFDCPowerFlow(; time_steps = 1), sys)
+    PF.solve_power_flow!(ptdf_data)
+    @test PF.get_arc_axis(vptdf_data) == PF.get_arc_axis(ptdf_data)
+    copyto!(
+        vptdf_data.arc_active_power_flow_from_to,
+        ptdf_data.arc_active_power_flow_from_to,
+    )
     @test isnothing(vptdf_data.solver_cache[])
+    @test !all(iszero, PF.dc_loss_factors(ptdf_data))
     @test isapprox(
         PF.dc_loss_factors(vptdf_data),
         PF.dc_loss_factors(ptdf_data);
         atol = 1e-8,
     )
-    PF.solve_power_flow!(ptdf_data)
     PF.solve_power_flow!(vptdf_data)
-    @test !isnothing(vptdf_data.solver_cache[])
+    @test PF._dc_aba_factor(vptdf_data, vptdf_data.solver_cache[]) ===
+          vptdf_data.solver_cache[].cache
     @test isapprox(
         PF.dc_loss_factors(vptdf_data),
         PF.dc_loss_factors(ptdf_data);
