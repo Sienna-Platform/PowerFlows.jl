@@ -21,7 +21,8 @@ function _ga_iterate!(cache::GeneralizedAdmittanceCache, np::GANodalPower,
     nv = n_v(part)
     nl = length(ws.u)
     R = ws.R
-    @inbounds for k in 1:nl                           # RHS [i, [0; i_q]]
+    # R = Y′ℓℓ⁻¹[i, [0; i_q]]: response to all currents, and to the PQ currents only
+    @inbounds for k in 1:nl
         R[k, 1] = ws.i[k]
         R[k, 2] = ws.i[k]
     end
@@ -32,11 +33,14 @@ function _ga_iterate!(cache::GeneralizedAdmittanceCache, np::GANodalPower,
     @inbounds for k in 1:nl
         ws.u[k] = ws.u0[k] + R[k, 1]
     end
+    # Tentative u from all currents; pin |u_v| = Vset and keep the angle
+    # ũ_v: the part of u_v that the v-bus currents must supply
     @inbounds for k in 1:nv
         a2 = abs2(ws.u[k])
         ws.u[k] *= Vset[k] / sqrt(a2)
         ws.ut[k] = ws.u[k] - ws.u0[k] - R[k, 2]
     end
+    # Schur on q: the i_v that gives ũ_v with no added q current
     mul!(ws.w, cache.blocks.Yqv, ws.ut)
     PNM.solve!(cache.Fq, ws.w)
     mul!(ws.iv_raw, cache.blocks.Yvv, ws.ut)
@@ -44,10 +48,12 @@ function _ga_iterate!(cache::GeneralizedAdmittanceCache, np::GANodalPower,
     @inbounds for k in 1:nv
         ws.iv_raw[k] += y[k] * ws.ut[k]
     end
-    @inbounds for j in 1:(nl - nv)                    # eq. (10)
+    # u_q from the slack, the PQ currents and the ũ_v response (eq. 21)
+    @inbounds for j in 1:(nl - nv)
         k = nv + j
         ws.u[k] = ws.u0[k] + R[k, 2] - ws.w[j]
     end
+    # u is final: mismatches and new currents from the power model at u
     gap = 0.0
     island = part.island_of_l
     fill!(ws.psum, 0.0)

@@ -5,7 +5,7 @@
 # it explicitly for clarity.
 
 @testset "VSC I0: TwoTerminalVSCLine lowers to an isolated 2-node DCNetwork" begin
-    sys = _build_vsc_system(; g = 50.0)
+    sys = _build_vsc_system(; g = 1 / 32.0)
     data = PowerFlowData(
         ACPowerFlow{NewtonRaphsonACPowerFlow}(;
             solution_parameters = VSC_SOLUTION_PARAMETERS,
@@ -29,9 +29,56 @@
     @test dcn.node_is_slack[1]
     @test !dcn.node_is_slack[2]
 
-    # dense DC conductance: [g -g; -g g]
+    # dense DC conductance: [g -g; -g g]. A 32 Ω line on the 400 kV, 100 MVA DC base (1600 Ω)
+    # is 50 pu of conductance.
     @test dcn.G_dc ≈ [50.0 -50.0; -50.0 50.0]
-    @test dcn.branch_g == [50.0]
+    @test dcn.branch_g ≈ [50.0]
+end
+
+# PowerSystems stores a VSC line's DC conductance in siemens; the DC network works per unit on
+# `rated_dc_voltage^2 / system base`. A 2.5 Ω line at 250 kV on 100 MVA (a 625 Ω base) is
+# 250 pu of conductance.
+@testset "VSC: DC-line conductance converts from siemens to system per unit" begin
+    sys = _build_vsc_system(; g = 1 / 2.5, rated_dc_voltage = 250.0)
+    data = PowerFlowData(
+        ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+            solution_parameters = VSC_SOLUTION_PARAMETERS,
+        ),
+        sys,
+    )
+    dcn = PF.get_dc_network(data)
+    @test dcn.branch_g ≈ [250.0]
+end
+
+@testset "VSC: a conducting DC line without a rated DC voltage is rejected" begin
+    sys = _build_vsc_system(; g = 1 / 32.0)
+    vsc = PSY.get_component(PSY.TwoTerminalVSCLine, sys, "vsc_test")
+    PSY.set_rated_dc_voltage!(vsc, 0.0)
+    @test_throws ArgumentError PowerFlowData(
+        ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+            solution_parameters = VSC_SOLUTION_PARAMETERS,
+        ),
+        sys,
+    )
+end
+
+# PowerSystems stores a TModelHVDCLine's series resistance in ohms; the DC network works per
+# unit on the DC bus base voltage and the system base.
+@testset "MTDC: DC-line resistance converts from ohms to system per unit" begin
+    sys = _build_mtdc_system()
+    data = PowerFlowData(
+        ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+            solution_parameters = VSC_SOLUTION_PARAMETERS,
+        ),
+        sys,
+    )
+    dcn = PF.get_dc_network(data)
+    expected = sort([
+        PSY.get_base_voltage(PSY.get_from(PSY.get_arc(l)))^2 /
+        (PSY.get_r(l) * PSY.get_base_power(sys))
+        for l in PSY.get_components(PSY.TModelHVDCLine, sys)
+    ])
+    @test sort(dcn.branch_g) ≈ expected
 end
 
 @testset "VSC I0: pure-AC system has an empty DCNetwork (regression-safe)" begin
@@ -58,7 +105,7 @@ end
         arc = arc,
         active_power_flow = 0.2,
         rating = 1.0,
-        g = 40.0,
+        g = 1 / 40.0,
         ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
         power_factor_setpoint_from = 1.0,
         ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
@@ -66,7 +113,7 @@ end
         dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE_DROOP,
         dc_voltage_droop_from = 0.05,
         dc_voltage_setpoint_from = 1.0,
-        rated_dc_voltage = 1.0,
+        rated_dc_voltage = 400.0,
         dc_control_to = PSY.VSCDCControlModes.DC_VOLTAGE_DROOP,
         dc_voltage_droop_to = 0.05,
         dc_voltage_setpoint_to = 1.0, input_basis = u"CU",
@@ -114,7 +161,7 @@ end
 # buses, zero converter loss (`_build_vsc_pq_system`, test_utils/common.jl). Solve with polar NR
 # and verify convergence + setpoints + Jacobian.
 @testset "VSC I1: polar NR solves a point-to-point VSC and meets setpoints" begin
-    sys = _build_vsc_pq_system(; g = 50.0, p_set = 0.4, q_set = 0.1, vdc = 1.05)
+    sys = _build_vsc_pq_system(; g = 1 / 32.0, p_set = 0.4, q_set = 0.1, vdc = 1.05)
     data = PowerFlowData(
         ACPowerFlow{NewtonRaphsonACPowerFlow}(;
             solution_parameters = VSC_SOLUTION_PARAMETERS,
@@ -140,7 +187,7 @@ end
 end
 
 @testset "VSC I1: analytic polar Jacobian matches finite differences" begin
-    sys = _build_vsc_pq_system(; g = 40.0, p_set = 0.3, q_set = -0.05, vdc = 1.02)
+    sys = _build_vsc_pq_system(; g = 1 / 40.0, p_set = 0.3, q_set = -0.05, vdc = 1.02)
     data = PowerFlowData(
         ACPowerFlow{NewtonRaphsonACPowerFlow}(;
             solution_parameters = VSC_SOLUTION_PARAMETERS,
@@ -159,7 +206,7 @@ end
 
 # Flexible builder: one VSC line between the first two PQ buses of c_sys14, control fields passed
 # through as keyword args.
-function _vsc_system(; g = 50.0, vsc_kwargs...)
+function _vsc_system(; g = 1 / 32.0, vsc_kwargs...)
     sys = deepcopy(PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false))
     pq = sort!(
         collect(
@@ -191,11 +238,11 @@ end
 
 @testset "VSC I2: DC-voltage droop — both converters follow V_dc = V_set + k·P_c" begin
     sys, _, _ = _vsc_system(;
-        g = 50.0,
+        g = 1 / 32.0,
         dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE_DROOP,
         dc_voltage_droop_from = 0.02,
         dc_voltage_setpoint_from = 1.05,
-        rated_dc_voltage = 1.0,
+        rated_dc_voltage = 400.0,
         reactive_power_from = 0.0,
         dc_control_to = PSY.VSCDCControlModes.DC_VOLTAGE_DROOP,
         dc_voltage_droop_to = 0.03,
@@ -228,11 +275,11 @@ end
 
 @testset "VSC I2: AC-voltage control (Vdc+Vac from, P+Vac to) holds bus magnitudes" begin
     sys, from_no, to_no = _vsc_system(;
-        g = 50.0,
+        g = 1 / 32.0,
         dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
         ac_control_from = PSY.VSCACControlModes.AC_VOLTAGE,
         dc_voltage_setpoint_from = 1.05,
-        rated_dc_voltage = 1.0,
+        rated_dc_voltage = 400.0,
         ac_voltage_setpoint_from = 1.01,
         dc_control_to = PSY.VSCDCControlModes.DC_POWER,
         ac_control_to = PSY.VSCACControlModes.AC_VOLTAGE,
@@ -258,11 +305,11 @@ end
 
 @testset "VSC I2: lossy converter — analytic Jacobian matches finite differences" begin
     sys, _, _ = _vsc_system(;
-        g = 45.0,
+        g = 1 / 36.0,
         dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
         ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
         dc_voltage_setpoint_from = 1.03,
-        rated_dc_voltage = 1.0,
+        rated_dc_voltage = 400.0,
         reactive_power_from = 0.0,
         dc_control_to = PSY.VSCDCControlModes.DC_POWER,
         ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
@@ -288,7 +335,7 @@ end
     verify_jacobian_asymptotic(residual, data, jac.Jv, x, 1; label = "VSC polar lossy")
 end
 @testset "VSC: analytic polar Jacobian matches FD for a lossy converter on a PV bus" begin
-    sys = _vsc_system_pv_terminal(; g = 45.0)
+    sys = _vsc_system_pv_terminal(; g = 1 / 36.0)
     data = PowerFlowData(
         ACPowerFlow{NewtonRaphsonACPowerFlow}(;
             solution_parameters = VSC_SOLUTION_PARAMETERS,
@@ -321,7 +368,7 @@ end
         dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
         ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
         dc_voltage_setpoint_from = 1.03,
-        rated_dc_voltage = 1.0,
+        rated_dc_voltage = 400.0,
         dc_control_to = PSY.VSCDCControlModes.DC_POWER,
         ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
         dc_power_setpoint_to = 0.3,
@@ -345,7 +392,7 @@ end
     )
     refs = Vector{Tuple{Float64, Float64, Float64}}()
     for S in solvers
-        sys = _build_vsc_pq_system(; g = 50.0, p_set = 0.4, q_set = 0.1, vdc = 1.05)
+        sys = _build_vsc_pq_system(; g = 1 / 32.0, p_set = 0.4, q_set = 0.1, vdc = 1.05)
         data = PowerFlowData(
             PF.ACPolarPowerFlow{S}(; solution_parameters = VSC_SOLUTION_PARAMETERS),
             sys,
@@ -367,7 +414,7 @@ end
         ("rect", PF.ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}),
         ("mixed", PF.ACMixedPowerFlow{NewtonRaphsonACPowerFlow}),
     )
-        sys = _build_vsc_pq_system(; g = 50.0, p_set = 0.4, q_set = 0.1, vdc = 1.05)
+        sys = _build_vsc_pq_system(; g = 1 / 32.0, p_set = 0.4, q_set = 0.1, vdc = 1.05)
         data = PowerFlowData(PF_T(; solution_parameters = VSC_SOLUTION_PARAMETERS), sys)
         @test solve_power_flow!(data)
         dcn = PF.get_dc_network(data)
@@ -388,11 +435,11 @@ end
 
 @testset "VSC I3: mixed Jacobian matches finite differences (incl. loss)" begin
     sys, _, _ = _vsc_system(;
-        g = 45.0,
+        g = 1 / 36.0,
         dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
         ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
         dc_voltage_setpoint_from = 1.03,
-        rated_dc_voltage = 1.0,
+        rated_dc_voltage = 400.0,
         reactive_power_from = 0.0,
         dc_control_to = PSY.VSCDCControlModes.DC_POWER,
         ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
@@ -416,11 +463,11 @@ end
 
 @testset "VSC I3: rectangular Jacobian matches finite differences (incl. loss)" begin
     sys, _, _ = _vsc_system(;
-        g = 45.0,
+        g = 1 / 36.0,
         dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
         ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
         dc_voltage_setpoint_from = 1.03,
-        rated_dc_voltage = 1.0,
+        rated_dc_voltage = 400.0,
         reactive_power_from = 0.0,
         dc_control_to = PSY.VSCDCControlModes.DC_POWER,
         ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
@@ -455,11 +502,11 @@ const _ALL_AC_FORMULATIONS = (
 # exercises the droop control row and its `∂r1/∂P_c = -k`, `∂r1/∂V_dc = 1` partials.
 function _vsc_droop_system()
     sys, _, _ = _vsc_system(;
-        g = 50.0,
+        g = 1 / 32.0,
         dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE_DROOP,
         dc_voltage_droop_from = 0.02,
         dc_voltage_setpoint_from = 1.05,
-        rated_dc_voltage = 1.0,
+        rated_dc_voltage = 400.0,
         reactive_power_from = 0.0,
         dc_control_to = PSY.VSCDCControlModes.DC_VOLTAGE_DROOP,
         dc_voltage_droop_to = 0.03,
@@ -477,11 +524,11 @@ end
 # `r2` rows are the `|V_ac|^2 - V_set^2` pin, exercising `∂r2/∂|V_ac|` (polar) / `-2e,-2f` (rect/mixed).
 function _vsc_ac_voltage_system()
     sys, _, _ = _vsc_system(;
-        g = 50.0,
+        g = 1 / 32.0,
         dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
         ac_control_from = PSY.VSCACControlModes.AC_VOLTAGE,
         dc_voltage_setpoint_from = 1.05,
-        rated_dc_voltage = 1.0,
+        rated_dc_voltage = 400.0,
         ac_voltage_setpoint_from = 1.01,
         dc_control_to = PSY.VSCDCControlModes.DC_POWER,
         ac_control_to = PSY.VSCACControlModes.AC_VOLTAGE,
@@ -573,11 +620,11 @@ end
                                                                                 _ALL_AC_FORMULATIONS
     time_steps = 4
     sys, from_no, to_no = _vsc_system(;
-        g = 50.0,
+        g = 1 / 32.0,
         dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
         ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
         dc_voltage_setpoint_from = 1.04,
-        rated_dc_voltage = 1.0,
+        rated_dc_voltage = 400.0,
         reactive_power_from = 0.0,
         dc_control_to = PSY.VSCDCControlModes.DC_POWER,
         ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
@@ -674,10 +721,10 @@ end
 
 @testset "VSC results: point-to-point line populates the vsc table" begin
     sys, from_no, to_no = _vsc_system(;
-        g = 50.0,
+        g = 1 / 32.0,
         dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
         dc_voltage_setpoint_from = 1.03,
-        rated_dc_voltage = 1.0,
+        rated_dc_voltage = 400.0,
         dc_control_to = PSY.VSCDCControlModes.DC_POWER,
         dc_power_setpoint_to = 0.3,
     )
@@ -701,10 +748,10 @@ end
 # from `_dc_converter_ac_buses`, passed to PNM as `irreducible_buses` for every PowerFlowData.
 @testset "VSC: converter AC terminals are collected as irreducible buses" begin
     sys, from_no, to_no = _vsc_system(;
-        g = 50.0,
+        g = 1 / 32.0,
         dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
         dc_voltage_setpoint_from = 1.03,
-        rated_dc_voltage = 1.0,
+        rated_dc_voltage = 400.0,
         dc_control_to = PSY.VSCDCControlModes.DC_POWER,
         dc_power_setpoint_to = 0.3,
     )
@@ -716,7 +763,7 @@ end
         g = 0.0,
         dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
         dc_voltage_setpoint_from = 1.03,
-        rated_dc_voltage = 1.0,
+        rated_dc_voltage = 400.0,
         dc_control_to = PSY.VSCDCControlModes.DC_POWER,
         dc_power_setpoint_to = 0.3,
     )
@@ -744,18 +791,18 @@ end
     @test !PF._has_dc_voltage_reference(PSY.VSCDCControlModes.DC_POWER)
 
     sys, _, _ = _vsc_system(;
-        g = 50.0,
+        g = 1 / 32.0,
         dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
         dc_voltage_setpoint_from = 1.04,
-        rated_dc_voltage = 1.0,
+        rated_dc_voltage = 400.0,
         dc_control_to = PSY.VSCDCControlModes.DC_VOLTAGE_DROOP,
         dc_voltage_droop_to = 0.05,
         dc_voltage_setpoint_to = 1.0,
     )
     vsc = first(PSY.get_components(PSY.TwoTerminalVSCLine, sys))
     base = PSY.get_base_power(sys)
-    # strict DC_VOLTAGE terminal keeps its voltage setpoint as DCSET
-    @test PF._vsc_export_dcset(vsc, :from, base) == PSY.get_dc_voltage_setpoint_from(vsc)
+    # strict DC_VOLTAGE terminal writes its voltage setpoint as DCSET, in kV
+    @test PF._vsc_export_dcset(vsc, :from, base) ≈ 1.04 * 400.0
     # droop terminal's DCSET is its MW feed into the AC network: +P_flow on the `to` side
     @test isapprox(
         PF._vsc_export_dcset(vsc, :to, base),
@@ -834,7 +881,7 @@ function _build_parallel_ic_system(; shared_ac::Bool = true)
         active_power_flow = 0.0,
         arc = arc,
         base_current = 100.0,
-        r = 0.01,
+        r = 0.01 * 230.0^2 / 100.0, # 0.01 pu on the 230 kV DC base and 100 MVA
         l = 0.0,
         c = 0.0,
         input_basis = u"CU",
@@ -865,7 +912,8 @@ end
 # Regression: a converter whose AC terminal is the REF bus. The rect/mixed REF rows are current
 # balance with (P_gen, Q_gen) as the bus states — the converter couples to (P_c, Q_c) but NOT to
 # the (P_gen, Q_gen) columns (e,f are fixed at REF), which the shared Jacobian writer must gate.
-function _vsc_system_ref_terminal(; g = 45.0)
+# `g` is the DC-line conductance in S and `rated_dc_voltage` the DC voltage base in kV.
+function _vsc_system_ref_terminal(; g = 1 / 36.0, rated_dc_voltage = 400.0)
     sys = deepcopy(PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false))
     pick(t) = first(
         sort!(
@@ -885,7 +933,7 @@ function _vsc_system_ref_terminal(; g = 45.0)
         ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
         power_factor_setpoint_from = 1.0,
         dc_voltage_setpoint_from = 1.03,
-        rated_dc_voltage = 1.0,
+        rated_dc_voltage = rated_dc_voltage,
         reactive_power_from = 0.0,
         dc_control_to = PSY.VSCDCControlModes.DC_POWER,
         ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
@@ -908,7 +956,7 @@ end
         ("rect", PF.ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}),
         ("mixed", PF.ACMixedPowerFlow{NewtonRaphsonACPowerFlow}),
     )
-        sys = _vsc_system_ref_terminal(; g = 45.0)
+        sys = _vsc_system_ref_terminal(; g = 1 / 36.0)
         pf = PF_T(; solution_parameters = VSC_SOLUTION_PARAMETERS)
         data = PowerFlowData(pf, sys)
         @test solve_power_flow!(data)
@@ -942,7 +990,7 @@ end
         ("rect", PF.ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}),
         ("mixed", PF.ACMixedPowerFlow{NewtonRaphsonACPowerFlow}),
     )
-        sys = _vsc_system_pv_terminal(; g = 45.0)
+        sys = _vsc_system_pv_terminal(; g = 1 / 36.0)
         pf = PF_T(; solution_parameters = VSC_SOLUTION_PARAMETERS)
         data = PowerFlowData(pf, sys)
         @test solve_power_flow!(data)
@@ -989,12 +1037,12 @@ end
         arc = arc,
         active_power_flow = 0.3,
         rating = 2.0,
-        g = 45.0,
+        g = 1 / 36.0,
         dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
         ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
         power_factor_setpoint_from = 1.0,
         dc_voltage_setpoint_from = 1.03,
-        rated_dc_voltage = 1.0,
+        rated_dc_voltage = 400.0,
         dc_control_to = PSY.VSCDCControlModes.DC_POWER,
         ac_control_to = PSY.VSCACControlModes.AC_VOLTAGE,
         dc_power_setpoint_to = 0.3,
@@ -1029,11 +1077,11 @@ end
             arc = arc_k,
             active_power_flow = 0.2,
             rating = 2.0,
-            g = 45.0,
+            g = 1 / 36.0,
             dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
             ac_control_from = PSY.VSCACControlModes.AC_VOLTAGE,
             dc_voltage_setpoint_from = 1.03,
-            rated_dc_voltage = 1.0,
+            rated_dc_voltage = 400.0,
             ac_voltage_setpoint_from = 1.0,
             dc_control_to = PSY.VSCDCControlModes.DC_POWER,
             ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
@@ -1116,7 +1164,7 @@ end
 # the FDDecoupled variant handles the tail via a sequential sub-solve, which cannot honor
 # AC-voltage control rows (must reject those too).
 @testset "VSC: RobustHomotopy rejects DC networks; FDDecoupled rejects AC-voltage control" begin
-    sys = _build_vsc_pq_system(; g = 50.0, p_set = 0.4, q_set = 0.1, vdc = 1.05)
+    sys = _build_vsc_pq_system(; g = 1 / 32.0, p_set = 0.4, q_set = 0.1, vdc = 1.05)
     data = PowerFlowData(
         ACPowerFlow{PF.RobustHomotopyPowerFlow}(;
             solution_parameters = VSC_SOLUTION_PARAMETERS,
@@ -1126,11 +1174,11 @@ end
     @test_throws ArgumentError solve_power_flow!(data)
 
     sys_vac, _, _ = _vsc_system(;
-        g = 50.0,
+        g = 1 / 32.0,
         dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
         ac_control_from = PSY.VSCACControlModes.AC_VOLTAGE,
         dc_voltage_setpoint_from = 1.05,
-        rated_dc_voltage = 1.0,
+        rated_dc_voltage = 400.0,
         ac_voltage_setpoint_from = 1.01,
         dc_control_to = PSY.VSCDCControlModes.DC_POWER,
         ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
@@ -1150,11 +1198,11 @@ end
 # previously left FDDecoupled unable to converge on any lossy VSC system.
 @testset "VSC: FDDecoupled converges on a lossy VSC system and matches NR" begin
     lossy_kwargs = (;
-        g = 45.0,
+        g = 1 / 36.0,
         dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
         ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
         dc_voltage_setpoint_from = 1.03,
-        rated_dc_voltage = 1.0,
+        rated_dc_voltage = 400.0,
         reactive_power_from = 0.0,
         dc_control_to = PSY.VSCDCControlModes.DC_POWER,
         ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
@@ -1190,11 +1238,11 @@ end
 @testset "get_hvdc_results: multiperiod NamedTuple tables" begin
     time_steps = 3
     sys, from_no, to_no = _vsc_system(;
-        g = 50.0,
+        g = 1 / 32.0,
         dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
         ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
         dc_voltage_setpoint_from = 1.04,
-        rated_dc_voltage = 1.0,
+        rated_dc_voltage = 400.0,
         reactive_power_from = 0.0,
         dc_control_to = PSY.VSCDCControlModes.DC_POWER,
         ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,

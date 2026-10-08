@@ -27,6 +27,10 @@ function _test_threads_bitwise(build, time_steps, perturb!; resolve::Bool)
         for f in _THREADED_FIELDS
             @test isequal(getfield(serial, f), getfield(threaded, f))
         end
+        dc_s, dc_t = PF.get_dc_network(serial), PF.get_dc_network(threaded)
+        for f in (:p_c, :q_c, :node_vdc)
+            @test isequal(getfield(dc_s, f), getfield(dc_t, f))
+        end
     end
 end
 
@@ -73,6 +77,24 @@ end
         end
     end
     _test_threads_bitwise(build, 8, perturb!; resolve = true)
+end
+
+# Workers share the DC network: the GA flat start must not restore other workers' columns.
+@testset "threaded time steps equal the serial solve: GA flat start with VSC" begin
+    build = function (T, n_threads)
+        params = SolutionParameters(;
+            linear_solver = "KLU", model_dc_network = true, n_threads)
+        pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+            time_steps = T, ga_flat_start = true, solution_parameters = params)
+        return PowerFlowData(pf, _build_vsc_system())
+    end
+    perturb! = function (data)
+        for t in 1:size(data.bus_active_power_withdrawals, 2)
+            data.bus_active_power_withdrawals[:, t] .*= 1.0 + 0.02 * t
+            data.bus_reactive_power_withdrawals[:, t] .*= 1.0 + 0.02 * t
+        end
+    end
+    _test_threads_bitwise(build, 8, perturb!; resolve = false)
 end
 
 @testset "threaded time steps: time_steps subset and n_threads > steps" begin

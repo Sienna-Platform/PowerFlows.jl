@@ -1305,8 +1305,10 @@ const VSC_SOLUTION_PARAMETERS = SolutionParameters(; model_dc_network = true)
 # One point-to-point VSC line between the first two PQ buses of c_sys14: from = DC-voltage control
 # (DC slack), to = (P, Q) control. Extra `TwoTerminalVSCLine` fields pass through `vsc_kwargs...`
 # (last-wins, so callers may override the defaults below, e.g. capability limits).
+# `g` is the DC-line conductance in S and `rated_dc_voltage` the DC voltage base in kV.
 function _build_vsc_pq_system(;
-    g = 50.0,
+    g = 1 / 32.0,
+    rated_dc_voltage = 400.0,
     p_set = 0.4,
     q_set = 0.1,
     vdc = 1.05,
@@ -1342,7 +1344,7 @@ function _build_vsc_pq_system(;
         ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
         power_factor_setpoint_from = 1.0,
         dc_voltage_setpoint_from = vdc,
-        rated_dc_voltage = 1.0,
+        rated_dc_voltage = rated_dc_voltage,
         reactive_power_from = q_set_from,
         # to: power control (P, Q)
         dc_control_to = PSY.VSCDCControlModes.DC_POWER,
@@ -1430,7 +1432,7 @@ function _build_mtdc_system()
             active_power_flow = 0.0,
             arc = arc,
             base_current = 100.0,
-            r = 0.01,
+            r = 0.01 * 230.0^2 / 100.0, # 0.01 pu on the 230 kV DC base and 100 MVA
             l = 0.0,
             c = 0.0,
             input_basis = u"CU",
@@ -1621,12 +1623,12 @@ function _comprehensive_area_dc_fixture(; lcc_metered_end::String = "from")
         arc = Arc(; from = b12, to = b13),
         active_power_flow = 0.2,
         rating = 2.0,
-        g = 50.0,
+        g = 1 / 32.0,
         dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
         ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
         power_factor_setpoint_from = 1.0,
         dc_voltage_setpoint_from = 1.05,
-        rated_dc_voltage = 1.0,
+        rated_dc_voltage = 400.0,
         reactive_power_from = 0.02,
         dc_control_to = PSY.VSCDCControlModes.DC_POWER,
         ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
