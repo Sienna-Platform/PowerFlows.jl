@@ -263,6 +263,7 @@ function _ga_solve(
     if converged && need_factors
         J(data, time_step)
     end
+    _finalize_formulation!(pf, data, sv.x, residual, time_step)
     converged = _finalize_power_flow(
         converged, iters + handoff_iters, name, residual, data, _finalize_jv(J),
         time_step,
@@ -290,14 +291,17 @@ function _ga_flat_start(
     handoff_tol::Float64,
 )
     dcn = get_dc_network(data)
-    p_c, q_c, node_vdc = copy(dcn.p_c), copy(dcn.q_c), copy(dcn.node_vdc)
+    # Threaded solves share `dcn` across tasks: touch only this time step's column.
+    p_c = dcn.p_c[:, time_step]
+    q_c = dcn.q_c[:, time_step]
+    node_vdc = dcn.node_vdc[:, time_step]
     part = _ga_partition(data, time_step)
     (; ws, exit, iters, best_gap) = _ga_stage!(
         data, part, _build_ga_cache(data, part), time_step, DEFAULT_GA_MAX_ITER,
         handoff_tol, NewtonRaphsonACPowerFlow)
-    copyto!(dcn.p_c, p_c)
-    copyto!(dcn.q_c, q_c)
-    copyto!(dcn.node_vdc, node_vdc)
+    dcn.p_c[:, time_step] .= p_c
+    dcn.q_c[:, time_step] .= q_c
+    dcn.node_vdc[:, time_step] .= node_vdc
     @info "Generalized-admittance flat start: $exit after $iters " *
           "iterations, gap $best_gap."
     newx0 = copy(x0)

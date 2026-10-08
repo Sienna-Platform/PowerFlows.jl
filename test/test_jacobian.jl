@@ -297,3 +297,178 @@ end
     sys = _make_3w_boundary_fixture()
     _verify_area_jacobian(sys, "polar area interchange (3W winding tie)")
 end
+
+nr(; kw...) = PF.ACPowerFlow{NewtonRaphsonACPowerFlow}(; kw...)
+
+_c14_gspf(c14) = Dict(
+    (ThermalStandard, get_name(g)) => Float64(i)
+    for (i, g) in enumerate(get_components(ThermalStandard, c14))
+)
+
+function _area_interchange_fixture()
+    sys = _make_two_area_system()
+    _set_slack!(sys, "Bus 6")
+    _add_area_interchange!(sys, "Area2", "Area1", 0.3; name = "A2_A1")
+    return sys
+end
+
+function _check_fused_kernel(data::PF.ACPowerFlowData, label::String)
+    residual = PF.ACPowerFlowResidual(data, 1)
+    J = PF.ACPowerFlowJacobian(data, residual, 1)
+    x = PF.calculate_x0(data, 1)
+    Random.seed!(11)
+    x .+= 0.02 .* randn(length(x))
+    residual(data, x, 1)
+    J(data, 1)
+    F_sep = copy(residual.Rv)
+    J_sep = copy(SparseArrays.nonzeros(J.Jv))
+    fill!(residual.Rv, NaN)
+    fill!(SparseArrays.nonzeros(J.Jv), 0.0)
+    PF._update_residual_and_jacobian!(residual, J, x, data, 1)
+    @testset "$label" begin
+        @test isapprox(residual.Rv, F_sep; rtol = 1e-12, atol = 1e-12)
+        @test isapprox(SparseArrays.nonzeros(J.Jv), J_sep; rtol = 1e-12, atol = 1e-12)
+    end
+    return
+end
+
+@testset "Fused residual + Jacobian kernel matches the separate evaluations" begin
+    c14 = PSB.build_system(PSITestSystems, "c_sys14")
+    _check_fused_kernel(PF.PowerFlowData(nr(; correct_bustypes = true), c14), "c_sys14")
+    gspf = _c14_gspf(c14)
+    _check_fused_kernel(
+        PF.PowerFlowData(
+            nr(; correct_bustypes = true, generator_slack_participation_factors = gspf),
+            c14,
+        ),
+        "c_sys14 distributed slack",
+    )
+    _check_fused_kernel(
+        PF.PowerFlowData(nr(; correct_bustypes = false), _two_swing_system()),
+        "two swings",
+    )
+    _check_fused_kernel(
+        PF.PowerFlowData(nr(; correct_bustypes = true), build_lcc_control_system()),
+        "two LCCs",
+    )
+    for (label, build) in (
+        ("VSC", _build_vsc_system), ("VSC PV terminal", _vsc_system_pv_terminal),
+    )
+        vsc_data = PF.PowerFlowData(
+            nr(; correct_bustypes = true, solution_parameters = VSC_SOLUTION_PARAMETERS),
+            build(),
+        )
+        @test PF.n_vsc_converters(PF.get_dc_network(vsc_data)) > 0
+        _check_fused_kernel(vsc_data, label)
+    end
+    area_sys = _area_interchange_fixture()
+    _check_fused_kernel(
+        PF.PowerFlowData(
+            nr(; correct_bustypes = true, area_interchange_control = true), area_sys),
+        "area interchange",
+    )
+end
+
+# The fused kernel defers writes of voltages and injections to `data` until `_write_back_bus_state!`.
+function _check_deferred_write_back(make_data, label::String)
+    eager = make_data()
+    deferred = make_data()
+    R_eager = PF.ACPowerFlowResidual(eager, 1)
+    R = PF.ACPowerFlowResidual(deferred, 1)
+    J = PF.ACPowerFlowJacobian(deferred, R, 1)
+    x = PF.calculate_x0(deferred, 1)
+    Random.seed!(7)
+    x .+= 0.02 .* randn(length(x))
+    R_eager(eager, x, 1)
+    q_before = deferred.bus_reactive_power_injections[:, 1]
+    PF._update_residual_and_jacobian!(R, J, x, deferred, 1)
+    PF._update_residual_and_jacobian!(R, J, x, deferred, 1)
+    @testset "$label" begin
+        @test R.bus_state.data_stale
+        @test deferred.bus_reactive_power_injections[:, 1] == q_before
+        PF._write_back_bus_state!(R, deferred, 1)
+        @test !R.bus_state.data_stale
+        @test isapprox(R.Rv, R_eager.Rv; rtol = 1e-12, atol = 1e-12)
+        for f in (:bus_magnitude, :bus_angles, :bus_active_power_injections,
+            :bus_reactive_power_injections)
+            @test getfield(deferred, f)[:, 1] == getfield(eager, f)[:, 1]
+        end
+    end
+    return
+end
+
+@testset "Fused kernel write-back matches a write-through evaluation" begin
+    c14 = PSB.build_system(PSITestSystems, "c_sys14")
+    _check_deferred_write_back(
+        () -> PF.PowerFlowData(nr(; correct_bustypes = true), c14), "c_sys14")
+    lcc = build_lcc_control_system()
+    _check_deferred_write_back(
+        () -> PF.PowerFlowData(nr(; correct_bustypes = true), lcc), "two LCCs")
+end
+
+# COO reference: triplets for every `neighbors` pair and the tails, assembled with `sparse`.
+function _reference_jacobian_structure(data::PF.ACPowerFlowData, slots)
+    rows = PF.J_INDEX_TYPE[]
+    columns = PF.J_INDEX_TYPE[]
+    values = Float64[]
+    num_buses = first(size(data.bus_type))
+    for bus_from in 1:num_buses, bus_to in data.neighbors[bus_from]
+        for row in (2 * bus_from - 1, 2 * bus_from), col in (2 * bus_to - 1, 2 * bus_to)
+            push!(rows, row)
+            push!(columns, col)
+            push!(values, 0.0)
+        end
+    end
+    for (bus_k, ref_bus) in slots
+        push!(rows, 2 * bus_k - 1)
+        push!(columns, 2 * ref_bus - 1)
+        push!(values, 0.0)
+    end
+    PF._create_jacobian_matrix_structure_lcc(data, rows, columns, values, num_buses)
+    PF._create_jacobian_matrix_structure_vsc(data, rows, columns, values, num_buses)
+    PF._create_jacobian_matrix_structure_area(data, rows, columns, values)
+    return SparseArrays.sparse(rows, columns, values)
+end
+
+@testset "Direct-CSC Jacobian structure matches the COO reference" begin
+    c14 = PSB.build_system(PSITestSystems, "c_sys14")
+    gspf = _c14_gspf(c14)
+    area_sys = _area_interchange_fixture()
+    cases = [
+        ("c_sys14", nr(; correct_bustypes = true), c14),
+        ("c_sys14 distributed slack",
+            nr(; correct_bustypes = true, generator_slack_participation_factors = gspf),
+            c14),
+        (
+            "c_sys5",
+            nr(; correct_bustypes = true),
+            PSB.build_system(PSITestSystems, "c_sys5"),
+        ),
+        ("ACTIVSg2000", nr(; correct_bustypes = true),
+            PSB.build_system(PSB.MatpowerTestSystems, "matpower_ACTIVSg2000_sys")),
+        ("two LCCs", nr(; correct_bustypes = true), build_lcc_control_system()),
+        ("VSC", nr(; correct_bustypes = true), _build_vsc_system()),
+        ("area interchange",
+            nr(; correct_bustypes = true, area_interchange_control = true),
+            area_sys),
+    ]
+    n_slotted = 0
+    n_tailed = 0
+    for (label, pf, sys) in cases
+        data = PF.PowerFlowData(pf, sys)
+        residual = PF.ACPowerFlowResidual(data, 1)
+        slots = PF._extra_slack_slots(data, residual.subnetworks, 1)
+        n_slotted += !isempty(slots)
+        J = PF._create_jacobian_matrix_structure(data, slots)
+        R = _reference_jacobian_structure(data, slots)
+        n_tailed += size(J, 1) > 2 * first(size(data.bus_type))
+        @testset "$label" begin
+            @test size(J) == size(R)
+            @test J.colptr == R.colptr
+            @test J.rowval == R.rowval
+            @test SparseArrays.nonzeros(J) == SparseArrays.nonzeros(R)
+        end
+    end
+    @test n_slotted >= 1
+    @test n_tailed == 3
+end

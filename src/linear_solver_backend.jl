@@ -9,16 +9,14 @@
 #
 # PNM exposes KLU ops as PNM.solve!/full_factor!/... and AppleAccelerate ops as
 # PNM.AccelerateWrapper.solve!/full_factor!/...; the MKLPardiso ops live in the
-# extension. PowerFlows unifies them below via dispatch over the
-# PFLinearSolverCache Union. A future PNM-side abstract supertype will let us
-# drop this Union.
+# extension. PowerFlows unifies them below by dispatch; every backend cache
+# subtypes `PNM.LinearSolverCache`.
 
 """Cache for the MKLPardiso backend. `ps` (the `Pardiso.MKLPardisoSolver` handle) is held as
-`Any`: its type is only available once the `Pardiso.jl` extension loads, and keeping it untyped
-also keeps this struct concrete so it stays a splittable member of `PFLinearSolverCache` (the cost
-is confined to the Pardiso solve path). `A` is snapshotted because Pardiso reads it at solve time;
-`Ti` is left abstract since Pardiso converts indices to `Int32` internally."""
-mutable struct PardisoLinSolveCache
+`Any`: its type is only available once the `Pardiso.jl` extension loads. `A` is snapshotted
+because Pardiso reads it at solve time; `Ti` is left abstract since Pardiso converts indices to
+`Int32` internally."""
+mutable struct PardisoLinSolveCache <: PNM.LinearSolverCache
     ps::Any                       # Pardiso.MKLPardisoSolver
     A::SparseMatrixCSC{Float64}
     is_factored::Bool
@@ -26,20 +24,6 @@ mutable struct PardisoLinSolveCache
     scratch_mat::Matrix{Float64}  # persistent multi-RHS solve buffer (resized on shape change) → non-alloc matrix solve!
     released::Bool                # set once RELEASE_ALL has freed the native MKL handle (guards double-free)
 end
-
-"""Union of the KLU, AppleAccelerate, and MKLPardiso solver caches. Every member is concrete so
-the 4-way union stays within Julia's small-union splitting. Both KLU index types are listed: the
-AC Newton cache and its fallback are built from `J.Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE}`
-(`Int32` off Apple, `Int64` on Apple), while PNM's DC ABA factorization is always
-`KLULinSolveCache{Float64, Int64}` regardless of platform — so the DC solve path needs the `Int64`
-member even where `J_INDEX_TYPE === Int32`."""
-const PFLinearSolverCache =
-    Union{
-        PNM.KLULinSolveCache{Float64, Int32},
-        PNM.KLULinSolveCache{Float64, Int64},
-        PNM.AAFactorCache,
-        PardisoLinSolveCache,
-    }
 
 """Supertype for the polar NR/TR reuse cache (`PolarNRCache`, `power_flow_method.jl`).
 Exists so `PowerFlowData` can type its `polar_nr_cache` slot as a two-member union:
@@ -54,15 +38,51 @@ symbolic_factor!(c::PNM.KLULinSolveCache, A::SparseMatrixCSC{Float64}) =
 symbolic_factor!(c::PNM.AAFactorCache, A::SparseMatrixCSC{Float64}) =
     PNM.AccelerateWrapper.symbolic_factor!(c, A)
 
-numeric_refactor!(c::PNM.KLULinSolveCache, A::SparseMatrixCSC{Float64}) =
+# A lean reject is mostly a pivot the frozen order puts on an exact zero (a bus type differing
+# from the plan's), which every later iterate of the solve repeats. Finish the solve on KLU's own
+# pivot order; `_resume_lean!` re-enables the lean path at the next solve.
+function numeric_refactor!(c::PNM.KLULinSolveCache, A::SparseMatrixCSC{Float64})
     PNM.numeric_refactor!(c, A)
+    if PNM.KLUWrapper.has_lean_plan(c) && !PNM.KLUWrapper.lean_active(c)
+        PNM.KLUWrapper.pause_lean!(c, true)
+    end
+    return c
+end
 numeric_refactor!(c::PNM.AAFactorCache, A::SparseMatrixCSC{Float64}) =
     PNM.AccelerateWrapper.numeric_refactor!(c, A)
 
-full_factor!(c::PNM.KLULinSolveCache, A::SparseMatrixCSC{Float64}) =
-    PNM.full_factor!(c, A)
+# A full factorization always pivots afresh, bypassing a lean plan, and keeps the rest of that
+# solve on the fresh KLU order.
+function full_factor!(c::PNM.KLULinSolveCache, A::SparseMatrixCSC{Float64})
+    PNM.symbolic_factor!(c, A)
+    PNM.KLUWrapper.pivoted_factor!(c, A)
+    PNM.KLUWrapper.has_lean_plan(c) && PNM.KLUWrapper.pause_lean!(c, true)
+    return c
+end
 full_factor!(c::PNM.AAFactorCache, A::SparseMatrixCSC{Float64}) =
     PNM.AccelerateWrapper.full_factor!(c, A)
+
+# The re-pivot guard in `_set_Δx_nr!`: a fresh pivot order on the kept symbolic analysis (the
+# pattern has not changed), with the rest of that solve kept off the lean path.
+_repivot!(c::PNM.KLULinSolveCache, A::SparseMatrixCSC{Float64}) =
+    PNM.KLUWrapper.repivot!(c, A)
+
+# KLU reuses the first factorization's pivot order; AA and Pardiso refactor from scratch.
+_repivots(::PNM.KLULinSolveCache) = true
+_repivots(::PNM.AAFactorCache) = false
+_repivots(::PardisoLinSolveCache) = false
+
+# After a bus-type or partition change, `klu_refactor` on the inherited pivot order can hit a zero
+# pivot (a PV bus's |V| column holds a single -1 where a PQ bus's holds dP/dV, dQ/dV). Free only
+# the Numeric: the next `numeric_refactor!` then runs a fresh `klu_factor` on the kept Symbolic,
+# or, with a lean plan, a lean refactor whose pivot-ratio check falls back to `klu_factor`.
+function _drop_numeric!(c::PNM.KLULinSolveCache)
+    PNM.KLUWrapper.drop_numeric!(c)
+    return
+end
+# These backends pivot afresh on every numeric factorization.
+_drop_numeric!(::PNM.AAFactorCache) = nothing
+_drop_numeric!(::PardisoLinSolveCache) = nothing
 
 solve!(c::PNM.KLULinSolveCache, b::StridedVecOrMat{Float64}) = PNM.solve!(c, b)
 solve!(c::PNM.AAFactorCache, b::StridedVecOrMat{Float64}) =
@@ -72,10 +92,10 @@ solve!(c::PNM.AAFactorCache, b::StridedVecOrMat{Float64}) =
 transpose solve)."""
 tsolve!(c::PNM.KLULinSolveCache, b::StridedVecOrMat{Float64}) = PNM.tsolve!(c, b)
 
-"""1-norm condition-number estimate of the cached factorization. KLU-only
-(libklu's `klu_condest`); AppleAccelerate exposes no condition estimate. Used by
-the per-iteration solver diagnostics ([`run_solver_diagnostics!`](@ref))."""
-condest!(c::PNM.KLULinSolveCache) = PNM.condest!(c)
+"""1-norm condition-number estimate of the cached factorization of `A`, which must be the
+matrix of the last `numeric_refactor!`. KLU-only (libklu's `klu_condest`); AppleAccelerate
+exposes no condition estimate."""
+condest!(c::PNM.KLULinSolveCache, A::SparseMatrixCSC{Float64}) = PNM.condest!(c, A)
 
 # --- Backend resolution and construction ---
 
@@ -134,16 +154,18 @@ function _validate_linear_solver_backend(::PNM.DenseSolver)
     )
 end
 
+# No values snapshot: PowerFlows never uses the snapshot-reading KLU paths (`condest!` gets the
+# matrix explicitly), so the per-refactor copy of `nonzeros(A)` is pure overhead.
 """Construct (without factorizing) the cache for backend `tag` over matrix `A`."""
 make_linear_solver_cache(::PNM.KLUSolver, A::SparseMatrixCSC{Float64}) =
-    PNM.KLULinSolveCache(A)
+    PNM.KLULinSolveCache(A; snapshot_values = false)
 make_linear_solver_cache(::PNM.AppleAccelerateLUSolver, A::SparseMatrixCSC{Float64}) =
     PNM.AAFactorCache(A)
 
 """Adapter: PowerFlows historically calls `solve_w_refinement(cache, A, b, eps)`
 with a step-tolerance `eps`. Map onto PNM's residual-based refined solve."""
 function solve_w_refinement(
-    cache::PFLinearSolverCache,
+    cache::PNM.LinearSolverCache,
     A::SparseMatrixCSC{Float64},
     b::Vector{Float64},
     refinement_eps::Float64,
