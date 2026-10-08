@@ -730,6 +730,9 @@ _reuse_fd_cache(::Nothing, key::FDCacheKey) = nothing
 _reuse_fd_cache(cache::FastDecoupledCache, key::FDCacheKey) =
     cache.key == key ? cache : nothing
 
+_empty_pq_data(::FDMatrices{S, C}) where {S, C} =
+    Dict{Vector{PSY.ACBusTypes.Value}, FDPQData{C}}()
+
 """
     _get_or_build_fd_cache!(data, time_step, scheme, backend_id, linear_solver)
         -> FastDecoupledCache
@@ -788,7 +791,7 @@ function _build_fd_cache!(
         theta_x_idx,
         p_row_idx,
         rp,
-        Dict{Vector{PSY.ACBusTypes.Value}, FDPQData{typeof(fd.bp_cache)}}(),
+        _empty_pq_data(fd),
         1,   # bp_factor_count: build_fd_matrices factored B′ exactly once
         0,   # bpp_factor_count: bumped per distinct PQ signature in _get_pq_data!
         pvpq_pos,

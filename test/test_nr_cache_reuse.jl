@@ -136,6 +136,7 @@ end
     @test !isnothing(c)
     ix = dcn.converter_ac_bus_ix[c]
     vk = base + dcn.converter_dc_node_ix[c]
+    qc = 2n + 2c
     col = 2 * ix - 1
 
     residual = PowerFlows.ACPowerFlowResidual(data, 1)
@@ -144,6 +145,7 @@ end
     residual(data, x, 1)
     jac(data, 1)
     @test jac.Jv[vk, col] == 0.0   # fresh PV build: structural zero
+    @test jac.Jv[qc, col] == 0.0
 
     data.bus_type[ix, 1] = PSY.ACBusTypes.PQ
     jac(data, 1)
@@ -152,6 +154,37 @@ end
     data.bus_type[ix, 1] = PSY.ACBusTypes.PV
     jac(data, 1)   # refilled IN PLACE, same Jacobian object, as a reused cache would do
     @test jac.Jv[vk, col] == 0.0   # must match a fresh PV build, not the stale PQ value
+    @test jac.Jv[qc, col] == 0.0
+end
+
+@testset "NR cache reuse: LCC Jacobian ∂F_tap/∂V slots clear when a terminal bus returns to PV" begin
+    # A Jacobian refilled in place across a PV→PQ→PV flip matches a fresh PV build.
+    sys, _ = simple_lcc_system()
+    pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(; correct_bustypes = true)
+    data = PowerFlowData(pf, sys)
+    terminals = collect(Iterators.flatten(data.lcc.bus_indices))
+    function set_terminals!(bus_type)
+        for ix in terminals
+            data.bus_type[ix, 1] = bus_type
+        end
+        return
+    end
+
+    set_terminals!(PSY.ACBusTypes.PV)
+    residual = PowerFlows.ACPowerFlowResidual(data, 1)
+    jac = PowerFlows.ACPowerFlowJacobian(data, residual, 1)
+    x = PowerFlows.calculate_x0(data, 1)
+    residual(data, x, 1)
+    jac(data, 1)
+    J_pv = copy(SparseArrays.nonzeros(jac.Jv))
+
+    set_terminals!(PSY.ACBusTypes.PQ)
+    jac(data, 1)
+    @test SparseArrays.nonzeros(jac.Jv) != J_pv   # PQ: the bus-V derivatives now enter
+
+    set_terminals!(PSY.ACBusTypes.PV)
+    jac(data, 1)   # refilled IN PLACE, same Jacobian object, as a reused cache would do
+    @test SparseArrays.nonzeros(jac.Jv) ≈ J_pv
 end
 
 @testset "Singular-Jacobian fallback matrix and factorization reuse" begin
