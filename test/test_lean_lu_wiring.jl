@@ -186,6 +186,7 @@ end
     @test entry.linSolveCache.lean_plan === plan
     @test iszero(align(entry.linSolveCache, entry, data))
     data.bus_type[k, 1] = PSY.ACBusTypes.REF
+    align(entry.linSolveCache, entry, data)
     @test iszero(align(entry.linSolveCache, entry, data))
 end
 
