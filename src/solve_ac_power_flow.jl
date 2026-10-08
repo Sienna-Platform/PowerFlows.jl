@@ -513,11 +513,11 @@ The read-only Jacobian-structure memo, which carries the lean-LU plan, is shared
 own network matrix or area data misses it and plans itself. See [`SolutionParameters`](@ref)'s
 `n_threads` for how results compare to a serial solve."""
 function _column_worker(
-    data::ACPowerFlowData,
+    data::D,
     steps::AbstractVector{Int},
     positions::UnitRange{Int},
     slot::WorkerSlot,
-)
+) where {D <: ACPowerFlowData}
     converged = copy(data.converged)
     for (pos, t) in enumerate(steps)
         if !(pos in positions)
@@ -540,8 +540,8 @@ function _column_worker(
         polar_nr_cache = slot.polar_nr_cache,
         worker_slots = WorkerSlot[],
     )
-    args = map(f -> get(fresh, f, getfield(data, f)), fieldnames(typeof(data)))
-    return typeof(data)(args...)
+    args = map(f -> get(fresh, f, getfield(data, f)), fieldnames(D))
+    return D(args...)
 end
 
 _worker_devices(::Nothing) = nothing

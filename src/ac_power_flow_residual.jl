@@ -2,7 +2,8 @@
 `ACPowerFlowResidual` and its `ACPowerFlowJacobian`. `data_stale` is `true` while `data` lacks
 that iterate's voltages and injections (the NR loop's fused kernel defers them to
 [`_write_back_bus_state!`](@ref)); while it is `false`, `data` is authoritative and is reloaded
-before each evaluation. `phasor_valid` is `true` only while `phasor == cis.(θ)`."""
+before each evaluation. `phasor_valid` is `true` only while `phasor == cis.(θ)`.
+Entries follow the `bus_lookup` order, which is the bus axis of the Ybus."""
 mutable struct PolarBusState
     Vm::Vector{Float64}
     θ::Vector{Float64}
@@ -33,7 +34,7 @@ A struct to keep track of the residuals in the Newton-Raphson AC power flow calc
 - `subnetworks::Dict{Int64, Vector{Int64}}`: The dictionary that identifies subnetworks (connected components), with the key defining the REF bus, values defining the corresponding (sorted) buses in the subnetwork.
 - `validate_indices::Vector{Int}`: precomputed `x`-indices of PQ-bus |V| entries for the per-iteration voltage-magnitude diagnostic.
 - `bus_state::PolarBusState`: per-bus |V|, θ and `cis(θ)` of the last evaluated iterate, shared with the `ACPowerFlowJacobian`.
-- `solve_start::Matrix{Float64}`: `P_net`, `Q_net`, |V| and θ at a solve's start, by column, for a rerun from the same start.
+- `solve_start::Matrix{Float64}`: `P_net`, `Q_net`, |V| and θ at a solve's start, one quantity per column. The cold retry restores them because the ZIP load update changes `P_net` and `Q_net` incrementally from the previous |V|, so a failed attempt leaves them at its iterate.
 """
 struct ACPowerFlowResidual
     Rv::Vector{Float64}
