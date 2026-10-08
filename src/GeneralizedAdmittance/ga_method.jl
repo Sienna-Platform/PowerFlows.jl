@@ -280,6 +280,21 @@ function _newton_power_flow(
     return _ga_solve(pf, data, time_step; kwargs...).converged
 end
 
+# A system without a DC network has 0×0 state mirrors.
+function _save_column(m::Matrix{Float64}, time_step::Int64)
+    if isempty(m)
+        return Float64[]
+    end
+    return m[:, time_step]
+end
+
+function _restore_column!(m::Matrix{Float64}, col::Vector{Float64}, time_step::Int64)
+    if !isempty(m)
+        m[:, time_step] .= col
+    end
+    return
+end
+
 # NR start from a GA stage run to `handoff_tol`: bus states from the best iterate, REF/PV
 # slots closed by the explicit sync. The stage runs on a private cache and the VSC state is
 # restored, so a rejected candidate leaves only the residual's own injection writes behind.
@@ -292,16 +307,16 @@ function _ga_flat_start(
 )
     dcn = get_dc_network(data)
     # Threaded solves share `dcn` across tasks: touch only this time step's column.
-    p_c = dcn.p_c[:, time_step]
-    q_c = dcn.q_c[:, time_step]
-    node_vdc = dcn.node_vdc[:, time_step]
+    p_c = _save_column(dcn.p_c, time_step)
+    q_c = _save_column(dcn.q_c, time_step)
+    node_vdc = _save_column(dcn.node_vdc, time_step)
     part = _ga_partition(data, time_step)
     (; ws, exit, iters, best_gap) = _ga_stage!(
         data, part, _build_ga_cache(data, part), time_step, DEFAULT_GA_MAX_ITER,
         handoff_tol, NewtonRaphsonACPowerFlow)
-    dcn.p_c[:, time_step] .= p_c
-    dcn.q_c[:, time_step] .= q_c
-    dcn.node_vdc[:, time_step] .= node_vdc
+    _restore_column!(dcn.p_c, p_c, time_step)
+    _restore_column!(dcn.q_c, q_c, time_step)
+    _restore_column!(dcn.node_vdc, node_vdc, time_step)
     @info "Generalized-admittance flat start: $exit after $iters " *
           "iterations, gap $best_gap."
     newx0 = copy(x0)

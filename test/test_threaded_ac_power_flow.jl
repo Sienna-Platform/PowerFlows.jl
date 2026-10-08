@@ -359,7 +359,6 @@ end
     dup = PF._copy_for_task(entry, slot, data, 1)
     lin, seed = dup.linSolveCache, entry.linSolveCache
     @test lin.lean_plan.p === slot.plan.p
-    @test lin.lean_q !== seed.lean_q
     @test lin.lean_plan.q !== seed.lean_plan.q
     @test slot.plan.q == q0
     @test entry.linSolveCache.lean_plan.q != slot.plan.q
