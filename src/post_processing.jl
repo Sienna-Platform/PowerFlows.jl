@@ -280,7 +280,8 @@ function _reactive_power_redistribution_pv(
     bus_injectors::Dict{Int, Vector{PSY.StaticInjection}},
 )
     @debug "Reactive Power Distribution $(PSY.get_name(bus))"
-    devices_ = _bus_sources(bus, bus_injectors)
+    # Q_gen excludes devices with no reactive power (`_get_injections!`), so they get no share.
+    devices_ = filter(contributes_reactive_power, _bus_sources(bus, bus_injectors))
     sources = filter(x -> typeof(x) == PSY.Source, collect(devices_))
     non_source_devices = filter(x -> typeof(x) !== PSY.Source, collect(devices_))
     if length(sources) > 0 && length(non_source_devices) > 0

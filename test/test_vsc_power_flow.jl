@@ -1160,6 +1160,30 @@ end
     @test occursin("$(v_bad)", err)
 end
 
+@testset "VSC: a converter on a PV bus without DC modeling gets no reactive power share" begin
+    sys = _build_mtdc_system()
+    pv = first(
+        sort!(
+            collect(
+                PSY.get_components(
+                    b -> PSY.get_bustype(b) == PSY.ACBusTypes.PV,
+                    PSY.ACBus,
+                    sys,
+                ),
+            );
+            by = PSY.get_number,
+        ),
+    )
+    ic = PSY.get_component(PSY.InterconnectingConverter, sys, "ic2")
+    PSY.set_bus!(ic, pv)
+    PSY.set_active_power!(ic, 0.3 * u"SU")
+    pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+        solution_parameters = SolutionParameters(; model_dc_network = false),
+    )
+    @test solve_and_store_power_flow!(pf, sys)
+    @test PSY.get_active_power(ic, u"SU") ≈ 0.3
+end
+
 # Solver guards: RobustHomotopy has no DC-tail (VSC/MTDC) support (must reject at construction);
 # the FDDecoupled variant handles the tail via a sequential sub-solve, which cannot honor
 # AC-voltage control rows (must reject those too).
