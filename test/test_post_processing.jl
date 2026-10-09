@@ -357,7 +357,7 @@ end
     )
     @test_throws ErrorException PF._power_redistribution_ref(
         sys, 0.12, 0.02, b1, PF.DEFAULT_MAX_REDISTRIBUTION_ITERATIONS,
-        PF._build_bus_injector_map(sys), gspf,
+        PF._build_bus_injector_map(_TEST_INJECTOR_PF, sys), gspf,
     )
     # No generator's active power was corrupted to NaN before the error.
     @test !isnan(get_active_power(g1, u"SU"))
@@ -385,7 +385,7 @@ end
     P_gen = 1.0
     PF._power_redistribution_ref(
         sys, P_gen, 0.0, b1, PF.DEFAULT_MAX_REDISTRIBUTION_ITERATIONS,
-        PF._build_bus_injector_map(sys); skip_reactive = true,
+        PF._build_bus_injector_map(_TEST_INJECTOR_PF, sys); skip_reactive = true,
     )
     p = get_active_power.(gens, (u"SU",))
     @test isapprox(sum(p), P_gen; atol = 1e-9)
@@ -397,7 +397,7 @@ end
 
 @testset "REF/PV redistribution with every unit at its limit warns and keeps the balance" begin
     sys, b1, gens = _ref_bus_with_units([(0.0, 1.0), (0.0, 2.0)])
-    bus_injectors = PF._build_bus_injector_map(sys)
+    bus_injectors = PF._build_bus_injector_map(_TEST_INJECTOR_PF, sys)
     @test_logs (:warn, r"P residual .* exceeds") match_mode = :any PF._power_redistribution_ref(
         sys, -0.3, 0.0, b1, PF.DEFAULT_MAX_REDISTRIBUTION_ITERATIONS, bus_injectors;
         skip_reactive = true,
@@ -411,6 +411,37 @@ end
         sys, 3.0, b1, PF.DEFAULT_MAX_REDISTRIBUTION_ITERATIONS, bus_injectors,
     )
     @test isapprox(sum(get_reactive_power.(gens, (u"SU",))), 3.0; atol = 1e-9)
+end
+
+@testset "Q redistribution with Q_gen = 0 resets every unit" begin
+    sys, b1, gens = _ref_bus_with_units([(0.0, 1.0), (0.0, 1.0)])
+    set_active_power!.(gens, (0.5 * u"SU",))
+    set_reactive_power!.(gens, (0.7 * u"SU",))
+    PF._reactive_power_redistribution_pv(
+        sys, 0.0, b1, PF.DEFAULT_MAX_REDISTRIBUTION_ITERATIONS,
+        PF._build_bus_injector_map(_TEST_INJECTOR_PF, sys),
+    )
+    @test all(isapprox.(get_reactive_power.(gens, (u"SU",)), 0.0; atol = 1e-9))
+end
+
+@testset "REF redistribution errors when no device can absorb P" begin
+    sys, b1, gens = _ref_bus_with_units([(0.0, 0.0), (0.0, 0.0)])
+    @test_throws ErrorException PF._power_redistribution_ref(
+        sys, 0.1, 0.0, b1, PF.DEFAULT_MAX_REDISTRIBUTION_ITERATIONS,
+        PF._build_bus_injector_map(_TEST_INJECTOR_PF, sys); skip_reactive = true,
+    )
+end
+
+@testset "a residual spills over to the next unit with headroom without a warning" begin
+    sys, b1, gens = _ref_bus_with_units([(0.0, 1.0), (0.0, 0.3)])
+    set_active_power!(gens[1], 0.9 * u"SU")
+    set_active_power!(gens[2], 0.0 * u"SU")
+    @test_logs PF._assign_residual!(
+        gens, 0.35, PSY.get_active_power, PSY.set_active_power!,
+        PF.get_active_power_limits_for_power_flow, b1, "P",
+    )
+    @test isapprox(get_active_power(gens[2], u"SU"), 0.3; atol = 1e-9)
+    @test isapprox(get_active_power(gens[1], u"SU"), 0.95; atol = 1e-9)
 end
 
 @testset "solve_and_store_power_flow! when the REF bus must absorb below its units' P_min" begin

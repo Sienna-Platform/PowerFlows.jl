@@ -410,6 +410,9 @@ function _solve_columns_threaded!(
     n_work::Int,
     merged_kwargs::NamedTuple,
 )
+    allunique(steps) || throw(
+        ArgumentError("time_steps must be unique when n_threads > 1, got $steps."),
+    )
     backend = _check_threadable(merged_kwargs)
     # Built here, before any task can race to build it, so every worker shares one pivot order.
     _prepare_lean_plan!(pf, data, first(steps), backend)
@@ -447,7 +450,15 @@ end
 
 # A worker that raised an error leaves its caches in an unknown state.
 # Drop them so that the next call rebuilds them.
-function _solve_slot!(ts_converged, worker, slot::WorkerSlot, pf, steps, positions, kwargs)
+function _solve_slot!(
+    ts_converged::Vector{Bool},
+    worker::ACPowerFlowData,
+    slot::WorkerSlot,
+    pf::AbstractACPowerFlow,
+    steps::AbstractVector{Int},
+    positions::UnitRange{Int},
+    kwargs::NamedTuple,
+)
     try
         _solve_columns!(ts_converged, worker, pf, steps, positions, kwargs)
     catch
@@ -462,19 +473,19 @@ _head_steps(::Nothing, positions::UnitRange{Int}) = first(positions):first(posit
 _head_steps(::AbstractNRCache, positions::UnitRange{Int}) =
     first(positions):(first(positions) - 1)
 
-function _seed_workers!(workers, steps, chunks)
+function _seed_workers!(
+    workers::Vector{<:ACPowerFlowData},
+    steps::AbstractVector{Int},
+    chunks::Vector{UnitRange{Int}},
+)
     seed = workers[1].polar_nr_cache[]
     memo = workers[1].ac_jacobian_structure_cache[]
     for i in 2:length(workers)
         worker = workers[i]
-        _seed_empty!(worker.polar_nr_cache[], worker, seed, memo, steps[first(chunks[i])])
+        _seed_worker!(worker, worker.polar_nr_cache[], seed, memo, steps[first(chunks[i])])
     end
     return
 end
-
-_seed_empty!(::Nothing, worker, seed, memo, time_step) =
-    _seed_worker!(worker, seed, memo, time_step)
-_seed_empty!(::AbstractNRCache, worker, seed, memo, time_step) = nothing
 
 _prepare_lean_plan!(
     ::AbstractACPowerFlow,
@@ -525,6 +536,12 @@ function _column_worker(
         end
     end
     cd = get_controlled_devices(data)
+    # A worker with active areas gets a private area set that a relax shrinks. The slot's caches
+    # may be sized for a previous call's shrunk set, so they cannot be reused.
+    if !isempty(data.area_interchange.pristine_areas)
+        slot.polar_nr_cache[] = nothing
+        slot.solver_cache[] = nothing
+    end
     fresh = (
         converged = converged,
         power_network_matrix = _worker_network_matrix(cd, data.power_network_matrix),

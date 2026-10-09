@@ -187,7 +187,8 @@ end
     @test iszero(align(entry.linSolveCache, entry, data))
     data.bus_type[k, 1] = PSY.ACBusTypes.REF
     align(entry.linSolveCache, entry, data)
-    @test iszero(align(entry.linSolveCache, entry, data))
+    @test entry.linSolveCache.lean_plan !== plan
+    @test entry.linSolveCache.lean_plan.p === plan.p
 end
 
 @testset "lean LU: never attached off KLU" begin

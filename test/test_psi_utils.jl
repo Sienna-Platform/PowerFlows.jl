@@ -78,6 +78,14 @@ end
     @test data.bus_active_power_constant_current_withdrawals[ix, 1] ≈ P0
     @test data.bus_reactive_power_constant_impedance_withdrawals[ix, 1] ≈ Q0
 
+    # DC reads only constant power withdrawals: at V = 1 p.u. every ZIP term equals P0.
+    data_dc = PowerFlowData(DCPowerFlow(), sys)
+    @test data_dc.bus_active_power_withdrawals[ix, 1] ≈ P0
+
+    # PSS/E export puts P0 and Q0 in the slot of their exponent.
+    @test PF._psse_zip_field(2, 2, P0) == P0
+    @test PF._psse_zip_field(2, 1, P0) == PF.PSSE_DEFAULT
+
     sys0, _, _, _ = exponential_system(0.0, 0.0)
     data0 = PowerFlowData(ACPowerFlow(), sys0)
     @test data0.bus_active_power_withdrawals[ix, 1] ≈ P0

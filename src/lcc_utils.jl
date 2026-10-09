@@ -821,8 +821,8 @@ end
 function _lcc_schedule(lcc::PSY.TwoTerminalLCCLine, base_power::Float64)
     mode = PSY.get_control_mode(lcc)
     if mode == PSY.LCCControlMode.POWER
-        setpoint = PSY.get_power_transfer_setpoint(lcc, u"NU")
-        return (setpoint >= 0.0, abs(setpoint) / base_power)
+        setpoint = PSY.get_power_transfer_setpoint(lcc, u"SU")
+        return (setpoint >= 0.0, abs(setpoint))
     elseif mode == PSY.LCCControlMode.CURRENT
         i_dc =
             abs(PSY.get_current_transfer_setpoint(lcc)) *
@@ -903,18 +903,7 @@ function initialize_LCCParameters!(
     # Fixed tap targets used to pin the tap state for 0-current (0-MW) converters.
     data.lcc.rectifier.tap_setpoint .= PSY.get_rectifier_tap_setting.(lccs)
     data.lcc.inverter.tap_setpoint .= PSY.get_inverter_tap_setting.(lccs)
-    lcc_dc_line_resistance .=
-        _lcc_ohm_to_pu.(
-            PSY.get_r.(lccs),
-            PSY.get_scheduled_dc_voltage.(lccs),
-            base_power,
-        ) .+
-        _lcc_ohm_to_pu.(
-            PSY.get_rectifier_rc.(lccs), PSY.get_rectifier_base_voltage.(lccs), base_power,
-        ) .+
-        _lcc_ohm_to_pu.(
-            PSY.get_inverter_rc.(lccs), PSY.get_inverter_base_voltage.(lccs), base_power,
-        )
+    lcc_dc_line_resistance .= _lcc_dc_resistance.(lccs, base_power)
     lcc_i_dc .= _lcc_i_dc_from_p_set.(lcc_dc_line_resistance, lcc_p_set)
     lcc_rectifier_delay_angle .= PSY.get_rectifier_delay_angle.(lccs)
     lcc_inverter_extinction_angle .= PSY.get_inverter_extinction_angle.(lccs)
@@ -988,8 +977,8 @@ function lcc_vsc_fixed_injections!(
     # DC-slack terminal, so it is not modeled here — warn instead of silently dropping it.
     if !isempty(PSY.get_available_components(PSY.InterconnectingConverter, sys))
         @warn "The system contains InterconnectingConverter components: multi-terminal DC " *
-              "networks are not modeled in DC power flow, and their converter injections are " *
-              "ignored. Use an AC power flow for joint AC-DC results."
+              "networks are not modeled in DC power flow, and each converter's active_power is " *
+              "applied as a fixed bus injection. Use an AC power flow for joint AC-DC results."
     end
     lcc = data.lcc
     for i in eachindex(lcc.bus_indices)

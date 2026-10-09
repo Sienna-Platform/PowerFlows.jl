@@ -932,24 +932,6 @@ function _compute_arc_angle_differences_from_data!(
     return
 end
 
-"""Compute one time step's arc angle differences using precomputed from/to bus index
-vectors. Used by the AC solver where `fb_ix`/`tb_ix` are already available from the
-branch flow calculation."""
-function _compute_arc_angle_differences_from_indices!(
-    data::PowerFlowData{T, M, N},
-    fb_ix::Vector{Int},
-    tb_ix::Vector{Int},
-    time_step::Int,
-) where {
-    T <: PowerFlowEvaluationModel,
-    M <: PNM.PowerNetworkMatrix,
-    N <: Union{PNM.PowerNetworkMatrix, Nothing},
-}
-    @views data.arc_angle_differences[:, time_step] .=
-        data.bus_angles[fb_ix, time_step] .- data.bus_angles[tb_ix, time_step]
-    return
-end
-
 """
 Create an appropriate `PowerFlowContainer` for the given `PowerFlowEvaluationModel` and initialize it from the given `PSY.System`.
 

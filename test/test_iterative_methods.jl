@@ -380,8 +380,10 @@ end
     )
     sys5 = deepcopy(sys)
     bad_x0!(sys5)
-    @test_logs (:debug, "skipping running DC power flow fallback") match_mode = :any min_level =
-        Logging.Debug PF.solve_power_flow(no_dc_pf, sys5)
+    logs, _ = Test.collect_test_logs(; min_level = Logging.Debug) do
+        PF.solve_power_flow(no_dc_pf, sys5)
+    end
+    @test !any(r -> occursin("DC power flow fallback yields", r.message), logs)
 end
 
 @testset "large residual warning" begin

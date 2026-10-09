@@ -1187,6 +1187,30 @@ _psse_get_load_data(exporter::PSSEExporter, load::PSY.StaticLoad) = (
     PSSE_DEFAULT,
 )
 
+# P0 * V^e is the constant power (PL, QL), current (IP, IQ) or impedance (YP, YQ) term for
+# e = 0, 1, 2. The slot comes from the same mapping the AC solver uses.
+function _psse_zip_field(slot::Int, field_slot::Int, value::Float64)
+    if slot == field_slot
+        return value
+    end
+    return PSSE_DEFAULT
+end
+
+function _psse_get_load_data(exporter::PSSEExporter, load::PSY.ExponentialLoad)
+    p = PSY.get_active_power(load, u"NU")
+    q = PSY.get_reactive_power(load, u"NU")
+    p_slot = _exponential_zip_slot(load, PSY.get_α(load))
+    q_slot = _exponential_zip_slot(load, PSY.get_β(load))
+    return (
+        _psse_zip_field(p_slot, 1, p),
+        _psse_zip_field(q_slot, 1, q),
+        _psse_zip_field(p_slot, 2, p),
+        _psse_zip_field(q_slot, 2, q),
+        _psse_zip_field(p_slot, 3, p),
+        _psse_zip_field(q_slot, 3, q),
+    )
+end
+
 _psse_interruptible(::PSY.ControllableLoad) = 1
 _psse_interruptible(::PSY.StaticLoad) = 0
 

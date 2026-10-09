@@ -115,6 +115,16 @@ end
     @test count(threaded.converged) == length(steps)
 end
 
+@testset "threaded time steps reject repeated time steps" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    data = PowerFlowData(
+        ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+            time_steps = 2, solution_parameters = _klu(2)),
+        sys,
+    )
+    @test_throws ArgumentError solve_power_flow!(data; time_steps = [1, 1])
+end
+
 @testset "threaded time steps refuse a per-call non-KLU backend" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
     plain = PowerFlowData(

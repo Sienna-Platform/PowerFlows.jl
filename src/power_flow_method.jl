@@ -112,9 +112,7 @@ struct PolarNRCache{C <: PNM.LinearSolverCache} <: AbstractNRCache
 end
 
 """Copy of a polar NR cache for another worker. Shares the read-only Jacobian index maps, arc
-index vectors and lean slot, and owns everything a solve writes. Its KLU cache takes the
-slot's pristine plan, never `entry`'s current one: a swapped plan's `q` is `entry`'s own
-`lean_q`, which `entry`'s next swap overwrites."""
+index vectors and lean slot, and owns everything a solve writes."""
 function _copy_for_task(
     entry::PolarNRCache{<:PNM.KLULinSolveCache},
     slot::LeanPlanSlot,
@@ -149,16 +147,24 @@ function _copy_for_task(
     return dup
 end
 
-# A worker is seeded only from a KLU polar cache and only when it shares the seed's memo (same
-# matrix and area data); otherwise it builds its own.
-_seed_worker!(::ACPowerFlowData, ::Any, ::Any, ::Int) = nothing
+# A worker without a cache is seeded only from a KLU polar cache and only when it shares the
+# seed's memo (same matrix and area data); otherwise it builds its own.
+_seed_worker!(
+    ::ACPowerFlowData,
+    ::Union{Nothing, AbstractNRCache},
+    ::Union{Nothing, AbstractNRCache},
+    ::Union{Nothing, ACJacobianStructureCache},
+    ::Int,
+) = nothing
 function _seed_worker!(
     worker::ACPowerFlowData,
+    ::Nothing,
     seed::PolarNRCache{<:PNM.KLULinSolveCache},
     memo::ACJacobianStructureCache,
     time_step::Int,
 )
     _lean_plan_tried(memo, worker) || return
+    seed.lean === memo.lean || return
     worker.polar_nr_cache[] = _copy_for_task(seed, memo.lean, worker, time_step)
     return
 end
@@ -1521,9 +1527,6 @@ function _fused_x0!(
         improve_x0!(x0, pf, data, residual, time_step)
         return false
     end
-    # The same log as `improve_x0!` when it would change nothing.
-    @debug "skipping enhanced flat start"
-    @debug "skipping running DC power flow fallback"
     large && _warn_large_initial_residual(residual, data, time_step)
     return true
 end
@@ -1638,7 +1641,7 @@ function _fresh_newton_workspace(
 end
 
 function _fresh_solver_state(
-    pf::AbstractACPowerFlow,
+    pf::ACPolarPowerFlow,
     data::ACPowerFlowData,
     time_step::Int64,
     backend,
@@ -1806,7 +1809,7 @@ function _polar_newton_workspace!(
 )
     can_reuse =
         typeof(entry.backend) === typeof(backend) &&
-        # The reuse path always recomputes the start point via `improve_x0`, so it can't honor
+        # The reuse path always recomputes the start point via `_polar_start!`, so it can't honor
         # a caller-provided `x0`; excluding it here keeps that path from being silently ignored.
         !haskey(init_kwargs, :x0) &&
         _refresh_polar_residual!(entry, data, time_step)

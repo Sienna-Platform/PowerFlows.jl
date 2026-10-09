@@ -71,6 +71,7 @@ function initialize_power_flow_data!(
     if get_distribute_slack_proportional_to_headroom(pf)
         generator_headroom = Dict{Tuple{DataType, String}, Float64}()
         _compute_bus_active_power_range!(
+            pf,
             data.bus_active_power_range,
             bus_lookup,
             reverse_bus_search_map,

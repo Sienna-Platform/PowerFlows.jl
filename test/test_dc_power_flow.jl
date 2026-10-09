@@ -449,4 +449,7 @@ end
         atol = 1e-9,
     )
     @test isapprox(klu_data.bus_angles, default_data.bus_angles; atol = 1e-9)
+    # The wrappers forward `linear_solver = nothing`, which falls back to the model's setting.
+    @test PF._vptdf_linear_solver(klu_data, nothing) == "KLU"
+    @test PF._vptdf_linear_solver(klu_data, "KLU") == "KLU"
 end

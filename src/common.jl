@@ -56,6 +56,7 @@ Only writes to column 1: PF uses single-value active power limits and setpoints
 (not time-varying). The caller copies column 1 to all time steps. For time-varying
 headroom, compute slack weights in PSI."""
 function _compute_bus_active_power_range!(
+    pf::PowerFlowEvaluationModel,
     bus_active_power_range::Matrix{Float64},
     bus_lookup::Dict{Int, Int},
     reverse_bus_search_map::Dict{Int, Int},
@@ -64,7 +65,7 @@ function _compute_bus_active_power_range!(
     generator_headroom::Union{Dict{Tuple{DataType, String}, Float64}, Nothing} = nothing,
 )
     for source in PSY.get_available_components(PSY.StaticInjection, sys)
-        contributes_active_power(source) || continue
+        _contributes_active_power(pf, source) || continue
         active_power_contribution_type(source) == PowerContributionType.INJECTION ||
             continue
         bus = PSY.get_bus(source)
@@ -123,6 +124,11 @@ function _exponential_zip_slot(load::PSY.ExponentialLoad, exponent::Float64)
         "0 (constant power), 1 (constant current) and 2 (constant impedance).",
     )
 end
+
+# DC reads only the constant power withdrawals. P0 * V^e = P0 at V = 1 p.u., so every ZIP term
+# of an ExponentialLoad is a constant power term there.
+_active_power_slot(::AbstractDCPowerFlow, ::Int) = 1
+_active_power_slot(::PowerFlowEvaluationModel, slot::Int) = slot
 
 function _get_withdrawals!(
     pf::PowerFlowEvaluationModel,
@@ -186,7 +192,8 @@ function _get_withdrawals!(
         bus = PSY.get_bus(l)
         PSY.get_number(bus) in removed_buses && continue
         bus_ix = _get_bus_ix(bus_lookup, reverse_bus_search_map, PSY.get_number(bus))
-        p[_exponential_zip_slot(l, PSY.get_α(l))][bus_ix] += PSY.get_active_power(l, u"SU")
+        p_slot = _active_power_slot(pf, _exponential_zip_slot(l, PSY.get_α(l)))
+        p[p_slot][bus_ix] += PSY.get_active_power(l, u"SU")
         q[_exponential_zip_slot(l, PSY.get_β(l))][bus_ix] +=
             PSY.get_reactive_power(l, u"SU")
     end

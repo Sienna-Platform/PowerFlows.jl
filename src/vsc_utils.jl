@@ -144,11 +144,11 @@ end
 
 # An AC-voltage-controlling converter (ControlPVac/ControlVdcQ) pins |V_ac| at its bus. At a PV/REF
 # bus the magnitude is already regulated, so the pin row would be constant in the state (a singular
-# Jacobian). When the converter's target equals the bus setpoint at every time step, lowering
-# demotes the converter to its reactive-power mode: Q stays at its setpoint and the bus's
+# Jacobian). When the converter's target equals the bus setpoint in the data at construction,
+# lowering demotes the converter to its reactive-power mode: Q stays at its setpoint and the bus's
 # generators supply the rest. A different target is an infeasible conflict and errors. Two
 # AC-voltage converters on one PQ bus duplicate the pin row, which is the same singularity.
-# Lowering fails fast and names the bus.
+# Lowering fails fast and names the bus. Later writes to `bus_magnitude` are not re-checked.
 function _resolve_vsc_ac_controls!(
     dcn::DCNetwork,
     bus_types::AbstractVector,
@@ -601,7 +601,7 @@ function initialize_DCNetwork!(
     # `solution_parameters = SolutionParameters(; model_dc_network = false)` restores the
     # historical DC-ignored behavior. Read off the model directly, not merged kwargs — this
     # runs during `PowerFlowData` construction, before any call-site keyword exists.
-    get_solution_parameters(data.pf).model_dc_network || return
+    get_solution_parameters(get_pf(data)).model_dc_network || return
 
     vsc_lines = _available_vsc_lines(sys, removed_buses)
     # Count only converters whose AC bus survives network reduction: if reduction removed every
@@ -807,13 +807,20 @@ function _vsc_warm_start!(
         end
         return
     end
+    y_finite = copy(y)
     for _ in 1:max_iter
         write_back!(y)
         _vsc_warm_residual!(F, dcn, Vm, time_step)
+        if !all(isfinite, F)
+            @debug "VSC warm start stopped on a non-finite residual" time_step
+            y .= y_finite
+            break
+        end
+        y_finite .= y
         norm(F) < tol && break
         _vsc_warm_jacobian!(J, dcn, Vm, time_step)
         # LAPACK throws ArgumentError on Inf/NaN input (e.g. an iterate reaching V_dc = 0).
-        all(isfinite, F) && all(isfinite, J) || break
+        all(isfinite, J) || break
         # The warm-start is best-effort: a singular/ill-conditioned tail must never abort the solve,
         # so on any linear-solve failure we keep the best seed so far and let the joint Newton run.
         local Δ
