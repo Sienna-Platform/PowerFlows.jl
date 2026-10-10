@@ -29,7 +29,9 @@
             solve_power_flow!(data_loss_factors)
 
             # get loss factors using brute force approach (sequential power flow evaluations for each bus)
-            bf_loss_factors = penalty_factors_brute_force(data_brute_force, pf)
+            # A 1e-6 difference quotient needs solves well past the default tol: NR's chord steps
+            # stop just under it instead of overshooting it quadratically.
+            bf_loss_factors = penalty_factors_brute_force(data_brute_force, pf; tol = 1e-12)
 
             # confirm that loss factors match for the Jacobian-based and brute force approaches
             @test all(
@@ -49,6 +51,7 @@
 end
 
 @testset "test_loss_factors_multiple_ref_buses" begin
+    sys = _make_two_island_system()
     for ACSolver in AC_SOLVERS_TO_TEST
         # FIXME failing for LevenbergMarquardtACPowerFlow. investigate.
         # FastDecoupled is skipped here too: its linear-rate perturbed solves make the
@@ -59,39 +62,6 @@ end
             continue
         end
         @testset "AC Solver: $(ACSolver)" begin
-            # Create a system with two disconnected islands, each with its own REF bus
-            sys = System(100.0)
-
-            # Island 1: buses 1-3
-            b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.05, 0.0)
-            b2 = _add_simple_bus!(sys, 2, ACBusTypes.PQ, 230, 1.0, 0.0)
-            b3 = _add_simple_bus!(sys, 3, ACBusTypes.PQ, 230, 1.0, 0.0)
-
-            # Island 2: buses 4-6
-            b4 = _add_simple_bus!(sys, 4, ACBusTypes.REF, 230, 1.02, 0.0)
-            b5 = _add_simple_bus!(sys, 5, ACBusTypes.PQ, 230, 1.0, 0.0)
-            b6 = _add_simple_bus!(sys, 6, ACBusTypes.PQ, 230, 1.0, 0.0)
-
-            # Add sources at REF buses
-            _add_simple_source!(sys, b1, 0.5, 0.1)
-            _add_simple_source!(sys, b4, 0.4, 0.08)
-
-            # Add loads at PQ buses
-            _add_simple_load!(sys, b2, 0.25, 0.05)
-            _add_simple_load!(sys, b3, 0.2, 0.04)
-            _add_simple_load!(sys, b5, 0.2, 0.04)
-            _add_simple_load!(sys, b6, 0.15, 0.03)
-
-            # Connect buses within island 1 (no connection between islands)
-            _add_simple_line!(sys, b1, b2, 0.01, 0.05, 0.02)
-            _add_simple_line!(sys, b2, b3, 0.015, 0.08, 0.01)
-            _add_simple_line!(sys, b1, b3, 0.012, 0.06, 0.015)
-
-            # Connect buses within island 2 (no connection between islands)
-            _add_simple_line!(sys, b4, b5, 0.01, 0.05, 0.02)
-            _add_simple_line!(sys, b5, b6, 0.015, 0.08, 0.01)
-            _add_simple_line!(sys, b4, b6, 0.012, 0.06, 0.015)
-
             pf_lf = ACPowerFlow{ACSolver}(; calculate_loss_factors = true)
             data_loss_factors = PowerFlowData(pf_lf, sys)
 

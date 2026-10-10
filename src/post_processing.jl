@@ -786,6 +786,21 @@ function _get_arc_endpoint_voltages(
     return (V_from, V_to)
 end
 
+"""Absolute tolerance between a recomputed and a stored from-side arc flow. The stored flow
+multiplies by PNM's ComplexF32 arc admittances, so on a near-zero-impedance branch
+(|y| ~ 1e6) their rounding alone exceeds a fixed 1e-3."""
+function _stored_flow_atol(
+    branch::PSY.ACTransmission,
+    data::ACPowerFlowData,
+    arc::Tuple{Int, Int},
+    time_step::Int,
+    nrd::PNM.NetworkReductionData,
+)
+    (V_from, V_to) = _get_arc_endpoint_voltages(data, arc, time_step)
+    (y11, y12, _, _) = PNM.ybus_branch_entries(branch, nrd)
+    return 1e-3 + eps(Float32) * abs(V_from) * (abs(y11 * V_from) + abs(y12 * V_to))
+end
+
 """
     _compute_segment_flows(arc_entry, data, arc, time_step) -> Vector{BranchFlowEntry}
 
@@ -1063,10 +1078,16 @@ function write_power_flow_solution!(
         arc_ix = arc_lookup[arc]
         p_arc = data.arc_active_power_flow_from_to[arc_ix, time_step]
         q_arc = data.arc_reactive_power_flow_from_to[arc_ix, time_step]
-        @assert isapprox(flow_entry.P_from_to, p_arc; atol = 1e-3) "Flow mismatch at " *
-                                                                   "arc $arc: recomputed P=$(flow_entry.P_from_to), stored P=$p_arc"
-        @assert isapprox(flow_entry.Q_from_to, q_arc; atol = 1e-3) "Flow mismatch at " *
-                                                                   "arc $arc: recomputed Q=$(flow_entry.Q_from_to), stored Q=$q_arc"
+        if !(
+            isapprox(flow_entry.P_from_to, p_arc; atol = 1e-3) &&
+            isapprox(flow_entry.Q_from_to, q_arc; atol = 1e-3)
+        )
+            atol = _stored_flow_atol(branch, data, arc, time_step, nrd)
+            @assert isapprox(flow_entry.P_from_to, p_arc; atol) "Flow mismatch at " *
+                                                                "arc $arc: recomputed P=$(flow_entry.P_from_to), stored P=$p_arc"
+            @assert isapprox(flow_entry.Q_from_to, q_arc; atol) "Flow mismatch at " *
+                                                                "arc $arc: recomputed Q=$(flow_entry.Q_from_to), stored Q=$q_arc"
+        end
         set_power_flow!(branch, flow_entry.P_from_to + im * flow_entry.Q_from_to)
     end
 

@@ -423,12 +423,12 @@ function _initialize_bus_data!(
     bus_reduction_map::Dict{Int, Set{Int}},
     reverse_bus_search_map::Dict{Int, Int},
     sys::PSY.System,
-    correct_bustypes::Bool = false,
+    correct_bustypes::Bool = false;
+    subnetworks::Dict{Int, Set{Int}} = PNM.find_subnetworks(sys),
 )
     # correct/validate the bus types. We don't care about PV vs PQ for DC power flow,
     # but due to the network reduction logic, it's simpler to handle the bus types the same
     # for both AC and DC [and just not error/warn for DC PV vs PQ problems].
-    subnetworks = PNM.find_subnetworks(sys)
     subnetwork_keys = keys(subnetworks)
     # so that we don't warn if there's just 1 component.
     #

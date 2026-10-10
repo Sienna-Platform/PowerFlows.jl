@@ -439,6 +439,63 @@ end
     @test isapprox(Matrix(c4.J.Jv), Matrix(fresh_J.Jv); atol = 1e-12)
 end
 
+@testset "NR cache reuse: a restored partition matches a re-derived one" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+        correct_bustypes = true,
+        solution_parameters = SolutionParameters(;
+            linear_solver = "KLU"))
+    @test_throws ErrorException PF._snapshot_partition(PowerFlowData(pf, sys))
+    # Islands bus 8 (Trans4 is its only connection) as its own REF, solves, then undoes the
+    # outage and either restores the base partition or invalidates it.
+    function islanded_then_base(restore::Bool)
+        data = PowerFlowData(pf, sys)
+        @test solve_power_flow!(data)
+        c0 = data.polar_nr_cache[]
+        snap = PF._snapshot_partition(data)
+        ybus = data.power_network_matrix
+        y0 = copy(SparseArrays.nonzeros(ybus.data))
+        i, j = PF.get_bus_lookup(data)[7], PF.get_bus_lookup(data)[8]
+        bt_j, spf_j = data.bus_type[j, 1], data.bus_slack_participation_factors[j, 1]
+        a = PNM.get_arc_lookup(ybus.arc_admittance_from_to)[(7, 8)]
+        ybus.data[i, i] -= ybus.arc_admittance_from_to.data[a, i]
+        ybus.data[j, j] -= ybus.arc_admittance_to_from.data[a, j]
+        ybus.data[i, j] = 0
+        ybus.data[j, i] = 0
+        data.bus_type[j, 1] = PSY.ACBusTypes.REF
+        data.bus_slack_participation_factors[j, 1] = 1.0
+        PF._invalidate_partition!(data)
+        @test solve_power_flow!(data)
+        @test length(c0.residual.subnetworks) == 2
+
+        copyto!(SparseArrays.nonzeros(ybus.data), y0)
+        data.bus_type[j, 1] = bt_j
+        data.bus_slack_participation_factors[j, 1] = spf_j
+        if restore
+            PF._restore_partition!(data, snap)
+            # The next refresh sees no bus-type change, so it cannot re-derive the islands.
+            @test c0.bus_type_snapshot == data.bus_type[:, 1]
+        else
+            PF._invalidate_partition!(data)
+        end
+        data.bus_active_power_withdrawals[:, 1] .*= 1.01
+        @test solve_power_flow!(data)
+        @test data.polar_nr_cache[] === c0
+        return data
+    end
+    restored = islanded_then_base(true)
+    derived = islanded_then_base(false)
+    cr, cd = restored.polar_nr_cache[], derived.polar_nr_cache[]
+    @test length(cr.residual.subnetworks) == 1
+    @test Dict(cr.residual.subnetworks) == Dict(cd.residual.subnetworks)
+    @test cr.J.independent_ref == cd.J.independent_ref
+    @test cr.J.slack_jnz == cd.J.slack_jnz
+    @test cr.residual.validate_indices == cd.residual.validate_indices
+    @test cr.bus_type_snapshot == cd.bus_type_snapshot
+    @test restored.bus_magnitude == derived.bus_magnitude
+    @test restored.bus_angles == derived.bus_angles
+end
+
 @testset "_pick_better_x0 leaves data and residual at the returned x0" begin
     # It reads the residual at x0 from `residual.Rv` instead of re-evaluating, so on both the
     # accept and the reject path a fresh evaluation at the returned x0 must reproduce `Rv`.

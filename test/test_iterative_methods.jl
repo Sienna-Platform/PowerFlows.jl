@@ -423,3 +423,182 @@ end
     ]
     @test steps == [budget]
 end
+
+@testset "NR stops at a non-finite residual" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+        solution_parameters = SolutionParameters(; linear_solver = "KLU"))
+    data = PowerFlowData(pf, sys)
+    pq = findfirst(==(PSY.ACBusTypes.PQ), data.bus_type[:, 1])
+    data.bus_active_power_injections[pq, 1] = NaN
+    @test !Logging.with_logger(() -> solve_power_flow!(data), Logging.NullLogger())
+    # One NaN step per run: the first, and the cold rerun of a lean-plan solve.
+    @test PF.get_iterations(data)[1] <= 2
+end
+
+# Iwamoto and TR evaluate the trial point with the fused kernel, which moves J there: every
+# step must still hand the caller a J and residual at its `x` (accepted, damped, reverted, or
+# rejected), or the next Newton step solves with a stale Jacobian.
+function _step_state(pf, sys)
+    data = PowerFlowData(pf, sys)
+    residual = PF.ACPowerFlowResidual(data, 1)
+    J = PF.ACPowerFlowJacobian(data, residual, 1)
+    x0 = PF.calculate_x0(data, 1)
+    x0[2:2:end] .+= 0.6 .* sin.(1:(length(x0) ÷ 2))
+    PF._update_residual_and_jacobian!(residual, J, x0, data, 1)
+    cache = PF.make_linear_solver_cache(PF.PNM.KLUSolver(), J.Jv)
+    PF.symbolic_factor!(cache, J.Jv)
+    return data, residual, J, cache, PF.StateVectorCache(x0, residual.Rv)
+end
+
+function _at_x(pf, sys, residual, J, x)
+    ref = PowerFlowData(pf, sys)
+    r2 = PF.ACPowerFlowResidual(ref, 1)
+    J2 = PF.ACPowerFlowJacobian(ref, r2, 1)
+    r2(ref, x, 1)
+    J2(ref, 1)
+    return LinearAlgebra.norm(J.Jv - J2.Jv, Inf) < 1e-9 &&
+           LinearAlgebra.norm(residual.Rv - r2.Rv, Inf) < 1e-9
+end
+
+@testset "Iwamoto and TR steps leave J at the current x" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    pf = ACPowerFlow{NewtonRaphsonACPowerFlow}()
+    data, residual, J, cache, sv = _step_state(pf, sys)
+    outcomes = Set{Tuple{Bool, Bool}}()
+    for _ in 1:8
+        progress, filled = PF._iwamoto_step(1, sv, cache, residual, J, data)
+        push!(outcomes, (progress, filled))
+        if progress && !filled
+            J(data, 1)
+        end
+        consistent = _at_x(pf, sys, residual, J, sv.x)
+        @test consistent
+        progress || break
+    end
+    # Full step fused, damped step, and revert all exercised.
+    @test outcomes == Set([(true, true), (true, false), (false, false)])
+    for (eta, fallback) in ((1e-6, true), (2.0, true), (2.0, false))
+        data, residual, J, cache, sv = _step_state(pf, sys)
+        PF._trust_region_step(
+            1,
+            sv,
+            cache,
+            residual,
+            J,
+            data,
+            0.5,
+            10.0,
+            eta,
+            true,
+            fallback,
+        )
+        consistent = _at_x(pf, sys, residual, J, sv.x)
+        @test consistent
+    end
+end
+
+# Zero-impedance transformers keep a 1e-6 substitute reactance, so the warm start carries a
+# ~3e5 pu mismatch and the first Newton step is ~1e5 long: the trust region must be able to grow
+# to it. The stored arc flows use ComplexF32 admittances, ~1e-3 off on those |y| ~ 1e6 arcs.
+@testset "TR, LM and store on retained zero-impedance transformers" begin
+    name = "psse_14_zero_impedance_branch_test_system"
+    nr = PowerFlowData(ACPolarPowerFlow(; correct_bustypes = true),
+        PSB.build_system(PSB.PSSEParsingTestSystems, name))
+    @test solve_power_flow!(nr)
+    for form in (ACPolarPowerFlow, ACRectangularPowerFlow, ACMixedPowerFlow)
+        data = PowerFlowData(form{TrustRegionACPowerFlow}(; correct_bustypes = true),
+            PSB.build_system(PSB.PSSEParsingTestSystems, name))
+        @test solve_power_flow!(data)
+        @test isapprox(data.bus_magnitude, nr.bus_magnitude; atol = 1e-8)
+        @test isapprox(data.bus_angles, nr.bus_angles; atol = 1e-8)
+    end
+    # Polar needs ‖F‖ capped at 1 in λ = μ‖F‖; mixed needs μ to fall below 1e-8 (62
+    # iterations). Rectangular LM stalls here.
+    for form in (ACPolarPowerFlow, ACMixedPowerFlow)
+        lm = PowerFlowData(
+            form{LevenbergMarquardtACPowerFlow}(;
+                correct_bustypes = true,
+                solution_parameters = SolutionParameters(; maxIterations = 100)),
+            PSB.build_system(PSB.PSSEParsingTestSystems, name))
+        @test solve_power_flow!(lm)
+        @test isapprox(lm.bus_magnitude, nr.bus_magnitude; atol = 1e-8)
+        @test isapprox(lm.bus_angles, nr.bus_angles; atol = 1e-8)
+    end
+    @test solve_and_store_power_flow!(ACPolarPowerFlow(; correct_bustypes = true),
+        PSB.build_system(PSB.PSSEParsingTestSystems, name))
+end
+
+function _chord_solve(pf, sys, chord::Bool)
+    PF._USE_CHORD[] = chord
+    try
+        data = PowerFlowData(pf, sys)
+        n0 = PF._CHORD_STEPS[]
+        @test solve_power_flow!(data)
+        return data, PF._CHORD_STEPS[] - n0
+    finally
+        PF._USE_CHORD[] = true
+    end
+end
+
+@testset "NR chord steps near convergence" begin
+    sys = PSB.build_system(PSB.PSISystems, "RTS_GMLC_DA_sys")
+    pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(; calculate_loss_factors = true)
+    newton, no_chords = _chord_solve(pf, sys, false)
+    chord, chords = _chord_solve(pf, sys, true)
+    @test iszero(no_chords)
+    @test chords > 0
+    # Chord steps count as iterations; the refactored steps are fewer.
+    @test sum(chord.iterations) - chords < sum(newton.iterations)
+    @test isapprox(chord.bus_magnitude, newton.bus_magnitude; atol = 1e-8)
+    @test isapprox(chord.bus_angles, newton.bus_angles; atol = 1e-8)
+    # Loss factors read J at the converged iterate, refilled after the last chord step.
+    @test isapprox(chord.loss_factors, newton.loss_factors; atol = 1e-6)
+end
+
+@testset "Rectangular and mixed NR chord steps" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    for form in (ACRectangularPowerFlow, ACMixedPowerFlow)
+        pf = form{NewtonRaphsonACPowerFlow}()
+        newton, no_chords = _chord_solve(pf, sys, false)
+        chord, chords = _chord_solve(pf, sys, true)
+        @test iszero(no_chords)
+        @test chords > 0
+        @test isapprox(chord.bus_magnitude, newton.bus_magnitude; atol = 1e-7)
+        @test isapprox(chord.bus_angles, newton.bus_angles; atol = 1e-7)
+    end
+end
+
+# Rect/mixed chord steps evaluate F only, so an undone step must refill J at the restored x.
+@testset "Rectangular and mixed chord step undo refills F and J" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    for (form, R, JT) in (
+        (ACRectangularPowerFlow, PF.ACRectangularCIResidual, PF.ACRectangularCIJacobian),
+        (ACMixedPowerFlow, PF.ACMixedCPBResidual, PF.ACMixedCPBJacobian),
+    )
+        pf = form{NewtonRaphsonACPowerFlow}()
+        data = PowerFlowData(pf, sys)
+        residual, J, x0 = PF._nr_initialize_with_jacobian_deferred(pf, data, 1)
+        J(data, 1)
+        cache = PF.make_linear_solver_cache(PF.PNM.KLUSolver(), J.Jv)
+        PF.symbolic_factor!(cache, J.Jv)
+        PF.numeric_refactor!(cache, J.Jv)
+        sv = PF.StateVectorCache(copy(x0), copy(residual.Rv))
+        # Move x with a residual-only evaluation, as an accepted chord step does: J is stale.
+        sv.x .*= 1.01
+        residual(data, sv.x, 1)
+        x = copy(sv.x)
+        # A zero reference norm forces the undo branch.
+        _, accepted = PF._chord_step!(1, sv, cache, residual, J, data, 0.0, 0.0)
+        @test !accepted
+        # The undo adds the step back, so x returns up to round-off.
+        @test maximum(abs, sv.x .- x) <= 1e-12
+        ref = PowerFlowData(pf, sys)
+        r = R(ref, 1)
+        r(ref, sv.x, 1)
+        Jref = JT(ref, r, 1)
+        Jref(ref, 1)
+        @test maximum(abs, residual.Rv .- r.Rv) <= 1e-12
+        @test maximum(abs, J.Jv.nzval .- Jref.Jv.nzval) <= 1e-12
+    end
+end

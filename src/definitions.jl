@@ -101,7 +101,7 @@ const DEFAULT_μ_MAX = 1e8
 const DEFAULT_FD_MAX_ITER = 150 # FD-stage iteration cap (linear rate needs more, cheaper iterations than NR's 50)
 const DEFAULT_FD_HANDOFF_TOL = 1e-3 # FD-stage exit ∞-norm when handing off (≈0.1 MW/MVAr on 100 MVA base)
 const DEFAULT_FD_SCHEME = :XB # B′/B″ scheme: :XB (Stott–Alsac) default; :BX (van Amerongen)
-const DEFAULT_FD_REFREEZE_ON_STALL = true # :fixed_jacobian only: refactor frozen J once on stall, then continue
+const DEFAULT_FD_REFREEZE_ON_STALL = true # :fixed_jacobian only: refactor a stale frozen J at the cycle start when its step fails
 const DEFAULT_FD_NON_DIVERGENT = true # non-divergent backtracking; on by default (pure-FD default mode)
 const DEFAULT_FD_NDVFCT = 0.99 # non-divergent improvement factor (accept a half-step only if it reduces the mismatch)
 const DEFAULT_FD_MAX_STEP_HALVINGS = 10 # ≤10 inner mismatch calculations (step factor down to ~0.002)
@@ -182,6 +182,7 @@ const OVERWRITE_NON_CONVERGED = true # overwrite non-converged time steps with N
 # Adam / gradient descent power flow
 const ADAM_BACKTRACK_FACTOR = 0.5
 const ADAM_MAX_BACKTRACKS = 10
+const DEFAULT_GD_MAX_ITER = 10_000
 
 # robust homotopy method constants
 const β = 10.0^-3

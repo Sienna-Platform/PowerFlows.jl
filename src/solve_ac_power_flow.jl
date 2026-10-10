@@ -27,7 +27,8 @@ setting and cannot round-trip a per-time-step schedule — use
 
 ## Keyword Arguments
 - `tol`: Infinite norm of residuals under which convergence is declared. Default is `1e-9`.
-- `maxIterations`: Maximum number of Newton-Raphson iterations. Default is `30`.
+- `maxIterations`: Maximum number of Newton-Raphson iterations. Default is
+  `$DEFAULT_NR_MAX_ITER`.
 
 # Returns
 - `converged::Bool`: Indicates whether the power flow solution converged.
@@ -229,7 +230,13 @@ This function solves the AC power flow problem for each time step specified in `
 It preallocates memory for the results and iterates over the sorted time steps.
     For each time step, it calls the `_ac_power_flow` function to solve the power flow equations and updates the `data` object with the results.
     If the power flow converges, it updates the active and reactive power injections, as well as the voltage magnitudes and angles for different bus types (REF, PV, PQ), and calculates that time step's branch power flows.
-    If the power flow does not converge, it sets the corresponding entries in `data` to `NaN`.
+    A failed time step is invalid as a whole.
+    The function sets the whole column of injections, voltage magnitudes and angles to `NaN`, inputs included (REF magnitude and angle, PV magnitude, P at PV and PQ buses, Q at PQ buses).
+    The function does not set the withdrawals to `NaN`. Shunt and FACTS control can leave their last applied susceptance in the constant-impedance reactive withdrawal.
+    After a failed time step, only `data.converged` and `data.iterations` are reliable.
+    Every other field of that time step is undefined: flows, LCC, VSC and area-interchange state, and the controlled-device store.
+    To re-solve, reset the start point and load the inputs again (for example, `clear_injection_data!`, then fill the injections and withdrawals).
+    This does not reset the controlled-device store. A time step with controlled shunts or FACTS cannot be re-solved this way.
 
 # Notes
 - If the grid topology changes (e.g., tap positions of transformers or in-service status of branches), the admittance matrices `Yft` and `Ytf` must be updated before that time step's branch flows are computed.
@@ -327,8 +334,8 @@ function _column_arc_flows!(slot::Base.RefValue, data::ACPowerFlowData)
     return slot[]
 end
 
-"""Solve one time step and write its column: voltages, injections, branch and LCC flows.
-Touches no other column of `data`."""
+"""Solve one time step and write its column: voltages, injections, branch flows, and LCC flows
+when the solve converges. Touches no other column of `data`."""
 function _solve_column!(
     data::ACPowerFlowData,
     pf::AbstractACPowerFlow{<:ACPowerFlowSolverType},
@@ -342,22 +349,20 @@ function _solve_column!(
 
     load_device_state!(cd, data, time_step)
     data.iterations[time_step] = 0
-    # Before the solve, so serial and threaded runs build the lean plan at the same step.
-    _prepare_lean_plan!(pf, data, time_step,
-        resolve_linear_solver_backend(get(merged_kwargs, :linear_solver, nothing)))
+    # The LCC Jacobian tails read LCC state that the solve's start residual rewrites, so an LCC
+    # system plans before the solve, as a threaded run does.
+    if get_lcc_count(data) > 0
+        _prepare_lean_plan!(pf, data, time_step,
+            resolve_linear_solver_backend(get(merged_kwargs, :linear_solver, nothing)))
+    end
     converged = _ac_power_flow_with_area_relax!(data, pf, time_step; merged_kwargs...)
     save_device_state!(cd, data, time_step)
     converged && _warn_vsc_limit_violations(data, time_step)
 
     if OVERWRITE_NON_CONVERGED && !converged
+        # A failed solve is invalid as a whole; see the `solve_power_flow!` docstring.
         data.bus_active_power_injections[:, time_step] .= NaN
-        data.bus_active_power_withdrawals[:, time_step] .= NaN
-        data.bus_active_power_constant_current_withdrawals[:, time_step] .= NaN
-        data.bus_active_power_constant_impedance_withdrawals[:, time_step] .= NaN
         data.bus_reactive_power_injections[:, time_step] .= NaN
-        data.bus_reactive_power_withdrawals[:, time_step] .= NaN
-        data.bus_reactive_power_constant_current_withdrawals[:, time_step] .= NaN
-        data.bus_reactive_power_constant_impedance_withdrawals[:, time_step] .= NaN
         data.bus_magnitude[:, time_step] .= NaN
         data.bus_angles[:, time_step] .= NaN
     elseif get_lcc_count(data) > 0 && converged
@@ -493,6 +498,7 @@ function _seed_workers!(
     for i in 2:length(workers)
         worker = workers[i]
         _seed_worker!(worker, worker.polar_nr_cache[], seed, memo, steps[first(chunks[i])])
+        _seed_rect_mixed!(worker, worker.solver_cache[], workers[1].solver_cache[])
     end
     return
 end
@@ -505,12 +511,31 @@ _prepare_lean_plan!(
 ) =
     nothing
 
-function _prepare_lean_plan!(
+_prepare_lean_plan!(
     ::ACPolarPowerFlow{<:Union{NewtonRaphsonACPowerFlow, TrustRegionACPowerFlow}},
     data::ACPowerFlowData,
     time_step::Int,
     ::PNM.KLUSolver,
-)
+) = _prepare_newton_plan!(data, time_step)
+
+# A staged solver's NR/TR handoff runs on the lean plan too (`_new_handoff_cache`).
+_prepare_lean_plan!(
+    pf::ACPolarPowerFlow{
+        <:Union{FastDecoupledACPowerFlow, GeneralizedAdmittanceACPowerFlow},
+    },
+    data::ACPowerFlowData,
+    time_step::Int,
+    ::PNM.KLUSolver,
+) = _prepare_handoff_plan!(get_solution_parameters(pf).handoff_solver, data, time_step)
+
+_prepare_handoff_plan!(::Type, ::ACPowerFlowData, ::Int) = nothing
+_prepare_handoff_plan!(
+    ::Type{<:Union{NewtonRaphsonACPowerFlow, TrustRegionACPowerFlow}},
+    data::ACPowerFlowData,
+    time_step::Int,
+) = _prepare_newton_plan!(data, time_step)
+
+function _prepare_newton_plan!(data::ACPowerFlowData, time_step::Int)
     _USE_LEAN_LU[] || return
     _lean_plan_tried(data.ac_jacobian_structure_cache[], data) && return
     _lean_plan_slot!(data, time_step)

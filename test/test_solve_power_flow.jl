@@ -153,6 +153,41 @@ end
     foreach(test_ac_convergence_fail, AC_SOLVERS_TO_TEST)
 end
 
+@testset "A failed solve leaves the data re-solvable" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    data = PowerFlowData(ACPowerFlow(; correct_bustypes = true), sys)
+    p_inj = copy(data.bus_active_power_injections)
+    q_inj = copy(data.bus_reactive_power_injections)
+    vm = copy(data.bus_magnitude)
+    withdrawn(d) = (
+        d.bus_active_power_withdrawals,
+        d.bus_reactive_power_withdrawals,
+        d.bus_active_power_constant_current_withdrawals,
+        d.bus_reactive_power_constant_current_withdrawals,
+        d.bus_active_power_constant_impedance_withdrawals,
+        d.bus_reactive_power_constant_impedance_withdrawals,
+    )
+    pq = data.bus_type[:, 1] .== PSY.ACBusTypes.PQ
+    ix = findall(pq)[1:3]
+    for (k, arr) in enumerate(withdrawn(data)[3:end])
+        arr[ix, 1] .= 0.01 * k
+    end
+    withdrawals = map(copy, withdrawn(data))
+    data.bus_magnitude[pq, 1] .= 1.0
+    fill!(data.bus_angles, 0.0)
+    @test_logs (:error, r"did not converge") match_mode = :any @test !solve_power_flow!(
+        data;
+        maxIterations = 1,
+    )
+    @test all(isnan, data.bus_magnitude)
+    @test withdrawn(data) == withdrawals
+    data.bus_active_power_injections .= p_inj
+    data.bus_reactive_power_injections .= q_inj
+    data.bus_magnitude .= vm
+    fill!(data.bus_angles, 0.0)
+    @test solve_power_flow!(data)
+end
+
 @testset "AC Test 240 Case PSS/e results" begin
     file = joinpath(
         TEST_DATA_DIR,
@@ -947,4 +982,27 @@ end
     hybrid = PSY.get_component(PSY.HybridSystem, sys, "all_hybrid")
     PSY.set_output_active_power_limits!(hybrid, nothing)
     @test_throws r"all_hybrid" PowerFlowData(pf, sys)
+end
+
+@testset "polar enhanced flat start: multiple islands, PV-less island" begin
+    sys = System(100.0)
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.02)
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.PV, 230, 1.04)
+    b3 = _add_simple_bus!(sys, 3, ACBusTypes.PQ, 230)
+    b4 = _add_simple_bus!(sys, 4, ACBusTypes.REF, 230, 1.06)
+    b5 = _add_simple_bus!(sys, 5, ACBusTypes.PQ, 230)
+    _add_simple_line!(sys, b1, b2, 1e-3, 1e-2)
+    _add_simple_line!(sys, b2, b3, 1e-3, 1e-2)
+    _add_simple_line!(sys, b4, b5, 1e-3, 1e-2)
+    _add_simple_source!(sys, b1)
+    _add_simple_source!(sys, b4)
+    _add_simple_thermal_standard!(sys, b2, 0.1, 0.0)
+    _add_simple_load!(sys, b3, 10.0, 2.0)
+    _add_simple_load!(sys, b5, 10.0, 2.0)
+    data = PowerFlowData(ACPowerFlow(), sys)
+    bus_lookup = PF.get_bus_lookup(data)
+    x = PF._enhanced_flat_start(PF.calculate_x0(data, 1), data, 1)
+    @test all(isfinite, x)
+    @test x[2 * bus_lookup[3] - 1] ≈ (1.02 + 1.04) / 2
+    @test x[2 * bus_lookup[5] - 1] ≈ 1.06
 end

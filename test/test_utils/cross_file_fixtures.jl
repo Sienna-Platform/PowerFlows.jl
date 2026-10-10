@@ -535,3 +535,32 @@ function _weak_tie_three_area_fixture(; x_weak::Float64 = 2.0, pdes2::Float64 = 
     _add_area_interchange!(sys, "Area3", "Area1", pdes3; name = "A3_A1")
     return sys
 end
+
+function _make_two_island_system()
+    sys = System(100.0)
+
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.05, 0.0)
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.PQ, 230, 1.0, 0.0)
+    b3 = _add_simple_bus!(sys, 3, ACBusTypes.PQ, 230, 1.0, 0.0)
+
+    b4 = _add_simple_bus!(sys, 4, ACBusTypes.REF, 230, 1.02, 0.0)
+    b5 = _add_simple_bus!(sys, 5, ACBusTypes.PQ, 230, 1.0, 0.0)
+    b6 = _add_simple_bus!(sys, 6, ACBusTypes.PQ, 230, 1.0, 0.0)
+
+    _add_simple_source!(sys, b1, 0.5, 0.1)
+    _add_simple_source!(sys, b4, 0.4, 0.08)
+
+    _add_simple_load!(sys, b2, 0.25, 0.05)
+    _add_simple_load!(sys, b3, 0.2, 0.04)
+    _add_simple_load!(sys, b5, 0.2, 0.04)
+    _add_simple_load!(sys, b6, 0.15, 0.03)
+
+    _add_simple_line!(sys, b1, b2, 0.01, 0.05, 0.02)
+    _add_simple_line!(sys, b2, b3, 0.015, 0.08, 0.01)
+    _add_simple_line!(sys, b1, b3, 0.012, 0.06, 0.015)
+
+    _add_simple_line!(sys, b4, b5, 0.01, 0.05, 0.02)
+    _add_simple_line!(sys, b5, b6, 0.015, 0.08, 0.01)
+    _add_simple_line!(sys, b4, b6, 0.012, 0.06, 0.015)
+    return sys
+end

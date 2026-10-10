@@ -50,6 +50,7 @@ function _newton_power_flow(pf::ACPolarPowerFlow{<:RobustHomotopyPowerFlow},
         end
         t_k = min(t_k + Δt_k, 1.0)
     end
+    data.iterations[time_step] += total_iters
     r_L2 = norm(homHess.pfResidual.Rv, 2)
     r_Linf = norm(homHess.pfResidual.Rv, Inf)
     @info("Final residual size: $(r_L2) L2, $(r_Linf) L∞.")
@@ -70,6 +71,26 @@ function _newton_power_flow(pf::ACPolarPowerFlow{<:RobustHomotopyPowerFlow},
 end
 
 sig3(x::Float64) = round(x; sigdigits = 3)
+
+# Every backtrack shrinks α by at least half, so past this many α·|δ| is below
+# INSUFFICIENT_CHANGE_IN_X for any practical |δ|. The default 1000 only adds F evaluations
+# at the round-off floor.
+const RH_LINE_SEARCH_MAX_ITER = 50
+
+"""Armijo backtracking from α = 1. Returns `(α, ϕ(α), true)`, or `(0.0, φ_0, false)` when no
+acceptable step exists (non-finite values, non-descent direction, round-off floor)."""
+function _backtracking_line_search(ϕ::F, φ_0::Float64, dφ_0::Float64) where {F}
+    try
+        (α, φ) = BackTracking(; iterations = RH_LINE_SEARCH_MAX_ITER)(ϕ, 1.0, φ_0, dφ_0)
+        return α, φ, true
+    catch e
+        _rethrow_unless_line_search_failure(e)
+        return 0.0, φ_0, false
+    end
+end
+
+_rethrow_unless_line_search_failure(::LineSearchException) = nothing
+_rethrow_unless_line_search_failure(::Any) = rethrow()
 
 function info_helper(homHess::HomotopyHessian, t_k::Float64, F_val::Float64, msg::String)
     r_val = norm(homHess.pfResidual.Rv, Inf)
@@ -135,11 +156,12 @@ function _second_order_newton_step(homHess::HomotopyHessian,
     # Create objective function
     ϕ = α -> F_value(homHess, data, t_k, x + α * δ, time_step)
 
-    # Perform line search
-    φ_0 = F_val
-    dφ_0 = dot(homHess.grad, δ)
-    (α_star, F_val) = BackTracking()(ϕ, 1.0, φ_0, dφ_0)
-
+    (α_star, F_val, searched) = _backtracking_line_search(ϕ, F_val, dot(homHess.grad, δ))
+    if !searched
+        # x is unchanged, so retrying at this t_k repeats the same failed search.
+        info_helper(homHess, t_k, F_val, "line search failed")
+        return true
+    end
     if !last_step && norm(δ * α_star) < INSUFFICIENT_CHANGE_IN_X
         # stop case 2: slow progress.
         info_helper(homHess, t_k, F_val, "slow progress")

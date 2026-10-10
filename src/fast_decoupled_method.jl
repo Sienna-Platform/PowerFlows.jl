@@ -248,6 +248,13 @@ formulation Jacobian to be assembled (the :decoupled loop otherwise skips it).""
 _fd_needs_handoff_jacobian(::Type{NoHandoff}) = false
 _fd_needs_handoff_jacobian(::Type{<:ACPowerFlowSolverType}) = true
 
+# FD converges linearly: once a cycle cuts ‖Rv‖∞ by less than half, the handoff's Newton steps
+# cost less than more cycles.
+const FD_HANDOFF_CONTRACTION = 0.5
+_fd_stage_stalled(::Type{NoHandoff}, ::Float64, ::Float64) = false
+_fd_stage_stalled(::Type{<:ACPowerFlowSolverType}, rinf::Float64, rinf_prev::Float64) =
+    !(rinf < FD_HANDOFF_CONTRACTION * rinf_prev)
+
 # The Type methods live in levenberg-marquardt.jl; this instance form lets call sites pass `pf`
 # directly instead of `typeof(pf)`.
 _default_marquardt_scaling(pf::AbstractACPowerFlow) = _default_marquardt_scaling(typeof(pf))
@@ -399,6 +406,7 @@ function _fd_fixed_jacobian_power_flow(
         sg = FDSafeguardState(sv.x, ss)
         converged = norm(residual.Rv, Inf) < stage_tol
         refrozen = false
+        fresh = true   # J holds values at the current cycle-start state
 
         while i < maxIterations && !converged
             _fd_begin_cycle!(sg, sv.x, ss)
@@ -426,8 +434,25 @@ function _fd_fixed_jacobian_power_flow(
             residual(data, sv.x, time_step)
             ss = dot(residual.Rv, residual.Rv)
 
-            # V≈0 abort.
-            if _fd_vm_abort(vm_view, fd_vm_abort)
+            # A stale J refreezes at the cycle start when its step fails or drives |V|≈0.
+            stale = fd_non_divergent && refreeze_on_stall && !fresh
+            vm_abort = _fd_vm_abort(vm_view, fd_vm_abort)
+            failed = vm_abort || !(ss < fd_ndvfct * sg.prev_ss)
+
+            # The mixed PV power rows rotate with the bus angle, so J frozen at x0 diverges
+            # once the angles move.
+            if stale && failed
+                @debug "$solver_name: stale Jacobian refreeze" time_step vm_abort
+                copyto!(sv.x, sg.cycle_x)
+                _residual_at_step!(residual, J, data, sv.x, time_step) || J(data, time_step)
+                numeric_refactor!(cache, J.Jv)
+                ss = sg.prev_ss
+                fresh = true
+                i += 1
+                continue
+            end
+
+            if vm_abort
                 @warn(
                     "$solver_name: a bus voltage magnitude was driven below " *
                     "$(fd_vm_abort); aborting FD stage."
@@ -438,10 +463,16 @@ function _fd_fixed_jacobian_power_flow(
                 break
             end
 
-            # --- non-divergent backtracking ---
-            if fd_non_divergent && ss >= fd_ndvfct * sg.prev_ss
-                # The full step failed to improve enough: re-apply a halved step from the
-                # cycle-start state, up to `fd_max_step_halvings` times.
+            if !fd_non_divergent && !isfinite(ss)
+                _fd_restore_best!(sv, residual, sg, data, time_step)
+                ss = sg.best_ss
+                break
+            end
+
+            # --- non-divergent backtracking (a NaN `ss` fails the test too) ---
+            if fd_non_divergent && failed
+                # Re-apply a halved step from the cycle-start state, up to
+                # `fd_max_step_halvings` times.
                 accepted = false
                 factor = 1.0
                 for _ in 1:fd_max_step_halvings
@@ -450,48 +481,31 @@ function _fd_fixed_jacobian_power_flow(
                     @inbounds @. sv.x += factor * sv.Δx_nr
                     residual(data, sv.x, time_step)
                     ss = dot(residual.Rv, residual.Rv)
-                    _fd_update_best!(sg, sv.x, ss)
-                    if ss < fd_ndvfct * sg.prev_ss &&
-                       !_fd_vm_abort(vm_view, fd_vm_abort)
+                    if _fd_halving_accepted!(sg, sv.x, ss, vm_view, fd_vm_abort, fd_ndvfct)
                         accepted = true
                         break
                     end
                 end
                 if !accepted
-                    # Exhausted halvings: optionally refreeze ONCE, else terminate and
-                    # restore the best-Σ(Rv²) state seen.
-                    if refreeze_on_stall && !refrozen
-                        refrozen = true
-                        # refresh J at the best state, refactor in place, continue
-                        _fd_restore_best!(sv, residual, sg, data, time_step)
-                        J(data, time_step)
-                        numeric_refactor!(cache, J.Jv)
-                        ss = sg.best_ss
-                        _fd_reset_safeguard!(sg, sv.x, ss)
-                        converged = norm(residual.Rv, Inf) < stage_tol
-                        i += 1
-                        continue
-                    else
-                        _fd_restore_best!(sv, residual, sg, data, time_step)
-                        ss = sg.best_ss
-                        @warn(
-                            "$solver_name: non-divergent backtracking exhausted; " *
-                            "restoring best state (Σmismatch² = $(ss))."
-                        )
-                        break
-                    end
+                    _fd_restore_best!(sv, residual, sg, data, time_step)
+                    ss = sg.best_ss
+                    @warn(
+                        "$solver_name: non-divergent backtracking exhausted; " *
+                        "restoring best state (Σmismatch² = $(ss))."
+                    )
+                    break
                 end
             else
                 # step accepted; update best-state record
                 _fd_update_best!(sg, sv.x, ss)
             end
-
-            validate_voltage_magnitudes && _validate_state_magnitudes(
-                residual, sv.x, vm_validation_range, i,
-            )
+            fresh = false
 
             converged = norm(residual.Rv, Inf) < stage_tol
             if !converged
+                validate_voltage_magnitudes && _validate_state_magnitudes(
+                    residual, sv.x, vm_validation_range, i,
+                )
                 i += 1
                 # On a plain stall (no non-divergent control) allow a one-shot refreeze.
                 if !fd_non_divergent && refreeze_on_stall && !refrozen &&
@@ -502,6 +516,9 @@ function _fd_fixed_jacobian_power_flow(
                     _fd_reset_safeguard!(sg, sv.x, ss)
                 end
             end
+        end
+        if !converged && ss > sg.best_ss
+            _fd_restore_best!(sv, residual, sg, data, time_step)
         end
         # Opt-in handoff: refine the FD state to the real `tol` with NR/TR. No-op when
         # handoff is disabled or the FD state already met `tol`. Threads handoff iters into
@@ -529,8 +546,7 @@ function _fd_fixed_jacobian_power_flow(
 end
 
 """Restore the best-Σ(Rv²) state recorded in `sg` into `sv.x` and re-evaluate the residual
-there (syncing `data`). Used on non-divergent termination, V≈0 abort, and before a
-one-shot refreeze."""
+there (syncing `data`)."""
 function _fd_restore_best!(
     sv::StateVectorCache,
     residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
@@ -541,6 +557,23 @@ function _fd_restore_best!(
     copyto!(sv.x, sg.best_x)
     residual(data, sv.x, time_step)
     return
+end
+
+"""Record a halved-step state as best only if it passes the V≈0 test, and return whether the
+halved step is accepted."""
+function _fd_halving_accepted!(
+    sg::FDSafeguardState,
+    x::Vector{Float64},
+    ss::Float64,
+    vm::AbstractVector{Float64},
+    vm_abort::Float64,
+    ndvfct::Float64,
+)
+    if _fd_vm_abort(vm, vm_abort)
+        return false
+    end
+    _fd_update_best!(sg, x, ss)
+    return ss < ndvfct * sg.prev_ss
 end
 
 # =====================================================================================
@@ -667,6 +700,8 @@ and the linear-solver cache type `C` so all fields are concretely typed.
   (length `length(pvpq)`).
 - `area_dtheta::Vector{Float64}`: bordered-Schur scratch, the final `Δθ = u − W·ΔP_a`
   (length `length(pvpq)`).
+- `handoff::Base.RefValue{Union{Nothing, HandoffLinearCache{C}}}`: the handoff solver's linear
+  cache, kept across solves (see [`HandoffLinearCache`](@ref)).
 """
 mutable struct FastDecoupledCache{S <: FDScheme, C <: PNM.LinearSolverCache} <: SolverCache
     key::FDCacheKey{S}
@@ -684,6 +719,23 @@ mutable struct FastDecoupledCache{S <: FDScheme, C <: PNM.LinearSolverCache} <: 
     area_g::Vector{Float64}
     area_u::Vector{Float64}
     area_dtheta::Vector{Float64}
+    handoff::Base.RefValue{Union{Nothing, HandoffLinearCache{C}}}
+end
+
+_lean_counts(stage::FastDecoupledCache) = _lean_counts(stage.handoff[])
+
+function _handoff_linear_cache!(
+    stage::FastDecoupledCache{S, C},
+    pf::AbstractACPowerFlow,
+    data::ACPowerFlowData,
+    J,
+    time_step::Int64,
+    linear_solver,
+) where {S, C}
+    structure = data.ac_jacobian_structure_cache[]
+    return _reuse_handoff_cache!(
+        stage.handoff, stage.handoff[], structure, pf, data, J, time_step, linear_solver,
+    )::C
 end
 
 """
@@ -726,8 +778,27 @@ function _get_or_build_fd_cache!(
     key = FDCacheKey(objectid(data.power_network_matrix), scheme, backend_id)
     reused = _reuse_fd_cache(data.solver_cache[], key)
     isnothing(reused) || return reused
+    return _build_fd_cache!(
+        data,
+        time_step,
+        scheme,
+        backend_id,
+        linear_solver,
+        _arc_params(data),
+    )
+end
 
-    fd = build_fd_matrices(data, time_step, scheme; linear_solver)   # B′ assembled + factored ONCE
+"""Build and store a [`FastDecoupledCache`](@ref) on the given π parameters, replacing the slot."""
+function _build_fd_cache!(
+    data::ACPowerFlowData,
+    time_step::Int64,
+    scheme::FDScheme,
+    backend_id::DataType,
+    linear_solver::Union{Nothing, AbstractString},
+    arc_params::FDArcParams,
+)
+    key = FDCacheKey(objectid(data.power_network_matrix), scheme, backend_id)
+    fd = build_fd_matrices(data, time_step, scheme; linear_solver, arc_params)   # B′ factored ONCE
     theta_x_idx = [2 * i for i in fd.pvpq]
     p_row_idx = [2 * i - 1 for i in fd.pvpq]
     rp = Vector{Float64}(undef, length(fd.pvpq))
@@ -753,6 +824,7 @@ function _get_or_build_fd_cache!(
         Vector{Float64}(undef, n_areas),
         Vector{Float64}(undef, length(fd.pvpq)),
         Vector{Float64}(undef, length(fd.pvpq)),
+        Base.RefValue{Union{Nothing, HandoffLinearCache{typeof(fd.bp_cache)}}}(nothing),
     )
     data.solver_cache[] = cache
     return cache
@@ -1130,12 +1202,11 @@ function _fd_decoupled_power_flow(
         _fd_needs_handoff_jacobian(handoff_solver) ||
         get_calculate_loss_factors(data) ||
         get_calculate_voltage_stability_factors(data)
+    residual, x0_init = _initialize_residual_x0(pf, data, time_step; init_kwargs...)
+    # Structure only: its consumers evaluate J at the state they need (handoff, solution).
+    J = nothing
     if need_jacobian
-        residual, J, x0_init =
-            initialize_power_flow_variables(pf, data, time_step; init_kwargs...)
-    else
-        residual, x0_init = _initialize_residual_x0(pf, data, time_step; init_kwargs...)
-        J = nothing
+        J = ACPowerFlowJacobian(data, residual, time_step)
     end
 
     solver_name = "FastDecoupled(FDDecoupled,$(nameof(typeof(scheme))))"
@@ -1201,6 +1272,8 @@ function _fd_decoupled_power_flow(
     ss = dot(residual.Rv, residual.Rv)
     sg = FDSafeguardState(sv.x, ss)
     converged = norm(residual.Rv, Inf) < stage_tol
+    # The flat-start residual is no contraction baseline: the first cycle is never judged.
+    rinf_prev = Inf
     i = 0
 
     # One FD half-step + explicit sync + residual refresh, returning whether it diverged on a
@@ -1291,15 +1364,17 @@ function _fd_decoupled_power_flow(
             break
         end
 
-        if diverged   # only reachable with fd_non_divergent = false
+        # Without fd_non_divergent, a BLOWUP or a non-finite cycle stops here. With it, the branch
+        # below backtracks the cycle.
+        if diverged || (!fd_non_divergent && !isfinite(ss))
             _fd_restore_best!(sv, residual, sg, data, time_step)
             ss = sg.best_ss
             break
         end
 
         # --- non-divergent backtracking: if the full cycle failed to improve Σ(Rv²) enough,
-        # re-apply a halved cycle step from the cycle-start state. ---
-        if fd_non_divergent && ss >= fd_ndvfct * sg.prev_ss
+        # re-apply a halved cycle step from the cycle-start state (a NaN `ss` fails it too). ---
+        if fd_non_divergent && !(ss < fd_ndvfct * sg.prev_ss)
             accepted = false
             factor = 1.0
             # Snapshot the full-cycle step ONCE. Backtracking re-applies a scaled copy from the
@@ -1325,8 +1400,7 @@ function _fd_decoupled_power_flow(
                     _fd_area_substep!(sv, cache, residual, data, time_step)
                 end
                 ss = dot(residual.Rv, residual.Rv)
-                _fd_update_best!(sg, sv.x, ss)
-                if ss < fd_ndvfct * sg.prev_ss && !_fd_vm_abort(Vm, fd_vm_abort)
+                if _fd_halving_accepted!(sg, sv.x, ss, Vm, fd_vm_abort, fd_ndvfct)
                     accepted = true
                     break
                 end
@@ -1344,14 +1418,20 @@ function _fd_decoupled_power_flow(
             _fd_update_best!(sg, sv.x, ss)
         end
 
+        rinf = norm(residual.Rv, Inf)
+        converged = rinf < stage_tol
+        converged && break
         validate_voltage_magnitudes && _validate_state_magnitudes(
             residual, sv.x, vm_validation_range, i,
         )
-
-        converged = norm(residual.Rv, Inf) < stage_tol
-        converged || (i += 1)
+        i += 1
+        _fd_stage_stalled(handoff_solver, rinf, rinf_prev) && break
+        rinf_prev = rinf
     end
 
+    if !converged && ss > sg.best_ss
+        _fd_restore_best!(sv, residual, sg, data, time_step)
+    end
     # Opt-in handoff: refine the FD state to the real `tol` with NR/TR. No-op when handoff
     # is disabled or the FD state already met `tol`. Threads handoff iters into the reported
     # count so finalize happens ONCE, on the refined state.
