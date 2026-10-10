@@ -172,7 +172,7 @@ end
 
 # ── Rectangular CI and MCPB ───────────────────────────────────────────────────────────────
 # Shared primitive: ΔI_i = ∂(Y_bus_eff·V)_i/∂p, from which each formulation's rows follow.
-# Cross-check identity: ∂F_rect/∂p = −ΔI_i, ∂F_polar/∂p = V_i·conj(ΔI_i).
+# Power rows (polar, rect, MCPB PV) take V_i·conj(ΔI_i); MCPB current rows take −ΔI_i.
 
 const _RectOrMixedResidual = Union{ACRectangularCIResidual, ACMixedCPBResidual}
 
@@ -197,8 +197,6 @@ function _refresh_jacobian_yb_caches!(J, data, r::ACRectangularCIResidual, ts::I
     @inbounds for i in eachindex(J.Y_diag)
         J.Y_diag[i] = r.Y_bus_eff[i, i]
     end
-    _populate_constant_yb_blocks!(
-        J.Jv, r.Y_bus_eff, r.bus_state_offset, view(data.bus_type, :, ts))
     return
 end
 function _refresh_jacobian_yb_caches!(J, data, r::ACMixedCPBResidual, ts::Int)
@@ -248,19 +246,22 @@ end
 
 # ── ΔI → residual rows, per formulation ───────────────────────────────────────────────────
 
-# F = I_spec − Y·V: real in slot 0, imag in slot 1 at every bus type. A PV bus's third row
-# is the `|V|²` constraint, which carries no p dependence.
+# F = V·conj(I) − S_spec: ΔP in slot 0, ΔQ in slot 1. A PV bus's second row is the `|V|²`
+# constraint, which carries no p dependence.
 function _stamp_dI!(
     rhs::Vector{Float64},
     r::ACRectangularCIResidual,
     i::Int,
     dI::ComplexF64,
-    ::PSY.ACBusTypes.Value,
+    bt::PSY.ACBusTypes.Value,
 )
     off = _state_offset(r, i)
-    @inbounds begin
-        rhs[off] = -real(dI)
-        rhs[off + 1] = -imag(dI)
+    dS = _bus_voltage(r, i) * conj(dI)
+    @inbounds rhs[off] = real(dS)
+    if bt == PSY.ACBusTypes.PV
+        @inbounds rhs[off + 1] = 0.0
+    else
+        @inbounds rhs[off + 1] = imag(dS)
     end
     return
 end
@@ -268,7 +269,7 @@ end
 # MCPB mixes three row conventions (`_update_mixed_cpb_residual_values!`):
 #   PQ  — divided current balance, IMAG-first (rows swap; (e, f) columns do not).
 #   PV  — real-power balance + `|V|²` row (p-independent; reactive injection cannot move either).
-#   REF — rect-verbatim, real-first.
+#   REF — current balance, real-first.
 function _stamp_dI!(
     rhs::Vector{Float64},
     r::ACMixedCPBResidual,

@@ -46,9 +46,7 @@ end
     pf_rect = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}()
     data = PF.PowerFlowData(pf_rect, sys)
     R = PF.ACRectangularCIResidual(data, 1)
-    # Block sizes: 2 for PQ/REF, 3 for PV
-    bt = view(data.bus_type, :, 1)
-    expected = sum(b == PSY.ACBusTypes.PV ? 3 : 2 for b in bt) +
-               4 * size(data.lcc.p_set, 1)
+    # Every bus is a 2-slot block (a PV bus has no reactive-power state).
+    expected = 2 * size(data.bus_type, 1) + 4 * size(data.lcc.p_set, 1)
     @test length(R.Rv) == expected
 end

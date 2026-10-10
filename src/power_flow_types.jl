@@ -17,7 +17,7 @@ abstract type ACPowerFlowSolverType end
 """An abstract supertype for AC power flow evaluation models, parametrized by the
 solver type `S <: ACPowerFlowSolverType`. Concrete subtypes select the *formulation*:
 [`ACPolarPowerFlow`](@ref) uses the polar voltage state; a rectangular
-current-injection formulation is provided separately. The solver and the
+formulation is provided separately. The solver and the
 formulation are orthogonal."""
 abstract type AbstractACPowerFlow{S <: ACPowerFlowSolverType} <: PowerFlowEvaluationModel end
 
@@ -251,14 +251,14 @@ intensive. Due to the difficulty of tuning meta parameters, this method may occa
 fail to converge where other methods would succeed.
 
 Works with both the polar ([`ACPolarPowerFlow`](@ref)) and rectangular
-current-injection ([`ACRectangularPowerFlow`](@ref)) formulations.
+([`ACRectangularPowerFlow`](@ref)) formulations.
 
 Marquardt diagonal column scaling (`√λ·D` damping instead of `√λ·I`) can be
 toggled via the `marquardt_scaling` keyword on the formulation constructor
 (e.g. `ACRectangularPowerFlow(; marquardt_scaling = true|false)`), which is
 folded into the stored `SolutionParameters`. Left unset, each formulation
 constructor resolves its own default via `_default_marquardt_scaling`: **on**
-for [`ACRectangularPowerFlow`](@ref) — whose state columns `(e, f, Q, P_gen)`
+for [`ACRectangularPowerFlow`](@ref) — whose state columns `(e, f, P_net, Q_net)`
 are differently scaled, so identity damping is ill-conditioned — and **off**
 for [`ACPolarPowerFlow`](@ref)/[`ACMixedPowerFlow`](@ref), leaving those
 solvers numerically unchanged.
@@ -686,13 +686,14 @@ get_n_threads(pf::AbstractACPowerFlow) = get_solution_parameters(pf).n_threads
     ACRectangularPowerFlow{ACSolver}(; kwargs...) where {ACSolver <: ACPowerFlowSolverType}
     ACRectangularPowerFlow(; kwargs...)
 
-An evaluation model for the AC power flow solved with the augmented
-current-injection (Da Costa) formulation in rectangular coordinates.
+An evaluation model for the AC power flow solved with the bus power mismatch in
+rectangular coordinates (MATPOWER's `newtonpf_S_cart`).
 
-State per bus: PQ `(eᵢ, fᵢ)`, PV `(eᵢ, fᵢ, Qᵢ)`, REF `(P_genᵢ, Q_genᵢ)` with
-`(eᵢ, fᵢ)` fixed. Residual is the complex current mismatch
-`ΔIᵢ = I_specᵢ − Y_bus·V`. Off-diagonal Jacobian blocks ≡ Y_bus 2×2 real blocks
-and are constant across iterations.
+State per bus: PQ and PV `(eᵢ, fᵢ)`, REF `(P_netᵢ, Q_netᵢ)` with `(eᵢ, fᵢ)` fixed.
+Rows per bus: PQ and REF `(ΔPᵢ, ΔQᵢ)` with `ΔSᵢ = Vᵢ·conj((Y_bus·V)ᵢ) − S_specᵢ`; PV
+`(ΔPᵢ, |Vᵢ|² − V_setᵢ²)`. A PV bus's reactive power is recovered from the converged
+voltages. Like the polar form, the rows do not change when all bus angles rotate together,
+so Newton converges from a flat start.
 
 `ACSolver` defaults to [`NewtonRaphsonACPowerFlow`](@ref). Supported solvers:
 [`NewtonRaphsonACPowerFlow`](@ref), [`TrustRegionACPowerFlow`](@ref), and
@@ -703,7 +704,7 @@ construction.
 Unlike [`ACPolarPowerFlow`](@ref), this model has no
 `calculate_voltage_stability_factors`, `calculate_loss_factors`, or
 `robust_power_flow` options — those post-processing/fallback paths assume the
-polar state layout and have no current-injection equivalent.
+polar state layout and have no rectangular equivalent.
 
 # Arguments
 - `check_reactive_power_limits::Bool`: Default `false`.

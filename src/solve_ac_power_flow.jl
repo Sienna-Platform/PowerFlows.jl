@@ -356,6 +356,8 @@ function _solve_column!(
             resolve_linear_solver_backend(get(merged_kwargs, :linear_solver, nothing)))
     end
     converged = _ac_power_flow_with_area_relax!(data, pf, time_step; merged_kwargs...)
+    converged = converged && _voltages_in_band(pf, data, time_step, merged_kwargs)
+    converged = converged && _root_operable(data, time_step, merged_kwargs)
     save_device_state!(cd, data, time_step)
     converged && _warn_vsc_limit_violations(data, time_step)
 
@@ -408,6 +410,130 @@ function _solve_column!(
         data.arc_angle_differences[k, time_step] = θ[f] - θ[t]
     end
     return converged
+end
+
+# Polar holds PV |V| at its setpoint; rectangular and mixed carry PV (e, f) as state.
+_band_checked(::ACPolarPowerFlow, bt::PSY.ACBusTypes.Value) = bt == PSY.ACBusTypes.PQ
+_band_checked(::AbstractACPowerFlow, bt::PSY.ACBusTypes.Value) =
+    bt == PSY.ACBusTypes.PQ || bt == PSY.ACBusTypes.PV
+
+"""`vm_validation_range` is the acceptance band of a converged step: a step that meets `tol` with
+a published |V| outside it at a PQ bus (PQ or PV in the rectangular and mixed formulations) has
+found a non-physical root (|V| ≈ 0 from a flat start) and is reported not converged. Off with
+`validate_voltage_magnitudes = false`, which also silences the per-iterate warnings."""
+function _voltages_in_band(
+    pf::AbstractACPowerFlow,
+    data::ACPowerFlowData,
+    time_step::Int,
+    merged_kwargs::NamedTuple,
+)
+    merged_kwargs.validate_voltage_magnitudes || return true
+    range = merged_kwargs.vm_validation_range
+    n_out = 0
+    @inbounds for i in axes(data.bus_magnitude, 1)
+        _band_checked(pf, data.bus_type[i, time_step]) || continue
+        vm = data.bus_magnitude[i, time_step]
+        n_out += !(range.min <= vm <= range.max)
+    end
+    iszero(n_out) && return true
+    _error_out_of_band(pf, data, time_step, range, n_out)
+    return false
+end
+
+@noinline function _error_out_of_band(
+    pf::AbstractACPowerFlow,
+    data::ACPowerFlowData,
+    time_step::Int,
+    range::MinMax,
+    n_out::Int,
+)
+    bus_numbers = get_bus_axis(data)
+    out = Int[]
+    vmin, vmax = Inf, -Inf
+    for i in axes(data.bus_magnitude, 1)
+        _band_checked(pf, data.bus_type[i, time_step]) || continue
+        vm = data.bus_magnitude[i, time_step]
+        vmin = min(vmin, vm)
+        vmax = max(vmax, vm)
+        if !(range.min <= vm <= range.max) && length(out) < PF_MAX_LOG
+            push!(out, bus_numbers[i])
+        end
+    end
+    @error "Time step $time_step met the tolerance at a non-physical root and is reported " *
+           "not converged: |V| outside vm_validation_range $range at $n_out bus(es), " *
+           "first $(length(out)): $out; checked |V| in [$vmin, $vmax]."
+    return
+end
+
+# The lowest-|V| loaded PQ buses `check_root_type` tests: a low-voltage root collapses a pocket
+# of load, so its lowest voltages are where ∂|V|/∂Q turns negative.
+const ROOT_TYPE_CHECKED_BUSES = 10
+
+"""`check_root_type`: a converged step must sit on the operable (high-voltage) branch, where
+the V-Q self-sensitivity ∂|V_i|/∂Q_i of the reduced Jacobian `J_QV - J_Qθ J_Pθ⁻¹ J_PV` is positive
+at every load bus (Kundur, Power System Stability and Control, §14.3). It is checked at the
+`ROOT_TYPE_CHECKED_BUSES` lowest-|V| PQ buses that carry power, from one factorization of the
+polar Jacobian at the published voltages (any formulation). Zero-injection buses are skipped:
+three-winding star buses with a capacitive self-admittance read negative at correct roots."""
+function _root_operable(data::ACPowerFlowData, time_step::Int, merged_kwargs::NamedTuple)
+    merged_kwargs.check_root_type || return true
+    buses, dvdq = _vq_self_sensitivities(data, time_step)
+    all(>(0.0), dvdq) && return true
+    _error_inoperable_root(data, time_step, buses, dvdq)
+    return false
+end
+
+function _carries_power(data::ACPowerFlowData, i::Int, time_step::Int)
+    return !(
+        iszero(data.bus_active_power_injections[i, time_step]) &&
+        iszero(data.bus_reactive_power_injections[i, time_step]) &&
+        iszero(get_bus_active_power_total_withdrawals(data, i, time_step)) &&
+        iszero(get_bus_reactive_power_total_withdrawals(data, i, time_step))
+    )
+end
+
+"""∂|V_i|/∂Q_i at the lowest-|V| loaded PQ buses: column `i` of the reduced Jacobian's inverse
+is the |V| block of `J⁻¹ [0; e_i]` in the block form of [`_block_J_indices`](@ref)."""
+function _vq_self_sensitivities(data::ACPowerFlowData, time_step::Int)
+    _, pv, pq = bus_type_idx(data, time_step)
+    vm = view(data.bus_magnitude, :, time_step)
+    cand = [j for j in eachindex(pq) if _carries_power(data, pq[j], time_step)]
+    k = min(ROOT_TYPE_CHECKED_BUSES, length(cand))
+    picked = partialsort!(cand, 1:k; by = j -> vm[pq[j]])
+    isempty(picked) && return Int[], Float64[]
+    residual = ACPowerFlowResidual(data, time_step)
+    J = ACPowerFlowJacobian(data, residual, time_step)
+    J(data, time_step)
+    pvpq = [pv; pq]
+    rows, cols = _block_J_indices(pvpq, pq)
+    Jb = J.Jv[rows, cols]
+    cache = make_linear_solver_cache(PNM.KLUSolver(), Jb)
+    full_factor!(cache, Jb)
+    offset = length(pvpq)
+    rhs = zeros(size(Jb, 1), k)
+    for (c, j) in enumerate(picked)
+        rhs[offset + j, c] = 1.0
+    end
+    solve!(cache, rhs)
+    dvdq = [rhs[offset + j, c] for (c, j) in enumerate(picked)]
+    return pq[picked], dvdq
+end
+
+@noinline function _error_inoperable_root(
+    data::ACPowerFlowData,
+    time_step::Int,
+    buses::Vector{Int},
+    dvdq::Vector{Float64},
+)
+    bus_numbers = get_bus_axis(data)
+    bad = [
+        (bus_numbers[buses[c]], data.bus_magnitude[buses[c], time_step], dvdq[c]) for
+        c in eachindex(buses) if !(dvdq[c] > 0.0)
+    ]
+    @error "Time step $time_step met the tolerance at a low-voltage (non-operable) root and is " *
+           "reported not converged: dV/dQ <= 0 at $(length(bad)) of the $(length(buses)) " *
+           "lowest-|V| loaded PQ buses, (bus, |V|, dV/dQ): $bad."
+    return
 end
 
 """Solve contiguous chunks of `steps` on `n_work` tasks. Each task gets a `_column_worker`

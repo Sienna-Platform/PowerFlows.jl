@@ -112,7 +112,7 @@ converged = solve_power_flow!(data)   # false at a fold, with a voltage-collapse
 
 `stop_at_fold` is supported by [`NewtonRaphsonACPowerFlow`](@ref),
 [`TrustRegionACPowerFlow`](@ref), and [`LevenbergMarquardtACPowerFlow`](@ref),
-on every AC formulation (polar, rectangular-CI, and mixed-CPB, with or without
+on every AC formulation (polar, rectangular, and mixed-CPB, with or without
 HVDC).
 
 ## Caveats

@@ -1136,6 +1136,7 @@ function _simple_step(time_step::Int,
     )
     # update x
     stateVector.x .+= stateVector.Δx_nr
+    _project_pv_setpoints!(residual, data, stateVector.x, stateVector.Δx_nr, time_step)
     # update data's fields (the bus angles/voltages) to match x, and update the residual.
     J_filled = _residual_at_step!(residual, J, data, stateVector.x, time_step)
     return J_filled, factored
@@ -1169,6 +1170,7 @@ function _chord_step!(time_step::Int,
     _solve_Δx_nr!(stateVector, linSolveCache)
     stateVector.Δx_nr .= .-stateVector.Δx_nr
     stateVector.x .+= stateVector.Δx_nr
+    _project_pv_setpoints!(residual, data, stateVector.x, stateVector.Δx_nr, time_step)
     residual(data, stateVector.x, time_step)
     new_norm = norm(residual.Rv, Inf)
     if new_norm <= CHORD_CONTRACTION * residual_norm || new_norm < tol
@@ -1239,6 +1241,7 @@ function _iwamoto_step(time_step::Int,
     )
     # Take full trial step: x += Δx_nr
     stateVector.x .+= stateVector.Δx_nr
+    _project_pv_setpoints!(residual, data, stateVector.x, stateVector.Δx_nr, time_step)
     # Evaluate trial residual b = F(x + Δx), and J there when the kernel is fused.
     J_filled = _residual_at_step!(residual, J, data, stateVector.x, time_step)
 
@@ -1258,7 +1261,9 @@ function _iwamoto_step(time_step::Int,
     @debug "Iwamoto: damped step μ = $μ (g₂/g₀ = $(g2/g0))"
     # Undo full step and apply damped step.
     stateVector.x .-= stateVector.Δx_nr
-    stateVector.x .+= μ .* stateVector.Δx_nr
+    stateVector.Δx_nr .*= μ
+    stateVector.x .+= stateVector.Δx_nr
+    _project_pv_setpoints!(residual, data, stateVector.x, stateVector.Δx_nr, time_step)
     # Re-evaluate residual at damped point.
     residual(data, stateVector.x, time_step)
     # Check whether the damped step actually improved the residual.
@@ -1267,7 +1272,7 @@ function _iwamoto_step(time_step::Int,
         # Damped step did not improve — revert to pre-step state.
         @debug "Iwamoto: damped step did not reduce residual " *
                "(g_damped/g₀ = $(g_damped/g0), μ = $μ); reverting"
-        stateVector.x .-= μ .* stateVector.Δx_nr
+        stateVector.x .-= stateVector.Δx_nr
         # The caller reads J again at the restored x without refilling it.
         _residual_at_step!(residual, J, data, stateVector.x, time_step)
         return false, false
@@ -1364,14 +1369,17 @@ function _run_power_flow_method(time_step::Int,
             )
             if accepted
                 Threads.atomic_add!(_CHORD_STEPS, 1)
-                converged = residual_norm < tol
+                converged =
+                    residual_norm < tol &&
+                    _converged_at_setpoints!(residual, data, stateVector.x, time_step, tol)
                 converged && keep_converged_J && J(data, time_step)
-                validate_vms && _validate_state_magnitudes(
-                    residual,
-                    stateVector.x,
-                    vm_validation_range,
-                    i,
-                )
+                validate_vms && !converged &&
+                    _validate_state_magnitudes(
+                        residual,
+                        stateVector.x,
+                        vm_validation_range,
+                        i,
+                    )
                 continue
             end
         end
@@ -1411,19 +1419,22 @@ function _run_power_flow_method(time_step::Int,
             factored &= chord
         end
         residual_norm = norm(residual.Rv, Inf)
-        converged = residual_norm < tol
+        converged =
+            residual_norm < tol &&
+            _converged_at_setpoints!(residual, data, stateVector.x, time_step, tol)
         # A NaN or Inf iterate stays non-finite: every further step is wasted work.
         isfinite(residual_norm) || break
         # A reverted Iwamoto step leaves J at the restored x.
         if made_progress && !J_filled && (!converged || keep_converged_J)
             J(data, time_step)
         end
-        validate_vms && _validate_state_magnitudes(
-            residual,
-            stateVector.x,
-            vm_validation_range,
-            i,
-        )
+        validate_vms && !converged &&
+            _validate_state_magnitudes(
+                residual,
+                stateVector.x,
+                vm_validation_range,
+                i,
+            )
         if !isnothing(diag_state)
             # J.Jv and residual.Rv are at the same iterate here, so one refactor feeds both
             # the log line and the bail-out.
@@ -1503,12 +1514,6 @@ function _run_power_flow_method(time_step::Int,
             autoscale,
             iwamoto_fallback,
         )
-        validate_vms && _validate_state_magnitudes(
-            residual,
-            stateVector.x,
-            vm_validation_range,
-            i,
-        )
         if !isnothing(diag_state)
             # After `_trust_region_step` (incl. reject and iwamoto-fallback), J.Jv and
             # residual.Rv are at the same iterate, so one refactor feeds both.
@@ -1517,8 +1522,16 @@ function _run_power_flow_method(time_step::Int,
                 linSolveCache, monitor, stop_at_fold) &&
                 return false, i
         end
-        converged = norm(residual.Rv, Inf) < tol
+        converged =
+            norm(residual.Rv, Inf) < tol &&
+            _converged_at_setpoints!(residual, data, stateVector.x, time_step, tol)
         if !converged
+            validate_vms && _validate_state_magnitudes(
+                residual,
+                stateVector.x,
+                vm_validation_range,
+                i,
+            )
             i += 1
         end
     end
@@ -1642,11 +1655,7 @@ function _finalize_formulation!(
     residual::ACRectangularCIResidual,
     time_step::Int64,
 )
-    rect_finalize_bus_injections!(
-        data, x, residual.bus_state_offset, residual.P_net_set,
-        residual.bus_slack_participation_factors, residual.subnetworks,
-        residual.independent_ref, time_step,
-    )
+    rect_finalize_bus_injections!(data, x, residual, time_step)
     return
 end
 
@@ -1920,10 +1929,10 @@ function _build_rect_mixed_cache!(
     return linSolveCache, stateVector
 end
 
-# A bus-type change resizes a rect state block, or moves a mixed one's entries, so rect/mixed
-# cannot take polar's flat plan with column swaps: the plan is built on the Jacobian a fresh cache
-# is built for (at the solve's start) and used only while the bus types are the plan's. A
-# re-plan per type change (a Q-limit flip) costs more than the lean steps it saves.
+# A bus-type change rewrites a rect bus's second row (ΔQ ↔ |V|²) or moves a mixed block's entries,
+# so rect/mixed cannot take polar's flat plan with column swaps: the plan is built on the Jacobian a
+# fresh cache is built for (at the solve's start) and used only while the bus types are the plan's.
+# A re-plan per type change (a Q-limit flip) costs more than the lean steps it saves.
 function _rect_mixed_symbolic!(
     c,
     Jv::SparseMatrixCSC{Float64},
@@ -2035,7 +2044,7 @@ function _get_or_build_rect_mixed_cache!(
         _reset_for_reuse!(stateVector)
         return cache.linSolveCache, stateVector
     end
-    # A new pattern on a reused slot (a rect Q-limit flip, a contingency branch outage) is not
+    # A new pattern on a reused slot (a mixed Q-limit flip, a contingency branch outage) is not
     # planned: the plan costs a factorization and an extract that its few remaining steps do not
     # repay.
     return _build_rect_mixed_cache!(data, time_step, backend, Jv, x0, r0, false)

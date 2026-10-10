@@ -498,6 +498,37 @@ end
     end
 end
 
+# A PV row holds e² + f² only to `tol`, so `(e, f)` can differ from the published setpoint
+# `|V|`. The power balance at the published voltages can then miss `tol`.
+@testset "LM: rect and mixed convergence holds at the published voltages" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    tol = 1e-8
+    for form in (ACRectangularPowerFlow, ACMixedPowerFlow)
+        pf = form{LevenbergMarquardtACPowerFlow}(;
+            solution_parameters = SolutionParameters(; tol))
+        data = PowerFlowData(pf, sys)
+        @test solve_power_flow!(data)
+        V = data.bus_magnitude[:, 1] .* cis.(data.bus_angles[:, 1])
+        S = V .* conj.(PF.get_power_network_matrix(data).data * V)
+        Vm = abs.(V)
+        P =
+            data.bus_active_power_injections[:, 1] .-
+            data.bus_active_power_withdrawals[:, 1] .-
+            data.bus_active_power_constant_current_withdrawals[:, 1] .* Vm .-
+            data.bus_active_power_constant_impedance_withdrawals[:, 1] .* Vm .^ 2
+        Q =
+            data.bus_reactive_power_injections[:, 1] .-
+            data.bus_reactive_power_withdrawals[:, 1] .-
+            data.bus_reactive_power_constant_current_withdrawals[:, 1] .* Vm .-
+            data.bus_reactive_power_constant_impedance_withdrawals[:, 1] .* Vm .^ 2
+        types = data.bus_type[:, 1]
+        pq = types .== PSY.ACBusTypes.PQ
+        pv = types .== PSY.ACBusTypes.PV
+        @test maximum(abs.(real.(S) .- P)[pq .| pv]) < tol
+        @test maximum(abs.(imag.(S) .- Q)[pq]) < tol
+    end
+end
+
 # Zero-impedance transformers keep a 1e-6 substitute reactance, so the warm start carries a
 # ~3e5 pu mismatch and the first Newton step is ~1e5 long: the trust region must be able to grow
 # to it. The stored arc flows use ComplexF32 admittances, ~1e-3 off on those |y| ~ 1e6 arcs.

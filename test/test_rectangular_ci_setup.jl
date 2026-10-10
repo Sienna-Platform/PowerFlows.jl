@@ -16,18 +16,10 @@
             PSY.ACBusTypes.PQ,
         ]
         off, bs, total = PF.compute_bus_state_offsets(bt)
-        # REF=2, PV=3, PQ=2, PV=3, PQ=2 ⇒ 12 total
-        @test off == Int32[1, 3, 6, 8, 11, 13]
-        @test bs == Int8[2, 3, 2, 3, 2]
-        @test total == 12
-    end
-
-    @testset "all PV" begin
-        bt = fill(PSY.ACBusTypes.PV, 4)
-        off, bs, total = PF.compute_bus_state_offsets(bt)
-        @test off == Int32[1, 4, 7, 10, 13]
-        @test bs == fill(Int8(3), 4)
-        @test total == 12
+        # Every bus is a 2-slot block: a PV bus has no reactive-power state.
+        @test off == Int32[1, 3, 5, 7, 9, 11]
+        @test bs == fill(Int8(2), 5)
+        @test total == 10
     end
 end
 

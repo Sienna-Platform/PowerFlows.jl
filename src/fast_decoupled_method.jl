@@ -9,7 +9,7 @@
 
 The default [`FDVariant`](@ref) for a bare (unparametrized) [`FastDecoupledACPowerFlow`](@ref) on a
 given formulation: [`FDDecoupled`](@ref) (classic B′/B″) for the polar formulation,
-[`FDFixedJacobian`](@ref) (frozen Jacobian) for the rectangular current-injection and mixed
+[`FDFixedJacobian`](@ref) (frozen Jacobian) for the rectangular power-mismatch and mixed
 current-power-balance formulations.
 """
 _default_fd_variant(::ACPolarPowerFlow) = FDDecoupled()
@@ -501,7 +501,9 @@ function _fd_fixed_jacobian_power_flow(
             end
             fresh = false
 
-            converged = norm(residual.Rv, Inf) < stage_tol
+            converged =
+                norm(residual.Rv, Inf) < stage_tol &&
+                _converged_at_setpoints!(residual, data, sv.x, time_step, stage_tol)
             if !converged
                 validate_voltage_magnitudes && _validate_state_magnitudes(
                     residual, sv.x, vm_validation_range, i,

@@ -7,7 +7,7 @@ CurrentModule = PowerFlows
 AC power flow has two independent choices: the **formulation** (how the
 network equations are written) and the **solver** (the iterative algorithm).
 Each is a type parameter: [`ACPolarPowerFlow`](@ref)`{S}` (power balance, polar state),
-[`ACRectangularPowerFlow`](@ref)`{S}` (Da Costa current injection), and
+[`ACRectangularPowerFlow`](@ref)`{S}` (power balance, rectangular state), and
 [`ACMixedPowerFlow`](@ref)`{S}` (mixed current/power balance, the most compact
 state) — each combined with [`NewtonRaphsonACPowerFlow`](@ref) (`NR`),
 [`TrustRegionACPowerFlow`](@ref) (`TR`), or
@@ -18,7 +18,9 @@ For the conceptual split between evaluation models and solvers, see
 [Evaluation Models vs. Solver Algorithms](@ref).
 
 Warm-solve timings: median of 10 runs after warm-up, with the `[min, max]`
-range. Hardware-dependent — compare medians across cells, not absolutes.
+range. Hardware-dependent — compare medians across cells, not absolutes. The
+Rectangular rows were measured before [`ACRectangularPowerFlow`](@ref) used a
+power-balance residual.
 
 ## 2000-bus (`ACTIVSg2000`, tol `1e-9`)
 
@@ -47,10 +49,8 @@ median is the representative figure.
   - **Default / general use:** [`ACPowerFlow`](@ref)`()` (Polar + NR). Well-trodden and
     the reference all other formulations are validated against.
   - **Fastest at scale:** [`ACRectangularPowerFlow`](@ref)`{NewtonRaphsonACPowerFlow}`
-    or `{TrustRegionACPowerFlow}`. The rectangular formulation's off-diagonal
-    Jacobian blocks are the constant admittance matrix, so the sparse
-    factorization is reused across iterations — consistently ~15% faster than
-    Polar/NR by median (2000 and 10k bus alike); [`ACMixedPowerFlow`](@ref) with NR/TR
+    or `{TrustRegionACPowerFlow}` — ~15% faster than Polar/NR by median in the
+    tables above (2000 and 10k bus alike); [`ACMixedPowerFlow`](@ref) with NR/TR
     is within a few percent of it.
   - **Most robust (poor start, ill-conditioned, high-impedance):**
     [`TrustRegionACPowerFlow`](@ref) on any formulation — its median is on par

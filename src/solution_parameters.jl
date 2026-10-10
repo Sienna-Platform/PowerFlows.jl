@@ -54,7 +54,14 @@ take effect.
 - `model_dc_network::Bool`: lower VSC/DC network equations into the joint AC–DC solve.
 
 # Voltage validation
-- `validate_voltage_magnitudes::Bool`, `vm_validation_range::MinMax`.
+- `validate_voltage_magnitudes::Bool`, `vm_validation_range::MinMax`: the band is a hard
+  acceptance band. A step that meets `tol` with a PQ |V| outside it (PQ or PV in the
+  rectangular and mixed formulations) is a non-physical root, reported not converged.
+  Iterates outside it only warn. `validate_voltage_magnitudes = false` turns both off.
+- `check_root_type::Bool`: also reject an in-band converged step that is not on the
+  operable (high-voltage) branch: one whose V-Q self-sensitivity ∂|V|/∂Q is negative at one
+  of the lowest-|V| PQ buses that carry power. Off by default: every converged step builds a
+  polar residual and Jacobian and factors them from scratch (KLU symbolic and numeric).
 
 # Newton / trust region / Levenberg-Marquardt
 - `refinement_threshold`, `refinement_eps`, `iwamoto`, `stop_at_fold`.
@@ -111,6 +118,7 @@ Base.@kwdef struct SolutionParameters
 
     validate_voltage_magnitudes::Bool = DEFAULT_VALIDATE_VOLTAGES
     vm_validation_range::MinMax = DEFAULT_VALIDATION_RANGE
+    check_root_type::Bool = false
 
     refinement_threshold::Float64 = DEFAULT_REFINEMENT_THRESHOLD
     refinement_eps::Float64 = DEFAULT_REFINEMENT_EPS

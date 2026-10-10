@@ -14,6 +14,39 @@
     end
 end
 
+# Power mismatch does not change under a common rotation of all bus angles, so Newton must
+# converge from flat on ACTIVSg2000, where solution angles reach −1.29 rad.
+@testset "Rectangular Power Flow: flat start on ACTIVSg2000" begin
+    sys = PSB.build_system(PSB.MatpowerTestSystems, "matpower_ACTIVSg2000_sys")
+    function flat_data(pf)
+        data = PF.PowerFlowData(pf, sys)
+        ref = findfirst(==(PSY.ACBusTypes.REF), data.bus_type[:, 1])
+        for i in axes(data.bus_type, 1)
+            data.bus_type[i, 1] == PSY.ACBusTypes.PQ && (data.bus_magnitude[i, 1] = 1.0)
+            data.bus_angles[i, 1] = data.bus_angles[ref, 1]
+        end
+        return data
+    end
+    settings = PF.SolutionParameters(; enhanced_flat_start = false, maxIterations = 20)
+    polar = flat_data(
+        ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+            correct_bustypes = true, solution_parameters = settings),
+    )
+    @test PF.solve_power_flow!(polar)
+    for S in (NewtonRaphsonACPowerFlow, TrustRegionACPowerFlow)
+        rect = flat_data(
+            ACRectangularPowerFlow{S}(;
+                correct_bustypes = true, solution_parameters = settings),
+        )
+        @test PF.solve_power_flow!(rect)
+        @test only(rect.iterations) <= 10
+        @test rect.bus_magnitude[:, 1] ≈ polar.bus_magnitude[:, 1] atol = 1e-7
+        @test rect.bus_angles[:, 1] ≈ polar.bus_angles[:, 1] atol = 1e-7
+        @test rect.bus_reactive_power_injections[:, 1] ≈
+              polar.bus_reactive_power_injections[:, 1] atol = 1e-6
+    end
+end
+
 @testset "Rectangular CI Power Flow: non-convergence returns missing" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
     # maxIterations = 1 from flat start cannot converge c_sys14; the solver must
@@ -365,5 +398,32 @@ end
         @test bus_r.θ[r1] ≈ 0.0 atol = 1e-9
         @test bus_r.Vm[r2] ≈ 1.05 atol = 1e-9
         @test bus_r.θ[r2] ≈ 0.05 atol = 1e-9
+    end
+end
+
+@testset "Rectangular Power Flow: threaded time steps equal the serial solve (T=8)" begin
+    function solved(n_threads)
+        sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+        data = PowerFlowData(
+            ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
+                time_steps = 8,
+                solution_parameters = SolutionParameters(;
+                    linear_solver = "KLU",
+                    n_threads,
+                ),
+            ),
+            sys,
+        )
+        prepare_ts_data!(data, 8)
+        @test solve_power_flow!(data)
+        return data
+    end
+    serial = solved(1)
+    for n_threads in (2, 4)
+        threaded = solved(n_threads)
+        for f in (:bus_magnitude, :bus_angles, :bus_type, :bus_active_power_injections,
+            :bus_reactive_power_injections, :converged, :iterations)
+            @test isequal(getfield(serial, f), getfield(threaded, f))
+        end
     end
 end

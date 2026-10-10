@@ -542,8 +542,8 @@ end
 end
 
 @testset "lean LU: rectangular and mixed pause the plan off its bus types" begin
-    # A PV→PQ flip keeps the mixed pattern and changes the rectangular one.
-    for (F, same_pattern) in ((ACRectangularPowerFlow, false), (ACMixedPowerFlow, true))
+    # A PV→PQ flip keeps both patterns: the cache, and its plan, are reused.
+    for F in (ACRectangularPowerFlow, ACMixedPowerFlow)
         data = _lean_rm_data(F)
         @test solve_power_flow!(data)
         cache = data.solver_cache[]
@@ -552,26 +552,17 @@ end
         data.bus_active_power_withdrawals .*= 1.01
         (; attempts) = PF._lean_counts(cache)
         @test solve_power_flow!(data)
-        @test (data.solver_cache[] === cache) == same_pattern
+        @test data.solver_cache[] === cache
         @test PF._lean_counts(cache).attempts == attempts
-        # A rebuild for a new pattern is not planned; a reused cache keeps its plan.
-        @test _KW.has_lean_plan(data.solver_cache[].linSolveCache) == same_pattern
-        @test data.solver_cache[].lean.tried == same_pattern
+        @test _KW.has_lean_plan(cache.linSolveCache)
+        @test cache.lean.tried
+        data.bus_type[k, 1] = PSY.ACBusTypes.PV
+        data.bus_active_power_withdrawals .*= 1.01
+        @test solve_power_flow!(data)
+        @test data.solver_cache[] === cache
+        @test PF._lean_counts(cache).attempts > attempts
+        @test iszero(PF._lean_counts(cache).rejects)
     end
-    data = _lean_rm_data(ACMixedPowerFlow)
-    @test solve_power_flow!(data)
-    cache = data.solver_cache[]
-    k = findfirst(==(PSY.ACBusTypes.PV), data.bus_type[:, 1])
-    data.bus_type[k, 1] = PSY.ACBusTypes.PQ
-    data.bus_active_power_withdrawals .*= 1.01
-    @test solve_power_flow!(data)
-    data.bus_type[k, 1] = PSY.ACBusTypes.PV
-    data.bus_active_power_withdrawals .*= 1.01
-    (; attempts) = PF._lean_counts(cache)
-    @test solve_power_flow!(data)
-    @test data.solver_cache[] === cache
-    @test PF._lean_counts(cache).attempts > attempts
-    @test iszero(PF._lean_counts(cache).rejects)
 end
 
 @testset "lean LU: a rejected rectangular plan is retired" begin
