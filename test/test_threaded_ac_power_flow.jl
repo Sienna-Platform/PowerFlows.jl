@@ -389,9 +389,9 @@ end
         )
     end
     ref = build_data(1)
-    @test quiet_solve!(ref)
     thr = build_data(2)
     for _ in 1:2
+        @test quiet_solve!(ref)
         @test quiet_solve!(thr)
         @test all(isnothing(s.polar_nr_cache[]) for s in thr.worker_slots)
         @test all(isnothing(s.solver_cache[]) for s in thr.worker_slots)
