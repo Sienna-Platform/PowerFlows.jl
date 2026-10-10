@@ -133,6 +133,30 @@ end
     @test PF.n_vsc_free_nodes(dcn) == 2
 end
 
+@testset "VSC I0: a DC-voltage setpoint <= 0 is rejected at lowering, naming the converter" begin
+    sys = _build_vsc_pq_system(; vdc = 0.0)
+    @test_throws "vsc_i1 (from)" PowerFlowData(
+        ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+            solution_parameters = VSC_SOLUTION_PARAMETERS,
+        ),
+        sys,
+    )
+end
+
+@testset "VSC: the DC warm start stops on a non-finite residual instead of throwing" begin
+    sys = _build_vsc_pq_system()
+    data = PowerFlowData(
+        ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+            solution_parameters = VSC_SOLUTION_PARAMETERS,
+        ),
+        sys,
+    )
+    dcn = PF.get_dc_network(data)
+    dcn.node_vdc .= 0.0
+    PF._vsc_warm_start!(dcn, data.bus_magnitude[:, 1], 1)
+    @test all(iszero, dcn.node_vdc)
+end
+
 # I1: a point-to-point VSC (from = DC-voltage control / DC slack, to = P,Q control) on two PQ
 # buses, zero converter loss (`_build_vsc_pq_system`, test_utils/common.jl). Solve with polar NR
 # and verify convergence + setpoints + Jacobian.
@@ -1072,6 +1096,92 @@ end
         ),
         sys_dup,
     )
+end
+
+@testset "VSC: AC-voltage control at a PV bus with the bus setpoint demotes to Q control" begin
+    function vac_at_pv(vac_set)
+        sys =
+            deepcopy(PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false))
+        buses(t) = sort!(
+            collect(PSY.get_components(b -> PSY.get_bustype(b) == t, PSY.ACBus, sys));
+            by = PSY.get_number,
+        )
+        pv = first(buses(PSY.ACBusTypes.PV))
+        v_pv = PSY.get_magnitude(pv, u"SU")
+        arc = _get_or_make_arc(sys, first(buses(PSY.ACBusTypes.PQ)), pv)
+        PSY.add_component!(
+            sys,
+            PSY.TwoTerminalVSCLine(;
+                name = "vsc_pv",
+                available = true,
+                arc = arc,
+                active_power_flow = 0.3,
+                rating = 2.0,
+                g = 1 / 32.0,
+                dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
+                ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
+                power_factor_setpoint_from = 1.0,
+                dc_voltage_setpoint_from = 1.03,
+                rated_dc_voltage = 400.0,
+                dc_control_to = PSY.VSCDCControlModes.DC_POWER,
+                ac_control_to = PSY.VSCACControlModes.AC_VOLTAGE,
+                dc_power_setpoint_to = 0.3,
+                ac_voltage_setpoint_to = vac_set(v_pv),
+                reactive_power_to = 0.05,
+                input_basis = u"CU",
+            ),
+        )
+        pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+            solution_parameters = VSC_SOLUTION_PARAMETERS,
+        )
+        return (sys, pf, PSY.get_number(pv), v_pv)
+    end
+
+    sys, pf, pv_number, v_pv = vac_at_pv(identity)
+    data = PowerFlowData(pf, sys)
+    dcn = PF.get_dc_network(data)
+    @test dcn.converter_mode == [PF.ControlVdc, PF.ControlPQ]
+    solve_power_flow!(data)
+    @test all(data.converged)
+    @test data.bus_magnitude[PF.get_bus_lookup(data)[pv_number], 1] ≈ v_pv
+    vsc = PSY.get_component(PSY.TwoTerminalVSCLine, sys, "vsc_pv")
+    @test dcn.q_c[2, 1] ≈ PSY.get_reactive_power_to(vsc, u"SU")
+    @test !iszero(dcn.q_c[2, 1])
+
+    sys_bad, pf_bad, pv_bad, v_bad = vac_at_pv(v -> v + 0.02)
+    err = try
+        PowerFlowData(pf_bad, sys_bad)
+        nothing
+    catch e
+        sprint(showerror, e)
+    end
+    @test occursin("bus $(pv_bad)", err)
+    @test occursin("$(v_bad + 0.02)", err)
+    @test occursin("$(v_bad)", err)
+end
+
+@testset "VSC: a converter on a PV bus without DC modeling gets no reactive power share" begin
+    sys = _build_mtdc_system()
+    pv = first(
+        sort!(
+            collect(
+                PSY.get_components(
+                    b -> PSY.get_bustype(b) == PSY.ACBusTypes.PV,
+                    PSY.ACBus,
+                    sys,
+                ),
+            );
+            by = PSY.get_number,
+        ),
+    )
+    ic = PSY.get_component(PSY.InterconnectingConverter, sys, "ic2")
+    PSY.set_bus!(ic, pv)
+    PSY.set_active_power!(ic, 0.3 * u"SU")
+    pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+        solution_parameters = SolutionParameters(; model_dc_network = false),
+    )
+    @test solve_and_store_power_flow!(pf, sys)
+    @test PSY.get_active_power(ic, u"SU") ≈ 0.3
 end
 
 # Solver guards: RobustHomotopy has no DC-tail (VSC/MTDC) support (must reject at construction);

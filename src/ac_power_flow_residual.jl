@@ -2,19 +2,21 @@
 `ACPowerFlowResidual` and its `ACPowerFlowJacobian`. `data_stale` is `true` while `data` lacks
 that iterate's voltages and injections (the NR loop's fused kernel defers them to
 [`_write_back_bus_state!`](@ref)); while it is `false`, `data` is authoritative and is reloaded
-before each evaluation.
+before each evaluation. `phasor_valid` is `true` only while `phasor == cis.(θ)`.
 Entries follow the `bus_lookup` order, which is the bus axis of the Ybus."""
 mutable struct PolarBusState
     Vm::Vector{Float64}
     θ::Vector{Float64}
     phasor::Vector{ComplexF64}
     data_stale::Bool
+    phasor_valid::Bool
 end
 
 PolarBusState(n::Int) = PolarBusState(
     Vector{Float64}(undef, n),
     Vector{Float64}(undef, n),
     Vector{ComplexF64}(undef, n),
+    false,
     false,
 )
 
@@ -193,6 +195,7 @@ function _load_bus_state!(s::PolarBusState, data::ACPowerFlowData, time_step::In
     copyto!(s.Vm, view(data.bus_magnitude, :, time_step))
     copyto!(s.θ, view(data.bus_angles, :, time_step))
     s.data_stale = false
+    s.phasor_valid = false
     return
 end
 
@@ -208,8 +211,8 @@ function _copy_voltages_to_data!(s::PolarBusState, data::ACPowerFlowData, time_s
     return
 end
 
-"""Write the last evaluated iterate's |V|, θ and REF/PV/PQ injections into `data`'s
-`time_step` column, if the fused kernel deferred them. Every polar driver reaches this through
+"""Write the last evaluated iterate's |V|, θ and REF/PV injections into `data`'s `time_step`
+column, if the fused kernel deferred them. Every polar driver reaches this through
 `_finalize_formulation!`."""
 function _write_back_bus_state!(
     R::ACPowerFlowResidual,
@@ -222,7 +225,8 @@ function _write_back_bus_state!(
     bus_types = view(data.bus_type, :, time_step)
     @inbounds for ix in eachindex(bus_types)
         bt = bus_types[ix]
-        if bt == PSY.ACBusTypes.PQ || bt == PSY.ACBusTypes.PV || bt == PSY.ACBusTypes.REF
+        # A PQ injection is a set point: its ZIP terms telescope back to the value in `data`.
+        if bt == PSY.ACBusTypes.PV || bt == PSY.ACBusTypes.REF
             _setpq(ix, R.P_net, R.Q_net, data, time_step)
         end
     end
@@ -285,7 +289,8 @@ function _set_state_variables_at_bus!(
     return
 end
 
-function _set_state_variables_at_bus!(
+# Inlined: the call itself costs about half of the 10k-bus state loop.
+@inline function _set_state_variables_at_bus!(
     ix::Int,
     P_net::Vector{Float64},
     Q_net::Vector{Float64},
@@ -370,6 +375,7 @@ function _update_residual_state!(
 )
     s = R.bus_state
     _sync_from_data!(s, data, time_step)
+    s.phasor_valid = false
     P_net = R.P_net
     Q_net = R.Q_net
     P_net_set = R.P_net_set
@@ -447,6 +453,7 @@ end
 
 function _fill_bus_phasor!(s::PolarBusState)
     s.phasor .= cis.(s.θ)
+    s.phasor_valid = true
     return
 end
 

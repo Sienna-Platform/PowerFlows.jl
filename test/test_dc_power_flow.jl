@@ -100,14 +100,49 @@ end
 end
 
 @testset "DC power flow with an LCC" begin
+    # DC holds the LCC at the schedule AC solves to (transfer_setpoint), so its terminal
+    # powers equal AC's. The stored active_power_flow is an output and must not size it.
     sys, lcc = simple_lcc_system()
     @assert get_base_power(sys, u"NU") == 100.0 "Test system base power changed."
-    set_active_power_flow!(lcc, 0.3 * u"SU")
+    set_active_power_flow!(lcc, 0.1 * u"SU")
+    ac = PowerFlowData(ACPowerFlow(; correct_bustypes = true), sys)
+    @test solve_power_flow!(ac)
+    @test ac.lcc.arc_active_power_flow_from_to[1, 1] ≈
+          get_power_transfer_setpoint(lcc, u"SU")
     for T in (DCPowerFlow, PTDFDCPowerFlow, vPTDFDCPowerFlow)
         results =
             solve_power_flow(T(; correct_bustypes = true), sys, PF.FlowReporting.ARC_FLOWS)
-        lcc_flow = results["1"]["lcc_results"][1, :P_from_to]
-        @test lcc_flow == get_active_power_flow(lcc, u"NU")
+        lcc_df = results["1"]["lcc_results"]
+        @test isapprox(
+            lcc_df[1, :P_from_to],
+            100.0 * ac.lcc.arc_active_power_flow_from_to[1, 1];
+            atol = 1e-6,
+        )
+        @test isapprox(
+            lcc_df[1, :P_to_from],
+            100.0 * ac.lcc.arc_active_power_flow_to_from[1, 1];
+            atol = 1e-6,
+        )
+    end
+end
+
+@testset "DC power flow with a current-mode LCC" begin
+    # PSS/E MDC=2: 62.5 A at VSCHD = 800 kV holds the inverter at 50 MW and the rectifier at
+    # 50 MW + R·I² (I = 0.5 pu, R = 0.05 pu on the system base).
+    sys, lcc = simple_lcc_system()
+    set_control_mode!(lcc, PSY.LCCControlMode.CURRENT)
+    set_current_transfer_setpoint!(lcc, 62.5)
+    ac = PowerFlowData(ACPowerFlow(; correct_bustypes = true), sys)
+    @test solve_power_flow!(ac)
+    @test ac.lcc.i_dc[1, 1] ≈ 0.5
+    @test ac.lcc.arc_active_power_flow_from_to[1, 1] ≈ 0.5125 atol = 1e-6
+    @test ac.lcc.arc_active_power_flow_to_from[1, 1] ≈ -0.5 atol = 1e-6
+    for T in (DCPowerFlow, PTDFDCPowerFlow, vPTDFDCPowerFlow)
+        results =
+            solve_power_flow(T(; correct_bustypes = true), sys, PF.FlowReporting.ARC_FLOWS)
+        lcc_df = results["1"]["lcc_results"]
+        @test lcc_df[1, :P_from_to] ≈ 51.25 atol = 1e-6
+        @test lcc_df[1, :P_to_from] ≈ -50.0 atol = 1e-6
     end
 end
 
@@ -394,4 +429,27 @@ end
     @test_throws ArgumentError PF.resolve_linear_solver_backend("Dense")
     data = PowerFlowData(DCPowerFlow(), sys)
     @test_throws ArgumentError solve_power_flow!(data; linear_solver = "Dense")
+end
+
+@testset "vPTDFDCPowerFlow linear_solver" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+
+    @test PF.get_linear_solver(vPTDFDCPowerFlow(; linear_solver = "KLU")) == "KLU"
+    @test PF.get_linear_solver(vPTDFDCPowerFlow()) == PNM._default_linear_solver()
+    @test_throws ErrorException vPTDFDCPowerFlow(; linear_solver = "NotASolver")
+    @test_throws ArgumentError vPTDFDCPowerFlow(; linear_solver = "Dense")
+
+    default_data = PowerFlowData(vPTDFDCPowerFlow(), sys)
+    klu_data = PowerFlowData(vPTDFDCPowerFlow(; linear_solver = "KLU"), sys)
+    solve_power_flow!(default_data)
+    solve_power_flow!(klu_data)
+    @test isapprox(
+        klu_data.arc_active_power_flow_from_to,
+        default_data.arc_active_power_flow_from_to;
+        atol = 1e-9,
+    )
+    @test isapprox(klu_data.bus_angles, default_data.bus_angles; atol = 1e-9)
+    # The wrappers forward `linear_solver = nothing`, which falls back to the model's setting.
+    @test PF._vptdf_linear_solver(klu_data, nothing) == "KLU"
+    @test PF._vptdf_linear_solver(klu_data, "KLU") == "KLU"
 end

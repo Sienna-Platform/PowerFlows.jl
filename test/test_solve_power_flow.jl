@@ -903,3 +903,48 @@ end
 @testset "AC arc_angle_differences validation" begin
     foreach(test_ac_arc_angle_differences, AC_SOLVERS_TO_TEST)
 end
+
+# c_sys5_hybrid: every source is a HybridSystem, and REF bus 4 (nodeD) hosts one.
+@testset "HybridSystem buses solve as PV/REF" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys5_hybrid"; add_forecasts = false)
+    ybus = PNM.Ybus(sys)
+    ybus_lookup = PNM.get_bus_lookup(ybus)
+    s_set = zeros(ComplexF64, length(ybus_lookup))
+    for d in get_available_components(StaticInjection, sys)
+        sign = 1.0
+        if PF.active_power_contribution_type(d) == PF.PowerContributionType.WITHDRAWAL
+            sign = -1.0
+        end
+        s_set[ybus_lookup[get_number(get_bus(d))]] +=
+            sign * (get_active_power(d, u"SU") + im * get_reactive_power(d, u"SU"))
+    end
+    for F in (PF.ACPolarPowerFlow, PF.ACRectangularPowerFlow, PF.ACMixedPowerFlow)
+        data = PowerFlowData(F{NewtonRaphsonACPowerFlow}(; correct_bustypes = true), sys)
+        solve_power_flow!(data)
+        @test all(data.converged)
+        lookup = PF.get_bus_lookup(data)
+        @test data.bus_type[lookup[4], 1] == ACBusTypes.REF
+        @test data.bus_type[lookup[1], 1] == ACBusTypes.PV
+        @test data.bus_type[lookup[3], 1] == ACBusTypes.PV
+        perm = [lookup[b] for b in PNM.get_bus_axis(ybus)]
+        V = (data.bus_magnitude[:, 1] .* cis.(data.bus_angles[:, 1]))[perm]
+        mismatch = V .* conj.(ybus.data * V) .- s_set
+        bus_type = data.bus_type[perm, 1]
+        @test all(
+            abs(real(mismatch[i])) < 1e-8 for
+            i in eachindex(mismatch) if bus_type[i] != ACBusTypes.REF
+        )
+        @test all(
+            abs(imag(mismatch[i])) < 1e-8 for
+            i in eachindex(mismatch) if bus_type[i] == ACBusTypes.PQ
+        )
+    end
+    pf = ACPowerFlow(;
+        correct_bustypes = true,
+        distribute_slack_proportional_to_headroom = true,
+    )
+    @test solve_and_store_power_flow!(pf, sys)
+    hybrid = PSY.get_component(PSY.HybridSystem, sys, "all_hybrid")
+    PSY.set_output_active_power_limits!(hybrid, nothing)
+    @test_throws r"all_hybrid" PowerFlowData(pf, sys)
+end

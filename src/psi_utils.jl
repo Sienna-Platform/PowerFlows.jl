@@ -27,6 +27,8 @@ contributes_active_power(::Union{PSY.FixedAdmittance, PSY.SwitchedAdmittance}) =
 contributes_active_power(::Union{PSY.StandardLoad, PSY.InterruptibleStandardLoad}) = false
 # withdraws active power, but getter is named differently: `get_active_power_losses`
 contributes_active_power(::PSY.SynchronousCondenser) = false
+# voltage dependent: `_get_withdrawals!` maps it onto the ZIP terms by exponent
+contributes_active_power(::PSY.ExponentialLoad) = false
 # not fully supported yet.
 contributes_active_power(::PSY.FACTSControlDevice) = false
 # loads withdraw power.
@@ -57,6 +59,7 @@ contributes_reactive_power(::Union{PSY.FixedAdmittance, PSY.SwitchedAdmittance})
 contributes_reactive_power(::Union{PSY.StandardLoad, PSY.InterruptibleStandardLoad}) = false
 # interconnecting converters do not support reactive power
 contributes_reactive_power(::PSY.InterconnectingConverter) = false
+contributes_reactive_power(::PSY.ExponentialLoad) = false
 # not fully supported yet.
 contributes_reactive_power(::PSY.FACTSControlDevice) = false
 # loads withdraw reactive power

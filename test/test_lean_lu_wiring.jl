@@ -1,11 +1,13 @@
 const _LEAN_KLU = SolutionParameters(; linear_solver = "KLU")
 const _KW = PNM.KLUWrapper
 
-function _lean_sys14_data(; T = 1, kwargs...)
+function _lean_sys14_data(; T = 1, n_threads = 1, kwargs...)
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
     data = PowerFlowData(
         ACPowerFlow{NewtonRaphsonACPowerFlow}(;
-            time_steps = T, solution_parameters = _LEAN_KLU, kwargs...),
+            time_steps = T,
+            solution_parameters = SolutionParameters(; linear_solver = "KLU", n_threads),
+            kwargs...),
         sys,
     )
     T > 1 && prepare_ts_data!(data, T)
@@ -76,16 +78,16 @@ end
 end
 
 @testset "lean LU: threaded time steps share the parent's plan" begin
-    data = _lean_sys14_data(; T = 24)
-    @test solve_power_flow!(data; threads = 4)
+    data = _lean_sys14_data(; T = 24, n_threads = 4)
+    @test solve_power_flow!(data)
     slot = _lean_slot(data)
     @test slot.tried && slot.valid
     h = _lean_plan_hash(slot.plan)
-    @test solve_power_flow!(data; threads = 4)
+    @test solve_power_flow!(data)
     @test _lean_slot(data) === slot
     @test _lean_plan_hash(slot.plan) == h
 
-    worker = PF._column_worker(data, 1:24, 1:6)
+    worker = PF._column_worker(data, 1:24, 1:6, PF.WorkerSlot())
     @test worker.ac_jacobian_structure_cache[] === data.ac_jacobian_structure_cache[]
     @test isnothing(worker.polar_nr_cache[])
 end
@@ -184,7 +186,9 @@ end
     @test entry.linSolveCache.lean_plan === plan
     @test iszero(align(entry.linSolveCache, entry, data))
     data.bus_type[k, 1] = PSY.ACBusTypes.REF
-    @test iszero(align(entry.linSolveCache, entry, data))
+    align(entry.linSolveCache, entry, data)
+    @test entry.linSolveCache.lean_plan !== plan
+    @test entry.linSolveCache.lean_plan.p === plan.p
 end
 
 @testset "lean LU: never attached off KLU" begin

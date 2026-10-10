@@ -15,6 +15,17 @@ abstract type SystemPowerFlowContainer <: PowerFlowContainer end
 
 get_system(container::SystemPowerFlowContainer) = container.system
 
+"""Solver-cache refs one threaded time-step worker keeps between calls, so a repeated solve
+reuses its Newton workspace instead of rebuilding it."""
+struct WorkerSlot
+    solver_cache::Base.RefValue{Union{Nothing, SolverCache}}
+    polar_nr_cache::Base.RefValue{Union{Nothing, AbstractNRCache}}
+end
+WorkerSlot() = WorkerSlot(
+    Base.RefValue{Union{Nothing, SolverCache}}(nothing),
+    Base.RefValue{Union{Nothing, AbstractNRCache}}(nothing),
+)
+
 """
     PowerFlowData{M <: PNM.PowerNetworkMatrix, N <: Union{PNM.PowerNetworkMatrix, Nothing}}
 
@@ -174,6 +185,9 @@ struct PowerFlowData{
     # slot so it never contends with a DC/FD `solver_cache`. Typed as the `AbstractNRCache` forward
     # supertype because `PolarNRCache` is defined later, in `power_flow_method.jl`.
     polar_nr_cache::Base.RefValue{Union{Nothing, AbstractNRCache}}
+    # One slot for each threaded time-step worker. The slots stay between calls, so a repeated
+    # solve reuses them. The data of a worker holds no slots.
+    worker_slots::Vector{WorkerSlot}
 end
 
 # aliases for specific type parameter combinations.
@@ -466,6 +480,7 @@ function PowerFlowData(
         controlled_devices,
         Base.RefValue{Union{Nothing, ACJacobianStructureCache}}(nothing), # ac_jacobian_structure_cache
         Base.RefValue{Union{Nothing, AbstractNRCache}}(nothing), # polar_nr_cache (lazily populated)
+        WorkerSlot[], # worker_slots
     )
 end
 
@@ -887,7 +902,8 @@ function PowerFlowData(
     ybus = PNM.Ybus(sys;
         network_reductions = network_reductions,
         irreducible_buses = _dc_converter_ac_buses(sys))
-    power_network_matrix = PNM.VirtualPTDF(ybus) # evaluates an empty virtual PTDF
+    # evaluates an empty virtual PTDF
+    power_network_matrix = PNM.VirtualPTDF(ybus; linear_solver = get_linear_solver(pf))
     aux_network_matrix = PNM.ABA_Matrix(ybus; factorize = true)
 
     return make_and_initialize_power_flow_data(
@@ -913,24 +929,6 @@ function _compute_arc_angle_differences_from_data!(
     tb_ix = [bus_lookup[bus_no] for bus_no in last.(arcs)]
     @views data.arc_angle_differences .=
         data.bus_angles[fb_ix, :] .- data.bus_angles[tb_ix, :]
-    return
-end
-
-"""Compute one time step's arc angle differences using precomputed from/to bus index
-vectors. Used by the AC solver where `fb_ix`/`tb_ix` are already available from the
-branch flow calculation."""
-function _compute_arc_angle_differences_from_indices!(
-    data::PowerFlowData{T, M, N},
-    fb_ix::Vector{Int},
-    tb_ix::Vector{Int},
-    time_step::Int,
-) where {
-    T <: PowerFlowEvaluationModel,
-    M <: PNM.PowerNetworkMatrix,
-    N <: Union{PNM.PowerNetworkMatrix, Nothing},
-}
-    @views data.arc_angle_differences[:, time_step] .=
-        data.bus_angles[fb_ix, time_step] .- data.bus_angles[tb_ix, time_step]
     return
 end
 

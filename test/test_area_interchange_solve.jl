@@ -796,43 +796,6 @@ end
     @test plain.beyond == false
 end
 
-# Strong Bus1-Bus2 tie (Area2) + deliberately weak, high-reactance Bus1-Bus3 tie (Area3).
-# Built from primitives, not c_sys14: c_sys14's transfer-capability nose is a
-# voltage-collapse bifurcation that makes Newton iterates nondeterministic near
-# infeasibility; this weak tie is far enough from feasible to fail deterministically.
-function _weak_tie_three_area_fixture(; x_weak::Float64 = 2.0, pdes2::Float64 = 0.1,
-    pdes3::Float64 = 2.0)
-    sys = System(100.0)
-    area1 = PSY.Area(; name = "Area1", input_basis = u"CU")
-    area2 = PSY.Area(; name = "Area2", input_basis = u"CU")
-    area3 = PSY.Area(; name = "Area3", input_basis = u"CU")
-    PSY.add_component!(sys, area1)
-    PSY.add_component!(sys, area2)
-    PSY.add_component!(sys, area3)
-
-    bus1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230)
-    bus2 = _add_simple_bus!(sys, 2, ACBusTypes.PV, 230)
-    bus3 = _add_simple_bus!(sys, 3, ACBusTypes.PV, 230)
-    PSY.set_area!(bus1, area1)
-    PSY.set_area!(bus2, area2)
-    PSY.set_area!(bus3, area3)
-
-    _add_simple_source!(sys, bus1, 0.0, 0.0)
-    _add_simple_thermal_standard!(sys, bus2, 0.1, 0.0)
-    _add_simple_thermal_standard!(sys, bus3, 0.1, 0.0)
-    _add_simple_load!(sys, bus1, 0.05, 0.02)
-
-    _add_simple_line!(sys, bus1, bus2, 1e-3, 1e-3)      # strong: Area2's tie
-    _add_simple_line!(sys, bus1, bus3, 0.02, x_weak)    # weak: Area3's tie
-
-    PSY.set_bustype!(bus2, ACBusTypes.SLACK)
-    PSY.set_bustype!(bus3, ACBusTypes.SLACK)
-
-    _add_area_interchange!(sys, "Area2", "Area1", pdes2; name = "A2_A1")
-    _add_area_interchange!(sys, "Area3", "Area1", pdes3; name = "A3_A1")
-    return sys
-end
-
 @testset "area interchange infeasible schedule greedy relax" begin
     sys = _weak_tie_three_area_fixture()
     pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; area_interchange_control = true)

@@ -1,25 +1,4 @@
 """
-Adjust the power injections vector to account for the power flows through LCCs.
-
-Relies on the fact that we calculate those flows during initialization and save them
-to the `active_power_flow_from_to` and `active_power_flow_to_from` fields of the
-`LCCParameters` struct.
-"""
-function adjust_power_injections_for_lccs!(power_injections::Matrix{Float64},
-    lcc_params::LCCParameters,
-)
-    for (i, bus_inds) in enumerate(lcc_params.bus_indices)
-        from_bus_ix, to_bus_ix = bus_inds
-        rectifier_power = lcc_params.arc_active_power_flow_from_to[i]
-        # inverter_power here takes into account losses.
-        inverter_power = lcc_params.arc_active_power_flow_to_from[i]
-        power_injections[from_bus_ix, :] .-= rectifier_power
-        power_injections[to_bus_ix, :] .+= inverter_power
-    end
-    return
-end
-
-"""
     DCSolverCache{M, B, C, S} <: SolverCache
 
 DC/PTDF persistent cache stored in `data.solver_cache[]`. The factored network matrix `matrix`
@@ -404,6 +383,12 @@ function solve_power_flow!(
     return
 end
 
+# The user-facing wrappers forward `linear_solver = nothing`, which must fall back to the model's
+# setting, not to the platform default.
+_vptdf_linear_solver(::vPTDFPowerFlowData, linear_solver::AbstractString) = linear_solver
+_vptdf_linear_solver(data::vPTDFPowerFlowData, ::Nothing) =
+    get_linear_solver(get_pf(data))
+
 """
     solve_power_flow!(data::vPTDFPowerFlowData)
 
@@ -423,7 +408,7 @@ function solve_power_flow!(
     linear_solver::Union{Nothing, AbstractString} = nothing,
 )
     _distribute_dc_slack!(data)
-    backend = resolve_linear_solver_backend(linear_solver)
+    backend = resolve_linear_solver_backend(_vptdf_linear_solver(data, linear_solver))
     _dc_solve!(
         data,
         data.solver_cache[],

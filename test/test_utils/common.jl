@@ -40,7 +40,7 @@ function modify_rts_system!(sys::System)
     ref_bus = get_bus(sys, 113)  # "Arne"
     @assert get_bustype(ref_bus) == ACBusTypes.REF
     # NOTE: we are not testing the correctness of _power_redistribution_ref here, it is used on both sides of the test
-    bus_injectors = PF._build_bus_injector_map(sys)
+    bus_injectors = PF._build_bus_injector_map(_TEST_INJECTOR_PF, sys)
     PF._power_redistribution_ref(
         sys,
         2.4375,

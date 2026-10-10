@@ -130,6 +130,20 @@ function _validate_discrete_control_settings(
     return
 end
 
+function _validate_n_threads(n_threads::Int)
+    n_threads >= 1 || throw(ArgumentError("n_threads must be >= 1, got $n_threads."))
+    return
+end
+
+# Every formulation and solver supports threads. The backend must be safe under concurrent
+# factorization.
+function _validate_threading_settings(params::SolutionParameters)
+    _validate_n_threads(params.n_threads)
+    params.n_threads == 1 && return
+    _check_concurrent_factorization(resolve_linear_solver_backend(params.linear_solver))
+    return
+end
+
 # Validated for NR/TR/LM/FastDecoupled: LM feeds the augmented rows through its
 # normal-equations residual; FDFixedJacobian carries the border in the frozen augmented
 # Jacobian; FDDecoupled corrects the tail via the bordered-Schur substep
@@ -574,6 +588,7 @@ function ACPolarPowerFlow{ACSolver}(;
         generator_slack_participation_factors,
         distribute_slack_proportional_to_headroom,
     )
+    _validate_threading_settings(params)
     # Returns the possibly-floored tolerance, so the stored parameters carry the value the
     # solve will actually use rather than the one the caller asked for.
     params = _override(
@@ -662,6 +677,7 @@ get_interchange_tolerance(::PowerFlowEvaluationModel) = DEFAULT_INTERCHANGE_TOLE
 get_tie_definition(pf::AbstractACPowerFlow) =
     get_solution_parameters(pf).tie_definition
 get_tie_definition(::PowerFlowEvaluationModel) = :lines_only
+get_n_threads(pf::AbstractACPowerFlow) = get_solution_parameters(pf).n_threads
 
 """
     ACRectangularPowerFlow{ACSolver}(; kwargs...) where {ACSolver <: ACPowerFlowSolverType}
@@ -781,6 +797,7 @@ function ACRectangularPowerFlow{ACSolver}(;
         time_steps,
     )
     _validate_discrete_control_settings(params.control_discrete_devices, ACSolver)
+    _validate_threading_settings(params)
     params = _resolve_solver_defaults(
         params,
         ACRectangularPowerFlow,
@@ -923,6 +940,7 @@ function ACMixedPowerFlow{ACSolver}(;
         time_steps,
     )
     _validate_discrete_control_settings(params.control_discrete_devices, ACSolver)
+    _validate_threading_settings(params)
     params = _resolve_solver_defaults(params, ACMixedPowerFlow, ACSolver, marquardt_scaling)
     return ACMixedPowerFlow{ACSolver}(
         exporter,
@@ -1156,6 +1174,14 @@ where creating and storing the full PTDF matrix would be infeasible or slow. See
 - `distribute_slack_proportional_to_headroom::Bool`: Whether to distribute the slack proportional to
     generator headroom. Default is `false`.
 - `skip_redistribution::Bool`: Whether to skip slack redistribution. Default is `false`.
+- `n_threads::Int`: Number of workers a caller that parallelizes over this model (e.g. a
+    contingency analysis) may use. PowerFlows' own vPTDF solve does not read it. Must be
+    `>= 1`. Default is `1`.
+- `linear_solver::String`: Name of the sparse linear-solver backend, as for
+    [`SolutionParameters`](@ref): it factors the virtual PTDF (`PNM.VirtualPTDF`) and the
+    solve's own factorization, and a threaded caller's per-worker cores follow it. Unknown or
+    unavailable backends error at construction. Default is the `PowerNetworkMatrices`
+    platform default.
 """
 struct vPTDFDCPowerFlow <: AbstractDCPowerFlow
     exporter::Union{Nothing, PowerFlowEvaluationModel}
@@ -1171,6 +1197,8 @@ struct vPTDFDCPowerFlow <: AbstractDCPowerFlow
     time_steps::Int
     time_step_names::Vector{String}
     correct_bustypes::Bool
+    n_threads::Int
+    linear_solver::String
 end
 
 function vPTDFDCPowerFlow(;
@@ -1187,12 +1215,16 @@ function vPTDFDCPowerFlow(;
     time_steps::Int = 1,
     time_step_names::Vector{String} = String[],
     correct_bustypes::Bool = false,
+    n_threads::Int = 1,
+    linear_solver::String = PNM._default_linear_solver(),
 )
     _validate_slack_distribution_settings(
         distribute_slack_proportional_to_headroom,
         generator_slack_participation_factors,
         time_steps,
     )
+    _validate_n_threads(n_threads)
+    resolve_linear_solver_backend(linear_solver)
     return vPTDFDCPowerFlow(
         exporter,
         calculate_loss_factors,
@@ -1203,11 +1235,15 @@ function vPTDFDCPowerFlow(;
         time_steps,
         time_step_names,
         correct_bustypes,
+        n_threads,
+        linear_solver,
     )
 end
 
 get_calculate_loss_factors(pf::PTDFDCPowerFlow) = pf.calculate_loss_factors
 get_calculate_loss_factors(pf::vPTDFDCPowerFlow) = pf.calculate_loss_factors
+get_n_threads(pf::vPTDFDCPowerFlow) = pf.n_threads
+get_linear_solver(pf::vPTDFDCPowerFlow) = pf.linear_solver
 get_lossy_flows(pf::DCPowerFlow) = pf.lossy_flows
 
 # See also: PSSEExportPowerFlow in psse_export.jl
