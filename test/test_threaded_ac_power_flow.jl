@@ -367,3 +367,52 @@ end
     dup2 = PF._copy_for_task(entry, slot, data, 1)
     @test dup2.linSolveCache.lean_plan === slot.plan
 end
+
+@testset "threaded area relax re-solves with a fresh cache" begin
+    T = 4
+    function build_data(n)
+        pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
+            time_steps = T,
+            solution_parameters = _threaded_params(n),
+            area_interchange_control = true,
+        )
+        data = PowerFlowData(pf, _weak_tie_three_area_fixture())
+        _replicate_col1_to_all_steps!(data, T)
+        return data
+    end
+    function quiet_solve!(data)
+        return @test_logs(
+            (:error, r"Area interchange:.*Area3.*de-enrolling"),
+            match_mode = :any,
+            min_level = Logging.Warn,
+            solve_power_flow!(data)
+        )
+    end
+    ref = build_data(1)
+    @test quiet_solve!(ref)
+    thr = build_data(2)
+    for _ in 1:2
+        @test quiet_solve!(thr)
+        @test all(isnothing(s.polar_nr_cache[]) for s in thr.worker_slots)
+        @test all(isnothing(s.solver_cache[]) for s in thr.worker_slots)
+        _test_threaded_parity(ref, thr)
+    end
+end
+
+@testset "a seed with a different lean plan does not seed a worker" begin
+    d = _slot_data(8, 1)
+    @test solve_power_flow!(d)
+    seed = d.polar_nr_cache[]
+    memo = d.ac_jacobian_structure_cache[]
+    @test PF._lean_plan_tried(memo, d)
+    other = PF.PolarNRCache(
+        seed.residual, seed.J, seed.linSolveCache, seed.stateVector, seed.backend,
+        seed.bus_type_snapshot, seed.arc_flows, PF.LeanPlanSlot(), seed.x0,
+        seed.partition,
+    )
+    d.polar_nr_cache[] = nothing
+    PF._seed_worker!(d, nothing, other, memo, 1)
+    @test isnothing(d.polar_nr_cache[])
+    PF._seed_worker!(d, nothing, seed, memo, 1)
+    @test !isnothing(d.polar_nr_cache[])
+end

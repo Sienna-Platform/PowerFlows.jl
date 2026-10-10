@@ -115,7 +115,7 @@ end
     @test count(threaded.converged) == length(steps)
 end
 
-@testset "threaded time steps reject repeated time steps" begin
+@testset "time steps must be strictly increasing" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
     data = PowerFlowData(
         ACPowerFlow{NewtonRaphsonACPowerFlow}(;
@@ -123,6 +123,13 @@ end
         sys,
     )
     @test_throws ArgumentError solve_power_flow!(data; time_steps = [1, 1])
+    serial = PowerFlowData(
+        ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+            time_steps = 2, solution_parameters = _KLU),
+        sys,
+    )
+    @test_throws ArgumentError solve_power_flow!(serial; time_steps = [1, 1])
+    @test_throws ArgumentError solve_power_flow!(serial; time_steps = [2, 1])
 end
 
 @testset "threaded time steps refuse a per-call non-KLU backend" begin

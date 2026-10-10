@@ -193,7 +193,19 @@ function _power_redistribution_ref(
     end
 
     sum_basepower = sum([g.max for g in get_active_power_limits_for_power_flow.(devices)])
-    if !isfinite(sum_basepower) || iszero(sum_basepower)
+    if !isfinite(sum_basepower)
+        unbounded = [
+            "$(typeof(d)) $(PSY.get_name(d))" for
+            d in devices if !isfinite(get_active_power_limits_for_power_flow(d).max)
+        ]
+        error(
+            "Bus $(PSY.get_name(bus)): the devices $(join(unbounded, ", ")) have no " *
+            "finite active power limit, so the proportional split of P = $P_gen is " *
+            "undefined. Set their output active power limits or use slack " *
+            "participation factors.",
+        )
+    end
+    if iszero(sum_basepower)
         error(
             "Bus $(PSY.get_name(bus)): the active power limits of its devices sum to " *
             "$sum_basepower, so they cannot absorb P = $P_gen.",

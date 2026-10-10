@@ -944,4 +944,7 @@ end
         distribute_slack_proportional_to_headroom = true,
     )
     @test solve_and_store_power_flow!(pf, sys)
+    hybrid = PSY.get_component(PSY.HybridSystem, sys, "all_hybrid")
+    PSY.set_output_active_power_limits!(hybrid, nothing)
+    @test_throws r"all_hybrid" PowerFlowData(pf, sys)
 end

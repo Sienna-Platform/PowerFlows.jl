@@ -219,7 +219,7 @@ The power flow solver settings are taken from the `ACPowerFlow` object stored in
     `solution_parameters` of the `ACPowerFlow` object, the values in `kwargs` take precedence.
 
 # Keyword Arguments
-- `time_steps`: Specifies the time steps to solve. Defaults to sorting and collecting the keys of `get_time_step_map(data)`.
+- `time_steps`: Specifies the time steps to solve. Defaults to sorting and collecting the keys of `get_time_step_map(data)`. The steps must be strictly increasing, or the function throws `ArgumentError`.
 
 The number of tasks solving contiguous chunks of `time_steps` concurrently is the stored
 `n_threads` of the model's [`SolutionParameters`](@ref).
@@ -260,6 +260,12 @@ function solve_power_flow!(
     )
     sorted_time_steps =
         get(merged_kwargs, :time_steps, sort(collect(keys(get_time_step_map(data)))))
+    issorted(sorted_time_steps; lt = <=) ||
+        throw(
+            ArgumentError(
+                "time_steps must be strictly increasing, got $sorted_time_steps.",
+            ),
+        )
     # This can be done from PSI by directly writing to `data`'s fields; we just don't
     # do it here in PF alone.
     if length(sorted_time_steps) > 1
@@ -410,9 +416,6 @@ function _solve_columns_threaded!(
     n_work::Int,
     merged_kwargs::NamedTuple,
 )
-    allunique(steps) || throw(
-        ArgumentError("time_steps must be unique when n_threads > 1, got $steps."),
-    )
     backend = _check_threadable(merged_kwargs)
     # Built here, before any task can race to build it, so every worker shares one pivot order.
     _prepare_lean_plan!(pf, data, first(steps), backend)
@@ -461,6 +464,13 @@ function _solve_slot!(
 )
     try
         _solve_columns!(ts_converged, worker, pf, steps, positions, kwargs)
+        # A relax only removes areas, so the pristine count means the full set. A cache sized
+        # for a reduced set cannot serve the next call.
+        aid = worker.area_interchange
+        if length(aid.areas) != length(aid.pristine_areas)
+            slot.polar_nr_cache[] = nothing
+            slot.solver_cache[] = nothing
+        end
     catch
         slot.polar_nr_cache[] = nothing
         slot.solver_cache[] = nothing
@@ -536,12 +546,6 @@ function _column_worker(
         end
     end
     cd = get_controlled_devices(data)
-    # A worker with active areas gets a private area set that a relax shrinks. The slot's caches
-    # may be sized for a previous call's shrunk set, so they cannot be reused.
-    if !isempty(data.area_interchange.pristine_areas)
-        slot.polar_nr_cache[] = nothing
-        slot.solver_cache[] = nothing
-    end
     fresh = (
         converged = converged,
         power_network_matrix = _worker_network_matrix(cd, data.power_network_matrix),
