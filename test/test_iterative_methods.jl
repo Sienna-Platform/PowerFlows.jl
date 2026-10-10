@@ -589,7 +589,7 @@ end
         residual(data, sv.x, 1)
         x = copy(sv.x)
         # A zero reference norm forces the undo branch.
-        _, accepted = PF._chord_step!(1, sv, cache, residual, J, data, 0.0)
+        _, accepted = PF._chord_step!(1, sv, cache, residual, J, data, 0.0, 0.0)
         @test !accepted
         # The undo adds the step back, so x returns up to round-off.
         @test maximum(abs, sv.x .- x) <= 1e-12

@@ -534,7 +534,6 @@ function get_bus_reactive_power_non_impedance_withdrawals(
 end
 
 function clear_injection_data!(pfd::PowerFlowData)
-    # anything overwritten with NaNs in the case of non-convergence should be reset here.
     pfd.bus_active_power_injections .= 0.0
     pfd.bus_reactive_power_injections .= 0.0
     pfd.bus_active_power_withdrawals .= 0.0

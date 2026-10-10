@@ -230,8 +230,13 @@ This function solves the AC power flow problem for each time step specified in `
 It preallocates memory for the results and iterates over the sorted time steps.
     For each time step, it calls the `_ac_power_flow` function to solve the power flow equations and updates the `data` object with the results.
     If the power flow converges, it updates the active and reactive power injections, as well as the voltage magnitudes and angles for different bus types (REF, PV, PQ), and calculates that time step's branch power flows.
-    If the power flow does not converge, it sets that time step's injections, voltage magnitudes
-    and angles in `data` to `NaN`; the load withdrawals are left intact.
+    A failed time step is invalid as a whole.
+    The function sets the whole column of injections, voltage magnitudes and angles to `NaN`, inputs included (REF magnitude and angle, PV magnitude, P at PV and PQ buses, Q at PQ buses).
+    The function does not set the withdrawals to `NaN`. Shunt and FACTS control can leave their last applied susceptance in the constant-impedance reactive withdrawal.
+    After a failed time step, only `data.converged` and `data.iterations` are reliable.
+    Every other field of that time step is undefined: flows, LCC, VSC and area-interchange state, and the controlled-device store.
+    To re-solve, reset the start point and load the inputs again (for example, `clear_injection_data!`, then fill the injections and withdrawals).
+    This does not reset the controlled-device store. A time step with controlled shunts or FACTS cannot be re-solved this way.
 
 # Notes
 - If the grid topology changes (e.g., tap positions of transformers or in-service status of branches), the admittance matrices `Yft` and `Ytf` must be updated before that time step's branch flows are computed.
@@ -329,8 +334,8 @@ function _column_arc_flows!(slot::Base.RefValue, data::ACPowerFlowData)
     return slot[]
 end
 
-"""Solve one time step and write its column: voltages, injections, branch and LCC flows.
-Touches no other column of `data`."""
+"""Solve one time step and write its column: voltages, injections, branch flows, and LCC flows
+when the solve converges. Touches no other column of `data`."""
 function _solve_column!(
     data::ACPowerFlowData,
     pf::AbstractACPowerFlow{<:ACPowerFlowSolverType},
@@ -355,8 +360,7 @@ function _solve_column!(
     converged && _warn_vsc_limit_violations(data, time_step)
 
     if OVERWRITE_NON_CONVERGED && !converged
-        # Only what the solve writes: the withdrawals are inputs it never touches, and NaN there
-        # would leave the column unsolvable after the caller resets its start point.
+        # A failed solve is invalid as a whole; see the `solve_power_flow!` docstring.
         data.bus_active_power_injections[:, time_step] .= NaN
         data.bus_reactive_power_injections[:, time_step] .= NaN
         data.bus_magnitude[:, time_step] .= NaN

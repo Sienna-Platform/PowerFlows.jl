@@ -232,12 +232,12 @@ end
     @test_throws ErrorException PF._inherit_jacobian_structure!(c5, base)
 end
 
-@testset "lean LU: a singular flat-start Jacobian is warned every time" begin
+@testset "lean LU: a singular lean-plan Jacobian is warned every time" begin
     J = SparseArrays.sparse(
         PF.J_INDEX_TYPE[1, 2, 1, 2], PF.J_INDEX_TYPE[1, 1, 2, 2], [1.0, 0.0, 0.0, 0.0])
     for _ in 1:2
         slot = PF.LeanPlanSlot()
-        warned = (:warn, r"flat-start Jacobian is singular")
+        warned = (:warn, r"Jacobian the lean plan is built on is singular")
         @test_logs warned PF._build_lean_plan!(slot, J, 1)
         @test !slot.valid
     end
@@ -431,8 +431,8 @@ end
 end
 
 @testset "lean LU: FD and GA handoffs run on the structure's plan" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
     function staged(S, handoff = NewtonRaphsonACPowerFlow)
-        sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
         params = SolutionParameters(;
             linear_solver = "KLU", handoff_solver = handoff, handoff_tol = 1e-2)
         return PowerFlowData(ACPowerFlow{S}(; solution_parameters = params), sys)
@@ -455,6 +455,32 @@ end
     @test fd.solver_cache[].handoff[].cache === h
     @test PF._lean_counts(h).attempts > attempts
     @test PF._lean_counts(h).rejects == 0
+
+    fd_pq = staged(PF.FastDecoupledXB)
+    nr_pq = staged(NewtonRaphsonACPowerFlow)
+    vm0, va0 = copy(fd_pq.bus_magnitude), copy(fd_pq.bus_angles)
+    @test solve_power_flow!(fd_pq)
+    @test solve_power_flow!(nr_pq)
+    h_pq = fd_pq.solver_cache[].handoff[].cache
+    counts = PF._lean_counts(h_pq)
+    pv_ix = findfirst(==(PSY.ACBusTypes.PV), fd_pq.bus_type[:, 1])
+    for data in (fd_pq, nr_pq)
+        data.bus_type[pv_ix, 1] = PSY.ACBusTypes.PQ
+        copyto!(data.bus_magnitude, vm0)
+        copyto!(data.bus_angles, va0)
+    end
+    @test PNM.is_factored(h_pq)
+    PF._handoff_linear_cache!(
+        fd_pq.solver_cache[], PF.get_pf(fd_pq), fd_pq, nothing, 1, "KLU")
+    @test !PNM.is_factored(h_pq)
+    @test solve_power_flow!(fd_pq)
+    @test solve_power_flow!(nr_pq)
+    @test fd_pq.solver_cache[].handoff[].cache === h_pq
+    counts_pq = PF._lean_counts(h_pq)
+    @test counts_pq.attempts > counts.attempts
+    @test counts_pq.rejects == counts.rejects
+    @test isapprox(fd_pq.bus_magnitude, nr_pq.bus_magnitude; atol = 1e-9, rtol = 0)
+    @test isapprox(fd_pq.bus_angles, nr_pq.bus_angles; atol = 1e-9, rtol = 0)
 
     ga = staged(GeneralizedAdmittanceACPowerFlow)
     @test solve_power_flow!(ga)
