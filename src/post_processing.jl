@@ -2,6 +2,11 @@ _counts_as_source(::PSY.StaticInjection) = true
 _counts_as_source(::PSY.ElectricLoad) = false
 # temporary workaround for FACTSControlDevice
 _counts_as_source(::PSY.FACTSControlDevice) = false
+# A lowered DC network sets the converter's power, so redistribution must not give it a share.
+_counts_as_source(::PowerFlowEvaluationModel, source::PSY.StaticInjection) =
+    _counts_as_source(source)
+_counts_as_source(pf::AbstractACPowerFlow, x::PSY.InterconnectingConverter) =
+    _contributes_active_power(pf, x)
 
 function _is_available_source(x, bus::PSY.ACBus)
     return PSY.get_available(x) && PSY.get_bus(x) == bus && _counts_as_source(x)
@@ -9,10 +14,10 @@ end
 
 """Available non-load, non-FACTS injectors bucketed by bus number, built once so REF/PV
 redistribution does not rescan every `StaticInjection` in `sys` per bus."""
-function _build_bus_injector_map(sys::PSY.System)
+function _build_bus_injector_map(pf::PowerFlowEvaluationModel, sys::PSY.System)
     bus_injectors = Dict{Int, Vector{PSY.StaticInjection}}()
     for x in PSY.get_available_components(PSY.StaticInjection, sys)
-        _counts_as_source(x) || continue
+        _counts_as_source(pf, x) || continue
         bus_no = PSY.get_number(PSY.get_bus(x))
         push!(get!(() -> PSY.StaticInjection[], bus_injectors, bus_no), x)
     end
@@ -50,10 +55,10 @@ function _calculate_fixed_admittance_powers(
     return busIxToFAPower
 end
 
-"""Give the residual a REF/PV bus's redistribution could not place to the device with the most
-headroom in its direction. When every device is at that limit, the widest-range device takes it
-past its limit with a warning: the converged injection is still written back, so the stored
-device powers keep summing to the solved bus injection."""
+"""Give the residual a REF/PV bus's redistribution could not place to the devices with headroom
+in its direction, largest headroom first. When every device is at its limit, the widest-range
+device takes the rest past its limit with a warning: the converged injection is still written
+back, so the stored device powers keep summing to the solved bus injection."""
 function _assign_residual!(
     devices::Vector{<:PSY.StaticInjection},
     residual::Float64,
@@ -70,18 +75,26 @@ function _assign_residual!(
         end
         return get_power(d, u"SU") - lim.min
     end
-    at_limit = filter(d -> headroom(d) <= BOUNDS_TOLERANCE, devices)
-    if length(at_limit) == length(devices)
-        device = argmax(d -> get_limits(d).max - get_limits(d).min, devices)
-    else
-        device = argmax(headroom, devices)
+    remaining = residual
+    rooms = headroom.(devices)
+    for i in sortperm(rooms; rev = true)
+        room = rooms[i]
+        room <= BOUNDS_TOLERANCE && break
+        d = devices[i]
+        share = copysign(min(abs(remaining), room), residual)
+        set_power!(d, (get_power(d, u"SU") + share) * u"SU")
+        remaining -= share
+        isapprox(remaining, 0.0; atol = ISAPPROX_ZERO_TOLERANCE) && return
     end
-    set_point = get_power(device, u"SU") + residual
+    # Every device is at its limit here: the loop either drained a device or stopped at one
+    # with no room.
+    device = argmax(d -> get_limits(d).max - get_limits(d).min, devices)
+    set_point = get_power(device, u"SU") + remaining
     set_power!(device, set_point * u"SU")
     limits = get_limits(device)
     if !(limits.min - BOUNDS_TOLERANCE <= set_point <= limits.max + BOUNDS_TOLERANCE)
-        @warn "Bus $(PSY.get_name(bus)): $quantity residual $residual exceeds the devices' " *
-              "limits; units at their limit: $(join(PSY.get_name.(at_limit), ", ")). " *
+        @warn "Bus $(PSY.get_name(bus)): $quantity residual $remaining exceeds the devices' " *
+              "limits; units at their limit: $(join(PSY.get_name.(devices), ", ")). " *
               "Unit $(PSY.get_name(device)) set to $quantity = $set_point outside " *
               "[$(limits.min), $(limits.max)]."
     end
@@ -180,6 +193,24 @@ function _power_redistribution_ref(
     end
 
     sum_basepower = sum([g.max for g in get_active_power_limits_for_power_flow.(devices)])
+    if !isfinite(sum_basepower)
+        unbounded = [
+            "$(typeof(d)) $(PSY.get_name(d))" for
+            d in devices if !isfinite(get_active_power_limits_for_power_flow(d).max)
+        ]
+        error(
+            "Bus $(PSY.get_name(bus)): the devices $(join(unbounded, ", ")) have no " *
+            "finite active power limit, so the proportional split of P = $P_gen is " *
+            "undefined. Set their output active power limits or use slack " *
+            "participation factors.",
+        )
+    end
+    if iszero(sum_basepower)
+        error(
+            "Bus $(PSY.get_name(bus)): the active power limits of its devices sum to " *
+            "$sum_basepower, so they cannot absorb P = $P_gen.",
+        )
+    end
     p_residual = P_gen
     units_at_limit = Vector{Int}()
     for (ix, d) in enumerate(devices)
@@ -208,11 +239,16 @@ function _power_redistribution_ref(
                 ix in units_at_limit;
                 init = 0.0,
             )
+            free_capacity = sum_basepower - removed_power
+            iszero(free_capacity) && error(
+                "Bus $(PSY.get_name(bus)): the devices not at their limit have no active " *
+                "power capacity to absorb the residual P = $p_residual.",
+            )
             reallocated_p = 0.0
             for (ix, d) in enumerate(devices)
                 ix ∈ units_at_limit && continue
                 p_limits = get_active_power_limits_for_power_flow(d)
-                part_factor = p_limits.max / (sum_basepower - removed_power)
+                part_factor = p_limits.max / free_capacity
                 current_p = PSY.get_active_power(d, u"SU")
                 p_target = p_residual * part_factor + current_p
                 p_set_point = clamp(p_target, p_limits.min, p_limits.max)
@@ -256,7 +292,8 @@ function _reactive_power_redistribution_pv(
     bus_injectors::Dict{Int, Vector{PSY.StaticInjection}},
 )
     @debug "Reactive Power Distribution $(PSY.get_name(bus))"
-    devices_ = _bus_sources(bus, bus_injectors)
+    # Q_gen excludes devices with no reactive power (`_get_injections!`), so they get no share.
+    devices_ = filter(contributes_reactive_power, _bus_sources(bus, bus_injectors))
     sources = filter(x -> typeof(x) == PSY.Source, collect(devices_))
     non_source_devices = filter(x -> typeof(x) !== PSY.Source, collect(devices_))
     if length(sources) > 0 && length(non_source_devices) > 0
@@ -275,7 +312,7 @@ function _reactive_power_redistribution_pv(
     end
     if length(devices_) == 1
         @debug "Only one generator in the bus"
-        q_limits = PSY.get_reactive_power_limits(first(devices_), u"SU")
+        q_limits = get_reactive_power_limits_for_power_flow(first(devices_), u"SU")
         if !(q_limits.min - BOUNDS_TOLERANCE <= Q_gen <= q_limits.max + BOUNDS_TOLERANCE)
             @warn "Reactive power at ref bus is outside limits."
         end
@@ -335,10 +372,6 @@ function _reactive_power_redistribution_pv(
 
         PSY.set_reactive_power!(d, q_set_point * u"SU")
         q_residual -= q_set_point
-
-        if isapprox(q_residual, 0.0; atol = ISAPPROX_ZERO_TOLERANCE)
-            break
-        end
     end
 
     if !isapprox(q_residual, 0.0; atol = ISAPPROX_ZERO_TOLERANCE)
@@ -349,6 +382,7 @@ function _reactive_power_redistribution_pv(
                 break
             end
             removed_power = sum(PSY.get_active_power.(devices[units_at_limit], (u"SU",)))
+            n_free = length(devices) - length(units_at_limit)
             reallocated_q = 0.0
             for (ix, d) in enumerate(devices)
                 ix ∈ units_at_limit && continue
@@ -359,7 +393,7 @@ function _reactive_power_redistribution_pv(
                         PSY.get_active_power(d, u"SU") /
                         (total_active_power - removed_power)
                 elseif isapprox(removed_power, total_active_power)
-                    fraction = 1
+                    fraction = 1 / n_free
                 else
                     error("Remove power can't be larger than the total active power")
                 end
@@ -967,7 +1001,7 @@ function write_power_flow_solution!(
     else
         get_computed_gspf(data)[time_step]
     end
-    bus_injectors = _build_bus_injector_map(sys)
+    bus_injectors = _build_bus_injector_map(pf, sys)
 
     # once redistribution is working again, could remove skip_redistribution.
     bus_lookup = get_bus_lookup(data)
@@ -1144,7 +1178,7 @@ function write_power_flow_solution!(
     else
         gspf = get_computed_gspf(data)[time_step]
     end
-    bus_injectors = _build_bus_injector_map(sys)
+    bus_injectors = _build_bus_injector_map(pf, sys)
     bus_lookup = get_bus_lookup(data)
     for (bus_number, reduced_buses) in PNM.get_bus_reduction_map(nrd)
         if !iszero(length(reduced_buses))
@@ -2211,7 +2245,7 @@ function update_system!(sys::PSY.System, data::PowerFlowData; time_step = 1)
     if !isempty(PNM.get_reductions(nrd))
         error("update_system! does not support systems with network reductions.")
     end
-    bus_injectors = _build_bus_injector_map(sys)
+    bus_injectors = _build_bus_injector_map(get_pf(data), sys)
     for bus in PSY.get_components(PSY.ACBus, sys)
         bus_index = get_bus_lookup(data)[PSY.get_number(bus)]
         bus_type = data.bus_type[bus_index, time_step]  # use this instead of bus.bustype to account for PV -> PQ

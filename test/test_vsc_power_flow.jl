@@ -1117,12 +1117,12 @@ end
                 arc = arc,
                 active_power_flow = 0.3,
                 rating = 2.0,
-                g = 45.0,
+                g = 1 / 32.0,
                 dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE,
                 ac_control_from = PSY.VSCACControlModes.AC_REACTIVE_POWER,
                 power_factor_setpoint_from = 1.0,
                 dc_voltage_setpoint_from = 1.03,
-                rated_dc_voltage = 1.0,
+                rated_dc_voltage = 400.0,
                 dc_control_to = PSY.VSCDCControlModes.DC_POWER,
                 ac_control_to = PSY.VSCACControlModes.AC_VOLTAGE,
                 dc_power_setpoint_to = 0.3,
@@ -1158,6 +1158,30 @@ end
     @test occursin("bus $(pv_bad)", err)
     @test occursin("$(v_bad + 0.02)", err)
     @test occursin("$(v_bad)", err)
+end
+
+@testset "VSC: a converter on a PV bus without DC modeling gets no reactive power share" begin
+    sys = _build_mtdc_system()
+    pv = first(
+        sort!(
+            collect(
+                PSY.get_components(
+                    b -> PSY.get_bustype(b) == PSY.ACBusTypes.PV,
+                    PSY.ACBus,
+                    sys,
+                ),
+            );
+            by = PSY.get_number,
+        ),
+    )
+    ic = PSY.get_component(PSY.InterconnectingConverter, sys, "ic2")
+    PSY.set_bus!(ic, pv)
+    PSY.set_active_power!(ic, 0.3 * u"SU")
+    pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+        solution_parameters = SolutionParameters(; model_dc_network = false),
+    )
+    @test solve_and_store_power_flow!(pf, sys)
+    @test PSY.get_active_power(ic, u"SU") ≈ 0.3
 end
 
 # Solver guards: RobustHomotopy has no DC-tail (VSC/MTDC) support (must reject at construction);

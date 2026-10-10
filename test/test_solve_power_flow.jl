@@ -167,8 +167,12 @@ end
         d.bus_active_power_constant_impedance_withdrawals,
         d.bus_reactive_power_constant_impedance_withdrawals,
     )
-    withdrawals = map(copy, withdrawn(data))
     pq = data.bus_type[:, 1] .== PSY.ACBusTypes.PQ
+    ix = findall(pq)[1:3]
+    for (k, arr) in enumerate(withdrawn(data)[3:end])
+        arr[ix, 1] .= 0.01 * k
+    end
+    withdrawals = map(copy, withdrawn(data))
     data.bus_magnitude[pq, 1] .= 1.0
     fill!(data.bus_angles, 0.0)
     @test_logs (:error, r"did not converge") match_mode = :any @test !solve_power_flow!(
@@ -975,6 +979,9 @@ end
         distribute_slack_proportional_to_headroom = true,
     )
     @test solve_and_store_power_flow!(pf, sys)
+    hybrid = PSY.get_component(PSY.HybridSystem, sys, "all_hybrid")
+    PSY.set_output_active_power_limits!(hybrid, nothing)
+    @test_throws r"all_hybrid" PowerFlowData(pf, sys)
 end
 
 @testset "converged |V| outside vm_validation_range is not converged" begin

@@ -49,6 +49,19 @@ function _get_injections!(
     return
 end
 
+function _has_finite_headroom(::PSY.Source, range_k::Float64)
+    return isfinite(range_k)
+end
+
+function _has_finite_headroom(source::PSY.StaticInjection, range_k::Float64)
+    isfinite(range_k) && return true
+    error(
+        "$(typeof(source)) $(PSY.get_name(source)) has no finite active power limit, " *
+        "so headroom distributed slack cannot weight it. Set its output active power " *
+        "limits or use slack participation factors.",
+    )
+end
+
 """Compute per-bus active power range R_k = sum(P_max - P_setpoint) for generators at
 REF/PV buses. Used for headroom-proportional distributed slack.
 
@@ -56,6 +69,7 @@ Only writes to column 1: PF uses single-value active power limits and setpoints
 (not time-varying). The caller copies column 1 to all time steps. For time-varying
 headroom, compute slack weights in PSI."""
 function _compute_bus_active_power_range!(
+    pf::PowerFlowEvaluationModel,
     bus_active_power_range::Matrix{Float64},
     bus_lookup::Dict{Int, Int},
     reverse_bus_search_map::Dict{Int, Int},
@@ -64,7 +78,7 @@ function _compute_bus_active_power_range!(
     generator_headroom::Union{Dict{Tuple{DataType, String}, Float64}, Nothing} = nothing,
 )
     for source in PSY.get_available_components(PSY.StaticInjection, sys)
-        contributes_active_power(source) || continue
+        _contributes_active_power(pf, source) || continue
         active_power_contribution_type(source) == PowerContributionType.INJECTION ||
             continue
         bus = PSY.get_bus(source)
@@ -78,7 +92,7 @@ function _compute_bus_active_power_range!(
         limits = get_active_power_limits_for_power_flow(source)
         range_k = limits.max - PSY.get_active_power(source, u"SU")
         range_k <= 0.0 && continue
-        isfinite(range_k) || continue
+        _has_finite_headroom(source, range_k) || continue
         bus_ix = _get_bus_ix(bus_lookup, reverse_bus_search_map, PSY.get_number(bus))
         bus_active_power_range[bus_ix, 1] += range_k
         if !isnothing(generator_headroom)
@@ -122,6 +136,31 @@ function _exponential_zip_slot(load::PSY.ExponentialLoad, exponent::Float64)
         "(α = $(PSY.get_α(load)), β = $(PSY.get_β(load))); power flow supports only " *
         "0 (constant power), 1 (constant current) and 2 (constant impedance).",
     )
+end
+
+# DC reads only the constant power withdrawals. P0 * V^e = P0 at V = 1 p.u., so every ZIP term
+# of an ExponentialLoad is a constant power term there. Any exponent is valid.
+function _add_exponential_load!(
+    ::AbstractDCPowerFlow,
+    p,
+    q,
+    l::PSY.ExponentialLoad,
+    bus_ix::Int,
+)
+    p[1][bus_ix] += PSY.get_active_power(l, u"SU")
+    return
+end
+
+function _add_exponential_load!(
+    ::PowerFlowEvaluationModel,
+    p,
+    q,
+    l::PSY.ExponentialLoad,
+    bus_ix::Int,
+)
+    p[_exponential_zip_slot(l, PSY.get_α(l))][bus_ix] += PSY.get_active_power(l, u"SU")
+    q[_exponential_zip_slot(l, PSY.get_β(l))][bus_ix] += PSY.get_reactive_power(l, u"SU")
+    return
 end
 
 function _get_withdrawals!(
@@ -186,9 +225,7 @@ function _get_withdrawals!(
         bus = PSY.get_bus(l)
         PSY.get_number(bus) in removed_buses && continue
         bus_ix = _get_bus_ix(bus_lookup, reverse_bus_search_map, PSY.get_number(bus))
-        p[_exponential_zip_slot(l, PSY.get_α(l))][bus_ix] += PSY.get_active_power(l, u"SU")
-        q[_exponential_zip_slot(l, PSY.get_β(l))][bus_ix] +=
-            PSY.get_reactive_power(l, u"SU")
+        _add_exponential_load!(pf, p, q, l, bus_ix)
     end
     # FixedAdmittance components are already included in the Ybus matrix.
     for sa in PSY.get_available_components(PSY.SwitchedAdmittance, sys)

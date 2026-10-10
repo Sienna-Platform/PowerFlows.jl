@@ -534,7 +534,6 @@ function get_bus_reactive_power_non_impedance_withdrawals(
 end
 
 function clear_injection_data!(pfd::PowerFlowData)
-    # anything overwritten with NaNs in the case of non-convergence should be reset here.
     pfd.bus_active_power_injections .= 0.0
     pfd.bus_reactive_power_injections .= 0.0
     pfd.bus_active_power_withdrawals .= 0.0
@@ -950,24 +949,6 @@ function _compute_arc_angle_differences_from_data!(
     tb_ix = [bus_lookup[bus_no] for bus_no in last.(arcs)]
     @views data.arc_angle_differences .=
         data.bus_angles[fb_ix, :] .- data.bus_angles[tb_ix, :]
-    return
-end
-
-"""Compute one time step's arc angle differences using precomputed from/to bus index
-vectors. Used by the AC solver where `fb_ix`/`tb_ix` are already available from the
-branch flow calculation."""
-function _compute_arc_angle_differences_from_indices!(
-    data::PowerFlowData{T, M, N},
-    fb_ix::Vector{Int},
-    tb_ix::Vector{Int},
-    time_step::Int,
-) where {
-    T <: PowerFlowEvaluationModel,
-    M <: PNM.PowerNetworkMatrix,
-    N <: Union{PNM.PowerNetworkMatrix, Nothing},
-}
-    @views data.arc_angle_differences[:, time_step] .=
-        data.bus_angles[fb_ix, time_step] .- data.bus_angles[tb_ix, time_step]
     return
 end
 

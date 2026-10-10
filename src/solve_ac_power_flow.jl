@@ -220,7 +220,7 @@ The power flow solver settings are taken from the `ACPowerFlow` object stored in
     `solution_parameters` of the `ACPowerFlow` object, the values in `kwargs` take precedence.
 
 # Keyword Arguments
-- `time_steps`: Specifies the time steps to solve. Defaults to sorting and collecting the keys of `get_time_step_map(data)`.
+- `time_steps`: Specifies the time steps to solve. Defaults to sorting and collecting the keys of `get_time_step_map(data)`. The steps must be strictly increasing, or the function throws `ArgumentError`.
 
 The number of tasks solving contiguous chunks of `time_steps` concurrently is the stored
 `n_threads` of the model's [`SolutionParameters`](@ref).
@@ -230,8 +230,13 @@ This function solves the AC power flow problem for each time step specified in `
 It preallocates memory for the results and iterates over the sorted time steps.
     For each time step, it calls the `_ac_power_flow` function to solve the power flow equations and updates the `data` object with the results.
     If the power flow converges, it updates the active and reactive power injections, as well as the voltage magnitudes and angles for different bus types (REF, PV, PQ), and calculates that time step's branch power flows.
-    If the power flow does not converge, it sets that time step's injections, voltage magnitudes
-    and angles in `data` to `NaN`; the load withdrawals are left intact.
+    A failed time step is invalid as a whole.
+    The function sets the whole column of injections, voltage magnitudes and angles to `NaN`, inputs included (REF magnitude and angle, PV magnitude, P at PV and PQ buses, Q at PQ buses).
+    The function does not set the withdrawals to `NaN`. Shunt and FACTS control can leave their last applied susceptance in the constant-impedance reactive withdrawal.
+    After a failed time step, only `data.converged` and `data.iterations` are reliable.
+    Every other field of that time step is undefined: flows, LCC, VSC and area-interchange state, and the controlled-device store.
+    To re-solve, reset the start point and load the inputs again (for example, `clear_injection_data!`, then fill the injections and withdrawals).
+    This does not reset the controlled-device store. A time step with controlled shunts or FACTS cannot be re-solved this way.
 
 # Notes
 - If the grid topology changes (e.g., tap positions of transformers or in-service status of branches), the admittance matrices `Yft` and `Ytf` must be updated before that time step's branch flows are computed.
@@ -262,6 +267,12 @@ function solve_power_flow!(
     )
     sorted_time_steps =
         get(merged_kwargs, :time_steps, sort(collect(keys(get_time_step_map(data)))))
+    issorted(sorted_time_steps; lt = <=) ||
+        throw(
+            ArgumentError(
+                "time_steps must be strictly increasing, got $sorted_time_steps.",
+            ),
+        )
     # This can be done from PSI by directly writing to `data`'s fields; we just don't
     # do it here in PF alone.
     if length(sorted_time_steps) > 1
@@ -323,8 +334,8 @@ function _column_arc_flows!(slot::Base.RefValue, data::ACPowerFlowData)
     return slot[]
 end
 
-"""Solve one time step and write its column: voltages, injections, branch and LCC flows.
-Touches no other column of `data`."""
+"""Solve one time step and write its column: voltages, injections, branch flows, and LCC flows
+when the solve converges. Touches no other column of `data`."""
 function _solve_column!(
     data::ACPowerFlowData,
     pf::AbstractACPowerFlow{<:ACPowerFlowSolverType},
@@ -351,8 +362,7 @@ function _solve_column!(
     converged && _warn_vsc_limit_violations(data, time_step)
 
     if OVERWRITE_NON_CONVERGED && !converged
-        # Only what the solve writes: the withdrawals are inputs it never touches, and NaN there
-        # would leave the column unsolvable after the caller resets its start point.
+        # A failed solve is invalid as a whole; see the `solve_power_flow!` docstring.
         data.bus_active_power_injections[:, time_step] .= NaN
         data.bus_reactive_power_injections[:, time_step] .= NaN
         data.bus_magnitude[:, time_step] .= NaN
@@ -574,9 +584,24 @@ end
 
 # A worker that raised an error leaves its caches in an unknown state.
 # Drop them so that the next call rebuilds them.
-function _solve_slot!(ts_converged, worker, slot::WorkerSlot, pf, steps, positions, kwargs)
+function _solve_slot!(
+    ts_converged::Vector{Bool},
+    worker::ACPowerFlowData,
+    slot::WorkerSlot,
+    pf::AbstractACPowerFlow,
+    steps::AbstractVector{Int},
+    positions::UnitRange{Int},
+    kwargs::NamedTuple,
+)
     try
         _solve_columns!(ts_converged, worker, pf, steps, positions, kwargs)
+        # A relax only removes areas, so the pristine count means the full set. A cache sized
+        # for a reduced set cannot serve the next call.
+        aid = worker.area_interchange
+        if length(aid.areas) != length(aid.pristine_areas)
+            slot.polar_nr_cache[] = nothing
+            slot.solver_cache[] = nothing
+        end
     catch
         slot.polar_nr_cache[] = nothing
         slot.solver_cache[] = nothing
@@ -589,20 +614,20 @@ _head_steps(::Nothing, positions::UnitRange{Int}) = first(positions):first(posit
 _head_steps(::AbstractNRCache, positions::UnitRange{Int}) =
     first(positions):(first(positions) - 1)
 
-function _seed_workers!(workers, steps, chunks)
+function _seed_workers!(
+    workers::Vector{<:ACPowerFlowData},
+    steps::AbstractVector{Int},
+    chunks::Vector{UnitRange{Int}},
+)
     seed = workers[1].polar_nr_cache[]
     memo = workers[1].ac_jacobian_structure_cache[]
     for i in 2:length(workers)
         worker = workers[i]
-        _seed_empty!(worker.polar_nr_cache[], worker, seed, memo, steps[first(chunks[i])])
+        _seed_worker!(worker, worker.polar_nr_cache[], seed, memo, steps[first(chunks[i])])
         _seed_rect_mixed!(worker, worker.solver_cache[], workers[1].solver_cache[])
     end
     return
 end
-
-_seed_empty!(::Nothing, worker, seed, memo, time_step) =
-    _seed_worker!(worker, seed, memo, time_step)
-_seed_empty!(::AbstractNRCache, worker, seed, memo, time_step) = nothing
 
 _prepare_lean_plan!(
     ::AbstractACPowerFlow,

@@ -40,6 +40,8 @@ struct HandoffLinearCache{C <: PNM.LinearSolverCache}
     cache::C
 end
 
+_lean_counts(h::HandoffLinearCache) = _lean_counts(h.cache)
+
 # The handoff runs on the stage's own `J` with the polar NR solve's linear-solver setup: a KLU cache
 # seeded with the structure memo's lean-LU plan (planned at flat on first use), so it pivots like
 # the plain NR solve and skips the symbolic analysis.
@@ -149,22 +151,22 @@ function _run_handoff_newton!(
     time_step::Int64,
     tol::Float64,
 )
-    run() = _run_power_flow_method(
+    run_method() = _run_power_flow_method(
         time_step, sv, hcache, residual, J, data, handoff_solver;
         tol, maxIterations = DEFAULT_NR_MAX_ITER,
     )
-    _reuses_pivot_order(hcache) || return run()
+    _reuses_pivot_order(hcache) || return run_method()
     x_start = copy(sv.x)
     _save_solve_start!(residual)
     counts = _retry_start(hcache)
-    converged, i = run()
+    converged, i = run_method()
     if converged || _pivoted_fresh_at_start(hcache, counts)
         return converged, i
     end
     @debug "handoff failed on a reused pivot order; retrying on a fresh factorization" time_step
     PNM.KLUWrapper.cold_restart!(hcache)
     _restart_from!(sv, residual, J, data, x_start, time_step)
-    converged, i_cold = run()
+    converged, i_cold = run_method()
     return converged, i + i_cold
 end
 

@@ -34,6 +34,8 @@ import PowerFlows: ACPowerFlowData, PTDFPowerFlowData, vPTDFPowerFlowData, ABAPo
 import PowerFlows: solve_power_flow!, write_results
 
 const BASE_DIR = dirname(dirname(Base.find_package("PowerFlows")))
+# Any model works: only AC models with a lowered DC network change who counts as a source.
+const _TEST_INJECTOR_PF = PF.ACPowerFlow{PF.NewtonRaphsonACPowerFlow}()
 const TEST_DATA_DIR = joinpath(BASE_DIR, "test", "test_data")
 const DIFF_INF_TOLERANCE = 1e-4
 const DIFF_L2_TOLERANCE = 1e-3

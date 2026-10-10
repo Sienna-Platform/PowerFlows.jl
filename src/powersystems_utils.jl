@@ -55,7 +55,14 @@ get_active_power_limits_for_power_flow(
     gen::Union{PSY.Storage, PSY.HybridSystem},
     units = u"SU",
 ) =
-    (min = 0.0, max = PSY.get_output_active_power_limits(gen, units).max)
+    (
+        min = 0.0,
+        max = _output_active_power_max(PSY.get_output_active_power_limits(gen, units)),
+    )
+
+# A HybridSystem without output limits is unbounded, like its missing reactive limits.
+_output_active_power_max(::Nothing) = Inf
+_output_active_power_max(limits) = limits.max
 
 """
 Return the active and reactive power generation from a generator component.

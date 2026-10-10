@@ -431,21 +431,25 @@ end
     @test_throws ArgumentError solve_power_flow!(data; linear_solver = "Dense")
 end
 
-@testset "vPTDF DC flows come from the angle solve, not PTDF rows" begin
-    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
-    vdata = PowerFlowData(vPTDFDCPowerFlow(; calculate_loss_factors = true), sys)
-    solve_power_flow!(vdata)
-    aba = PowerFlowData(DCPowerFlow(), sys)
-    solve_power_flow!(aba)
-    @test isapprox(
-        vdata.arc_active_power_flow_from_to,
-        aba.arc_active_power_flow_from_to;
-        atol = 1e-10,
+@testset "vPTDF DC flows come from the angle solve, on one island and on two" begin
+    for sys in (
+        PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false),
+        _make_two_island_system(),
     )
-    @test isempty(PNM.get_cache(vdata.power_network_matrix))
-    ptdf = PowerFlowData(PTDFDCPowerFlow(; calculate_loss_factors = true), sys)
-    solve_power_flow!(ptdf)
-    @test isapprox(vdata.loss_factors, ptdf.loss_factors; atol = 1e-10)
+        vdata = PowerFlowData(vPTDFDCPowerFlow(; calculate_loss_factors = true), sys)
+        solve_power_flow!(vdata)
+        aba = PowerFlowData(DCPowerFlow(), sys)
+        solve_power_flow!(aba)
+        @test isapprox(
+            vdata.arc_active_power_flow_from_to,
+            aba.arc_active_power_flow_from_to;
+            atol = 1e-10,
+        )
+        @test isempty(PNM.get_cache(vdata.power_network_matrix))
+        ptdf = PowerFlowData(PTDFDCPowerFlow(; calculate_loss_factors = true), sys)
+        solve_power_flow!(ptdf)
+        @test isapprox(vdata.loss_factors, ptdf.loss_factors; atol = 1e-10)
+    end
 end
 
 @testset "vPTDFDCPowerFlow linear_solver" begin
@@ -466,4 +470,7 @@ end
         atol = 1e-9,
     )
     @test isapprox(klu_data.bus_angles, default_data.bus_angles; atol = 1e-9)
+    # The wrappers forward `linear_solver = nothing`, which falls back to the model's setting.
+    @test PF._vptdf_linear_solver(klu_data, nothing) == "KLU"
+    @test PF._vptdf_linear_solver(klu_data, "KLU") == "KLU"
 end

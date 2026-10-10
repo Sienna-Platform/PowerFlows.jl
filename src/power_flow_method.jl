@@ -112,9 +112,7 @@ struct PolarNRCache{C <: PNM.LinearSolverCache} <: AbstractNRCache
 end
 
 """Copy of a polar NR cache for another worker. Shares the read-only Jacobian index maps, arc
-index vectors and lean slot, and owns everything a solve writes. Its KLU cache takes the
-slot's pristine plan, never `entry`'s current one: a swapped plan's `q` is `entry`'s own
-`lean_q`, which `entry`'s next swap overwrites."""
+index vectors and lean slot, and owns everything a solve writes."""
 function _copy_for_task(
     entry::PolarNRCache{<:PNM.KLULinSolveCache},
     slot::LeanPlanSlot,
@@ -149,16 +147,24 @@ function _copy_for_task(
     return dup
 end
 
-# A worker is seeded only from a KLU polar cache and only when it shares the seed's memo (same
-# matrix and area data); otherwise it builds its own.
-_seed_worker!(::ACPowerFlowData, ::Any, ::Any, ::Int) = nothing
+# A worker without a cache is seeded only from a KLU polar cache and only when it shares the
+# seed's memo (same matrix and area data); otherwise it builds its own.
+_seed_worker!(
+    ::ACPowerFlowData,
+    ::Union{Nothing, AbstractNRCache},
+    ::Union{Nothing, AbstractNRCache},
+    ::Union{Nothing, ACJacobianStructureCache},
+    ::Int,
+) = nothing
 function _seed_worker!(
     worker::ACPowerFlowData,
+    ::Nothing,
     seed::PolarNRCache{<:PNM.KLULinSolveCache},
     memo::ACJacobianStructureCache,
     time_step::Int,
 )
     _lean_plan_tried(memo, worker) || return
+    seed.lean === memo.lean || return
     worker.polar_nr_cache[] = _copy_for_task(seed, memo.lean, worker, time_step)
     return
 end
@@ -313,8 +319,8 @@ function _build_lean_plan!(
         slot.valid = true
     catch e
         e isa LinearAlgebra.SingularException || rethrow()
-        @warn "The flat-start Jacobian is singular; this Jacobian structure solves without " *
-              "the lean LU." time_step
+        @warn "The Jacobian the lean plan is built on is singular; this Jacobian structure " *
+              "solves without the lean LU." time_step
     end
     return
 end
@@ -1147,9 +1153,9 @@ const _USE_CHORD = Ref(true)
 const _CHORD_STEPS = Threads.Atomic{Int}(0)
 
 """A step from the last factorization in `linSolveCache`, kept when `‖F‖∞` falls to
-`CHORD_CONTRACTION` of `residual_norm`; `J` is then left where it was. A rejected step that still
-lowers `‖F‖∞` is kept with `J` refilled there; any other is undone with `F` and `J` refilled at
-the restored `x`. Returns `(‖F(x)‖∞, accepted)`; on an undone step the norm is `residual_norm`,
+`CHORD_CONTRACTION` of `residual_norm` or below `tol`; `J` is then left where it was. A rejected
+step that still lowers `‖F‖∞` is kept with `J` refilled there; any other is undone with `F` and
+`J` refilled at the restored `x`. Returns `(‖F(x)‖∞, accepted)`; on an undone step the norm is `residual_norm`,
 since the caller's Newton step recomputes it."""
 function _chord_step!(time_step::Int,
     stateVector::StateVectorCache,
@@ -1158,6 +1164,7 @@ function _chord_step!(time_step::Int,
     J::Union{ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
     data::ACPowerFlowData,
     residual_norm::Float64,
+    tol::Float64,
 )
     copyto!(stateVector.r, residual.Rv)
     _solve_Δx_nr!(stateVector, linSolveCache)
@@ -1166,7 +1173,7 @@ function _chord_step!(time_step::Int,
     _project_pv_setpoints!(residual, data, stateVector.x, stateVector.Δx_nr, time_step)
     residual(data, stateVector.x, time_step)
     new_norm = norm(residual.Rv, Inf)
-    if new_norm <= CHORD_CONTRACTION * residual_norm
+    if new_norm <= CHORD_CONTRACTION * residual_norm || new_norm < tol
         return new_norm, true
     end
     if new_norm < residual_norm
@@ -1311,8 +1318,8 @@ end
 
 """Runs the full `NewtonRaphsonACPowerFlow`. Without Iwamoto damping or diagnostics, NR
 takes chord steps once `‖F‖∞ < CHORD_TRIGGER` (see [`_chord_step!`](@ref)). An accepted chord
-step is an iteration, also counted in `_CHORD_STEPS`, so refactored steps are the iterations
-less the chord steps; a rejected one and the Newton step after it count once.
+step is an iteration, also counted in `_CHORD_STEPS`, so refactored steps are at most the
+iterations less the chord steps; a rejected one and the Newton step after it count once.
 # Keyword arguments:
 - `maxIterations::Int`: maximum iterations, chord steps included. Default: $DEFAULT_NR_MAX_ITER.
 - `tol::Float64`: tolerance. The iterative search ends when `norm(abs.(residual)) < tol`.
@@ -1358,6 +1365,7 @@ function _run_power_flow_method(time_step::Int,
         if factored && residual_norm < CHORD_TRIGGER
             residual_norm, accepted = _chord_step!(
                 time_step, stateVector, linSolveCache, residual, J, data, residual_norm,
+                tol,
             )
             if accepted
                 Threads.atomic_add!(_CHORD_STEPS, 1)
@@ -1744,9 +1752,6 @@ function _fused_x0!(
         improve_x0!(x0, pf, data, residual, time_step)
         return false
     end
-    # The same log as `improve_x0!` when it would change nothing.
-    @debug "skipping enhanced flat start"
-    @debug "skipping running DC power flow fallback"
     large && _warn_large_initial_residual(residual, data, time_step)
     return true
 end
@@ -1861,7 +1866,7 @@ function _fresh_newton_workspace(
 end
 
 function _fresh_solver_state(
-    pf::AbstractACPowerFlow,
+    pf::ACPolarPowerFlow,
     data::ACPowerFlowData,
     time_step::Int64,
     backend,
@@ -1896,6 +1901,7 @@ mutable struct RectMixedNRCache{C <: PNM.LinearSolverCache} <: SolverCache
 end
 
 _lean_counts(cache::RectMixedNRCache) = _lean_counts(cache.linSolveCache)
+_plan_rejected(cache::RectMixedNRCache) = !iszero(_lean_counts(cache).rejects)
 
 function _build_rect_mixed_cache!(
     data::ACPowerFlowData,
@@ -1966,12 +1972,12 @@ function _set_rect_mixed_plan!(
 end
 
 # Off the plan's bus types the lean path pauses and KLU pivots afresh. A rejected plan was built
-# at a start unlike these solves (a flat start) and would fail again each solve, so it is retired.
+# at another solve's start and would fail again each solve, so it is retired.
 function _set_lean_for_types!(
     cache::RectMixedNRCache,
     bus_type::AbstractVector{PSY.ACBusTypes.Value},
 )
-    if _lean_counts(cache.linSolveCache).rejects > 0
+    if _plan_rejected(cache)
         cache.lean = LeanPlanSlot()
     end
     if cache.lean.valid && bus_type == cache.lean.bus_types
@@ -1984,7 +1990,8 @@ end
 
 """Give `work` (a threaded worker, or a downstream working copy) a rect/mixed cache on `seed`'s
 pattern and lean plan, so it pivots like `seed` instead of planning on whatever it solves first.
-Only an empty slot is seeded, from a KLU cache with a valid plan."""
+Only an empty slot is seeded, from a KLU cache with a valid plan.
+A plan that `seed` rejected is not passed on, so the worker factors with plain KLU."""
 _seed_rect_mixed!(::ACPowerFlowData, ::Any, ::Any) = nothing
 function _seed_rect_mixed!(
     work::ACPowerFlowData,
@@ -1995,12 +2002,16 @@ function _seed_rect_mixed!(
     A = SparseMatrixCSC(seed.m, seed.n, copy(seed.colptr), copy(seed.rowval),
         zeros(length(seed.rowval)))
     lin = _polar_jacobian_cache(seed.backend, A)
-    _set_rect_mixed_plan!(lin, A, seed.lean)
+    lean = seed.lean
+    if _plan_rejected(seed)
+        lean = LeanPlanSlot()
+    end
+    _set_rect_mixed_plan!(lin, A, lean)
     sv = seed.stateVector
     work.solver_cache[] = RectMixedNRCache(
         A.colptr, A.rowval, seed.m, seed.n, seed.backend, lin,
         StateVectorCache(copy(sv.x), copy(sv.r)), copy(seed.bus_type_snapshot),
-        seed.lean,
+        lean,
     )
     return
 end
@@ -2127,7 +2138,7 @@ function _polar_newton_workspace!(
 )
     can_reuse =
         typeof(entry.backend) === typeof(backend) &&
-        # The reuse path always recomputes the start point via `improve_x0`, so it can't honor
+        # The reuse path always recomputes the start point via `_polar_start!`, so it can't honor
         # a caller-provided `x0`; excluding it here keeps that path from being silently ignored.
         !haskey(init_kwargs, :x0) &&
         _refresh_polar_residual!(entry, data, time_step)
