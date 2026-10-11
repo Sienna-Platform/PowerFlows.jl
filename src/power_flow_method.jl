@@ -391,10 +391,35 @@ function _align_lean_plan!(
     PNM.KLUWrapper.has_lean_plan(c) || return
     plan_types = slot.bus_types
     swaps(i) = _swaps_state_columns(plan_types[i], bus_type[i])
+    # Rebuilding an order the cache already holds would allocate and drop its lean factors.
+    _lean_order_aligned(c.lean_plan, slot.plan, swaps, length(bus_type)) && return
     pairs = ((2i - 1, 2i) for i in eachindex(bus_type, plan_types) if swaps(i))
     PNM.KLUWrapper.swap_lean_columns!(c, slot.plan, pairs)
     return
 end
+
+# Mirrors `PNM.KLUWrapper.swap_lean_columns!`: column `a` of a swapping bus takes its partner's
+# place in `plan.q` unless the two columns differ in pattern. Columns past the `n_buses` bus
+# pairs (LCC states) never swap.
+function _lean_order_aligned(
+    current::PNM.KLUWrapper.LeanLUPlan,
+    plan::PNM.KLUWrapper.LeanLUPlan,
+    swaps::F,
+    n_buses::Int,
+) where {F}
+    current.p === plan.p || return false
+    for (j, col) in enumerate(plan.q)
+        bus = (col + 1) >> 1
+        expected = Int(col)
+        if bus <= n_buses && swaps(bus) &&
+           PNM.KLUWrapper._same_column_pattern(plan, 2bus - 1, 2bus)
+            expected = xor(col - 1, 1) + 1
+        end
+        current.q[j] == expected || return false
+    end
+    return true
+end
+
 _align_lean_plan!(
     ::PNM.LinearSolverCache,
     ::LeanPlanSlot,

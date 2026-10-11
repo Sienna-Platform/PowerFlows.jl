@@ -189,6 +189,7 @@ end
     align(entry.linSolveCache, entry, data)
     @test entry.linSolveCache.lean_plan !== plan
     @test entry.linSolveCache.lean_plan.p === plan.p
+    @test iszero(align(entry.linSolveCache, entry, data))
 end
 
 @testset "lean LU: never attached off KLU" begin
