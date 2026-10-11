@@ -292,15 +292,13 @@ function _set_bus_angles_and_magnitudes!(
     bus_lookup::Dict{Int, Int},
     bus_reduction_map::Dict{Int, Set{Int}},
     reverse_bus_search_map::Dict{Int, Int},
-    temp_bus_map::Dict{Int, String},
+    temp_bus_map::Dict{Int, PSY.ACBus},
     subnetwork_keys::Base.KeySet{Int, Dict{Int, Set{Int}}},
     main_ref_bus::Int,
-    sys::PSY.System,
 )
     for bus_no in keys(bus_reduction_map)
         ix = _get_bus_ix(bus_lookup, reverse_bus_search_map, bus_no)
-        bus_name = temp_bus_map[bus_no]
-        bus = PSY.get_component(PSY.ACBus, sys, bus_name)
+        bus = temp_bus_map[bus_no]
         bus_angles[ix] = PSY.get_angle(bus)
         # use 0 as angle for REF buses in islanded subnetworks.
         if bus_no in subnetwork_keys && bus_no != main_ref_bus
@@ -319,15 +317,13 @@ function _set_bus_angles_and_magnitudes!(
     bus_lookup::Dict{Int, Int},
     bus_reduction_map::Dict{Int, Set{Int}},
     reverse_bus_search_map::Dict{Int, Int},
-    temp_bus_map::Dict{Int, String},
+    temp_bus_map::Dict{Int, PSY.ACBus},
     subnetwork_keys::Base.KeySet{Int, Dict{Int, Set{Int}}},
     main_ref_bus::Int,
-    sys::PSY.System,
 )
     for bus_no in keys(bus_reduction_map)
         ix = _get_bus_ix(bus_lookup, reverse_bus_search_map, bus_no)
-        bus_name = temp_bus_map[bus_no]
-        bus = PSY.get_component(PSY.ACBus, sys, bus_name)
+        bus = temp_bus_map[bus_no]
         bus_angles[ix] = PSY.get_angle(bus)
         if bus_no in subnetwork_keys && bus_no != main_ref_bus
             bus_angles[ix] = 0.0
@@ -337,14 +333,14 @@ function _set_bus_angles_and_magnitudes!(
         if bus_type[ix] == PSY.ACBusTypes.PQ &&
            bus_vm < BUS_VOLTAGE_MAGNITUDE_CUTOFF_MIN
             @warn(
-                "Initial bus voltage magnitude of $bus_vm p.u. at PQ bus $bus_name is below the plausible minimum cut-off value of $BUS_VOLTAGE_MAGNITUDE_CUTOFF_MIN p.u. and has been set to $BUS_VOLTAGE_MAGNITUDE_CUTOFF_MIN p.u.",
+                "Initial bus voltage magnitude of $bus_vm p.u. at PQ bus $(PSY.get_name(bus)) is below the plausible minimum cut-off value of $BUS_VOLTAGE_MAGNITUDE_CUTOFF_MIN p.u. and has been set to $BUS_VOLTAGE_MAGNITUDE_CUTOFF_MIN p.u.",
                 maxlog = PF_MAX_LOG,
             )
             bus_vm = BUS_VOLTAGE_MAGNITUDE_CUTOFF_MIN
         elseif bus_type[ix] == PSY.ACBusTypes.PQ &&
                bus_vm > BUS_VOLTAGE_MAGNITUDE_CUTOFF_MAX
             @warn(
-                "Initial bus voltage magnitude of $bus_vm p.u. at PQ bus $bus_name is above the plausible maximum cut-off value of $BUS_VOLTAGE_MAGNITUDE_CUTOFF_MAX p.u. and has been set to $BUS_VOLTAGE_MAGNITUDE_CUTOFF_MAX p.u.",
+                "Initial bus voltage magnitude of $bus_vm p.u. at PQ bus $(PSY.get_name(bus)) is above the plausible maximum cut-off value of $BUS_VOLTAGE_MAGNITUDE_CUTOFF_MAX p.u. and has been set to $BUS_VOLTAGE_MAGNITUDE_CUTOFF_MAX p.u.",
                 maxlog = PF_MAX_LOG,
             )
             bus_vm = BUS_VOLTAGE_MAGNITUDE_CUTOFF_MAX
@@ -450,13 +446,13 @@ function _initialize_bus_data!(
     bus_numbers = PSY.get_bus_numbers(sys)
     temp_bus_types = Dict{Int, PSY.ACBusTypes.Value}()
     sizehint!(temp_bus_types, length(bus_numbers))
-    temp_bus_map = Dict{Int, String}()
+    temp_bus_map = Dict{Int, PSY.ACBus}()
     sizehint!(temp_bus_map, length(bus_numbers))
     for bus in PSY.get_components(PSY.ACBus, sys)
         bt = PSY.get_bustype(bus)
         bus_no = PSY.get_number(bus)
         bus_name = PSY.get_name(bus)
-        temp_bus_map[bus_no] = bus_name
+        temp_bus_map[bus_no] = bus
         bt = _normalize_slack_bustype(pf, bt, bus_no, bus_name, possible_PV)
         if bus_no in subnetwork_keys && bus_no != main_ref_bus
             bt = PSY.ACBusTypes.REF
@@ -518,7 +514,6 @@ function _initialize_bus_data!(
         temp_bus_map,
         subnetwork_keys,
         main_ref_bus,
-        sys,
     )
     return
 end

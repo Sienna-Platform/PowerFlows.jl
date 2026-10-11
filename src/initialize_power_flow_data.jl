@@ -1,3 +1,59 @@
+"""Logger for the tasks of [`_run_concurrently`](@ref). It uses the filter of `parent` and
+keeps the records. The caller sends the records to `parent` later. Each task needs its own
+logger because the IS `MultiLogger` changes its counters without a lock."""
+struct _BufferedLogger{L <: Logging.AbstractLogger} <: Logging.AbstractLogger
+    parent::L
+    records::Vector{Any}
+end
+
+_BufferedLogger(parent::Logging.AbstractLogger) = _BufferedLogger(parent, Any[])
+
+Logging.min_enabled_level(l::_BufferedLogger) = Logging.min_enabled_level(l.parent)
+Logging.shouldlog(l::_BufferedLogger, level, _module, group, id) =
+    Logging.shouldlog(l.parent, level, _module, group, id)
+Logging.catch_exceptions(l::_BufferedLogger) = Logging.catch_exceptions(l.parent)
+
+function Logging.handle_message(l::_BufferedLogger, args...; kwargs...)
+    push!(l.records, (args, kwargs))
+    return
+end
+
+function _replay!(l::_BufferedLogger)
+    for (args, kwargs) in l.records
+        Logging.handle_message(l.parent, args...; kwargs...)
+    end
+    return
+end
+
+_task_exception(e::TaskFailedException) = e.task.exception
+_task_exception(e) = e
+
+# Wait for `task` and send its log records to the parent logger.
+# If the task failed, throw the exception of the task.
+function _join!(task::Task, logger::_BufferedLogger)
+    try
+        wait(task)
+    catch e
+        _replay!(logger)
+        throw(_task_exception(e))
+    end
+    _replay!(logger)
+    return
+end
+
+"""Run each thunk in a task. The log records go to the caller in thunk order.
+If a thunk fails, the exception of the first failed thunk is thrown.
+Thus the warnings, their order and the error types are the same as in a sequential run."""
+function _run_concurrently(thunks::Vararg{Function, N}) where {N}
+    parent = Logging.current_logger()
+    loggers = ntuple(_ -> _BufferedLogger(parent), N)
+    tasks = ntuple(i -> Threads.@spawn(Logging.with_logger(thunks[i], loggers[i])), N)
+    for i in 1:N
+        _join!(tasks[i], loggers[i])
+    end
+    return
+end
+
 """
 Sets the fields of a PowerFlowData struct to match the given System.
 """
@@ -32,35 +88,72 @@ function initialize_power_flow_data!(
     bus_type = Vector{PSY.ACBusTypes.Value}(undef, n_buses)
     bus_angles = zeros(Float64, n_buses)
     bus_magnitude = ones(Float64, n_buses)
-    _initialize_bus_data!(
-        pf,
-        bus_type,
-        bus_angles,
-        bus_magnitude,
-        bus_lookup,
-        bus_reduction_map,
-        reverse_bus_search_map,
-        sys,
-        correct_bustypes;
-        subnetworks = subnetworks,
+    # active, reactive power injections
+    bus_active_power_injections = zeros(Float64, n_buses)
+    bus_reactive_power_injections = zeros(Float64, n_buses)
+    # active power withdrawals, constant current and impedance withdrawals
+    bus_active_power_withdrawals = zeros(Float64, n_buses)
+    bus_reactive_power_withdrawals = zeros(Float64, n_buses)
+    bus_active_power_constant_current_withdrawals = zeros(Float64, n_buses)
+    bus_reactive_power_constant_current_withdrawals = zeros(Float64, n_buses)
+    bus_active_power_constant_impedance_withdrawals = zeros(Float64, n_buses)
+    bus_reactive_power_constant_impedance_withdrawals = zeros(Float64, n_buses)
+    # reactive power bounds
+    bus_reactive_power_bounds = fill((0.0, 0.0), n_buses)
+
+    # The scans read only `sys` and the bus maps. Each scan writes only to its own outputs.
+    _run_concurrently(
+        () -> _initialize_bus_data!(
+            pf,
+            bus_type,
+            bus_angles,
+            bus_magnitude,
+            bus_lookup,
+            bus_reduction_map,
+            reverse_bus_search_map,
+            sys,
+            correct_bustypes;
+            subnetworks = subnetworks,
+        ),
+        () -> _get_injections!(
+            pf,
+            bus_active_power_injections,
+            bus_reactive_power_injections,
+            bus_lookup,
+            reverse_bus_search_map,
+            removed_buses,
+            sys,
+        ),
+        () -> _get_withdrawals!(
+            pf,
+            bus_active_power_withdrawals,
+            bus_reactive_power_withdrawals,
+            bus_active_power_constant_current_withdrawals,
+            bus_reactive_power_constant_current_withdrawals,
+            bus_active_power_constant_impedance_withdrawals,
+            bus_reactive_power_constant_impedance_withdrawals,
+            bus_lookup,
+            reverse_bus_search_map,
+            removed_buses,
+            sys,
+        ),
+        () -> _get_reactive_power_bound!(
+            bus_reactive_power_bounds,
+            bus_lookup,
+            reverse_bus_search_map,
+            removed_buses,
+            sys,
+        ),
+        # Phase shifters: precompute the DC per-arc flow offsets and paired bus
+        # injections from stored circuit α.
+        () -> _populate_phase_shift_terms!(data),
     )
+
     # initialize for all time steps, or just the first?
     data.bus_type[:, :] .= bus_type
     data.bus_angles[:, :] .= bus_angles
     data.bus_magnitude[:, :] .= bus_magnitude
 
-    # active, reactive power injections, withdrawals
-    bus_active_power_injections = zeros(Float64, n_buses)
-    bus_reactive_power_injections = zeros(Float64, n_buses)
-    _get_injections!(
-        pf,
-        bus_active_power_injections,
-        bus_reactive_power_injections,
-        bus_lookup,
-        reverse_bus_search_map,
-        removed_buses,
-        sys,
-    )
     # Broadcast seeds every column from the snapshot; time-varying callers (PSI, prepare_ts_data!)
     # overwrite columns afterward. An unfilled column would solve as zero, not the snapshot.
     data.bus_active_power_injections .= bus_active_power_injections
@@ -83,26 +176,6 @@ function initialize_power_flow_data!(
         )
     end
 
-    # active power withdrawals, constant current and impedance withdrawals
-    bus_active_power_withdrawals = zeros(Float64, n_buses)
-    bus_reactive_power_withdrawals = zeros(Float64, n_buses)
-    bus_active_power_constant_current_withdrawals = zeros(Float64, n_buses)
-    bus_reactive_power_constant_current_withdrawals = zeros(Float64, n_buses)
-    bus_active_power_constant_impedance_withdrawals = zeros(Float64, n_buses)
-    bus_reactive_power_constant_impedance_withdrawals = zeros(Float64, n_buses)
-    _get_withdrawals!(
-        pf,
-        bus_active_power_withdrawals,
-        bus_reactive_power_withdrawals,
-        bus_active_power_constant_current_withdrawals,
-        bus_reactive_power_constant_current_withdrawals,
-        bus_active_power_constant_impedance_withdrawals,
-        bus_reactive_power_constant_impedance_withdrawals,
-        bus_lookup,
-        reverse_bus_search_map,
-        removed_buses,
-        sys,
-    )
     data.bus_active_power_withdrawals .= bus_active_power_withdrawals
     data.bus_reactive_power_withdrawals .= bus_reactive_power_withdrawals
     # Constant-I/Z baselines are time-invariant; broadcast so the per-step control delta on
@@ -116,18 +189,6 @@ function initialize_power_flow_data!(
     data.bus_reactive_power_constant_impedance_withdrawals .=
         bus_reactive_power_constant_impedance_withdrawals
 
-    # reactive power bounds
-    bus_reactive_power_bounds = Vector{Tuple{Float64, Float64}}(undef, n_buses)
-    for i in 1:n_buses
-        bus_reactive_power_bounds[i] = (0.0, 0.0)
-    end
-    _get_reactive_power_bound!(
-        bus_reactive_power_bounds,
-        bus_lookup,
-        reverse_bus_search_map,
-        removed_buses,
-        sys,
-    )
     # Bounds are time-invariant but read per `time_step`; broadcast so PV→PQ Q-limit switching
     # fires at `ts≥2` (the matrix is otherwise `(-Inf, Inf)`).
     data.bus_reactive_power_bounds .= bus_reactive_power_bounds
@@ -185,9 +246,6 @@ function initialize_power_flow_data!(
         reverse_bus_search_map,
         removed_buses,
     )
-    # Phase shifters: precompute the DC per-arc flow offsets and paired bus
-    # injections from stored circuit α.
-    _populate_phase_shift_terms!(data)
     # ZIP Loads, DC only: convert constant current and impedance components to constant
     # powers via assuming V = 1.0 p.u.
     handle_zip_loads!(data, pf)
