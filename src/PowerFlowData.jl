@@ -209,7 +209,7 @@ are configured for the `PTDFDCPowerFlow` method ."""
 const PTDFPowerFlowData = PowerFlowData{
     PTDFDCPowerFlow,
     PNM.DC_PTDF_Matrix,
-    PNM.DC_ABA_Matrix_Factorized,
+    PNM.DC_ABA_Matrix_Unfactorized,
 }
 
 """A type alias for a `PowerFlowData` struct whose type parameters
@@ -217,7 +217,7 @@ are configured for the `vPTDFDCPowerFlow` method."""
 const vPTDFPowerFlowData = PowerFlowData{
     vPTDFDCPowerFlow,
     <:PNM.DC_vPTDF_Matrix,
-    PNM.DC_ABA_Matrix_Factorized,
+    PNM.DC_ABA_Matrix_Unfactorized,
 }
 get_metadata_matrix(pfd::Union{PTDFPowerFlowData, vPTDFPowerFlowData}) =
     pfd.power_network_matrix
@@ -226,7 +226,7 @@ get_metadata_matrix(pfd::Union{PTDFPowerFlowData, vPTDFPowerFlowData}) =
 are configured for the `DCPowerFlow` method."""
 const ABAPowerFlowData = PowerFlowData{
     DCPowerFlow,
-    PNM.DC_ABA_Matrix_Factorized,
+    PNM.DC_ABA_Matrix_Unfactorized,
     PNM.DC_BA_Matrix,
 }
 get_metadata_matrix(pfd::ABAPowerFlowData) = pfd.aux_network_matrix
@@ -802,7 +802,7 @@ function PowerFlowData(
         irreducible_buses = _dc_converter_ac_buses(sys),
         make_arc_admittance_matrices = pf.lossy_flows,
     )
-    power_network_matrix = PNM.ABA_Matrix(ybus; factorize = true)
+    power_network_matrix = PNM.ABA_Matrix(ybus)
     aux_network_matrix = PNM.BA_Matrix(ybus)
     # `get_arc_axis(data)`/`get_bus_lookup(data)` read the BA (metadata) matrix for this method.
     arc_bus_incidence = _signed_arc_bus_incidence(ybus, aux_network_matrix)
@@ -870,7 +870,7 @@ function PowerFlowData(
         network_reductions = network_reductions,
         irreducible_buses = _dc_converter_ac_buses(sys))
     power_network_matrix = PNM.PTDF(ybus)
-    aux_network_matrix = PNM.ABA_Matrix(ybus; factorize = true)
+    aux_network_matrix = PNM.ABA_Matrix(ybus)
     # `get_arc_axis(data)`/`get_bus_lookup(data)` read the PTDF (metadata) matrix for this method.
     arc_bus_incidence = _signed_arc_bus_incidence(ybus, power_network_matrix)
     return make_and_initialize_power_flow_data(
@@ -923,7 +923,7 @@ function PowerFlowData(
         irreducible_buses = _dc_converter_ac_buses(sys))
     # evaluates an empty virtual PTDF
     power_network_matrix = PNM.VirtualPTDF(ybus; linear_solver = get_linear_solver(pf))
-    aux_network_matrix = PNM.ABA_Matrix(ybus; factorize = true)
+    aux_network_matrix = PNM.ABA_Matrix(ybus)
 
     return make_and_initialize_power_flow_data(
         pf,

@@ -1,3 +1,4 @@
+import Pardiso
 const GA = GeneralizedAdmittanceACPowerFlow
 const GA_SYS14 = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
 
@@ -108,7 +109,7 @@ end
 
 function ga_kernel_setup(sys)
     data, part, np = ga_setup(sys)
-    cache = PF._get_or_build_ga_cache!(data, part)
+    cache = PF._get_or_build_ga_cache!(data, part, PNM.KLUSolver())
     y = PF._ga_initial_shunts(cache.blocks, np, part, data, 1)
     PF._ga_factor!(cache, y, part, PF.get_bus_lookup(data))
     PF._ga_u0!(cache.ws, cache, PF._ga_slack_voltages(data, part, 1))
@@ -368,7 +369,7 @@ end
     @testset "solver cache" begin
         @testset "KLU factor, solve, reuse and refactor on c_sys14" begin
             data, part, np = ga_setup(GA_SYS14)
-            cache = PF._get_or_build_ga_cache!(data, part)
+            cache = PF._get_or_build_ga_cache!(data, part, PNM.KLUSolver())
             @test data.solver_cache[] === cache
             y = PF._ga_initial_shunts(cache.blocks, np, part, data, 1)
             rhs = ComplexF64.(randn(PF.n_l(part)) .+ im .* randn(PF.n_l(part)))
@@ -381,7 +382,7 @@ end
                 PNM.solve!(cache.Fq, xq)
                 @test Matrix(cache.blocks.Yqq) * xq ≈ rhs[1:PF.n_q(part)]
             end
-            @test PF._get_or_build_ga_cache!(data, part) === cache
+            @test PF._get_or_build_ga_cache!(data, part, PNM.KLUSolver()) === cache
         end
 
         @testset "flat-start q0 with a purely real PQ diagonal" begin
@@ -430,12 +431,54 @@ end
             @test_throws ArgumentError PF._ga_factor_error(
                 ArgumentError("x"), part, lookup, PF.GABlockYll())
         end
+
+        if PF.PNM._has_apple_accelerate_backend()
+            @testset "AppleAccelerate singular block names the bus" begin
+                part = PF.GAPartition([1], [2], [3, 4], [2, 3, 4], [1.0], [1, 1, 1], 1)
+                lookup = Dict(10 => 1, 20 => 2, 30 => 3, 40 => 4)
+                A = SparseArrays.sparse(
+                    [1, 2], [1, 2], ComplexF64[1.0, 1.0], 3, 3)
+                F = PF.make_linear_solver_cache(PNM.AppleAccelerateLUSolver(), A)
+                @test_throws r"singular" PF._ga_factor_block!(
+                    F, A, false, PF.GABlockYll(), part, lookup)
+            end
+        end
+
+        @testset "non-singular factor error is rethrown" begin
+            part = PF.GAPartition([1], [2], [3, 4], [2, 3, 4], [1.0], [1, 1, 1], 1)
+            lookup = Dict(10 => 1, 20 => 2, 30 => 3, 40 => 4)
+            A = SparseArrays.sparse(
+                [1, 2, 3], [1, 2, 3], ComplexF64[1.0, 1.0, 1.0], 3, 3)
+            @test_throws ArgumentError begin
+                try
+                    throw(ArgumentError("backend failure"))
+                catch e
+                    PF._ga_on_factor_error(e, :other, A, PF.GABlockYll(), part, lookup)
+                end
+            end
+        end
     end
 
     @testset "iteration kernel matches the dense reference" begin
         @testset "c_sys14, allocation-free after warm-up" begin
             part, np, cache, y = ga_check_against_dense(GA_SYS14, 5)
             @test (@allocated PF._ga_iterate!(cache, np, y, part)) == 0
+        end
+
+        if PF.PNM._has_apple_accelerate_backend()
+            @testset "c_sys14, AppleAccelerate allocation-free after warm-up" begin
+                data, part, np = ga_setup(GA_SYS14)
+                cache = PF._get_or_build_ga_cache!(
+                    data, part, PF.resolve_linear_solver_backend("AppleAccelerateLU"))
+                y = PF._ga_initial_shunts(cache.blocks, np, part, data, 1)
+                PF._ga_factor!(cache, y, part, PF.get_bus_lookup(data))
+                PF._ga_u0!(cache.ws, cache, PF._ga_slack_voltages(data, part, 1))
+                fill!(cache.ws.i, 0.0im)
+                for _ in 1:3
+                    PF._ga_iterate!(cache, np, y, part)
+                end
+                @test (@allocated PF._ga_iterate!(cache, np, y, part)) == 0
+            end
         end
 
         @testset "no PV buses" begin
@@ -695,11 +738,20 @@ end
         residual = PF.ACPowerFlowResidual(data, 1)
         residual(data, x0, 1)
         r0 = norm(residual.Rv, 1)
-        x = PF._ga_flat_start(x0, data, residual, 1, 1e-3)
+        x = PF._ga_flat_start(x0, data, residual, 1, 1e-3, PNM.KLUSolver())
         @test data.solver_cache[] === slot
         @test (dcn.p_c, dcn.q_c, dcn.node_vdc) == dc_before
         residual(data, x, 1)
         @test norm(residual.Rv, 1) < r0
+        # The stage builds its cache with the backend it receives.
+        @test_throws MethodError PF._ga_flat_start(x0, data, residual, 1, 1e-3, nothing)
+        pf_klu = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+            ga_flat_start = true,
+            solution_parameters = SolutionParameters(; linear_solver = "KLU"))
+        @test PF.resolve_linear_solver_backend(
+            PF.get_solution_parameters(pf_klu).linear_solver) == PNM.KLUSolver()
+        x_klu = PF.improve_x0(pf_klu, data, residual, 1)
+        @test length(x_klu) == length(x0)
         @test solve_power_flow!(data; pf = pf)
         data_nr = PowerFlowData(
             ACPowerFlow{NewtonRaphsonACPowerFlow}(;
@@ -774,10 +826,12 @@ end
         @test solve_power_flow!(data_ga)
         ga_compare(data_nr, data_ga)
         cache = data_ga.solver_cache[]
-        @test typeof(cache) === PF.GeneralizedAdmittanceCache
+        @test typeof(cache) == PF.GeneralizedAdmittanceCache{typeof(cache.Fl)}
+        @test typeof(cache.Fl) == typeof(cache.Fq)
         @test PF._get_or_build_ga_cache!(
             data_ga,
             PF.GAPartition(data_ga, 1, Dict{Int, Float64}()),
+            PF.resolve_linear_solver_backend(nothing),
         ) === cache
         @test cache.factored
         part = PF.GAPartition(data_ga, 1, Dict{Int, Float64}())
@@ -941,6 +995,58 @@ end
             @test count(==(first(dg.converter_ac_bus_ix)), dg.converter_ac_bus_ix) == 2
             @test maximum(abs.(dn.q_c .- dg.q_c)) < 1e-6
             @test maximum(abs.(dn.p_c .- dg.p_c)) < 1e-6
+        end
+    end
+
+    @testset "every available backend matches KLU" begin
+        sys = ga_sys14()
+        backends = String[]
+        if PF.PNM._has_apple_accelerate_backend()
+            push!(backends, "AppleAccelerateLU")
+        end
+        if PF.PNM._has_mkl_pardiso_ext() && Pardiso.mkl_is_available()
+            push!(backends, "MKLPardiso")
+        end
+        ga(name) = ACPowerFlow{GeneralizedAdmittanceACPowerFlow}(;
+            solution_parameters = SolutionParameters(; linear_solver = name))
+        res_klu = solve_power_flow(ga("KLU"), sys)
+        for name in backends
+            res = solve_power_flow(ga(name), sys)
+            @test isapprox(
+                res["bus_results"][!, :Vm], res_klu["bus_results"][!, :Vm]; atol = 1e-7)
+            @test isapprox(
+                res["bus_results"][!, :θ], res_klu["bus_results"][!, :θ]; atol = 1e-7)
+        end
+    end
+
+    @testset "singular check catches a floating block" begin
+        y = 1.0 - 10.0im
+        L = SparseArrays.spzeros(ComplexF64, 4, 4)
+        for k in 1:4
+            j = mod1(k + 1, 4)
+            L[k, k] += y
+            L[j, j] += y
+            L[k, j] -= y
+            L[j, k] -= y
+        end
+        names = String[]
+        if PF.PNM._has_apple_accelerate_backend()
+            push!(names, "AppleAccelerateLU")
+        end
+        if PF.PNM._has_mkl_pardiso_ext() && Pardiso.mkl_is_available()
+            push!(names, "MKLPardiso")
+        end
+        for name in names
+            F = PF.make_linear_solver_cache(PF.resolve_linear_solver_backend(name), L)
+            ok = try
+                PF.full_factor!(F, L)
+                PF._ga_factor_ok(F, L)
+            catch e
+                @test typeof(e) == LinearAlgebra.SingularException ||
+                      occursin("Pardiso", string(typeof(e)))
+                false
+            end
+            @test !ok
         end
     end
 end

@@ -58,9 +58,7 @@ function _make_dc_scratch(data::PowerFlowData)
     )
 end
 
-# `aba_matrix.K` is always a KLU factorization of this exact matrix (PNM's own choice,
-# regardless of the solve backend), so only the KLU backend can reuse it.
-_dc_initial_cache(::PNM.KLUSolver, aba_matrix::PNM.ABA_Matrix) = aba_matrix.K
+# The ABA matrix carries no factorization; the caller picks the backend.
 function _dc_initial_cache(backend, aba_matrix::PNM.ABA_Matrix)
     M = aba_matrix.data
     cache = make_linear_solver_cache(backend, M)
@@ -619,7 +617,22 @@ end
 
 function dc_loss_factors(data::vPTDFPowerFlowData, Rs::Vector{Float64})
     valid_ix = collect(1:length(get_bus_axis(data)))[get_valid_ix(data)]
-    return _vptdf_loss_factors(data, Rs, data.aux_network_matrix.K, valid_ix)
+    return _vptdf_loss_factors(
+        data,
+        Rs,
+        _dc_aba_factor(data, data.solver_cache[]),
+        valid_ix,
+    )
+end
+
+# The DC solve keeps its factorization of the aux ABA matrix in the solver-cache slot.
+# Without a solve, factor once with the default backend.
+_dc_aba_factor(::vPTDFPowerFlowData, entry::DCSolverCache) = entry.cache
+function _dc_aba_factor(data::vPTDFPowerFlowData, ::Nothing)
+    return _dc_initial_cache(
+        resolve_linear_solver_backend(get_linear_solver(data.pf)),
+        data.aux_network_matrix,
+    )
 end
 
 # `PTDFᵀ w = B⁻¹ BA w` on the non-reference buses (the REF-relative PTDF has zero reference
