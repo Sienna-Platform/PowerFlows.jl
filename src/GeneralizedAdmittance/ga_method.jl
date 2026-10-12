@@ -306,7 +306,7 @@ function _ga_flat_start(
     residual::ACPowerFlowResidual,
     time_step::Int64,
     handoff_tol::Float64,
-    backend,
+    backend::PNM.LinearSolverType,
 )
     dcn = get_dc_network(data)
     # Threaded solves share `dcn` across tasks: touch only this time step's column.

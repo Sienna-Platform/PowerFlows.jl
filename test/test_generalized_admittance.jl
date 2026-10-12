@@ -1040,7 +1040,7 @@ end
             F = PF.make_linear_solver_cache(PF.resolve_linear_solver_backend(name), L)
             ok = try
                 PF.full_factor!(F, L)
-                PF._ga_factor_ok(F, L)
+                PF.PNM.factorization_ok(F, L)
             catch e
                 @test typeof(e) == LinearAlgebra.SingularException ||
                       occursin("Pardiso", string(typeof(e)))

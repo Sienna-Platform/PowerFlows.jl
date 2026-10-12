@@ -107,10 +107,10 @@ end
 
 function Base.:(==)(a::GACacheKey, b::GACacheKey)
     return a.ybus_id == b.ybus_id && a.s_ix == b.s_ix && a.v_ix == b.v_ix &&
-           a.q_ix == b.q_ix && typeof(a.backend) == typeof(b.backend)
+           a.q_ix == b.q_ix && a.backend === b.backend
 end
 
-mutable struct GeneralizedAdmittanceCache{F} <: SolverCache
+mutable struct GeneralizedAdmittanceCache{F <: PNM.LinearSolverCache} <: SolverCache
     key::GACacheKey
     blocks::GABlocks
     Fl::F
@@ -182,29 +182,20 @@ end
 
 _ga_factor_error(e, ::GAPartition, ::Dict{Int, Int}, block) = throw(e)
 
-const GA_SINGULAR_PROBE_RTOL = 1e-6
-
-# KLU reports a singular block with its column. AppleAccelerate and MKL Pardiso can factor a
-# numerically singular block without an error, so one solve checks the forward error.
-# The matrix type matches the generic method exactly to avoid an ambiguity for a KLU cache.
-_ga_factor_ok(::PNM.KLULinSolveCache, ::SparseMatrixCSC{ComplexF64, Int64}) = true
-
-function _ga_factor_ok(F, A::SparseMatrixCSC{ComplexF64, Int64})
-    v = ComplexF64.(1:size(A, 1))
-    x = A * v
-    solve!(F, x)
-    return all(isfinite, x) &&
-           LinearAlgebra.norm(x - v) <= GA_SINGULAR_PROBE_RTOL * LinearAlgebra.norm(v)
-end
-
 # Runs only after a failure: a KLU factorization of `A` names the bus.
-function _ga_singular_error(A::SparseMatrixCSC{ComplexF64, Int64}, block,
-    part::GAPartition, bus_lookup::Dict{Int, Int})
+function _ga_locate_singular(A::SparseMatrixCSC, block, part::GAPartition,
+    bus_lookup::Dict{Int, Int})
     try
         PNM.klu_factorize(A)
-    catch e
-        _ga_factor_error(e, part, bus_lookup, block)
+    catch k
+        _ga_factor_error(k, part, bus_lookup, block)
     end
+    return
+end
+
+function _ga_singular_error(A::SparseMatrixCSC{ComplexF64, Int64}, block,
+    part::GAPartition, bus_lookup::Dict{Int, Int})
+    _ga_locate_singular(A, block, part, bus_lookup)
     return error(
         "GeneralizedAdmittanceACPowerFlow: $(_ga_block_name(block)) is numerically " *
         "singular. Is there an island without a REF bus?",
@@ -224,11 +215,7 @@ _ga_located_error(::LinearAlgebra.SingularException, A::SparseMatrixCSC, block,
     _ga_singular_error(A, block, part, bus_lookup)
 function _ga_located_error(e, A::SparseMatrixCSC, block, part::GAPartition,
     bus_lookup::Dict{Int, Int})
-    try
-        PNM.klu_factorize(A)
-    catch k
-        _ga_factor_error(k, part, bus_lookup, block)
-    end
+    _ga_locate_singular(A, block, part, bus_lookup)
     rethrow(e)
 end
 
@@ -243,7 +230,7 @@ function _ga_factor_block!(F, A::SparseMatrixCSC{ComplexF64, Int64}, factored::B
     catch e
         _ga_on_factor_error(e, F, A, block, part, bus_lookup)
     end
-    if !_ga_factor_ok(F, A)
+    if !PNM.factorization_ok(F, A)
         _ga_singular_error(A, block, part, bus_lookup)
     end
     return

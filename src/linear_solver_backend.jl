@@ -7,10 +7,9 @@
 #   - MKLPardiso (Intel MKL, x86_64 only; PNM's `MKLPardisoExt` extension,
 #     loaded on `import Pardiso`)
 #
-# KLU and MKLPardiso operations are methods of PNM.solve!/full_factor!/...;
-# AppleAccelerate operations are PNM.AccelerateWrapper.solve!/full_factor!/...
-# PowerFlows unifies them below by dispatch; every backend cache
-# subtypes `PNM.LinearSolverCache`.
+# Every backend cache subtypes `PNM.LinearSolverCache` and shares PNM's
+# solve!/full_factor!/numeric_refactor!/symbolic_factor!. The PowerFlows functions below
+# forward to PNM and add the KLU lean-plan behavior.
 
 """Supertype for the polar NR/TR reuse cache (`PolarNRCache`, `power_flow_method.jl`).
 Exists so `PowerFlowData` can type its `polar_nr_cache` slot as a two-member union:
@@ -20,12 +19,7 @@ abstract type AbstractNRCache end
 
 # --- Backend-agnostic operations (forward to the owning PNM namespace) ---
 
-symbolic_factor!(c::PNM.KLULinSolveCache, A::SparseMatrixCSC{Float64}) =
-    PNM.symbolic_factor!(c, A)
-symbolic_factor!(c::PNM.AAFactorCache, A::SparseMatrixCSC) =
-    PNM.AccelerateWrapper.symbolic_factor!(c, A)
-symbolic_factor!(c::PNM.PardisoLinSolveCache, A::SparseMatrixCSC) =
-    PNM.symbolic_factor!(c, A)
+symbolic_factor!(c::PNM.LinearSolverCache, A::SparseMatrixCSC) = PNM.symbolic_factor!(c, A)
 
 # A lean reject is mostly a pivot the frozen order puts on an exact zero (a bus type differing
 # from the plan's), which every later iterate of the solve repeats. Finish the solve on KLU's own
@@ -37,13 +31,7 @@ function numeric_refactor!(c::PNM.KLULinSolveCache, A::SparseMatrixCSC{Float64})
     end
     return c
 end
-numeric_refactor!(c::PNM.AAFactorCache, A::SparseMatrixCSC) =
-    PNM.AccelerateWrapper.numeric_refactor!(c, A)
-numeric_refactor!(c::PNM.PardisoLinSolveCache, A::SparseMatrixCSC) =
-    PNM.numeric_refactor!(c, A)
-
-# The generalized-admittance solver factors ComplexF64 blocks: no lean plan, plain PNM calls.
-numeric_refactor!(c::PNM.KLULinSolveCache, A::SparseMatrixCSC{ComplexF64}) =
+numeric_refactor!(c::PNM.LinearSolverCache, A::SparseMatrixCSC) =
     PNM.numeric_refactor!(c, A)
 
 # A full factorization always pivots afresh, bypassing a lean plan, and keeps the rest of that
@@ -54,12 +42,7 @@ function full_factor!(c::PNM.KLULinSolveCache, A::SparseMatrixCSC{Float64})
     PNM.KLUWrapper.has_lean_plan(c) && PNM.KLUWrapper.pause_lean!(c, true)
     return c
 end
-full_factor!(c::PNM.AAFactorCache, A::SparseMatrixCSC) =
-    PNM.AccelerateWrapper.full_factor!(c, A)
-full_factor!(c::PNM.PardisoLinSolveCache, A::SparseMatrixCSC) = PNM.full_factor!(c, A)
-
-full_factor!(c::PNM.KLULinSolveCache, A::SparseMatrixCSC{ComplexF64}) =
-    PNM.full_factor!(c, A)
+full_factor!(c::PNM.LinearSolverCache, A::SparseMatrixCSC) = PNM.full_factor!(c, A)
 
 # The re-pivot guard in `_set_Δx_nr!`: a fresh pivot order on the kept symbolic analysis (the
 # pattern has not changed), with the rest of that solve kept off the lean path.
@@ -83,11 +66,7 @@ end
 _drop_numeric!(::PNM.AAFactorCache) = nothing
 _drop_numeric!(::PNM.PardisoLinSolveCache) = nothing
 
-solve!(c::PNM.KLULinSolveCache, b::StridedVecOrMat{Float64}) = PNM.solve!(c, b)
-solve!(c::PNM.KLULinSolveCache, b::StridedVecOrMat{ComplexF64}) = PNM.solve!(c, b)
-solve!(c::PNM.AAFactorCache, b::StridedVecOrMat) =
-    PNM.AccelerateWrapper.solve!(c, b)
-solve!(c::PNM.PardisoLinSolveCache, b::StridedVecOrMat) = PNM.solve!(c, b)
+solve!(c::PNM.LinearSolverCache, b::StridedVecOrMat) = PNM.solve!(c, b)
 
 """Transpose solve `Aᵀ x = b` in place. KLU-only (AppleAccelerate has no
 transpose solve)."""
@@ -106,7 +85,7 @@ Returns a PNM backend singleton: `PNM.KLUSolver()`, `PNM.AppleAccelerateLUSolver
 or `PNM.MKLPardisoSolver()`. When `override === nothing`, the platform default from
 PNM's preference logic is used. Throws if AppleAccelerate is requested off an Apple
 platform, if MKLPardiso is requested on a non-x86_64 architecture or without the
-the PNM `MKLPardisoExt` extension loaded (`import Pardiso`), or if `"Dense"` is
+PNM `MKLPardisoExt` extension loaded (`import Pardiso`), or if `"Dense"` is
 requested (PNM resolves it to a real backend tag, but PowerFlows has no DC linear
 solver cache for it)."""
 function resolve_linear_solver_backend(override::Union{Nothing, AbstractString})
@@ -155,21 +134,12 @@ function _validate_linear_solver_backend(::PNM.DenseSolver)
     )
 end
 
-# No values snapshot: PowerFlows never uses the snapshot-reading KLU paths (`condest!` gets the
-# matrix explicitly), so the per-refactor copy of `nonzeros(A)` is pure overhead.
+# No values snapshot: PowerFlows never reads it (`condest!` and `factorization_ok` get the matrix
+# explicitly), so the per-refactor copy of `nonzeros(A)` is overhead. AppleAccelerate and
+# MKLPardiso ignore the keyword.
 """Construct (without factorizing) the cache for backend `tag` over matrix `A`."""
-make_linear_solver_cache(::PNM.KLUSolver, A::SparseMatrixCSC{Float64}) =
-    PNM.KLULinSolveCache(A; snapshot_values = false)
-make_linear_solver_cache(::PNM.AppleAccelerateLUSolver, A::SparseMatrixCSC{Float64}) =
-    PNM.AAFactorCache(A)
-make_linear_solver_cache(::PNM.MKLPardisoSolver, A::SparseMatrixCSC{Float64}) =
-    PNM.PardisoLinSolveCache(A)
-make_linear_solver_cache(::PNM.KLUSolver, A::SparseMatrixCSC{ComplexF64}) =
-    PNM.KLULinSolveCache(A)
-make_linear_solver_cache(::PNM.AppleAccelerateLUSolver, A::SparseMatrixCSC{ComplexF64}) =
-    PNM.AAFactorCache(A)
-make_linear_solver_cache(::PNM.MKLPardisoSolver, A::SparseMatrixCSC{ComplexF64}) =
-    PNM.PardisoLinSolveCache(A)
+make_linear_solver_cache(tag::PNM.LinearSolverType, A::SparseMatrixCSC) =
+    PNM.make_linear_solver_cache(tag, A; snapshot_values = false)
 
 # The polar Jacobian's pattern is fixed at construction (bus-type agnostic) and refactored a few
 # times per solve, so skip KLU's per-refactor structural compare (about 20 us at 10k buses).
@@ -187,18 +157,4 @@ function solve_w_refinement(
     refinement_eps::Float64,
 )
     return PNM.solve_w_refinement(cache, A, b; tol = refinement_eps)
-end
-
-"""MKLPardiso refines in its `SOLVE_ITERATIVE_REFINE` phase, so `A` and `refinement_eps` are
-not used. The singular guard in `_set_Δx_nr!` handles MKL's silent pivot perturbation on
-(near-)singular matrices."""
-function solve_w_refinement(
-    cache::PNM.PardisoLinSolveCache{Float64},
-    ::SparseMatrixCSC{Float64},
-    b::Vector{Float64},
-    ::Float64,
-)
-    x = copy(b)
-    solve!(cache, x)
-    return x
 end

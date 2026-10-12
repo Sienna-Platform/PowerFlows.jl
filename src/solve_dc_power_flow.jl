@@ -58,7 +58,6 @@ function _make_dc_scratch(data::PowerFlowData)
     )
 end
 
-# The ABA matrix carries no factorization; the caller picks the backend.
 function _dc_initial_cache(backend, aba_matrix::PNM.ABA_Matrix)
     M = aba_matrix.data
     cache = make_linear_solver_cache(backend, M)
