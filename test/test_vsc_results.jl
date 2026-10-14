@@ -43,13 +43,19 @@ _conv_ix_by_bus_number(dcn, number::Int) =
     @test isapprox(PSY.get_reactive_power_from(vsc, u"SU"), dcn.q_c[cf, 1]; atol = 1e-6)
     @test isapprox(PSY.get_reactive_power_to(vsc, u"SU"), dcn.q_c[ct, 1]; atol = 1e-6)
 
-    # dc_current is finite, positive from→to, and consistent with P_dc / V_dc at the from node
+    # dc_current is finite, positive from→to, and consistent with P_dc / V_dc at the from node,
+    # in kA
     nf = dcn.converter_dc_node_ix[cf]
     Vm_from = data.bus_magnitude[dcn.converter_ac_bus_ix[cf], 1]
     Vdc_from = dcn.node_vdc[nf, 1]
     Idc = PSY.get_dc_current(vsc)
     @test isfinite(Idc)
-    @test isapprox(Idc, -PF._vsc_pdc(dcn, cf, Vm_from, 1) / Vdc_from; atol = 1e-6)
+    i_base_ka = PF._vsc_current_base_ka(vsc, PSY.get_base_power(sys))
+    @test isapprox(
+        Idc,
+        -PF._vsc_pdc(dcn, cf, Vm_from, 1) / Vdc_from * i_base_ka;
+        atol = 1e-6,
+    )
     @test Idc > 0.0
     # sign consistency: dc_current and active_power_flow are both from→to
     @test sign(Idc) == sign(PSY.get_active_power_flow(vsc, u"SU"))

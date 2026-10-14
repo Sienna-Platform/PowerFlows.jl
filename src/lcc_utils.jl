@@ -815,7 +815,7 @@ function _lcc_scheduled_flows(lcc::PSY.TwoTerminalLCCLine, base_power::Float64)
 end
 
 # POWER mode (PSS/E MDC=1): |SETVL| MW at the rectifier when SETVL ≥ 0, else at the inverter.
-# CURRENT mode (MDC=2): SETVL is Amperes with VSCHD held at the inverter, so the inverter takes
+# CURRENT mode (MDC=2): the setpoint is kA with VSCHD held at the inverter, so the inverter takes
 # I·VSCHD and the rectifier I·VSCHD + R·I²; scheduling that rectifier power makes
 # `_lcc_i_dc_from_p_set` return exactly I. A BLOCKED line transfers no power.
 function _lcc_schedule(lcc::PSY.TwoTerminalLCCLine, base_power::Float64)
@@ -826,7 +826,7 @@ function _lcc_schedule(lcc::PSY.TwoTerminalLCCLine, base_power::Float64)
     elseif mode == PSY.LCCControlMode.CURRENT
         i_dc =
             abs(PSY.get_current_transfer_setpoint(lcc)) *
-            PSY.get_scheduled_dc_voltage(lcc) / 1000.0 / base_power
+            PSY.get_scheduled_dc_voltage(lcc) / base_power
         return (true, i_dc + _lcc_dc_resistance(lcc, base_power) * i_dc^2)
     end
     return (true, 0.0)

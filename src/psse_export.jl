@@ -2302,13 +2302,14 @@ function write_to_buffers!(
     end
 end
 
-"""SETVL of an LCC line: MW in the POWER mode, A in the CURRENT mode, 0 when BLOCKED."""
+"""SETVL of an LCC line: MW in the POWER mode, A in the CURRENT mode (PSY stores kA), 0 when
+BLOCKED."""
 function _psse_lcc_setvl(dcline::PSY.TwoTerminalLCCLine)
     mode = PSY.get_control_mode(dcline)
     if mode == PSY.LCCControlMode.POWER
         return PSY.get_power_transfer_setpoint(dcline, u"NU")
     elseif mode == PSY.LCCControlMode.CURRENT
-        return PSY.get_current_transfer_setpoint(dcline)
+        return 1000.0 * PSY.get_current_transfer_setpoint(dcline)
     end
     return 0.0
 end
@@ -2613,8 +2614,9 @@ function _compute_vsc_converter_fields(
     else
         SMAX * base_power
     end
-    IMAX = get_imax(vscline)
-    IMAX = IMAX == PSSE_INFINITY ? 0.0 : IMAX
+    # PSY stores currents in kA; PSS/E records A.
+    IMAX = 1000.0 * get_imax(vscline)
+    IMAX = IMAX ≈ PSSE_INFINITY ? 0.0 : IMAX
 
     MAXQ = q_limits.max * base_power
     MINQ = q_limits.min * base_power
