@@ -173,7 +173,13 @@ end
     @test solve_power_flow!(ref)
     @test maximum(abs, d.bus_magnitude .- ref.bus_magnitude) < 1e-8
     @test maximum(abs, d.bus_angles .- ref.bus_angles) < 1e-8
-    @test all(d.iterations .<= ref.iterations)
+    # A task never warm-starts from a step of the same call, so the reference for the reused
+    # caches is a first threaded solve of the same inputs on fresh caches.
+    fresh = _slot_data(T, 4)
+    fresh.bus_active_power_withdrawals .= d.bus_active_power_withdrawals
+    fresh.bus_reactive_power_withdrawals .= d.bus_reactive_power_withdrawals
+    @test solve_power_flow!(fresh)
+    @test all(d.iterations .<= fresh.iterations)
 end
 
 @testset "invalidating the partition invalidates every worker slot" begin
@@ -415,4 +421,19 @@ end
     @test isnothing(d.polar_nr_cache[])
     PF._seed_worker!(d, nothing, seed, memo, 1)
     @test !isnothing(d.polar_nr_cache[])
+end
+
+@testset "threaded schedule: fixed chunks only when a worker carries state" begin
+    plain = PowerFlowData(
+        ACPolarPowerFlow(; time_steps = 4, solution_parameters = _threaded_params(4)),
+        _make_multiperiod_tap_system(),
+    )
+    @test !PF._carries_step_state(plain)
+    taps = PowerFlowData(
+        ACPolarPowerFlow(;
+            time_steps = 4, control_discrete_devices = true,
+            solution_parameters = _threaded_params(4)),
+        _make_multiperiod_tap_system(),
+    )
+    @test PF._carries_step_state(taps)
 end
