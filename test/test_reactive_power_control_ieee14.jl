@@ -155,6 +155,21 @@ end
     end
 end
 
+@testset "PV bus demoted by correct_bustypes: no Q write-back attempted" begin
+    sys = _make_ieee14_scaled_load_system(1.0)
+    for g in get_components(
+        g -> get_number(get_bus(g)) == 6 && !(g isa ElectricLoad),
+        StaticInjection,
+        sys,
+    )
+        set_available!(g, false)
+    end
+    pf = ACPolarPowerFlow(; correct_bustypes = true)
+    @test solve_and_store_power_flow!(pf, sys)
+    @test get_bustype(only(get_components(b -> get_number(b) == 6, ACBus, sys))) ==
+          ACBusTypes.PQ
+end
+
 @testset "reactive power control: FACTS device at Bus 14 -> V=1.0" begin
     sys = _make_ieee14_scaled_load_system(1.4)
     _add_facts_shunt!(sys, 14; voltage_setpoint = 1.0)
