@@ -68,8 +68,8 @@ const DEFAULT_NR_MAX_ITER = 50 # default maxIterations for the NR power flow
 it with the solver default."""
 const UNSET_MAX_ITERATIONS = -1
 const DEFAULT_NR_TOL = 1e-9 # default tolerance for the NR power flow
-"""`SolutionParameters.tol` value for "unset": the formulation constructor replaces it with the
-solver default."""
+"""The `SolutionParameters.tol` value for "unset". The formulation constructor replaces it with
+the solver default."""
 const UNSET_TOL = -1.0
 const DEFAULT_REFINEMENT_THRESHOLD = 5e-2 # do refinement if relative error > 5%.
 const DEFAULT_REFINEMENT_MAX_ITER = 10 # how many times to try iterative refinement
@@ -104,8 +104,8 @@ const DEFAULT_μ_MAX = 1e8
 # Fast/Fixed Decoupled Newton-Raphson (FDNR) defaults.
 const DEFAULT_FD_MAX_ITER = 150 # FD-stage iteration cap (linear rate needs more, cheaper iterations than NR's 50)
 const DEFAULT_FD_HANDOFF_TOL = 1e-3 # FD-stage exit ∞-norm when handing off (≈0.1 MW/MVAr on 100 MVA base)
-# Pure B′/B″ FD default tolerance: the constant-matrix approximation converges only linearly, so
-# 1e-3 pu (≈0.1 MW/MVAr on 100 MVA base) is the precision it is built for; use a handoff for more.
+# Pure B′/B″ FD converges only linearly. Thus 1e-3 pu (about 0.1 MW/MVAr on 100 MVA) is the default.
+# Use a handoff solver for a tighter tolerance.
 const DEFAULT_FD_TOL = 1e-3
 const DEFAULT_FD_SCHEME = :XB # B′/B″ scheme: :XB (Stott–Alsac) default; :BX (van Amerongen)
 const DEFAULT_FD_REFREEZE_ON_STALL = true # :fixed_jacobian only: refactor a stale frozen J at the cycle start when its step fails
