@@ -98,7 +98,7 @@ polar_ac_solvers = [
         Dict{Symbol, Any}(:tol => 1e-2)),
 ]
 
-# Rectangular Current-Injection (Da Costa) and Mixed Current-Power Balance (MCPB) formulations,
+# Rectangular power-mismatch and Mixed Current-Power Balance (MCPB) formulations,
 # each across plain NR, NR+Iwamoto, Trust Region, TR+Iwamoto fallback (MCPB adds a single LM run).
 _RECT_CI_VARIANTS = [
     ("ACRectangularPowerFlow{NR}", PF.NewtonRaphsonACPowerFlow, Dict{Symbol, Any}()),

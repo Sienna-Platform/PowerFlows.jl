@@ -574,7 +574,7 @@ end
     lin = cache.linSolveCache
     R = PF.ACRectangularCIResidual(data, 1)
     x = Vector{Float64}(undef, length(R.Rv))
-    PF.rect_initial_state!(x, data, R.bus_state_offset, R.bus_block_size, 1)
+    PF.rect_initial_state!(x, data, R.bus_state_offset, 1)
     R(data, x, 1)
     bad = copy(PF.ACRectangularCIJacobian(data, R, 1).Jv)
     # Shrink the plan's first pivot far below its reject ratio.

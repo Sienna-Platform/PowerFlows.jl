@@ -5,8 +5,7 @@
             data = PF.PowerFlowData(pf_rect, sys)
             R = PF.ACMixedCPBResidual(data, 1)
             x = Vector{Float64}(undef, length(R.Rv))
-            PF.mixed_initial_state!(x, data, R.bus_state_offset,
-                R.bus_block_size, 1)
+            PF.mixed_initial_state!(x, data, R.bus_state_offset, 1)
             R(data, x, 1)
             J = PF.ACMixedCPBJacobian(data, R, 1)
 
@@ -20,7 +19,6 @@
             # is square over the full state.
             @test size(J.Jv) == (total, total)
             @test J.total_bus_state == R.total_bus_state
-            @test all(==(2), R.bus_block_size)
             @test R.total_bus_state == 2 * n_buses
 
             bus_types = data.bus_type[:, 1]
@@ -86,7 +84,7 @@ end
         data = PF.PowerFlowData(pf_mixed, sys)
         R = PF.ACMixedCPBResidual(data, 1)
         x = Vector{Float64}(undef, length(R.Rv))
-        PF.mixed_initial_state!(x, data, R.bus_state_offset, R.bus_block_size, 1)
+        PF.mixed_initial_state!(x, data, R.bus_state_offset, 1)
         return R, data, x
     end
 
@@ -119,7 +117,7 @@ end
         data = PF.PowerFlowData(pf_mixed, sys)
         R = PF.ACMixedCPBResidual(data, 1)
         x = Vector{Float64}(undef, length(R.Rv))
-        PF.mixed_initial_state!(x, data, R.bus_state_offset, R.bus_block_size, 1)
+        PF.mixed_initial_state!(x, data, R.bus_state_offset, 1)
         Random.seed!(2024)
         x .+= 1e-3 .* randn(length(x))
         _verify_mixed_jacobian(R, data, x, "mixed CPB ZIP")
@@ -135,7 +133,7 @@ end
         data = PF.PowerFlowData(pf_mixed, sys)
         R = PF.ACMixedCPBResidual(data, 1)
         x = Vector{Float64}(undef, length(R.Rv))
-        PF.mixed_initial_state!(x, data, R.bus_state_offset, R.bus_block_size, 1)
+        PF.mixed_initial_state!(x, data, R.bus_state_offset, 1)
         return R, data, x
     end
 
@@ -180,7 +178,7 @@ end
     data = PF.PowerFlowData(pf_mixed, sys)
     R = PF.ACMixedCPBResidual(data, 1)
     x = Vector{Float64}(undef, length(R.Rv))
-    PF.mixed_initial_state!(x, data, R.bus_state_offset, R.bus_block_size, 1)
+    PF.mixed_initial_state!(x, data, R.bus_state_offset, 1)
     Random.seed!(2024)
     x .+= 1e-3 .* randn(length(x))
     R(data, x, 1)
@@ -195,8 +193,7 @@ end
         data = PF.PowerFlowData(pf_rect, sys)
         R = PF.ACMixedCPBResidual(data, 1)
         x = Vector{Float64}(undef, length(R.Rv))
-        PF.mixed_initial_state!(x, data, R.bus_state_offset,
-            R.bus_block_size, 1)
+        PF.mixed_initial_state!(x, data, R.bus_state_offset, 1)
         R(data, x, 1)
         return PF.ACMixedCPBJacobian(data, R, 1), data
     end
@@ -205,8 +202,7 @@ end
         data = PF.PowerFlowData(pf_rect, sys)
         R = PF.ACRectangularCIResidual(data, 1)
         x = Vector{Float64}(undef, length(R.Rv))
-        PF.rect_initial_state!(x, data, R.bus_state_offset,
-            R.bus_block_size, 1)
+        PF.rect_initial_state!(x, data, R.bus_state_offset, 1)
         R(data, x, 1)
         return PF.ACRectangularCIJacobian(data, R, 1), data
     end

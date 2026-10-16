@@ -1364,7 +1364,8 @@ function _run_power_flow_method(time_step::Int,
             )
             if accepted
                 Threads.atomic_add!(_CHORD_STEPS, 1)
-                converged = residual_norm < tol
+                converged =
+                    _residual_converged!(residual, data, stateVector.x, time_step, tol)
                 converged && keep_converged_J && J(data, time_step)
                 validate_vms && _validate_state_magnitudes(
                     residual,
@@ -1411,7 +1412,8 @@ function _run_power_flow_method(time_step::Int,
             factored &= chord
         end
         residual_norm = norm(residual.Rv, Inf)
-        converged = residual_norm < tol
+        converged =
+            _residual_converged!(residual, data, stateVector.x, time_step, tol)
         # A NaN or Inf iterate stays non-finite: every further step is wasted work.
         isfinite(residual_norm) || break
         # A reverted Iwamoto step leaves J at the restored x.
@@ -1517,7 +1519,8 @@ function _run_power_flow_method(time_step::Int,
                 linSolveCache, monitor, stop_at_fold) &&
                 return false, i
         end
-        converged = norm(residual.Rv, Inf) < tol
+        converged =
+            _residual_converged!(residual, data, stateVector.x, time_step, tol)
         if !converged
             i += 1
         end
@@ -1642,11 +1645,7 @@ function _finalize_formulation!(
     residual::ACRectangularCIResidual,
     time_step::Int64,
 )
-    rect_finalize_bus_injections!(
-        data, x, residual.bus_state_offset, residual.P_net_set,
-        residual.bus_slack_participation_factors, residual.subnetworks,
-        residual.independent_ref, time_step,
-    )
+    rect_finalize_bus_injections!(data, x, residual, time_step)
     return
 end
 
@@ -1759,8 +1758,7 @@ function _nr_initialize_with_jacobian_deferred(
     vm_validation_range::MinMax = DEFAULT_VALIDATION_RANGE,
     _ignored...,
 ) where {T <: ACPowerFlowSolverType}
-    q_slot = _rect_q_slots(data.solver_cache[], view(data.bus_type, :, time_step))
-    residual = ACRectangularCIResidual(data, time_step, q_slot)
+    residual = ACRectangularCIResidual(data, time_step)
     if isnothing(x0)
         x0_computed = improve_x0(pf, data, residual, time_step)
     else
@@ -1885,8 +1883,6 @@ end
 
 """Rectangular/mixed NR/TR linear-solver cache stored in `data.solver_cache`. Reused when the
 rebuilt Jacobian has the recorded sparsity pattern (`colptr`, `rowval`, `m`, `n`);
-`q_slot` marks the buses with a 3-slot block (rect only; all false for mixed). A PQ bus in
-this set has a pinned Q slot, so a PV to PQ flip keeps the pattern;
 `bus_type_snapshot` holds the bus types of the last factorization. `lean` is the
 [`LeanPlanSlot`](@ref) whose plan the KLU cache was given; worker caches may share it, so a
 re-plan replaces it instead of editing it."""
@@ -1900,22 +1896,6 @@ mutable struct RectMixedNRCache{C <: PNM.LinearSolverCache} <: SolverCache
     stateVector::StateVectorCache
     bus_type_snapshot::Vector{PSY.ACBusTypes.Value}
     lean::LeanPlanSlot
-    q_slot::BitVector
-end
-
-# A PQ bus keeps its 3-slot block (a pinned Q slot) after a PV to PQ flip, so the
-# Jacobian keeps the pattern of the cached factorization. The mask is the cached
-# 3-slot set joined with the PV set. `compute_bus_state_offsets` ignores REF buses.
-function _rect_q_slots(
-    cache::RectMixedNRCache,
-    bus_type::AbstractVector{PSY.ACBusTypes.Value},
-)
-    pv = bus_type .== PSY.ACBusTypes.PV
-    return cache.q_slot .| pv
-end
-
-function _rect_q_slots(::Any, bus_type::AbstractVector{PSY.ACBusTypes.Value})
-    return bus_type .== PSY.ACBusTypes.PV
 end
 
 _lean_counts(cache::RectMixedNRCache) = _lean_counts(cache.linSolveCache)
@@ -1929,7 +1909,6 @@ function _build_rect_mixed_cache!(
     x0::Vector{Float64},
     r0::Vector{Float64},
     plan::Bool,
-    q_slot::BitVector,
 )
     linSolveCache = _polar_jacobian_cache(backend, Jv)
     bus_type = view(data.bus_type, :, time_step)
@@ -1943,15 +1922,15 @@ function _build_rect_mixed_cache!(
     stateVector = StateVectorCache(x0, r0)
     data.solver_cache[] = RectMixedNRCache(
         copy(Jv.colptr), copy(Jv.rowval), size(Jv, 1), size(Jv, 2), backend,
-        linSolveCache, stateVector, copy(bus_type), lean, q_slot,
+        linSolveCache, stateVector, copy(bus_type), lean,
     )
     return linSolveCache, stateVector
 end
 
-# A bus-type change moves a mixed block's entries and changes the row meaning of a rect block.
-# Rect and mixed cannot take polar's flat plan with column swaps. The plan is built on the
-# Jacobian of a fresh cache (at the solve's start). It is used only while the bus types are
-# the plan's.
+# A bus-type change rewrites a rect bus's second row (ΔQ ↔ |V|²) or moves a mixed block's entries,
+# so rect/mixed cannot take polar's flat plan with column swaps: the plan is built on the Jacobian a
+# fresh cache is built for (at the solve's start) and used only while the bus types are the plan's.
+# A re-plan per type change (a Q-limit flip) costs more than the lean steps it saves.
 function _rect_mixed_symbolic!(
     c,
     Jv::SparseMatrixCSC{Float64},
@@ -2030,7 +2009,7 @@ function _seed_rect_mixed!(
     work.solver_cache[] = RectMixedNRCache(
         A.colptr, A.rowval, seed.m, seed.n, seed.backend, lin,
         StateVectorCache(copy(sv.x), copy(sv.r)), copy(seed.bus_type_snapshot),
-        lean, copy(seed.q_slot),
+        lean,
     )
     return
 end
@@ -2038,8 +2017,8 @@ end
 # No cache yet, or another solver's cache (e.g. FastDecoupled ran on this `data` first): rect/mixed
 # share the slot with FD across an ordinary solver switch, so rebuild rather than error.
 _get_or_build_rect_mixed_cache!(
-    ::Union{Nothing, SolverCache}, data, time_step, backend, Jv, x0, r0, q_slot,
-) = _build_rect_mixed_cache!(data, time_step, backend, Jv, x0, r0, true, q_slot)
+    ::Union{Nothing, SolverCache}, data, time_step, backend, Jv, x0, r0,
+) = _build_rect_mixed_cache!(data, time_step, backend, Jv, x0, r0, true)
 
 function _get_or_build_rect_mixed_cache!(
     cache::RectMixedNRCache,
@@ -2049,7 +2028,6 @@ function _get_or_build_rect_mixed_cache!(
     Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
     x0::Vector{Float64},
     r0::Vector{Float64},
-    q_slot::BitVector,
 )
     if typeof(cache.backend) === typeof(backend) && _same_sparsity(cache, Jv)
         bus_type = view(data.bus_type, :, time_step)
@@ -2067,7 +2045,7 @@ function _get_or_build_rect_mixed_cache!(
     # A new pattern on a reused slot (a contingency branch outage) is not
     # planned: the plan costs a factorization and an extract that its few remaining steps do not
     # repay.
-    return _build_rect_mixed_cache!(data, time_step, backend, Jv, x0, r0, false, q_slot)
+    return _build_rect_mixed_cache!(data, time_step, backend, Jv, x0, r0, false)
 end
 
 """Newton workspace for one `_newton_power_flow` call. Returns
@@ -2098,8 +2076,7 @@ function _newton_workspace!(
     converged && return residual, J_deferred, x0_init, nothing, nothing, true
     J = _nr_build_jacobian(pf, data, residual, J_deferred, time_step)
     linSolveCache, stateVector = _get_or_build_rect_mixed_cache!(
-        data.solver_cache[], data, time_step, backend, J.Jv, x0_init, residual.Rv,
-        residual.bus_block_size .== Int8(3))
+        data.solver_cache[], data, time_step, backend, J.Jv, x0_init, residual.Rv)
     return residual, J, x0_init, linSolveCache, stateVector, false
 end
 

@@ -53,7 +53,7 @@ end
 # Q-limit enforcement triggers PV → PQ bus-type switching in the `_ac_power_flow`
 # outer loop. The MCPB residual/Jacobian must be REBUILT against the mutated
 # `data.bus_type` on each outer-loop pass (the constructors re-read
-# `data.bus_type[:, ts]` via `compute_mixed_bus_state_offsets`). Parity vs polar
+# `data.bus_type[:, ts]` via `compute_bus_state_offsets`). Parity vs polar
 # and rectangular NR (all four bus quantities) validates this rebuild.
 @testset "Mixed CPB Power Flow: Q-limit enforcement (PV → PQ switching, c_sys14)" begin
     sys_p = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)

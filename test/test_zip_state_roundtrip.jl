@@ -78,7 +78,7 @@ end
         @test PF.solve_power_flow!(data)
         residual = residual_type(data, 1)
         x = Vector{Float64}(undef, length(residual.Rv))
-        fill_state!(x, data, residual.bus_state_offset, residual.bus_block_size, 1)
+        fill_state!(x, data, residual.bus_state_offset, 1)
         residual(data, x, 1)
         @test maximum(abs, residual.Rv) < ZIP_ROUNDTRIP_ATOL
     end

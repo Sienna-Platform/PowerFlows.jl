@@ -12,7 +12,7 @@
         data = PF.PowerFlowData(pf_mixed, sys)
         R = PF.ACMixedCPBResidual(data, 1)
         x = Vector{Float64}(undef, length(R.Rv))
-        PF.mixed_initial_state!(x, data, R.bus_state_offset, R.bus_block_size, 1)
+        PF.mixed_initial_state!(x, data, R.bus_state_offset, 1)
         Rv = similar(x)
         R(data, Rv, x, 1)
         @test LinearAlgebra.norm(Rv, Inf) < 1e-6
@@ -26,7 +26,7 @@
         data = PF.PowerFlowData(pf_mixed, sys)
         R = PF.ACMixedCPBResidual(data, 1)
         x = Vector{Float64}(undef, length(R.Rv))
-        PF.mixed_initial_state!(x, data, R.bus_state_offset, R.bus_block_size, 1)
+        PF.mixed_initial_state!(x, data, R.bus_state_offset, 1)
         Rv = similar(x)
         R(data, Rv, x, 1)
         @test LinearAlgebra.norm(Rv, Inf) < 1e-6
@@ -49,7 +49,7 @@
         data = PF.PowerFlowData(pf_mixed, sys)
         R = PF.ACMixedCPBResidual(data, 1)
         x = Vector{Float64}(undef, length(R.Rv))
-        PF.mixed_initial_state!(x, data, R.bus_state_offset, R.bus_block_size, 1)
+        PF.mixed_initial_state!(x, data, R.bus_state_offset, 1)
         Rv = similar(x)
         R(data, Rv, x, 1)
         @test LinearAlgebra.norm(Rv, Inf) < 1e-6
@@ -63,7 +63,7 @@ end
     data = PF.PowerFlowData(pf_mixed, sys)
     R = PF.ACMixedCPBResidual(data, 1)
     x = Vector{Float64}(undef, length(R.Rv))
-    PF.mixed_initial_state!(x, data, R.bus_state_offset, R.bus_block_size, 1)
+    PF.mixed_initial_state!(x, data, R.bus_state_offset, 1)
     bus_types = PF.get_bus_type(data)
 
     # Initial mixed state is ~1 p.u. ⇒ in range ⇒ silent.

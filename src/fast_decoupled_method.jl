@@ -9,7 +9,7 @@
 
 The default [`FDVariant`](@ref) for a bare (unparametrized) [`FastDecoupledACPowerFlow`](@ref) on a
 given formulation: [`FDDecoupled`](@ref) (classic B′/B″) for the polar formulation,
-[`FDFixedJacobian`](@ref) (frozen Jacobian) for the rectangular current-injection and mixed
+[`FDFixedJacobian`](@ref) (frozen Jacobian) for the rectangular power-mismatch and mixed
 current-power-balance formulations.
 """
 _default_fd_variant(::ACPolarPowerFlow) = FDDecoupled()

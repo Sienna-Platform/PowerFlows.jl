@@ -150,11 +150,15 @@ at ``x_0``. This is the well-known constant-matrix ("dishonest") Newton method,
 which is competitive with — and on high-``r/x`` systems
 often better-iterating than — the XB/BX decoupled schemes.
 
-It is the natural default for the rectangular and mixed formulations because
-their off-diagonal Jacobian blocks are *already* the constant admittance-matrix
-entries (see [Mixed Current-Power Balance Formulation](@ref)); freezing the
-Jacobian then only affects the diagonal blocks. Because the LCC HVDC state
-variables and the distributed-slack column live inside the frozen Jacobian,
+It is the natural default for the rectangular and mixed formulations, whose
+`(e, f)` state has no B′/B″ split. In the mixed form most off-diagonal Jacobian
+blocks (the PQ current rows) are *already* the constant admittance-matrix entries
+(see [Mixed Current-Power Balance Formulation](@ref)), so freezing the Jacobian
+mostly affects the diagonal blocks. Power-balance rows are the exception — every
+rectangular row and the mixed PV rows: their off-diagonals rotate with the bus
+angle, so a Jacobian frozen at the start goes stale as angles move. Because the
+LCC HVDC state variables and the distributed-slack column live inside the frozen
+Jacobian,
 **`:fixed_jacobian` supports LCC systems and distributed slack with no special
 handling** — it spans the trailing LCC state variables directly (the *unified*
 AC–DC approach). The polar `:decoupled` half-iterations cannot span those

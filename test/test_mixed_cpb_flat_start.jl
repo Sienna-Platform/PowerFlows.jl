@@ -58,7 +58,7 @@ end
 
     x0 = Vector{Float64}(undef, length(residual.Rv))
     PF.mixed_initial_state!(
-        x0, data, residual.bus_state_offset, residual.bus_block_size, 1,
+        x0, data, residual.bus_state_offset, 1,
     )
     residual(data, x0, 1)
     # The hard fixture must actually trip the LARGE_RESIDUAL gate so the
@@ -151,7 +151,7 @@ end
     # Cold flat start for step 2 (reads the perturbed step-2 data).
     cold = Vector{Float64}(undef, length(residual.Rv))
     PF.mixed_initial_state!(
-        cold, data, residual.bus_state_offset, residual.bus_block_size, 2,
+        cold, data, residual.bus_state_offset, 2,
     )
     residual(data, cold, 2)
     cold_norm = norm(residual.Rv, 1)
@@ -174,7 +174,7 @@ end
 
     x0 = Vector{Float64}(undef, length(residual.Rv))
     PF.mixed_initial_state!(
-        x0, data, residual.bus_state_offset, residual.bus_block_size, 1,
+        x0, data, residual.bus_state_offset, 1,
     )
     # Drive a non-REF bus to a degenerate (e,f). Two sub-cases: a near-zero
     # (e²+f² ≈ 1e-20) and an exactly-zero voltage — the latter makes the

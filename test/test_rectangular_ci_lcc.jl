@@ -12,7 +12,7 @@ end
     data = PF.PowerFlowData(pf_r, sys)
     R = PF.ACRectangularCIResidual(data, 1)
     x = Vector{Float64}(undef, length(R.Rv))
-    PF.rect_initial_state!(x, data, R.bus_state_offset, R.bus_block_size, 1)
+    PF.rect_initial_state!(x, data, R.bus_state_offset, 1)
     R(data, x, 1)
     @test LinearAlgebra.norm(R.Rv, Inf) < 1e-7
 end
@@ -24,7 +24,7 @@ function _rect_lcc_verify(sys::System; label::String, perturbation::Float64 = 0.
     R = PF.ACRectangularCIResidual(data, 1)
     J = PF.ACRectangularCIJacobian(data, R, 1)
     x = Vector{Float64}(undef, length(R.Rv))
-    PF.rect_initial_state!(x, data, R.bus_state_offset, R.bus_block_size, 1)
+    PF.rect_initial_state!(x, data, R.bus_state_offset, 1)
     if perturbation > 0
         Random.seed!(42)
         x .+= perturbation .* randn(length(x))
@@ -103,7 +103,7 @@ end
     R = PF.ACRectangularCIResidual(data, 1)
     J = PF.ACRectangularCIJacobian(data, R, 1)
     x = Vector{Float64}(undef, length(R.Rv))
-    PF.rect_initial_state!(x, data, R.bus_state_offset, R.bus_block_size, 1)
+    PF.rect_initial_state!(x, data, R.bus_state_offset, 1)
     # Verify away from the converged state. NB: case5_2_lcc has x_t = 0 for
     # both converter sides, which forces ϕ ≡ ±α — so the α-approximation in
     # rect's Jacobian coincides with the true-ϕ residual math regardless of

@@ -100,17 +100,15 @@ solve_power_flow(pf, sys)
 ## Formulation matters for LM
 
 LM's per-iteration cost and iteration count depend strongly on the AC
-formulation. On large systems (10k buses and above),
-[`ACRectangularPowerFlow`](@ref)`{LevenbergMarquardtACPowerFlow}` can require
-many more iterations than Newton or trust-region on the same formulation, while
-[`ACMixedPowerFlow`](@ref)`{LevenbergMarquardtACPowerFlow}` converges in a
-handful of iterations with the lowest LM median at every benchmark size.
+formulation. [`ACMixedPowerFlow`](@ref)`{LevenbergMarquardtACPowerFlow}`
+converges in a handful of iterations with the lowest LM median at every
+benchmark size.
 [`ACPolarPowerFlow`](@ref)`{LevenbergMarquardtACPowerFlow}` is a reasonable
 middle ground. See the benchmark tables in
 [How to choose an AC formulation and solver](@ref choose-ac-formulation-and-solver).
 
-`marquardt_scaling` defaults to `true` on rectangular and mixed formulations
-and `false` on polar; set it explicitly when chasing GS-like behaviour on polar
+`marquardt_scaling` defaults to `true` on the rectangular formulation
+and `false` on polar and mixed; set it explicitly when chasing GS-like behaviour on polar
 (see above).
 
 ## A caveat on cost, and when to pick LM

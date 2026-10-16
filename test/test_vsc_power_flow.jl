@@ -971,13 +971,22 @@ end
             label = "VSC REF terminal $(label)",
         )
         dcn = PF.get_dc_network(data)
-        sol[label] =
-            (copy(data.bus_magnitude[:, 1]), copy(dcn.p_c[:, 1]), copy(dcn.q_c[:, 1]))
+        sol[label] = (
+            copy(data.bus_magnitude[:, 1]),
+            copy(dcn.p_c[:, 1]),
+            copy(dcn.q_c[:, 1]),
+            copy(data.bus_active_power_injections[:, 1]),
+            copy(data.bus_reactive_power_injections[:, 1]),
+        )
     end
     for other in ("rect", "mixed")
         @test isapprox(sol["polar"][1], sol[other][1]; atol = 1e-6)
         @test isapprox(sol["polar"][2], sol[other][2]; atol = 1e-6)
         @test isapprox(sol["polar"][3], sol[other][3]; atol = 1e-6)
+        if other == "rect"
+            @test isapprox(sol["polar"][4], sol[other][4]; atol = 1e-6)
+            @test isapprox(sol["polar"][5], sol[other][5]; atol = 1e-6)
+        end
     end
 end
 
@@ -1009,13 +1018,52 @@ end
             copy(data.bus_magnitude[:, 1]),
             copy(dcn.p_c[:, 1]),
             copy(dcn.node_vdc[:, 1]),
+            copy(data.bus_active_power_injections[:, 1]),
+            copy(data.bus_reactive_power_injections[:, 1]),
         )
     end
     for other in ("rect", "mixed")
         @test isapprox(sol["polar"][1], sol[other][1]; atol = 1e-6)
         @test isapprox(sol["polar"][2], sol[other][2]; atol = 1e-6)
         @test isapprox(sol["polar"][3], sol[other][3]; atol = 1e-6)
+        if other == "rect"
+            @test isapprox(sol["polar"][4], sol[other][4]; atol = 1e-6)
+            @test isapprox(sol["polar"][5], sol[other][5]; atol = 1e-6)
+        end
     end
+end
+
+# A converter on a PV bus whose generator Q limit binds: the bus flips to PQ and the reported
+# P and Q must still agree across formulations.
+@testset "VSC: converter on a PV bus after a Q-limit flip — formulations agree" begin
+    sol = Dict{String, Any}()
+    for (label, PF_T) in (
+        ("polar", PF.ACPolarPowerFlow{NewtonRaphsonACPowerFlow}),
+        ("rect", PF.ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}),
+        ("mixed", PF.ACMixedPowerFlow{NewtonRaphsonACPowerFlow}),
+    )
+        sys = _vsc_system_pv_terminal(; g = 1 / 36.0)
+        gen = PSY.get_component(PSY.ThermalStandard, sys, "Bus2")
+        PSY.set_reactive_power_limits!(gen, (min = -0.4 * u"SU", max = 0.2 * u"SU"))
+        pf = PF_T(;
+            solution_parameters = VSC_SOLUTION_PARAMETERS,
+            check_reactive_power_limits = true,
+        )
+        data = PowerFlowData(pf, sys)
+        dcn = PF.get_dc_network(data)
+        vsc_ix = dcn.converter_ac_bus_ix[2]
+        @test data.bus_type[vsc_ix, 1] == PSY.ACBusTypes.PV
+        @test solve_power_flow!(data)
+        @test data.bus_type[vsc_ix, 1] == PSY.ACBusTypes.PQ
+        sol[label] = (
+            copy(data.bus_active_power_injections[:, 1]),
+            copy(data.bus_reactive_power_injections[:, 1]),
+            data.bus_reactive_power_injections[vsc_ix, 1],
+        )
+    end
+    @test isapprox(sol["polar"][3], 0.2; atol = 1e-6)
+    @test isapprox(sol["polar"][1], sol["rect"][1]; atol = 1e-6)
+    @test isapprox(sol["polar"][2], sol["rect"][2]; atol = 1e-6)
 end
 
 # Lowering-time validation: an AC-voltage-controlling converter pins |V_ac|, which is singular at

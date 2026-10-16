@@ -16,7 +16,7 @@ for [`PowerSystems.jl`](https://sienna-platform.github.io/PowerSystems.jl/stable
 Main capabilities include:
 
   - **DC power flow** — bus-angle formulation and PTDF-based (dense and virtual) methods, with optional multi-period solves.
-  - **AC power flow** — polar, rectangular current-injection, and mixed current–power balance formulations.
+  - **AC power flow** — polar, rectangular power-mismatch, and mixed current–power balance formulations.
   - **Iterative AC solvers** — Newton–Raphson, trust region, Levenberg–Marquardt, and robust homotopy options.
   - **Multi-period DC workflows** — batch validation of time-coupled dispatches (for example, post–unit commitment checks).
   - **Post-processing and export** — structured `DataFrame` results, optional PSS/E export, loss and voltage-stability factors.

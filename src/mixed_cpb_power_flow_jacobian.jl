@@ -2,10 +2,8 @@
     struct ACMixedCPBJacobian
 
 Jacobian functor for the mixed current/power-balance (MCPB) AC power flow.
-Mirrors [`ACRectangularCIJacobian`](@ref) 1:1, but every bus uses a 2-slot
-block (no PV→3 expansion): rect's `pv_extra_nz` is dropped, and `offdiag_pv_nz`
-is added for the PV power-balance row's off-diagonals, which are nonlinear in
-MCPB and rewritten each iteration. PQ off-diagonals are constant `±Y`
+`offdiag_pv_nz` holds the PV power-balance row's off-diagonals, which are
+nonlinear and rewritten each iteration. PQ off-diagonals are constant `±Y`
 (`_populate_mixed_constant_yb_blocks!`). Per-iteration updates write into
 `nonzeros(Jv)` through nzval-index caches built once at construction, so the
 hot path is `O(N + n_LCC)`. Field roles are in the inline comments below.
@@ -26,7 +24,6 @@ struct ACMixedCPBJacobian
     subnetworks::Dict{Int64, Vector{Int64}}
     independent_ref::Set{Int}      # shared view into residual's independent_ref
     bus_state_offset::Vector{REC_INDEX_TYPE}
-    bus_block_size::Vector{Int8}
     total_bus_state::Int
     # nzval-index caches (populated once at construction)
     diag_base_nz::Matrix{Int}        # 4 × n_buses; rows: (off,off), (off,off+1), (off+1,off), (off+1,off+1)
@@ -52,7 +49,6 @@ function ACMixedCPBJacobian(
         residual.bus_slack_participation_factors,
         residual.subnetworks,
         residual.bus_state_offset,
-        residual.bus_block_size,
         residual.total_bus_state,
         time_step,
     )
@@ -70,7 +66,7 @@ function ACMixedCPBJacobian(
     @inbounds for i in 1:n_buses
         Y_diag[i] = residual.Y_bus_eff[i, i]
     end
-    diag_base_nz = _build_mixed_diag_nz_cache(
+    diag_base_nz = _build_diag_nz_cache(
         Jv0, residual.bus_state_offset,
     )
     offdiag_pv_nz, offdiag_pv_i, offdiag_pv_k, offdiag_pv_y =
@@ -80,7 +76,7 @@ function ACMixedCPBJacobian(
         )
     # REF status is fixed for the life of a solve; reuse the residual's
     # already-computed set instead of reallocating it here.
-    slack_nz_idx_e, slack_nz_idx_f, _, slack_c_k =
+    slack_nz_idx_e, slack_nz_idx_f, slack_c_k =
         _build_slack_nz_cache(
             Jv0, residual.bus_state_offset, residual.subnetworks,
             residual.bus_slack_participation_factors, residual.independent_ref,
@@ -110,7 +106,6 @@ function ACMixedCPBJacobian(
         residual.subnetworks,
         residual.independent_ref,
         residual.bus_state_offset,
-        residual.bus_block_size,
         residual.total_bus_state,
         diag_base_nz,
         offdiag_pv_nz,
@@ -160,8 +155,8 @@ end
 Build the MCPB Jacobian sparsity pattern (all blocks 2×2). Off-diagonal blocks
 reserve both `(e, f)` neighbor columns for PQ and PV rows; PQ entries are later
 filled constant by `_populate_mixed_constant_yb_blocks!`, PV entries are
-structural zeros written per-iteration. Slack cross-terms, LCC tail, and REF
-handling mirror rect verbatim.
+structural zeros written per-iteration. Slack cross-terms and the LCC tail use
+the same pattern as rect.
 """
 function _create_mixed_cpb_jacobian_structure(
     data::ACPowerFlowData,
@@ -169,7 +164,6 @@ function _create_mixed_cpb_jacobian_structure(
     bus_slack_participation_factors::SparseVector{Float64, Int},
     subnetworks::Dict{Int64, Vector{Int64}},
     bus_state_offset::Vector{REC_INDEX_TYPE},
-    bus_block_size::Vector{Int8},
     total_bus_state::Int,
     time_step::Int64,
 )
@@ -181,28 +175,21 @@ function _create_mixed_cpb_jacobian_structure(
     dcn = get_dc_network(data)
     total_state = total_bus_state + state_tail_length(data, dcn)
 
-    sizehint!(rows, 4 * SparseArrays.nnz(Y_bus_eff) + 17 * n_lccs + 2 * n_buses)
-    sizehint!(cols, 4 * SparseArrays.nnz(Y_bus_eff) + 17 * n_lccs + 2 * n_buses)
-    sizehint!(vals, 4 * SparseArrays.nnz(Y_bus_eff) + 17 * n_lccs + 2 * n_buses)
+    sizehint!(rows, 4 * SparseArrays.nnz(Y_bus_eff) + 26 * n_lccs + 2 * n_buses)
+    sizehint!(cols, 4 * SparseArrays.nnz(Y_bus_eff) + 26 * n_lccs + 2 * n_buses)
+    sizehint!(vals, 4 * SparseArrays.nnz(Y_bus_eff) + 26 * n_lccs + 2 * n_buses)
 
     Yrows = SparseArrays.rowvals(Y_bus_eff)
     bus_types_at_t = view(data.bus_type, :, time_step)
     independent_ref = _multi_swing_ref_indices(data.bus_type, subnetworks, time_step)
     @inbounds for col in 1:n_buses
         col_off = Int(bus_state_offset[col])
-        col_bs = bus_block_size[col]
         is_ref_col = bus_types_at_t[col] == PSY.ACBusTypes.REF
         # Diagonal block unconditionally: a bus whose Ybus column has NO stored
         # diagonal (an AC-isolated swing, e.g. a DC-tie voltage holder with zero
         # AC branches) still needs its own block — its rows/columns otherwise
         # never enter the pattern and the value writers hit "missing entry".
-        for r in 0:(Int(col_bs) - 1)
-            for c in 0:(Int(col_bs) - 1)
-                push!(rows, J_INDEX_TYPE(col_off + r))
-                push!(cols, J_INDEX_TYPE(col_off + c))
-                push!(vals, 0.0)
-            end
-        end
+        _push_block!(rows, cols, vals, col_off, col_off)
         for j in SparseArrays.nzrange(Y_bus_eff, col)
             row = Yrows[j]
             # Diagonal block already pushed above.
@@ -214,18 +201,9 @@ function _create_mixed_cpb_jacobian_structure(
                 continue
             end
             row_off = Int(bus_state_offset[row])
-            row_bs = bus_block_size[row]
-            # Every block is 2×2 in MCPB; off-diagonal blocks reserve both
-            # (e, f) columns for ALL non-REF rows (PQ constant, PV nonlinear).
-            n_cols_to_write = Int(col_bs)  # 2 for all bus types
-            n_rows_to_write = Int(row_bs)  # 2 for all bus types
-            for r in 0:(n_rows_to_write - 1)
-                for c in 0:(n_cols_to_write - 1)
-                    push!(rows, J_INDEX_TYPE(row_off + r))
-                    push!(cols, J_INDEX_TYPE(col_off + c))
-                    push!(vals, 0.0)
-                end
-            end
+            # Off-diagonal blocks reserve both (e, f) columns for ALL non-REF rows
+            # (PQ constant, PV nonlinear).
+            _push_block!(rows, cols, vals, row_off, col_off)
         end
     end
 
@@ -253,9 +231,8 @@ function _create_mixed_cpb_jacobian_structure(
         end
     end
 
-    # LCC tail entries: mirror rect structure (REF residual rows identical to
-    # rect's; the rect helper is layout-generic over bus_state_offset so it is
-    # reused directly).
+    # LCC tail entries: the rect helper is layout-generic over bus_state_offset,
+    # so it is reused directly.
     if n_lccs > 0
         _create_rect_ci_lcc_structure!(
             rows, cols, vals, data, bus_state_offset, total_bus_state,
@@ -274,13 +251,13 @@ function _create_mixed_cpb_jacobian_structure(
 end
 
 """
-    _build_mixed_diag_nz_cache(Jv, bus_state_offset)
+    _build_diag_nz_cache(Jv, bus_state_offset)
 
 `diag_base_nz::Matrix{Int}` (`4 × n_buses`): nzval indices of each per-bus 2×2
 diagonal block, rows ordered `(off,off), (off,off+1), (off+1,off),
-(off+1,off+1)`. No `pv_extra_nz` (MCPB PV blocks are 2×2, no Q column).
+(off+1,off+1)`.
 """
-function _build_mixed_diag_nz_cache(
+function _build_diag_nz_cache(
     Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
     bus_state_offset::Vector{REC_INDEX_TYPE},
 )
@@ -369,8 +346,7 @@ gives the 2×2 block
     Jv[off,   k_off] = −B_ik   Jv[off,   k_off+1] = −G_ik
     Jv[off+1, k_off] = −G_ik   Jv[off+1, k_off+1] = +B_ik
 
-i.e. rect's off-diagonal block with its two rows swapped (rect is real-first;
-MCPB PQ is imag-first), matching the residual's PQ slot swap.
+The PQ rows are imag-first, matching the residual's PQ slot order.
 """
 function _populate_mixed_constant_yb_blocks!(
     Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
@@ -400,11 +376,10 @@ function _populate_mixed_constant_yb_blocks!(
                 Jv[row_off + 1, col_off] = -g      # ∂F[off+1]/∂e_k (real)
                 Jv[row_off + 1, col_off + 1] = b   # ∂F[off+1]/∂f_k (real)
             elseif row_bt == PSY.ACBusTypes.REF
-                # REF residual is rect-verbatim (NOT swapped): the
-                # current-mismatch rows depend on neighbor (e_k, f_k) through
-                # −Ir_acc/−Ii_acc, giving rect's constant real-first block
-                # [[−G, B], [−B, −G]]. (REF rows ARE present in the structure;
-                # only REF columns are skipped.)
+                # REF rows are real-first (not swapped): the current-mismatch
+                # rows depend on neighbor (e_k, f_k) through −Ir_acc/−Ii_acc,
+                # giving the constant block [[−G, B], [−B, −G]]. (REF rows ARE
+                # present in the structure; only REF columns are skipped.)
                 Jv[row_off, col_off] = -g          # ∂F[off]/∂e_k   (real)
                 Jv[row_off, col_off + 1] = b       # ∂F[off]/∂f_k   (real)
                 Jv[row_off + 1, col_off] = -b      # ∂F[off+1]/∂e_k (imag)
@@ -512,19 +487,40 @@ function _update_mixed_cpb_jacobian_values!(
     end
     dcn = get_dc_network(data)
     if has_dc_network(dcn)
-        _set_entries_for_vsc_rect_mcpb!(
+        _set_entries_for_vsc_mixed!(
             Jvnz, diag_base_nz, vsc_nz, dcn, e_state, f_state,
-            view(data.bus_type, :, time_step), time_step, true,
+            view(data.bus_type, :, time_step), time_step,
         )
     end
     return
 end
 
+# REF diagonal 2×2: current-balance rows with `(P_net, Q_net)` columns.
+@inline function _update_ref_diag_block!(
+    Jvnz::Vector{Float64},
+    diag_base_nz::Matrix{Int},
+    i::Int,
+    e_r::Float64,
+    f_r::Float64,
+    c_ref::Float64,
+)
+    # The residual uses P_gen = P_net_set[ref] + c_ref · (x[off] - P_net_set[ref]).
+    # So ∂P_gen/∂x[off] = c_ref and ∂I_spec_r/∂x[off] = c_ref · e_r/V².
+    # The residual floors V² with V_FLOOR2. REF |V| stays near V_set, so the floor does not
+    # apply in practice.
+    V_sq = max(e_r^2 + f_r^2, V_FLOOR2)
+    inv_V_sq = 1.0 / V_sq
+    @inbounds Jvnz[diag_base_nz[1, i]] = c_ref * e_r * inv_V_sq
+    @inbounds Jvnz[diag_base_nz[2, i]] = f_r * inv_V_sq
+    @inbounds Jvnz[diag_base_nz[3, i]] = c_ref * f_r * inv_V_sq
+    @inbounds Jvnz[diag_base_nz[4, i]] = -e_r * inv_V_sq
+    return
+end
+
 """
 MCPB PQ diagonal 2×2 (imag-first: slot `off` = imag balance, `off+1` = real
-balance). Same divided-current + const-I expressions as rect's
-`_update_pq_diag_block!` with the two rows swapped — diag rows `1,2,3,4` are
-rect's rows `3,4,1,2` — matching the residual's PQ slot swap.
+balance). The entries are the derivatives of the divided-current and const-I
+terms of the residual's PQ rows.
 """
 @inline function _update_mixed_pq_diag_block!(
     Jvnz::Vector{Float64},
@@ -550,10 +546,10 @@ rect's rows `3,4,1,2` — matching the residual's PQ slot swap.
     Is_i = (P_eff * f - Q_eff * e) * inv_V_sq
     term_r = (const_I_P * e + const_I_Q * f) * inv_Vm * inv_V_sq
     term_i = (const_I_P * f - const_I_Q * e) * inv_Vm * inv_V_sq
-    # rect real-first row 1 (∂real/∂e) and row 2 (∂real/∂f):
+    # Real-balance row: ∂/∂e and ∂/∂f.
     real_de = (P_eff - 2 * e * Is_r) * inv_V_sq - g_ii - e * term_r
     real_df = (Q_eff - 2 * f * Is_r) * inv_V_sq + b_ii - f * term_r
-    # rect real-first row 3 (∂imag/∂e) and row 4 (∂imag/∂f):
+    # Imag-balance row: ∂/∂e and ∂/∂f.
     imag_de = (-Q_eff - 2 * e * Is_i) * inv_V_sq - b_ii - e * term_i
     imag_df = (P_eff - 2 * f * Is_i) * inv_V_sq - g_ii - f * term_i
     # MCPB imag-first slot assignment (rows swapped):
@@ -667,14 +663,14 @@ function _set_entries_for_lcc_mixed!(
         # FB-side bus contribution. The LCC current enters Ir_acc/Ii_acc as
         #   ΔIr = A·u(ϕ),  ΔIi = A·w(ϕ)
         # so the residual's current-mismatch rows pick up −ΔIr/−ΔIi.
-        #   rect_dIr_de = −[−A·f·w·invV² − A·w·∂ϕ/∂e]  (rect diag_base_nz[1])
-        # We compute the four rect-real-first overlays then route per bus type.
+        #   ∂F_real/∂e = −[−A·f·w·invV² − A·w·∂ϕ/∂e]
+        # We compute the four real/imag overlays then route per bus type.
         A_fb = s.tap_r * SQRT6_DIV_PI * s.i_dc / Vm_fb
         u_fb = cos_phi_r * e_fb + sin_phi_r * f_fb
         w_fb = cos_phi_r * f_fb - sin_phi_r * e_fb
         dphi_de_fb = dphi_dV_fb * e_fb / Vm_fb
         dphi_df_fb = dphi_dV_fb * f_fb / Vm_fb
-        # rect real-first overlays (∂F_real/∂e, ∂F_real/∂f, ∂F_imag/∂e,
+        # Overlays (∂F_real/∂e, ∂F_real/∂f, ∂F_imag/∂e,
         # ∂F_imag/∂f) where F = I_spec − I_network and ΔI_lcc adds to network:
         ovl_fb_re_de = -A_fb * f_fb * w_fb * inv_Vsq_fb - A_fb * w_fb * dphi_de_fb
         ovl_fb_re_df = A_fb * e_fb * w_fb * inv_Vsq_fb - A_fb * w_fb * dphi_df_fb
@@ -713,7 +709,7 @@ function _set_entries_for_lcc_mixed!(
             Jvnz[lcc_nz[2, i]] = cross_fb_im_α
             Jvnz[lcc_nz[3, i]] = cross_fb_re_tap
             Jvnz[lcc_nz[4, i]] = cross_fb_re_α
-        else  # REF: rect-verbatim (real-first)
+        else  # REF: real-first rows
             Jvnz[lcc_nz[1, i]] = cross_fb_re_tap
             Jvnz[lcc_nz[2, i]] = cross_fb_re_α
             Jvnz[lcc_nz[3, i]] = cross_fb_im_tap
@@ -755,7 +751,7 @@ function _set_entries_for_lcc_mixed!(
             Jvnz[lcc_nz[6, i]] = cross_tb_im_α
             Jvnz[lcc_nz[7, i]] = cross_tb_re_tap
             Jvnz[lcc_nz[8, i]] = cross_tb_re_α
-        else  # REF: rect-verbatim
+        else  # REF: real-first rows
             Jvnz[lcc_nz[5, i]] = cross_tb_re_tap
             Jvnz[lcc_nz[6, i]] = cross_tb_re_α
             Jvnz[lcc_nz[7, i]] = cross_tb_im_tap

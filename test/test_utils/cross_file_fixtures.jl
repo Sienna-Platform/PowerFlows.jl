@@ -564,3 +564,15 @@ function _make_two_island_system()
     _add_simple_line!(sys, b4, b6, 0.012, 0.06, 0.015)
     return sys
 end
+
+# --- plain flat start (test_rectangular_ci_power_flow) ---
+
+"Set PQ magnitudes to 1.0 and every bus angle to the REF angle. Return the REF bus index."
+function flat_start!(data)
+    ref = findfirst(==(PSY.ACBusTypes.REF), data.bus_type[:, 1])
+    for i in axes(data.bus_type, 1)
+        data.bus_type[i, 1] == PSY.ACBusTypes.PQ && (data.bus_magnitude[i, 1] = 1.0)
+        data.bus_angles[i, 1] = data.bus_angles[ref, 1]
+    end
+    return ref
+end

@@ -14,6 +14,35 @@
     end
 end
 
+# Power mismatch does not change under a common rotation of all bus angles, so Newton must
+# converge from flat on ACTIVSg2000, where solution angles reach −1.29 rad.
+@testset "Rectangular Power Flow: flat start on ACTIVSg2000" begin
+    sys = PSB.build_system(PSB.MatpowerTestSystems, "matpower_ACTIVSg2000_sys")
+    function flat_data(pf)
+        data = PF.PowerFlowData(pf, sys)
+        flat_start!(data)
+        return data
+    end
+    settings = PF.SolutionParameters(; enhanced_flat_start = false, maxIterations = 20)
+    polar = flat_data(
+        ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+            correct_bustypes = true, solution_parameters = settings),
+    )
+    @test PF.solve_power_flow!(polar)
+    for S in (NewtonRaphsonACPowerFlow, TrustRegionACPowerFlow)
+        rect = flat_data(
+            ACRectangularPowerFlow{S}(;
+                correct_bustypes = true, solution_parameters = settings),
+        )
+        @test PF.solve_power_flow!(rect)
+        @test only(rect.iterations) <= 10
+        @test rect.bus_magnitude[:, 1] ≈ polar.bus_magnitude[:, 1] atol = 1e-7
+        @test rect.bus_angles[:, 1] ≈ polar.bus_angles[:, 1] atol = 1e-7
+        @test rect.bus_reactive_power_injections[:, 1] ≈
+              polar.bus_reactive_power_injections[:, 1] atol = 1e-6
+    end
+end
+
 @testset "Rectangular CI Power Flow: non-convergence returns missing" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
     # maxIterations = 1 from flat start cannot converge c_sys14; the solver must
@@ -388,4 +417,108 @@ end
     @test data_r.bus_type == data_p.bus_type
     @test isapprox(data_r.bus_magnitude, data_p.bus_magnitude; atol = 1e-6, rtol = 0)
     @test isapprox(data_r.bus_angles, data_p.bus_angles; atol = 1e-6, rtol = 0)
+end
+
+@testset "Rectangular Power Flow: threaded time steps equal the serial solve (T=8)" begin
+    function solved(n_threads)
+        sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+        data = PowerFlowData(
+            ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
+                time_steps = 8,
+                solution_parameters = SolutionParameters(;
+                    linear_solver = "KLU",
+                    n_threads,
+                ),
+            ),
+            sys,
+        )
+        prepare_ts_data!(data, 8)
+        @test solve_power_flow!(data)
+        return data
+    end
+    serial = solved(1)
+    for n_threads in (2, 4)
+        threaded = solved(n_threads)
+        for f in (:bus_magnitude, :bus_angles, :bus_type, :bus_active_power_injections,
+            :bus_reactive_power_injections, :converged, :iterations)
+            @test isequal(getfield(serial, f), getfield(threaded, f))
+        end
+    end
+end
+
+@testset "Rectangular Power Flow: converged means the published state meets tol" begin
+    # PV magnitudes are published at the setpoint, not at the solver |e + jf|.
+    sys = PSB.build_system(PSB.MatpowerTestSystems, "matpower_ACTIVSg2000_sys")
+    tol = 1e-3
+    pf = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
+        correct_bustypes = true,
+        solution_parameters = SolutionParameters(; tol),
+    )
+    data = PF.PowerFlowData(pf, sys)
+    @test PF.solve_power_flow!(data)
+    residual = PF.ACRectangularCIResidual(data, 1)
+    x = zeros(length(residual.Rv))
+    PF.rect_initial_state!(x, data, residual.bus_state_offset, 1)
+    residual(data, x, 1)
+    @test norm(residual.Rv, Inf) < tol
+end
+
+@testset "Rectangular Power Flow: converged |V| outside vm_validation_range" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    rect = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}()
+    polar = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}()
+    data = PowerFlowData(rect, sys)
+    @test solve_power_flow!(data)
+    pq = data.bus_type[:, 1] .== ACBusTypes.PQ
+    band = (min = minimum(data.bus_magnitude[pq, 1]) + 1e-3, max = 1.5)
+
+    data = PowerFlowData(rect, sys)
+    @test !(@test_logs (:error, r"non-physical root") match_mode = :any solve_power_flow!(
+        data; vm_validation_range = band))
+    @test !data.converged[1]
+
+    data = PowerFlowData(rect, sys)
+    @test solve_power_flow!(
+        data; vm_validation_range = band, validate_voltage_magnitudes = false)
+
+    # The check is rectangular only: polar keeps its result.
+    data = PowerFlowData(polar, sys)
+    @test solve_power_flow!(data; vm_validation_range = band)
+end
+
+@testset "Rectangular Power Flow: _converged_at_setpoints! scales PV buses onto V_set" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    rect = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}()
+    data = PowerFlowData(rect, sys)
+    @test solve_power_flow!(data)
+    R = PF.ACRectangularCIResidual(data, 1)
+    x = zeros(length(R.Rv))
+    PF.rect_initial_state!(x, data, R.bus_state_offset, 1)
+    R(data, x, 1)
+    x_solved = copy(x)
+    k = findfirst(==(ACBusTypes.PV), data.bus_type[:, 1])
+    off = Int(R.bus_state_offset[k])
+
+    # A PV |e + jf| off V_set is moved onto V_set when the scaled state meets tol.
+    x[off] *= 1 + 1e-7
+    x[off + 1] *= 1 + 1e-7
+    @test hypot(x[off], x[off + 1]) != data.bus_magnitude[k, 1]
+    @test PF._converged_at_setpoints!(R, data, x, 1, 1e-4)
+    @test isapprox(hypot(x[off], x[off + 1]), data.bus_magnitude[k, 1]; rtol = 1e-12)
+
+    # A large residual fails the check and leaves x unchanged.
+    copyto!(x, x_solved)
+    q = findfirst(==(ACBusTypes.PQ), data.bus_type[:, 1])
+    q_off = Int(R.bus_state_offset[q])
+    x[q_off] += 1e-2
+    x_before = copy(x)
+    @test !PF._converged_at_setpoints!(R, data, x, 1, 1e-8)
+    @test x == x_before
+
+    # Polar residuals have no setpoint check.
+    polar = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}()
+    data_polar = PowerFlowData(polar, sys)
+    x_polar = PF.calculate_x0(data_polar, 1)
+    @test PF._converged_at_setpoints!(
+        PF.ACPowerFlowResidual(data_polar, 1), data_polar, x_polar, 1, 1e-8)
 end

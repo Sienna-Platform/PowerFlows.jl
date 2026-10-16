@@ -1,34 +1,4 @@
 """
-    compute_mixed_bus_state_offsets(bus_type)
-
-Per-bus state-vector offsets and block sizes for MCPB. Every bus occupies 2
-slots (no PV→3 expansion). Returns `(offsets, block_sizes, total_bus_state)`:
-`offsets[i]` is bus `i`'s 1-based block start, `offsets[end]` the LCC-tail
-start (`== total_bus_state + 1`), `block_sizes[i] == 2`.
-"""
-function compute_mixed_bus_state_offsets(
-    bus_type::AbstractVector{PSY.ACBusTypes.Value},
-)
-    n_buses = length(bus_type)
-    offsets = Vector{REC_INDEX_TYPE}(undef, n_buses + 1)
-    block_sizes = Vector{Int8}(undef, n_buses)
-    # MCPB has no PV→3 expansion, so block size is provably 2 for every bus
-    # (PQ, PV, REF), `offsets[i] == 2i-1`, and `total_bus_state == 2*n_buses`.
-    # These arrays are therefore redundant for MCPB itself; they are kept only
-    # for signature parity with the variable-block rectangular-CI formulation
-    # this code mirrors 1:1, so shared helpers and cross-formulation test
-    # parity stay mechanical. Do not "optimize" them away in isolation.
-    fill!(block_sizes, Int8(2))
-    pos = REC_INDEX_TYPE(1)
-    for i in 1:n_buses
-        offsets[i] = pos
-        pos += REC_INDEX_TYPE(2)
-    end
-    offsets[n_buses + 1] = pos
-    return offsets, block_sizes, Int(pos - 1)
-end
-
-"""
     _mixed_fill_state!(x, data, bus_state_offset, type_time_step, value_time_step)
 
 Fill the MCPB state vector `x`: block layout from
@@ -56,7 +26,7 @@ function _mixed_fill_state!(
                 data.bus_reactive_power_injections[i, value_time_step] -
                 data.bus_reactive_power_withdrawals[i, value_time_step]
         else
-            # MCPB: both PV and PQ use 2 state slots (e, f); no Q slot (unlike rectangular CI).
+            # PV and PQ both hold (e, f).
             Vm = data.bus_magnitude[i, value_time_step]
             θ = data.bus_angles[i, value_time_step]
             x[off] = Vm * cos(θ)
@@ -90,7 +60,7 @@ function _mixed_fill_state!(
 end
 
 """
-    mixed_initial_state!(x, data, bus_state_offset, bus_block_size, time_step)
+    mixed_initial_state!(x, data, bus_state_offset, time_step)
 
 Initialize the MCPB state vector `x` (flat start) from `data`. REF slots hold
 `(P_gen, Q_gen)`; all other buses hold `(e, f)`. Counterpart of
@@ -100,7 +70,6 @@ function mixed_initial_state!(
     x::Vector{Float64},
     data::ACPowerFlowData,
     bus_state_offset::Vector{REC_INDEX_TYPE},
-    bus_block_size::Vector{Int8},
     time_step::Int64,
 )
     _mixed_fill_state!(x, data, bus_state_offset, time_step, time_step)
@@ -108,7 +77,7 @@ function mixed_initial_state!(
 end
 
 """
-    mixed_update_data!(data, x, bus_state_offset, bus_block_size, time_step)
+    mixed_update_data!(data, x, bus_state_offset, time_step)
 
 Write state-derived voltages and LCC taps/angles from `x` back into `data`
 (per-iteration). Does NOT write power injections: at REF `x[off]` carries the
@@ -120,7 +89,6 @@ function mixed_update_data!(
     data::ACPowerFlowData,
     x::Vector{Float64},
     bus_state_offset::Vector{REC_INDEX_TYPE},
-    bus_block_size::Vector{Int8},
     time_step::Int64,
 )
     bus_types = view(data.bus_type, :, time_step)

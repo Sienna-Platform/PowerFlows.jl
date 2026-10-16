@@ -66,8 +66,8 @@ scheduling step, or batch validation when you already have a `System` in memory.
 
 ## Capabilities relevant to developers
 
-  - **AC formulations** — polar power balance (default), Da Costa rectangular current
-    injection, and mixed current–power balance ([`ACMixedPowerFlow`](@ref)).
+  - **AC formulations** — polar power balance (default), rectangular power balance, and
+    mixed current–power balance ([`ACMixedPowerFlow`](@ref)).
   - **AC solvers** — Newton–Raphson, trust region, Levenberg–Marquardt; robust homotopy
     and gradient descent on polar only.
   - **DC** — bus-angle DC, PTDF, and virtual PTDF; multi-period DC is supported.

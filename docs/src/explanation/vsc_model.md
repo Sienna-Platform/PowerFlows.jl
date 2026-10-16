@@ -29,7 +29,8 @@ DC node the DC voltage $V_{dc}$. Each converter contributes two control rows ($r
 DC node one DC-KCL row, matching the added states. VSC extensions are implemented for all three AC
 formulations — [`ACPolarPowerFlow`](@ref), [`ACRectangularPowerFlow`](@ref), and
 [`ACMixedPowerFlow`](@ref) — sharing the same converter-physics kernels; only the bus-coupling rows
-differ (polar uses the bus power balance; rectangular/mixed use the bus current-injection balance).
+differ (polar and rectangular use the bus power balance; mixed uses the current-injection balance at
+PQ and REF buses).
 
 ### Control modes
 
@@ -126,11 +127,11 @@ The residual and Jacobian kernels are shared across formulations (only the bus-c
 differ), so each equation above maps to one internal method in `vsc_utils.jl` (polar Jacobian
 bus-coupling lives in `ac_power_flow_jacobian.jl`):
 
-| Role                                      | Method(s)                                                                              |
-|:----------------------------------------- |:-------------------------------------------------------------------------------------- |
-| Lowering PSY DC components → `DCNetwork`  | `initialize_DCNetwork!`, `_vsc_control_mode`, `_loss_coefficients`, `_build_G_dc`      |
-| $P_{dc}$ and its derivatives              | `_vsc_pdc`, `_vsc_pdc_derivatives`                                                     |
-| Control-row residuals $r_1$, $r_2$        | `_vsc_r1`, `_vsc_r2`                                                                   |
-| Control-row partials                      | `_vsc_dr1_dP`, `_vsc_dr1_dVdc`, `_vsc_dr2_dQ`, `_vsc_dr2_dVm`                          |
-| Residual assembly (control rows + DC-KCL) | `_set_vsc_tail_residuals!` (polar), `_set_vsc_tail_residuals_rect!` (rectangular/MCPB) |
-| Jacobian assembly (control rows + DC-KCL) | `_set_entries_for_vsc` (polar), `_set_entries_for_vsc_rect_mcpb!` (rectangular/MCPB)   |
+| Role                                      | Method(s)                                                                                                        |
+|:----------------------------------------- |:---------------------------------------------------------------------------------------------------------------- |
+| Lowering PSY DC components → `DCNetwork`  | `initialize_DCNetwork!`, `_vsc_control_mode`, `_loss_coefficients`, `_build_G_dc`                                |
+| $P_{dc}$ and its derivatives              | `_vsc_pdc`, `_vsc_pdc_derivatives`                                                                               |
+| Control-row residuals $r_1$, $r_2$        | `_vsc_r1`, `_vsc_r2`                                                                                             |
+| Control-row partials                      | `_vsc_dr1_dP`, `_vsc_dr1_dVdc`, `_vsc_dr2_dQ`, `_vsc_dr2_dVm`                                                    |
+| Residual assembly (control rows + DC-KCL) | `_set_vsc_tail_residuals!` (polar), `_set_vsc_tail_residuals_rect!` (rectangular/MCPB)                           |
+| Jacobian assembly (control rows + DC-KCL) | `_set_entries_for_vsc` (polar), `_set_entries_for_vsc_rect!` (rectangular), `_set_entries_for_vsc_mixed!` (MCPB) |

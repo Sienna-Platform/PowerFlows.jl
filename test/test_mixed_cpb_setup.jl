@@ -3,16 +3,15 @@
     pf = PF.ACMixedPowerFlow{NewtonRaphsonACPowerFlow}()
     data = PF.PowerFlowData(pf, sys)
 
-    offs, bs, total =
-        PF.compute_mixed_bus_state_offsets(view(data.bus_type, :, 1))
+    offs, total =
+        PF.compute_bus_state_offsets(view(data.bus_type, :, 1))
     n_buses = size(data.bus_type, 1)
-    @test all(bs .== 2)
     @test total == 2 * n_buses
     @test offs[1] == 1 && offs[end] == total + 1
 
     n_lccs = size(data.lcc.p_set, 1)
     x = Vector{Float64}(undef, total + 4 * n_lccs)
-    PF.mixed_initial_state!(x, data, offs, bs, 1)
+    PF.mixed_initial_state!(x, data, offs, 1)
     @test all(isfinite, x)
 
     bt = view(data.bus_type, :, 1)
@@ -27,7 +26,7 @@
         end
         bt[i] != PSY.ACBusTypes.REF && (data.bus_angles[i, 1] = NaN)
     end
-    PF.mixed_update_data!(data, x, offs, bs, 1)
+    PF.mixed_update_data!(data, x, offs, 1)
 
     for i in 1:n_buses
         if bt[i] == PSY.ACBusTypes.PV
@@ -71,7 +70,7 @@ end
         data.bus_angles[i, 1] = atan(f_state[i], e_state[i])
     end
 
-    offs, bs, total = PF.compute_mixed_bus_state_offsets(bt)
+    offs, total = PF.compute_bus_state_offsets(bt)
     n_lccs = size(data.lcc.p_set, 1)
     x = zeros(total + 4 * n_lccs)
     # REF P/Q slots; set so P_slack_total == 0 (Q_gen recovery is independent).

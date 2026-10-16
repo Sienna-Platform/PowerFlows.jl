@@ -54,7 +54,8 @@ const LARGE_RESIDUAL = 10 # threshold for "bad initial guess": default
 
 const ISAPPROX_ZERO_TOLERANCE = 1e-6
 
-const V_FLOOR2 = 1e-16 # lower bound on |V|² (e²+f²) to guard 1/D in rectangular/MCPB current balance
+# Lower bound on |V|² (e² + f²) where a term divides by |V|²
+const V_FLOOR2 = 1e-16
 
 # FIXME really belongs in PowerFlowFileParser
 const PSSE_EXPORT_METADATA_EXTENSION = "_export_metadata.json"

@@ -143,7 +143,7 @@ Pages = [
 ]
 ```
 
-# Rectangular Current-Injection AC Power Flow
+# Rectangular AC Power Flow
 
 ## Setup
 

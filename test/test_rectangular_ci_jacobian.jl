@@ -8,7 +8,7 @@
         R = PF.ACRectangularCIResidual(data, 1)
         J = PF.ACRectangularCIJacobian(data, R, 1)
         x = Vector{Float64}(undef, length(R.Rv))
-        PF.rect_initial_state!(x, data, R.bus_state_offset, R.bus_block_size, 1)
+        PF.rect_initial_state!(x, data, R.bus_state_offset, 1)
         # Avoid verifying at the special converged state — see note in
         # verify_jacobian (test_jacobian.jl) about hidden zeros.
         Random.seed!(42)
@@ -27,7 +27,7 @@
         R = PF.ACRectangularCIResidual(data, 1)
         J = PF.ACRectangularCIJacobian(data, R, 1)
         x = Vector{Float64}(undef, length(R.Rv))
-        PF.rect_initial_state!(x, data, R.bus_state_offset, R.bus_block_size, 1)
+        PF.rect_initial_state!(x, data, R.bus_state_offset, 1)
         Random.seed!(42)
         x .+= 0.02 .* randn(length(x))
         R(data, x, 1)
@@ -58,7 +58,7 @@
         R = PF.ACRectangularCIResidual(data, 1)
         J = PF.ACRectangularCIJacobian(data, R, 1)
         x = Vector{Float64}(undef, length(R.Rv))
-        PF.rect_initial_state!(x, data, R.bus_state_offset, R.bus_block_size, 1)
+        PF.rect_initial_state!(x, data, R.bus_state_offset, 1)
         Random.seed!(7)
         x .+= 0.02 .* randn(length(x))
         R(data, x, 1)
@@ -82,7 +82,7 @@
         R = PF.ACRectangularCIResidual(data, 1)
         J = PF.ACRectangularCIJacobian(data, R, 1)
         x = Vector{Float64}(undef, length(R.Rv))
-        PF.rect_initial_state!(x, data, R.bus_state_offset, R.bus_block_size, 1)
+        PF.rect_initial_state!(x, data, R.bus_state_offset, 1)
         Random.seed!(42)
         x .+= 0.05 .* randn(length(x))
         R(data, x, 1)
@@ -98,39 +98,27 @@
     end
 end
 
-@testset "Rectangular CI Jacobian: off-diagonal Y_bus blocks are constant" begin
-    sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
-    pf_polar = ACPowerFlow{NewtonRaphsonACPowerFlow}()
-    PF.solve_and_store_power_flow!(pf_polar, sys)
-    pf_rect = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}()
-    data = PF.PowerFlowData(pf_rect, sys)
-    R = PF.ACRectangularCIResidual(data, 1)
-    J = PF.ACRectangularCIJacobian(data, R, 1)
-    x = Vector{Float64}(undef, length(R.Rv))
-    PF.rect_initial_state!(x, data, R.bus_state_offset, R.bus_block_size, 1)
-    R(data, x, 1)
-    J(data, 1)
-    J_first = copy(J.Jv)
-
-    Random.seed!(123)
-    x .+= 0.01 .* randn(length(x))
-    R(data, x, 1)
-    J(data, 1)
-    J_second = copy(J.Jv)
-
-    # For non-REF, non-PV-Q columns at off-diagonal block positions, Y_bus entries
-    # should be identical across iterations.
-    bus_types = data.bus_type[:, 1]
-    for col in 1:length(bus_types), row in 1:length(bus_types)
-        row == col && continue
-        bus_types[col] == PSY.ACBusTypes.REF && continue
-        row_off = Int(R.bus_state_offset[row])
-        col_off = Int(R.bus_state_offset[col])
-        for dr in 0:1, dc in 0:1
-            @test J_first[row_off + dr, col_off + dc] ==
-                  J_second[row_off + dr, col_off + dc]
-        end
+@testset "Rectangular Jacobian: pattern independent of the PQ/PV split" begin
+    # A Q-limit flip (PV → PQ) only rewrites the bus's second row, so the linear-solver cache
+    # keeps its symbolic analysis.
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    data = PF.PowerFlowData(ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(), sys)
+    function rect_J(data)
+        R = PF.ACRectangularCIResidual(data, 1)
+        x = Vector{Float64}(undef, length(R.Rv))
+        PF.rect_initial_state!(x, data, R.bus_state_offset, 1)
+        R(data, x, 1)
+        return PF.ACRectangularCIJacobian(data, R, 1).Jv
     end
+    J_pv = rect_J(data)
+    pv = findfirst(==(PSY.ACBusTypes.PV), data.bus_type[:, 1])
+    data.bus_type[pv, 1] = PSY.ACBusTypes.PQ
+    J_pq = rect_J(data)
+    @test J_pq.colptr == J_pv.colptr
+    @test J_pq.rowval == J_pv.rowval
+    @test J_pv[2 * pv, 2 * pv - 1] ==
+          2 * data.bus_magnitude[pv, 1] * cos(data.bus_angles[pv, 1])
+    @test J_pq[2 * pv, 2 * pv - 1] != J_pv[2 * pv, 2 * pv - 1]
 end
 
 @testset "Rectangular CI Jacobian: two swings in one island (multi-swing)" begin
@@ -142,7 +130,7 @@ end
     R = PF.ACRectangularCIResidual(data, 1)
     J = PF.ACRectangularCIJacobian(data, R, 1)
     x = Vector{Float64}(undef, length(R.Rv))
-    PF.rect_initial_state!(x, data, R.bus_state_offset, R.bus_block_size, 1)
+    PF.rect_initial_state!(x, data, R.bus_state_offset, 1)
     # Avoid the special converged state (see verify_jacobian note in
     # test_jacobian.jl about hidden zeros).
     Random.seed!(42)
@@ -150,33 +138,4 @@ end
     R(data, x, 1)
     J(data, 1)
     verify_jacobian_asymptotic(R, data, copy(J.Jv), x, 1; label = "rect CI two-swing")
-end
-
-@testset "Rectangular CI Jacobian: pattern kept across a PV->PQ flip" begin
-    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
-    pf_rect = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}()
-    data = PF.PowerFlowData(pf_rect, sys)
-    q_slot = data.bus_type[:, 1] .== PSY.ACBusTypes.PV
-    R0 = PF.ACRectangularCIResidual(data, 1, q_slot)
-    J0 = PF.ACRectangularCIJacobian(data, R0, 1)
-
-    k = findfirst(q_slot)
-    data.bus_type[k, 1] = PSY.ACBusTypes.PQ
-    R = PF.ACRectangularCIResidual(data, 1, q_slot)
-    J = PF.ACRectangularCIJacobian(data, R, 1)
-    @test R.bus_state_offset == R0.bus_state_offset
-    @test R.bus_block_size == R0.bus_block_size
-    @test J.Jv.colptr == J0.Jv.colptr
-    @test J.Jv.rowval == J0.Jv.rowval
-
-    x = Vector{Float64}(undef, length(R.Rv))
-    PF.rect_initial_state!(x, data, R.bus_state_offset, R.bus_block_size, 1)
-    Random.seed!(42)
-    x .+= 0.02 .* randn(length(x))
-    R(data, x, 1)
-    off = Int(R.bus_state_offset[k])
-    @test R.Rv[off + 2] == x[off + 2]
-    J(data, 1)
-    verify_jacobian_asymptotic(
-        R, data, copy(J.Jv), x, 1; label = "rect CI c_sys14 flipped PV->PQ")
 end

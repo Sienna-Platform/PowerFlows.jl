@@ -1110,7 +1110,7 @@ end
 
 @testset "discrete control: analytic sensitivity agrees across AC formulations" begin
     # `∂F/∂p` uses three different row/sign conventions per formulation (polar power balance;
-    # rectangular `I_spec − Y·V` real-first; MCPB mixes imag-first PQ, PV power, and
+    # rectangular `V·conj(I) − S_spec` power mismatch (ΔP, ΔQ); MCPB mixes imag-first PQ, PV power, and
     # real-first REF rows) — a sign error there would silently invert a control's feedback
     # while still clearing the `CONTROL_GAIN_FLOOR` gate. Assert against the FD probe AND
     # across formulations.

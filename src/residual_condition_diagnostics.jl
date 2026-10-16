@@ -171,9 +171,9 @@ function _describe_residual_entry(
 )
     if ix <= r.total_bus_state
         b, row = _locate_variable_block(r.bus_state_offset, ix)
-        labels = ("ΔI_re", "ΔI_im", "Q pin")   # a 3rd row at a PQ bus pins the Q slot
+        labels = ("ΔP", "ΔQ")
         if data.bus_type[b, time_step] == PSY.ACBusTypes.PV
-            labels = ("ΔI_re", "ΔI_im", "|V|²−V_set²")
+            labels = ("ΔP", "|V|²−V_set²")
         end
         return "bus $(_diag_bus_number(data, b)) ($(labels[row]))"
     end

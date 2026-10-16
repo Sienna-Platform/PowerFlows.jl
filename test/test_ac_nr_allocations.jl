@@ -41,7 +41,7 @@ end
     residual = PF.ACRectangularCIResidual(pf_data, 1)
     x0 = Vector{Float64}(undef, length(residual.Rv))
     PF.rect_initial_state!(
-        x0, pf_data, residual.bus_state_offset, residual.bus_block_size, 1,
+        x0, pf_data, residual.bus_state_offset, 1,
     )
     residual(pf_data, x0, 1)  # warm
     J = PF.ACRectangularCIJacobian(pf_data, residual, 1)

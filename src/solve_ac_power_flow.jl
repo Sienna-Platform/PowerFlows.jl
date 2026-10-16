@@ -334,6 +334,58 @@ function _column_arc_flows!(slot::Base.RefValue, data::ACPowerFlowData)
     return slot[]
 end
 
+"""
+    _voltages_in_band(pf, data, time_step, merged_kwargs) -> Bool
+
+The rectangular form can meet `tol` at a non-physical root (a PQ |V| near 0 from a flat
+start). A step with a published PQ |V| outside `vm_validation_range` is not converged.
+`validate_voltage_magnitudes = false` turns the check off. Other formulations return `true`.
+"""
+_voltages_in_band(::AbstractACPowerFlow, ::ACPowerFlowData, ::Int, ::NamedTuple) = true
+
+function _voltages_in_band(
+    ::ACRectangularPowerFlow,
+    data::ACPowerFlowData,
+    time_step::Int,
+    merged_kwargs::NamedTuple,
+)
+    merged_kwargs.validate_voltage_magnitudes || return true
+    range = merged_kwargs.vm_validation_range
+    n_out = 0
+    @inbounds for i in axes(data.bus_magnitude, 1)
+        data.bus_type[i, time_step] == PSY.ACBusTypes.PQ || continue
+        vm = data.bus_magnitude[i, time_step]
+        n_out += !(range.min <= vm <= range.max)
+    end
+    iszero(n_out) && return true
+    _error_out_of_band(data, time_step, range, n_out)
+    return false
+end
+
+@noinline function _error_out_of_band(
+    data::ACPowerFlowData,
+    time_step::Int,
+    range::MinMax,
+    n_out::Int,
+)
+    bus_numbers = get_bus_axis(data)
+    out = Int[]
+    vmin, vmax = Inf, -Inf
+    for i in axes(data.bus_magnitude, 1)
+        data.bus_type[i, time_step] == PSY.ACBusTypes.PQ || continue
+        vm = data.bus_magnitude[i, time_step]
+        vmin = min(vmin, vm)
+        vmax = max(vmax, vm)
+        if !(range.min <= vm <= range.max) && length(out) < PF_MAX_LOG
+            push!(out, bus_numbers[i])
+        end
+    end
+    @error "Time step $time_step met the tolerance at a non-physical root and is reported " *
+           "not converged: |V| outside vm_validation_range $range at $n_out bus(es), " *
+           "first $(length(out)): $out; checked |V| in [$vmin, $vmax]."
+    return
+end
+
 """Solve one time step and write its column: voltages, injections, branch flows, and LCC flows
 when the solve converges. Touches no other column of `data`."""
 function _solve_column!(
@@ -356,6 +408,7 @@ function _solve_column!(
             resolve_linear_solver_backend(get(merged_kwargs, :linear_solver, nothing)))
     end
     converged = _ac_power_flow_with_area_relax!(data, pf, time_step; merged_kwargs...)
+    converged = converged && _voltages_in_band(pf, data, time_step, merged_kwargs)
     save_device_state!(cd, data, time_step)
     converged && _warn_vsc_limit_violations(data, time_step)
 
