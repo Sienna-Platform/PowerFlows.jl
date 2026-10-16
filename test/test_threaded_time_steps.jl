@@ -147,3 +147,28 @@ end
     end
     @test_throws r"n_threads" solve_power_flow!(plain; threads = 2)
 end
+
+# Steps go to whichever task is free, so repeat the threaded solve: every run must equal the
+# serial one, whatever order the tasks took the steps in.
+@testset "threaded time steps: the step schedule never changes a result" begin
+    sys = PSB.build_system(PSB.MatpowerTestSystems, "matpower_ACTIVSg2000_sys")
+    function profiled(n_threads)
+        pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+            time_steps = 12, correct_bustypes = true,
+            solution_parameters = _klu(n_threads))
+        data = PowerFlowData(pf, sys)
+        for t in 1:12
+            data.bus_active_power_withdrawals[:, t] .*= 1.0 + 0.01 * cos(1.3 * t)
+        end
+        return data
+    end
+    serial = profiled(1)
+    @test solve_power_flow!(serial)
+    for _ in 1:5
+        threaded = profiled(4)
+        @test solve_power_flow!(threaded)
+        for f in _THREADED_FIELDS
+            @test isequal(getfield(serial, f), getfield(threaded, f))
+        end
+    end
+end
