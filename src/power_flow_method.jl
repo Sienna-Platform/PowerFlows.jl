@@ -311,7 +311,7 @@ function _plan_at_flat_in_place!(
 end
 
 """Rebuild the lean plan of `data`'s Jacobian structure once, on the Jacobian at the solved state
-of `time_step`. It runs at the end of the first step solved after [`_plan_at_flat!`](@ref) built
+of `time_step`. It runs at the end of the first step solved after `_plan_at_flat!` built
 the plan, and closes the slot to later calls. A plan built at a solved state keeps the pivots of
 later operating points above the ratio test where the flat plan can fail it (EI515, eight load
 steps: one reject at flat, none after the rebuild), and each reject costs a `klu_factor`. A step
@@ -319,7 +319,7 @@ that did not converge keeps the flat plan. A failed rebuild keeps it too.
 
 It writes the shared slot without a lock. Call it only where no task shares the slot: after a
 serial step, or before `_solve_columns_threaded!` spawns its tasks. Caches holding the flat plan
-take the new one at their next [`_align_lean_plan!`](@ref)."""
+take the new one at their next `_align_lean_plan!`."""
 _settle_lean_plan!(data::ACPowerFlowData, time_step::Int, converged::Bool) =
     _settle_lean_plan!(data.ac_jacobian_structure_cache[], data, time_step, converged)
 _settle_lean_plan!(::Nothing, ::ACPowerFlowData, ::Int, ::Bool) = nothing
