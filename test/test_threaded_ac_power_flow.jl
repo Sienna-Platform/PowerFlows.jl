@@ -212,12 +212,13 @@ end
 
 @testset "a raising step clears its own slot only" begin
     d = _slot_data(8, 2)
-    # No reference bus at step 7 makes the solve raise inside the second chunk's task.
+    # No reference bus at step 7 makes the solve raise inside the task that claims step 7.
+    # The schedule decides which task that is.
     d.bus_type[:, 7] .= PSY.ACBusTypes.PQ
     @test_throws Exception solve_power_flow!(d)
-    @test !isnothing(d.worker_slots[1].polar_nr_cache[])
-    @test isnothing(d.worker_slots[2].polar_nr_cache[])
-    @test isnothing(d.worker_slots[2].solver_cache[])
+    cleared = [isnothing(s.polar_nr_cache[]) for s in d.worker_slots]
+    @test count(cleared) == 1
+    @test all(isnothing(s.solver_cache[]) for s in d.worker_slots[cleared])
 end
 
 @testset "threaded parity: Q limits" begin
