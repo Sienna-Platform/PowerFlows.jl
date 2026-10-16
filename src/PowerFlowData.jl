@@ -73,7 +73,11 @@ the respective type of power flow evaluations.
 - `bus_type::Matrix{PSY.ACBusTypes.Value}`:
         matrix containing type of buses present in the system.
 - `bus_magnitude::Matrix{Float64}`:
-        matrix containing the bus voltage magnitudes.
+        solved bus voltage magnitudes. Also the REF setpoint, and the PV setpoint
+        under polar.
+- `bus_voltage_setpoint::Matrix{Float64}`:
+        PV voltage setpoints read by rect and mixed. Never written by a solve. To change
+        a PV setpoint, write this and `bus_magnitude`.
 - `bus_angles::Matrix{Float64}`:
         matrix containing the bus voltage angles.
 - `arc_active_power_flow_from_to::Matrix{Float64}`:
@@ -132,6 +136,8 @@ struct PowerFlowData{
     }
     bus_type::Matrix{PSY.ACBusTypes.Value}
     bus_magnitude::Matrix{Float64}
+    # PV voltage setpoint. Rect and mixed read it; `bus_magnitude` holds the solved |V|.
+    bus_voltage_setpoint::Matrix{Float64}
     bus_angles::Matrix{Float64}
     arc_active_power_flow_from_to::Matrix{Float64}
     arc_reactive_power_flow_from_to::Matrix{Float64}
@@ -254,6 +260,7 @@ get_bus_slack_participation_factors(pfd::PowerFlowData) =
     pfd.bus_slack_participation_factors
 get_bus_type(pfd::PowerFlowData) = pfd.bus_type
 get_bus_magnitude(pfd::PowerFlowData) = pfd.bus_magnitude
+get_bus_voltage_setpoint(pfd::PowerFlowData) = pfd.bus_voltage_setpoint
 get_bus_angles(pfd::PowerFlowData) = pfd.bus_angles
 get_arc_active_power_flow_from_to(pfd::PowerFlowData) =
     pfd.arc_active_power_flow_from_to
@@ -439,6 +446,7 @@ function PowerFlowData(
         Vector{Dict{Tuple{DataType, String}, Float64}}(), # computed_generator_slack_participation_factors
         fill(PSY.ACBusTypes.PQ, (n_buses, n_time_steps)), # bus_type
         ones(n_buses, n_time_steps), # bus_magnitude
+        ones(n_buses, n_time_steps), # bus_voltage_setpoint
         zeros(n_buses, n_time_steps), # bus_angles
         zeros(n_arcs, n_time_steps), # arc_active_power_flow_from_to
         zeros(n_arcs, n_time_steps), # arc_reactive_power_flow_from_to

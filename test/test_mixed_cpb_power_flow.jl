@@ -181,3 +181,33 @@ end
         end
     end
 end
+
+"‖ΔS‖∞ of the polar residual at the published voltages and injections."
+function _published_mismatch_mixed(data)
+    res = PF.ACPowerFlowResidual(data, 1)
+    x = PF.calculate_x0(data, 1)
+    res(data, x, 1)
+    return LinearAlgebra.norm(res.Rv, Inf)
+end
+
+@testset "Mixed CPB: publishes the solved PV magnitude" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    tol = 1e-9
+    pf = ACMixedPowerFlow{NewtonRaphsonACPowerFlow}(;
+        solution_parameters = SolutionParameters(; tol),
+    )
+    data = PowerFlowData(pf, sys)
+    vset_before = copy(PF.get_bus_voltage_setpoint(data))
+    for i in findall(==(ACBusTypes.PV), data.bus_type[:, 1])
+        data.bus_magnitude[i, 1] = 0.97 * vset_before[i, 1]
+    end
+    @test solve_power_flow!(data)
+    @test solve_power_flow!(data)
+    @test PF.get_bus_voltage_setpoint(data) == vset_before
+    pv = findall(==(ACBusTypes.PV), data.bus_type[:, 1])
+    @test !isempty(pv)
+    for i in pv
+        @test abs(data.bus_magnitude[i, 1] - vset_before[i, 1]) <= tol
+    end
+    @test _published_mismatch_mixed(data) < tol
+end

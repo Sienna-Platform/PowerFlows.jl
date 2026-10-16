@@ -254,3 +254,17 @@ end
         calculate_loss_factors = true)
     @test PF.get_calculate_loss_factors(p) === true
 end
+
+@testset "PowerFlowData: bus_voltage_setpoint equals the initial PV magnitude" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    for pf in (
+        ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(),
+        ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(),
+        ACMixedPowerFlow{NewtonRaphsonACPowerFlow}(),
+    )
+        data = PowerFlowData(pf, sys)
+        vset = PF.get_bus_voltage_setpoint(data)
+        @test size(vset) == size(PF.get_bus_magnitude(data))
+        @test vset == PF.get_bus_magnitude(data)
+    end
+end

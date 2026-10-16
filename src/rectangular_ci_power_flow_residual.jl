@@ -30,11 +30,10 @@ start like the polar form.
 - `validate_offsets::Vector{Int}` — precomputed `x`-offsets of PQ/PV buses for
   the per-iteration voltage-magnitude diagnostic
 - `e_state`, `f_state` — per-bus `(e, f)` of the last evaluation (REF from its fixed
-  voltage); `data.bus_magnitude` holds `V_set` at PV buses, not `|V_state|`.
+  voltage); `data.bus_voltage_setpoint` holds `V_set` at PV buses.
 - `P_eff_cache`, `Q_eff_cache` — per-bus specified net injection of the last evaluation
 - `Ir_acc`, `Ii_acc` — per-bus network current `Re/Im(Y_bus_eff·V + Y_lcc·V)` of the last
   evaluation, read by the Jacobian and by [`rect_finalize_bus_injections!`](@ref)
-- `x_set` — scratch copy of the state for `_converged_at_setpoints!`
 """
 struct ACRectangularCIResidual
     Rv::Vector{Float64}
@@ -56,7 +55,6 @@ struct ACRectangularCIResidual
     Q_eff_cache::Vector{Float64}
     Ir_acc::Vector{Float64}
     Ii_acc::Vector{Float64}
-    x_set::Vector{Float64}
 end
 
 function ACRectangularCIResidual(data::ACPowerFlowData, time_step::Int64)
@@ -127,7 +125,6 @@ function ACRectangularCIResidual(data::ACPowerFlowData, time_step::Int64)
         Vector{Float64}(undef, n_buses),
         Vector{Float64}(undef, n_buses),
         Vector{Float64}(undef, n_buses),
-        Vector{Float64}(undef, total_state),
     )
 end
 
@@ -182,7 +179,7 @@ function _update_rect_ci_residual_values!(
     n_lccs = size(data.lcc.p_set, 1)
     bus_types = view(data.bus_type, :, time_step)
 
-    # 1) Push state into data (only PQ updates bus_magnitude; PV preserves V_set).
+    # 1) Push state into data (PQ and PV write |V| and θ; REF stays fixed).
     rect_update_data!(data, x, bus_state_offset, time_step)
     # Populate state caches before LCC admittance refresh (LCC needs |V_state|).
     @inbounds for i in 1:n_buses
@@ -199,8 +196,6 @@ function _update_rect_ci_residual_values!(
         end
     end
     if n_lccs > 0
-        # PV buses store V_set in data.bus_magnitude; use the rect form so LCC math
-        # sees |V_state| = sqrt(e² + f²), matching the rectangular Jacobian.
         _update_ybus_lcc!(data, time_step, e_state, f_state)
     end
 
@@ -287,15 +282,14 @@ function _update_rect_ci_residual_values!(
             F[off + 1] = Q_calc - (x[off + 1] - const_I_Q[i] * Vm)
         elseif bt == PSY.ACBusTypes.PV
             F[off] = P_calc - P_eff_cache[i]
-            # V_set² from data.bus_magnitude (preserved by rect_update_data!).
-            F[off + 1] = e_i^2 + f_i^2 - data.bus_magnitude[i, time_step]^2
+            F[off + 1] = e_i^2 + f_i^2 - data.bus_voltage_setpoint[i, time_step]^2
         else
             F[off] = P_calc - P_eff_cache[i]
             F[off + 1] = Q_calc - Q_eff_cache[i]
         end
     end
 
-    # 5) LCC tail residuals, with |V_state| instead of polar's bus_magnitude (V_set at PV).
+    # 5) LCC tail residuals with |V_state| from (e, f).
     if n_lccs > 0
         _set_lcc_tail_residuals!(
             F, data, R.total_bus_state, time_step, e_state, f_state,
@@ -311,70 +305,4 @@ function _update_rect_ci_residual_values!(
         _set_vsc_tail_residuals_rect!(F, dcn, e_state, f_state, vsc_off, time_step)
     end
     return
-end
-
-"""
-    _converged_at_setpoints!(residual, data, x, time_step, tol) -> Bool
-
-Call this function after `‖F(x)‖∞ < tol`. PF publishes the PV setpoint as |V|, not
-`|e + jf|`. The rectangular method scales each PV `(e, f)` onto the setpoint and evaluates
-the residual again. If the check passes, `x` and `residual` keep the scaled state. If it
-fails, the function restores both.
-Other residual types return `true`.
-"""
-_converged_at_setpoints!(
-    ::Any,
-    ::ACPowerFlowData,
-    ::Vector{Float64},
-    ::Int64,
-    ::Float64,
-) = true
-
-"""
-    _residual_converged!(residual, data, x, time_step, tol) -> Bool
-
-Return `true` when `‖F(x)‖∞ < tol` and `_converged_at_setpoints!` accepts `x`.
-"""
-function _residual_converged!(
-    residual,
-    data::ACPowerFlowData,
-    x::Vector{Float64},
-    time_step::Int64,
-    tol::Float64,
-)
-    return norm(residual.Rv, Inf) < tol &&
-           _converged_at_setpoints!(residual, data, x, time_step, tol)
-end
-
-@inline function _scale_onto_setpoint!(x::Vector{Float64}, off::Int, v_set::Float64)
-    scale = v_set / hypot(x[off], x[off + 1])
-    x[off] *= scale
-    x[off + 1] *= scale
-    return
-end
-
-# The PV row holds e² + f² only to `tol`. Near a low-impedance branch, that gap moves the
-# neighbouring rows by much more.
-function _converged_at_setpoints!(
-    residual::ACRectangularCIResidual,
-    data::ACPowerFlowData,
-    x::Vector{Float64},
-    time_step::Int64,
-    tol::Float64,
-)
-    bus_types = view(data.bus_type, :, time_step)
-    x_set = residual.x_set
-    copyto!(x_set, x)
-    for i in eachindex(bus_types)
-        bus_types[i] == PSY.ACBusTypes.PV || continue
-        off = Int(residual.bus_state_offset[i])
-        _scale_onto_setpoint!(x_set, off, data.bus_magnitude[i, time_step])
-    end
-    residual(data, x_set, time_step)
-    if norm(residual.Rv, Inf) < tol
-        copyto!(x, x_set)
-        return true
-    end
-    residual(data, x, time_step)
-    return false
 end

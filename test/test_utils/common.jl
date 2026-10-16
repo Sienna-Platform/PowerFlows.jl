@@ -82,6 +82,7 @@ function modify_rts_power_flow!(data::PowerFlowData)
 
     # For PQ bus, active and reactive are fixed; update voltage and angle
     data.bus_magnitude[bus_lookup[117]] = 0.84783
+    data.bus_voltage_setpoint[bus_lookup[117]] = 0.84783
     data.bus_angles[bus_lookup[117]] = 0.14956
 end
 

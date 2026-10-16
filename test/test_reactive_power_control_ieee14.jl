@@ -253,3 +253,28 @@ end
         _predict_reference_mvar(13, v_baseline_ours, _bus_v(data, bus_lookup, 13), q_mvar)
     @test round(predicted_ref_mvar) in (18.0, 19.0)
 end
+
+@testset "Q-limit retries keep the PV setpoint exact (rect and mixed)" begin
+    tol = 1e-9
+    for pf in (
+        ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
+            solution_parameters = SolutionParameters(; tol),
+            check_reactive_power_limits = true,
+        ),
+        ACMixedPowerFlow{NewtonRaphsonACPowerFlow}(;
+            solution_parameters = SolutionParameters(; tol),
+            check_reactive_power_limits = true,
+        ),
+    )
+        sys = _make_ieee14_scaled_load_system(1.4)
+        data = PowerFlowData(pf, sys)
+        vset_before = copy(PF.get_bus_voltage_setpoint(data))
+        n_pv_before = count(==(ACBusTypes.PV), data.bus_type[:, 1])
+        @test solve_power_flow!(data)
+        @test count(==(ACBusTypes.PV), data.bus_type[:, 1]) < n_pv_before
+        @test PF.get_bus_voltage_setpoint(data) == vset_before
+        for i in findall(==(ACBusTypes.PV), data.bus_type[:, 1])
+            @test abs(data.bus_magnitude[i, 1] - vset_before[i, 1]) <= tol
+        end
+    end
+end
