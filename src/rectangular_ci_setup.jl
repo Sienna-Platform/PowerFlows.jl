@@ -165,14 +165,10 @@ function rect_update_data!(
         if bt == PSY.ACBusTypes.REF
             # REF voltage is fixed (V_set, θ_set); bus_magnitude/bus_angles
             # were initialized at PowerFlowData construction and stay constant.
-        elseif bt == PSY.ACBusTypes.PQ
+        else
             e = x[off]
             f = x[off + 1]
-            data.bus_magnitude[i, time_step] = sqrt(e^2 + f^2)
-            data.bus_angles[i, time_step] = atan(f, e)
-        else  # PV: do NOT overwrite bus_magnitude (V_set must be preserved).
-            e = x[off]
-            f = x[off + 1]
+            data.bus_magnitude[i, time_step] = hypot(e, f)
             data.bus_angles[i, time_step] = atan(f, e)
         end
     end

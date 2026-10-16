@@ -314,8 +314,8 @@ Recompute `data.lcc.rectifier.phi`, `data.lcc.inverter.phi`, and
 `data.lcc.branch_admittances` for each LCC at `time_step`. Reads `|V|` at each
 AC terminal from `data.bus_magnitude` (the polar convention). The
 `(e_state, f_state)` method below covers the rectangular CI case where
-`|V_state| = sqrt(e² + f²)` must be used instead — at PV buses,
-`data.bus_magnitude` holds `V_set` rather than the actual state magnitude.
+`|V_state| = sqrt(e² + f²)` is used instead. It is the magnitude of the state that the
+residual evaluates.
 """
 # Recompute the phi angles and equivalent branch admittances for a SINGLE LCC `i` given its two
 # AC-terminal magnitudes. Shared by the all-LCC `_update_ybus_lcc!` methods and by the sequential
@@ -402,8 +402,7 @@ limit constraints) for each LCC into `F`, starting at slot
 `base_offset + 1`. The i-th LCC occupies slots `base_offset + 4(i-1) + 1
 .. base_offset + 4i`. The polar method reads `|V|` from
 `data.bus_magnitude`; the rectangular method reads `sqrt(e² + f²)` from
-the (e, f) state (since `data.bus_magnitude` holds `V_set` at PV buses,
-not the actual state magnitude). Mirrors the two-method layout of
+the (e, f) state, the state that the residual evaluates. Mirrors the two-method layout of
 [`_update_ybus_lcc!`](@ref).
 """
 function _set_lcc_tail_residuals!(

@@ -27,10 +27,7 @@ struct ACMixedCPBResidual
     bus_state_offset::Vector{REC_INDEX_TYPE}
     total_bus_state::Int
     validate_offsets::Vector{Int}
-    # State caches mirrored from x at each residual evaluation. The Jacobian
-    # reads these so it sees the SAME (e, f) values that the residual used.
-    # This is necessary because data.bus_magnitude holds V_set for PV buses
-    # (not |V_state|), and we need both available.
+    # State caches mirrored from x at each residual evaluation. The Jacobian reads these.
     e_state::Vector{Float64}            # length n_buses; current real(V)
     f_state::Vector{Float64}            # length n_buses; current imag(V)
     P_eff_cache::Vector{Float64}        # length n_buses; effective P at current iter
@@ -176,8 +173,7 @@ function _update_mixed_cpb_residual_values!(
     n_lccs = size(data.lcc.p_set, 1)
     bus_types = view(data.bus_type, :, time_step)
 
-    # 1) Push state into data (MCPB: PQ updates bus_magnitude; PV/REF preserve
-    #    V_set). Populate state caches before LCC admittance refresh.
+    # 1) Push state into data (PQ and PV write |V| and θ; REF stays fixed).
     mixed_update_data!(data, x, bus_state_offset, time_step)
     @inbounds for i in 1:n_buses
         off = Int(bus_state_offset[i])
@@ -283,7 +279,7 @@ function _update_mixed_cpb_residual_values!(
             # PV: real-power balance (eq.7) + |V|² constraint (eq.8).
             P_i = P_eff_cache[i]
             F[off] = e_i * Ir_acc[i] + f_i * Ii_acc[i] - P_i
-            V_set_sq = data.bus_magnitude[i, time_step]^2
+            V_set_sq = data.bus_voltage_setpoint[i, time_step]^2
             F[off + 1] = (e_i^2 + f_i^2) - V_set_sq
         else  # PQ
             # PQ: divided-current balance, IMAG-FIRST ordering (paper §IV), so

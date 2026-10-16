@@ -1409,8 +1409,7 @@ function _run_power_flow_method(time_step::Int,
             )
             if accepted
                 Threads.atomic_add!(_CHORD_STEPS, 1)
-                converged =
-                    _residual_converged!(residual, data, stateVector.x, time_step, tol)
+                converged = norm(residual.Rv, Inf) < tol
                 converged && keep_converged_J && J(data, time_step)
                 validate_vms && _validate_state_magnitudes(
                     residual,
@@ -1457,8 +1456,7 @@ function _run_power_flow_method(time_step::Int,
             factored &= chord
         end
         residual_norm = norm(residual.Rv, Inf)
-        converged =
-            _residual_converged!(residual, data, stateVector.x, time_step, tol)
+        converged = residual_norm < tol
         # A NaN or Inf iterate stays non-finite: every further step is wasted work.
         isfinite(residual_norm) || break
         # A reverted Iwamoto step leaves J at the restored x.
@@ -1564,8 +1562,7 @@ function _run_power_flow_method(time_step::Int,
                 linSolveCache, monitor, stop_at_fold) &&
                 return false, i
         end
-        converged =
-            _residual_converged!(residual, data, stateVector.x, time_step, tol)
+        converged = norm(residual.Rv, Inf) < tol
         if !converged
             i += 1
         end

@@ -224,8 +224,8 @@ end
 
 _state_offset(r::_RectOrMixedResidual, i::Int) = Int(r.bus_state_offset[i])
 
-# NOT `data.bus_magnitude`/`bus_angles`: those hold V_set at PV buses, not |V_state|. Use
-# `e_state`/`f_state` — the values the Jacobian was built from — so ∂F/∂p and J stay consistent.
+# Use `e_state`/`f_state`, the values the Jacobian was built from, so ∂F/∂p and J stay
+# consistent.
 _bus_voltage(r::_RectOrMixedResidual, i::Int) = complex(r.e_state[i], r.f_state[i])
 
 # ── ∂I/∂p, per device family ──────────────────────────────────────────────────────────────

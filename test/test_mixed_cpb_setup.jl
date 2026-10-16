@@ -18,24 +18,17 @@
     Vm_before = copy(view(data.bus_magnitude, :, 1))
     θ_before = copy(view(data.bus_angles, :, 1))
 
-    # Perturb data, round-trip through mixed_update_data!. PV bus_magnitude
-    # must be preserved (V_set); PQ bus_magnitude/bus_angles recovered.
+    # Perturb data, round-trip through mixed_update_data!. PQ and PV
+    # bus_magnitude/bus_angles recovered.
     for i in 1:n_buses
-        if bt[i] == PSY.ACBusTypes.PQ
-            data.bus_magnitude[i, 1] = NaN
-        end
+        bt[i] != PSY.ACBusTypes.REF && (data.bus_magnitude[i, 1] = NaN)
         bt[i] != PSY.ACBusTypes.REF && (data.bus_angles[i, 1] = NaN)
     end
     PF.mixed_update_data!(data, x, offs, 1)
 
     for i in 1:n_buses
-        if bt[i] == PSY.ACBusTypes.PV
-            @test data.bus_magnitude[i, 1] ≈ Vm_before[i] atol = 1e-12
-        end
-        if bt[i] == PSY.ACBusTypes.PQ
-            @test data.bus_magnitude[i, 1] ≈ Vm_before[i] atol = 1e-12
-        end
         if bt[i] != PSY.ACBusTypes.REF
+            @test data.bus_magnitude[i, 1] ≈ Vm_before[i] atol = 1e-12
             @test data.bus_angles[i, 1] ≈ θ_before[i] atol = 1e-12
         end
     end

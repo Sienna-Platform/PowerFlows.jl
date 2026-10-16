@@ -73,21 +73,16 @@ end
     θ_before = copy(view(data.bus_angles, :, 1))
     Q_inj_before = copy(view(data.bus_reactive_power_injections, :, 1))
 
-    # Perturb data; round-trip via rect_update_data!. PV-bus bus_magnitude is
-    # preserved (not overwritten) since V_set must be retained for the ΔV² row.
+    # Perturb data; round-trip via rect_update_data!. PQ and PV magnitudes and angles recovered.
     for i in 1:length(bt)
-        if bt[i] == PSY.ACBusTypes.PQ
-            data.bus_magnitude[i, 1] = NaN
-        end
+        bt[i] != PSY.ACBusTypes.REF && (data.bus_magnitude[i, 1] = NaN)
         bt[i] != PSY.ACBusTypes.REF && (data.bus_angles[i, 1] = NaN)
     end
     PF.rect_update_data!(data, x, off, 1)
 
     for i in 1:length(bt)
-        if bt[i] == PSY.ACBusTypes.PQ
-            @test data.bus_magnitude[i, 1] ≈ Vm_before[i] atol = 1e-12
-        end
         if bt[i] != PSY.ACBusTypes.REF
+            @test data.bus_magnitude[i, 1] ≈ Vm_before[i] atol = 1e-12
             @test data.bus_angles[i, 1] ≈ θ_before[i] atol = 1e-12
         end
     end

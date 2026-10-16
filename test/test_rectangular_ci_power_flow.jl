@@ -447,7 +447,6 @@ end
 end
 
 @testset "Rectangular Power Flow: converged means the published state meets tol" begin
-    # PV magnitudes are published at the setpoint, not at the solver |e + jf|.
     sys = PSB.build_system(PSB.MatpowerTestSystems, "matpower_ACTIVSg2000_sys")
     tol = 1e-3
     pf = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
@@ -486,39 +485,32 @@ end
     @test solve_power_flow!(data; vm_validation_range = band)
 end
 
-@testset "Rectangular Power Flow: _converged_at_setpoints! scales PV buses onto V_set" begin
+"‖ΔS‖∞ of the polar residual at the published voltages and injections."
+function _published_mismatch(data)
+    res = PF.ACPowerFlowResidual(data, 1)
+    x = PF.calculate_x0(data, 1)
+    res(data, x, 1)
+    return norm(res.Rv, Inf)
+end
+
+@testset "Rectangular Power Flow: publishes the solved PV magnitude" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
-    rect = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}()
-    data = PowerFlowData(rect, sys)
+    tol = 1e-9
+    pf = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
+        solution_parameters = SolutionParameters(; tol),
+    )
+    data = PowerFlowData(pf, sys)
+    vset_before = copy(PF.get_bus_voltage_setpoint(data))
+    for i in findall(==(ACBusTypes.PV), data.bus_type[:, 1])
+        data.bus_magnitude[i, 1] = 0.97 * vset_before[i, 1]
+    end
     @test solve_power_flow!(data)
-    R = PF.ACRectangularCIResidual(data, 1)
-    x = zeros(length(R.Rv))
-    PF.rect_initial_state!(x, data, R.bus_state_offset, 1)
-    R(data, x, 1)
-    x_solved = copy(x)
-    k = findfirst(==(ACBusTypes.PV), data.bus_type[:, 1])
-    off = Int(R.bus_state_offset[k])
-
-    # A PV |e + jf| off V_set is moved onto V_set when the scaled state meets tol.
-    x[off] *= 1 + 1e-7
-    x[off + 1] *= 1 + 1e-7
-    @test hypot(x[off], x[off + 1]) != data.bus_magnitude[k, 1]
-    @test PF._converged_at_setpoints!(R, data, x, 1, 1e-4)
-    @test isapprox(hypot(x[off], x[off + 1]), data.bus_magnitude[k, 1]; rtol = 1e-12)
-
-    # A large residual fails the check and leaves x unchanged.
-    copyto!(x, x_solved)
-    q = findfirst(==(ACBusTypes.PQ), data.bus_type[:, 1])
-    q_off = Int(R.bus_state_offset[q])
-    x[q_off] += 1e-2
-    x_before = copy(x)
-    @test !PF._converged_at_setpoints!(R, data, x, 1, 1e-8)
-    @test x == x_before
-
-    # Polar residuals have no setpoint check.
-    polar = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}()
-    data_polar = PowerFlowData(polar, sys)
-    x_polar = PF.calculate_x0(data_polar, 1)
-    @test PF._converged_at_setpoints!(
-        PF.ACPowerFlowResidual(data_polar, 1), data_polar, x_polar, 1, 1e-8)
+    @test solve_power_flow!(data)
+    @test PF.get_bus_voltage_setpoint(data) == vset_before
+    pv = findall(==(ACBusTypes.PV), data.bus_type[:, 1])
+    @test !isempty(pv)
+    for i in pv
+        @test abs(data.bus_magnitude[i, 1] - vset_before[i, 1]) <= tol
+    end
+    @test _published_mismatch(data) < tol
 end
