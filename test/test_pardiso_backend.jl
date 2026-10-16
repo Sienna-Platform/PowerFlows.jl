@@ -1,6 +1,6 @@
 # MKLPardiso backend tests.
 #
-# Loading Pardiso triggers PowerFlows' PowerFlowsPardisoExt (and PNM's MKLPardisoExt).
+# Loading Pardiso triggers PNM's MKLPardisoExt, which implements the MKLPardiso cache.
 # Pardiso.jl installs on every platform, but MKL is only functional on x86_64
 # Linux/Windows; the numeric tests are gated on `Pardiso.mkl_is_available()` so they
 # RUN on the Linux/Windows CI runners and SKIP cleanly on Apple Silicon. The
@@ -8,6 +8,7 @@
 import Pardiso
 
 @testset "MKLPardiso backend" begin
+    @test_throws ArgumentError vPTDFDCPowerFlow(; linear_solver = "MKLPardiso")
     if Pardiso.mkl_is_available()
         @testset "DC parity: KLU vs MKLPardiso" begin
             sys = build_system(PSITestSystems, "c_sys5")
@@ -15,6 +16,20 @@ import Pardiso
                 DCPowerFlow(), sys, FlowReporting.ARC_FLOWS; linear_solver = "KLU")
             res_par = solve_power_flow(
                 DCPowerFlow(), sys, FlowReporting.ARC_FLOWS;
+                linear_solver = "MKLPardiso")
+            @test isapprox(
+                res_klu["1"]["bus_results"].θ,
+                res_par["1"]["bus_results"].θ;
+                atol = 1e-8,
+            )
+        end
+
+        @testset "PTDF DC parity: KLU vs MKLPardiso" begin
+            sys = build_system(PSITestSystems, "c_sys5")
+            res_klu = solve_power_flow(
+                PTDFDCPowerFlow(), sys, FlowReporting.ARC_FLOWS; linear_solver = "KLU")
+            res_par = solve_power_flow(
+                PTDFDCPowerFlow(), sys, FlowReporting.ARC_FLOWS;
                 linear_solver = "MKLPardiso")
             @test isapprox(
                 res_klu["1"]["bus_results"].θ,

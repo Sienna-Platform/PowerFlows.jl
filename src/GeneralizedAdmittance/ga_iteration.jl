@@ -9,7 +9,7 @@ _ga_slack_voltages(data::ACPowerFlowData, part::GAPartition, time_step::Int) =
 function _ga_u0!(ws::GAWorkspace, cache::GeneralizedAdmittanceCache,
     u_s::Vector{ComplexF64})
     mul!(ws.u0, cache.blocks.Yls, u_s)
-    PNM.solve!(cache.Fl, ws.u0)
+    solve!(cache.Fl, ws.u0)
     ws.u0 .*= -1
     return
 end
@@ -29,7 +29,7 @@ function _ga_iterate!(cache::GeneralizedAdmittanceCache, np::GANodalPower,
     @inbounds for k in 1:nv
         R[k, 2] = zero(ComplexF64)
     end
-    PNM.solve!(cache.Fl, R)
+    solve!(cache.Fl, R)
     @inbounds for k in 1:nl
         ws.u[k] = ws.u0[k] + R[k, 1]
     end
@@ -42,7 +42,7 @@ function _ga_iterate!(cache::GeneralizedAdmittanceCache, np::GANodalPower,
     end
     # Schur on q: the i_v that gives ũ_v with no added q current
     mul!(ws.w, cache.blocks.Yqv, ws.ut)
-    PNM.solve!(cache.Fq, ws.w)
+    solve!(cache.Fq, ws.w)
     mul!(ws.iv_raw, cache.blocks.Yvv, ws.ut)
     mul!(ws.iv_raw, cache.blocks.Yvq, ws.w, -1.0, 1.0)
     @inbounds for k in 1:nv

@@ -189,6 +189,7 @@ end
     align(entry.linSolveCache, entry, data)
     @test entry.linSolveCache.lean_plan !== plan
     @test entry.linSolveCache.lean_plan.p === plan.p
+    @test iszero(align(entry.linSolveCache, entry, data))
 end
 
 @testset "lean LU: never attached off KLU" begin
@@ -445,7 +446,6 @@ end
     @test solve_power_flow!(fd)
     @test _lean_slot(fd).tried
     h = fd.solver_cache[].handoff[].cache
-    @test h.lean_plan === _lean_slot(fd).plan
     @test isapprox(fd.bus_magnitude, nr.bus_magnitude; atol = 1e-9, rtol = 0)
     @test isapprox(fd.bus_angles, nr.bus_angles; atol = 1e-9, rtol = 0)
     (; attempts) = PF._lean_counts(h)
@@ -453,6 +453,8 @@ end
     copyto!(fd.bus_angles, va0)
     @test solve_power_flow!(fd)
     @test fd.solver_cache[].handoff[].cache === h
+    # The re-solve moved the cache to the plan the first solve settled.
+    @test h.lean_plan === _lean_slot(fd).plan
     @test PF._lean_counts(h).attempts > attempts
     @test PF._lean_counts(h).rejects == 0
 
@@ -632,4 +634,29 @@ end
               serial.solver_cache[].lean.plan
         @test PF._lean_counts(work).attempts > 0
     end
+end
+
+@testset "lean LU: the first converged step settles the plan once" begin
+    data = _lean_sys14_data(; T = 4)
+    @test solve_power_flow!(data)
+    slot = _lean_slot(data)
+    @test !slot.settle_pending
+    settled = slot.plan
+    flat = _lean_sys14_data()
+    @test _lean_plan_hash(settled) != _lean_plan_hash(PF._lean_plan_slot!(flat, 1).plan)
+    @test data.polar_nr_cache[].linSolveCache.lean_plan.p === settled.p
+
+    data.bus_active_power_withdrawals .*= 1.01
+    @test solve_power_flow!(data)
+    @test slot.plan === settled
+    @test PF._lean_counts(data).rejects == 0
+
+    # A step that did not converge keeps the flat plan and closes the slot.
+    pending = _lean_sys14_data()
+    open_slot = PF._lean_plan_slot!(pending, 1)
+    @test open_slot.settle_pending
+    flat_plan = open_slot.plan
+    PF._settle_lean_plan!(pending, 1, false)
+    @test open_slot.plan === flat_plan
+    @test !open_slot.settle_pending
 end

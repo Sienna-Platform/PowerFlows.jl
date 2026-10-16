@@ -28,20 +28,24 @@ discriminates which path populated it — no sentinel tag is needed and a cross-
 `MethodError` rather than a silent reuse."""
 abstract type SolverCache end
 
-"""One frozen KLU pivot order (`PNM.KLUWrapper.LeanLUPlan`) for a Jacobian structure, built
-once on the operating-point-free Jacobian (|V| = 1, θ = 0) by [`_lean_plan_slot!`](@ref).
-`tried` is set by the first build attempt, so tasks sharing the slot never write it; `valid` is
-false when that attempt found the Jacobian singular. `bus_types` are the bus types that Jacobian
-was built with, for comparing a solve's bus types against the plan's."""
+"""One frozen KLU pivot order (`PNM.KLUWrapper.LeanLUPlan`) for a Jacobian structure. It is
+built once on the operating-point-free Jacobian (|V| = 1, θ = 0) by [`_lean_plan_slot!`](@ref),
+then rebuilt once on the first converged Jacobian of the same call by
+[`_settle_lean_plan!`](@ref). `tried` is set by the first build attempt, so tasks sharing the
+slot never write it; `valid` is false when that attempt found the Jacobian singular.
+`bus_types` are the bus types that Jacobian was built with, for comparing a solve's bus types
+against the plan's. `settle_pending` is true from the flat build to the end of the first step
+solved after it."""
 mutable struct LeanPlanSlot
     plan::PNM.KLUWrapper.LeanLUPlan
     tried::Bool
     valid::Bool
     bus_types::Vector{PSY.ACBusTypes.Value}
+    settle_pending::Bool
 end
 
 LeanPlanSlot() =
-    LeanPlanSlot(PNM.KLUWrapper.LeanLUPlan(), false, false, PSY.ACBusTypes.Value[])
+    LeanPlanSlot(PNM.KLUWrapper.LeanLUPlan(), false, false, PSY.ACBusTypes.Value[], false)
 
 """Memoized AC-Jacobian sparse structure, stored in its OWN `PowerFlowData` field (not the shared
 `solver_cache` slot): the NR/TR AC Jacobian and a [`SolverCache`](@ref) can both be live in one
@@ -389,7 +393,8 @@ const FastDecoupledFixed = FastDecoupledACPowerFlow{FDFixedJacobian, FDSchemeXB}
 
 Sparse generalized-admittance (PFPD) AC power flow: loads and generators are fixed shunts in the
 non-slack admittance block and corrective nodal currents restore the exact power and PV
-constraints by fixed-point iteration, reusing KLU factorizations of `Yℓℓ` and its PQ block.
+constraints by fixed-point iteration, reusing factorizations of `Yℓℓ` and its PQ block.
+The `linear_solver` setting selects the backend: KLU, AppleAccelerateLU, or MKLPardiso.
 The iteration is Anderson-accelerated, starts from stiffened PV shunts, and refreshes the shunts
 from the current iterate as the mismatch falls, which makes it robust from a flat start.
 Polar only. Supports `handoff_solver` ([`NewtonRaphsonACPowerFlow`](@ref),
@@ -1228,6 +1233,14 @@ function vPTDFDCPowerFlow(;
         time_steps,
     )
     _validate_n_threads(n_threads)
+    if linear_solver == "MKLPardiso"
+        throw(
+            ArgumentError(
+                "vPTDFDCPowerFlow does not support linear_solver = \"MKLPardiso\". " *
+                "Use PTDFDCPowerFlow or another linear_solver.",
+            ),
+        )
+    end
     resolve_linear_solver_backend(linear_solver)
     return vPTDFDCPowerFlow(
         exporter,

@@ -319,6 +319,7 @@ function _solve_columns!(
     cd = get_controlled_devices(data)
     for pos in positions
         ts_converged[pos] = _solve_column!(data, pf, steps[pos], flows, cd, merged_kwargs)
+        _settle_lean_plan!(data, steps[pos], ts_converged[pos])
     end
     @debug "lean LU refactors on this cache so far" lean = _lean_counts(data)
     return ts_converged
@@ -484,6 +485,9 @@ function _solve_columns_threaded!(
     # cache can seed the other workers: they share its read-only maps instead of building their own.
     head = _head_steps(slots[1].polar_nr_cache[], chunks[1])
     _solve_slot!(ts_converged, workers[1], slots[1], pf, steps, head, merged_kwargs)
+    # The head step settled a fresh plan. Close a plan left pending by an earlier call that
+    # raised, so no task writes the shared slot.
+    _settle_lean_plan!(workers[1], first(steps), false)
     _seed_workers!(workers, steps, chunks)
     @sync for (i, positions) in enumerate(chunks)
         worker = workers[i]

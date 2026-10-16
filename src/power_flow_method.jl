@@ -280,6 +280,7 @@ function _plan_at_flat!(
     time_step::Int64,
 )
     slot.tried = true
+    slot.settle_pending = true
     slot.bus_types = data.bus_type[:, time_step]
     s = J.bus_state
     fill!(s.Vm, 1.0)
@@ -306,6 +307,46 @@ function _plan_at_flat_in_place!(
     copyto!(s.θ, θ)
     copyto!(s.phasor, phasor)
     copyto!(SparseArrays.nonzeros(J.Jv), nz)
+    return
+end
+
+"""Rebuild the lean plan of `data`'s Jacobian structure once, on the Jacobian at the solved state
+of `time_step`. It runs at the end of the first step solved after `_plan_at_flat!` built
+the plan, and closes the slot to later calls. A plan built at a solved state keeps the pivots of
+later operating points above the ratio test where the flat plan can fail it (EI515, eight load
+steps: one reject at flat, none after the rebuild), and each reject costs a `klu_factor`. A step
+that did not converge keeps the flat plan. A failed rebuild keeps it too.
+
+It writes the shared slot without a lock. Call it only where no task shares the slot: after a
+serial step, or before `_solve_columns_threaded!` spawns its tasks. Caches holding the flat plan
+take the new one at their next `_align_lean_plan!`."""
+_settle_lean_plan!(data::ACPowerFlowData, time_step::Int, converged::Bool) =
+    _settle_lean_plan!(data.ac_jacobian_structure_cache[], data, time_step, converged)
+_settle_lean_plan!(::Nothing, ::ACPowerFlowData, ::Int, ::Bool) = nothing
+function _settle_lean_plan!(
+    memo::ACJacobianStructureCache,
+    data::ACPowerFlowData,
+    time_step::Int,
+    converged::Bool,
+)
+    slot = memo.lean
+    slot.settle_pending || return
+    slot.settle_pending = false
+    (converged && slot.valid) || return
+    bus_type = view(data.bus_type, :, time_step)
+    # A Q-limit switch since the flat build would plan for types the next steps start without.
+    bus_type == slot.bus_types || return
+    residual = ACPowerFlowResidual(data, time_step)
+    J = ACPowerFlowJacobian(data, residual, time_step)
+    s = J.bus_state
+    s.Vm .= view(data.bus_magnitude, :, time_step)
+    s.θ .= view(data.bus_angles, :, time_step)
+    s.phasor .= s.Vm .* cis.(s.θ)
+    _update_jacobian_matrix_values!(J, data, time_step)
+    settled = LeanPlanSlot()
+    _build_lean_plan!(settled, J.Jv, time_step)
+    settled.valid || return
+    slot.plan = settled.plan
     return
 end
 
@@ -389,12 +430,16 @@ function _align_lean_plan!(
     bus_type::AbstractVector{PSY.ACBusTypes.Value},
 )
     PNM.KLUWrapper.has_lean_plan(c) || return
+    # `_settle_lean_plan!` replaced the slot's plan after this cache took it. A swapped order
+    # keeps its plan's `p`, as `swap_lean_columns!` checks.
+    c.lean_plan.p === slot.plan.p || PNM.KLUWrapper.set_lean_plan!(c, slot.plan)
     plan_types = slot.bus_types
     swaps(i) = _swaps_state_columns(plan_types[i], bus_type[i])
     pairs = ((2i - 1, 2i) for i in eachindex(bus_type, plan_types) if swaps(i))
     PNM.KLUWrapper.swap_lean_columns!(c, slot.plan, pairs)
     return
 end
+
 _align_lean_plan!(
     ::PNM.LinearSolverCache,
     ::LeanPlanSlot,

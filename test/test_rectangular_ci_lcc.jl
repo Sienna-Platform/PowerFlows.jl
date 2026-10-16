@@ -92,6 +92,28 @@ end
         perturbation = 0.01)
 end
 
+@testset "Rectangular CI LCC: asymptotic verification at REF and PV terminals" begin
+    # case5_2_lcc has x_t = 0, so ϕ ≡ ±α there. Here x_t > 0, each converter is at a REF or a
+    # PV bus, and the setpoint is on either side.
+    for (from, to) in ((1, 2), (2, 1)), setpoint in (0.5, -0.5)
+        sys = System(100.0)
+        b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.1, 0.0)
+        b2 = _add_simple_bus!(sys, 2, ACBusTypes.PV, 230, 1.05, 0.0)
+        b3 = _add_simple_bus!(sys, 3, ACBusTypes.PQ, 230, 1.1, 0.0)
+        _add_simple_load!(sys, b2, 10, 5)
+        _add_simple_load!(sys, b3, 60, 20)
+        _add_simple_line!(sys, b1, b2, 5e-3, 5e-3, 1e-3)
+        _add_simple_line!(sys, b1, b3, 5e-3, 5e-3, 1e-3)
+        _add_simple_source!(sys, b1, 0.0, 0.0)
+        _add_simple_thermal_standard!(sys, b2, 0.2, 0.0)
+        terminals = (b1, b2)
+        lcc = _add_simple_lcc!(sys, terminals[from], terminals[to], 0.05, 0.05, 0.08)
+        PSY.set_inverter_extinction_angle!(lcc, 1.0)
+        PSY.set_power_transfer_setpoint!(lcc, setpoint * u"CU")
+        _rect_lcc_verify(sys; label = "rect CI LCC $from→$to, setpoint $setpoint")
+    end
+end
+
 @testset "Rectangular CI LCC: asymptotic Jacobian verification on case5_2_lcc" begin
     raw_path = joinpath(TEST_DATA_DIR, "case5_2_lcc.raw")
     sys = system_from_openapi(PFP.PowerModelsData(raw_path); runchecks = false)

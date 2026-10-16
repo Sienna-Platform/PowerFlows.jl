@@ -102,42 +102,55 @@ struct GACacheKey
     s_ix::Vector{Int}
     v_ix::Vector{Int}
     q_ix::Vector{Int}
+    backend::PNM.LinearSolverType
 end
 
-Base.:(==)(a::GACacheKey, b::GACacheKey) =
-    a.ybus_id == b.ybus_id && a.s_ix == b.s_ix && a.v_ix == b.v_ix && a.q_ix == b.q_ix
+function Base.:(==)(a::GACacheKey, b::GACacheKey)
+    return a.ybus_id == b.ybus_id && a.s_ix == b.s_ix && a.v_ix == b.v_ix &&
+           a.q_ix == b.q_ix && a.backend === b.backend
+end
 
-mutable struct GeneralizedAdmittanceCache <: SolverCache
+mutable struct GeneralizedAdmittanceCache{F <: PNM.LinearSolverCache} <: SolverCache
     key::GACacheKey
     blocks::GABlocks
-    Fl::PNM.KLULinSolveCache{ComplexF64, Int64}
-    Fq::PNM.KLULinSolveCache{ComplexF64, Int64}
+    Fl::F
+    Fq::F
     factored::Bool
     ws::GAWorkspace
     aa::GAAnderson
 end
 
-_ga_cache_key(data::ACPowerFlowData, part::GAPartition) =
-    GACacheKey(objectid(get_power_network_matrix(data)), part.s_ix, part.v_ix, part.q_ix)
+_ga_cache_key(data::ACPowerFlowData, part::GAPartition, backend::PNM.LinearSolverType) =
+    GACacheKey(
+        objectid(get_power_network_matrix(data)), part.s_ix, part.v_ix, part.q_ix, backend)
 
 # An empty slot rebuilds. A cache from a different solver raises a MethodError.
 _ga_can_reuse(::Nothing, ::GACacheKey) = false
 _ga_can_reuse(c::GeneralizedAdmittanceCache, key::GACacheKey) = c.key == key
 
-function _build_ga_cache(data::ACPowerFlowData, part::GAPartition)
+function _build_ga_cache(
+    data::ACPowerFlowData,
+    part::GAPartition,
+    backend::PNM.LinearSolverType,
+)
     blocks = GABlocks(data, part)
-    return GeneralizedAdmittanceCache(_ga_cache_key(data, part), blocks,
-        PNM.KLULinSolveCache(blocks.Yll), PNM.KLULinSolveCache(blocks.Yqq), false,
+    return GeneralizedAdmittanceCache(_ga_cache_key(data, part, backend), blocks,
+        make_linear_solver_cache(backend, blocks.Yll),
+        make_linear_solver_cache(backend, blocks.Yqq), false,
         GAWorkspace(n_v(part), n_q(part), part.n_islands),
         GAAnderson(n_l(part), GA_ANDERSON_DEPTH))
 end
 
-function _get_or_build_ga_cache!(data::ACPowerFlowData, part::GAPartition)
+function _get_or_build_ga_cache!(
+    data::ACPowerFlowData,
+    part::GAPartition,
+    backend::PNM.LinearSolverType,
+)
     slot = data.solver_cache[]
-    if _ga_can_reuse(slot, _ga_cache_key(data, part))
+    if _ga_can_reuse(slot, _ga_cache_key(data, part, backend))
         return slot::GeneralizedAdmittanceCache
     end
-    cache = _build_ga_cache(data, part)
+    cache = _build_ga_cache(data, part, backend)
     data.solver_cache[] = cache
     return cache
 end
@@ -169,16 +182,56 @@ end
 
 _ga_factor_error(e, ::GAPartition, ::Dict{Int, Int}, block) = throw(e)
 
+# Runs only after a failure: a KLU factorization of `A` names the bus.
+function _ga_locate_singular(A::SparseMatrixCSC, block, part::GAPartition,
+    bus_lookup::Dict{Int, Int})
+    try
+        PNM.klu_factorize(A)
+    catch k
+        _ga_factor_error(k, part, bus_lookup, block)
+    end
+    return
+end
+
+function _ga_singular_error(A::SparseMatrixCSC{ComplexF64, Int64}, block,
+    part::GAPartition, bus_lookup::Dict{Int, Int})
+    _ga_locate_singular(A, block, part, bus_lookup)
+    return error(
+        "GeneralizedAdmittanceACPowerFlow: $(_ga_block_name(block)) is numerically " *
+        "singular. Is there an island without a REF bus?",
+    )
+end
+
+# AppleAccelerate reports a singular block with `info == 0`, so `_ga_factor_error` cannot
+# index the block rows. The KLU diagnosis names the bus instead.
+_ga_on_factor_error(e, ::PNM.KLULinSolveCache, ::SparseMatrixCSC, block,
+    part::GAPartition, bus_lookup::Dict{Int, Int}) =
+    _ga_factor_error(e, part, bus_lookup, block)
+_ga_on_factor_error(e, ::Any, A::SparseMatrixCSC, block,
+    part::GAPartition, bus_lookup::Dict{Int, Int}) =
+    _ga_located_error(e, A, block, part, bus_lookup)
+_ga_located_error(::LinearAlgebra.SingularException, A::SparseMatrixCSC, block,
+    part::GAPartition, bus_lookup::Dict{Int, Int}) =
+    _ga_singular_error(A, block, part, bus_lookup)
+function _ga_located_error(e, A::SparseMatrixCSC, block, part::GAPartition,
+    bus_lookup::Dict{Int, Int})
+    _ga_locate_singular(A, block, part, bus_lookup)
+    rethrow(e)
+end
+
 function _ga_factor_block!(F, A::SparseMatrixCSC{ComplexF64, Int64}, factored::Bool,
     block, part::GAPartition, bus_lookup::Dict{Int, Int})
     try
         if factored
-            PNM.numeric_refactor!(F, A)
+            numeric_refactor!(F, A)
         else
-            PNM.full_factor!(F, A)
+            full_factor!(F, A)
         end
     catch e
-        _ga_factor_error(e, part, bus_lookup, block)
+        _ga_on_factor_error(e, F, A, block, part, bus_lookup)
+    end
+    if !PNM.factorization_ok(F, A)
+        _ga_singular_error(A, block, part, bus_lookup)
     end
     return
 end

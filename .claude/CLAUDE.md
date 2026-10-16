@@ -36,7 +36,7 @@ Include order is authoritative — see `src/PowerFlows.jl`. New types/consts mus
 - **Diagnostics / results:** `residual_condition_diagnostics.jl`, `post_processing.jl`, `branch_flow_results.jl`.
 - **HVDC/LCC:** `lcc_parameters.jl`, `lcc_utils.jl`.
 - **Export:** `psse_export.jl` (PSS/E `.raw`).
-- **Pardiso backend:** `ext/PowerFlowsPardisoExt.jl` (weakdep extension).
+- **Pardiso backend:** none in PowerFlows; `PNM.PardisoLinSolveCache` lives in PNM's `MKLPardisoExt`.
 
 ## Public API / entry points
 
@@ -76,9 +76,9 @@ Exported solver-model types and functions (see `src/PowerFlows.jl`):
 
 **`validate_voltage_magnitudes`** exists for polar, rectangular, and mixed. For rect/mixed it checks squared bounds (`e²+f² ∈ [min²,max²]`) for PQ and PV (PV `(e,f)` are real state vars and `|V|²` can drift mid-iteration before the constraint row pins it); REF skipped. Toggle via the `validate_voltage_magnitudes` keyword of the formulation constructor (a `SolutionParameters` field; the old `solver_settings` Dict is gone).
 
-**Linear-solver backends (PNM-owned).** PowerFlows no longer hand-rolls a KLU cache — KLU is **not** a direct dependency. Backends come from PNM (`PNM.KLULinSolveCache{Tv,Ti}`, `PNM.AAFactorCache` for AppleAccelerate) plus a PowerFlows-defined `PardisoLinSolveCache` in `ext/PowerFlowsPardisoExt.jl`. Selection = PNM preference default + the `linear_solver` keyword (AC: a `SolutionParameters` field, resolved to a `String` at construction; DC: per-solve kwarg). `"Dense"` is rejected at resolution time.
+**Linear-solver backends (PNM-owned).** PowerFlows no longer hand-rolls a KLU cache — KLU is **not** a direct dependency. Backends come from PNM: `PNM.KLULinSolveCache{Tv,Ti}`, `PNM.AAFactorCache` for AppleAccelerate, and `PNM.PardisoLinSolveCache` (PNM's `MKLPardisoExt`, loaded on `import Pardiso`). Selection = PNM preference default + the `linear_solver` keyword (AC: a `SolutionParameters` field, resolved to a `String` at construction; DC: per-solve kwarg). `"Dense"` is rejected at resolution time.
 - Index width gates the AppleAccelerate path: `INDEX_TYPE = @static Sys.isapple() ? Int64 : Int32` (drives `J_INDEX_TYPE`/`REC_INDEX_TYPE`). AA's Apple `libSparse` ABI needs Int64 `columnStarts`; KLU uses Int32 elsewhere. Any cache-type `Union` must list BOTH `KLULinSolveCache{Float64,Int32}` and `{…,Int64}` (PNM's DC ABA factorization is always Int64 — omitting it MethodErrors on Linux).
-- The KLU and AA backends do NOT share generic functions: `PNM.solve!/full_factor!/symbolic_factor!/numeric_refactor!/tsolve!` are KLU-only (`.KLUWrapper`); AA's live in `PNM.AccelerateWrapper.*`. PowerFlows defines local dispatch over both cache types. `AAFactorCache` is Int-only with NO transpose solve, so voltage-stability factors (need Aᵀ\b) stay KLU-only.
+- All backend caches share PNM's `PNM.solve!/full_factor!/symbolic_factor!/numeric_refactor!/is_factored`, plus `PNM.make_linear_solver_cache` and `PNM.factorization_ok`; PowerFlows forwards to them and keeps its own KLU `Float64` arms for the lean plan. `PNM.tsolve!` is KLU-only. `AAFactorCache` is Int-only with NO transpose solve, so voltage-stability factors (need Aᵀ\b) stay KLU-only.
 - MKLPardiso is x86_64-only; `resolve_linear_solver_backend` rejects it when `Sys.ARCH !== :x86_64`; Pardiso tests gate on `Pardiso.mkl_is_available()`.
 
 **Singular-matrix handling is backend-agnostic.** Native singular signals are heterogeneous (KLU throws `SingularException`, AppleAccelerate silently returns finite garbage, Pardiso perturbs pivots). The authoritative guard is in `_set_Δx_nr!`: catch any factorization throw → fallback; then use the **relative residual** `‖JΔx−r‖/‖r‖` from `_do_refinement!`; if above `DEFAULT_REFINEMENT_THRESHOLD` (5%) → regularized KLU fallback. Native signals are diagnostics only.
