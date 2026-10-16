@@ -13,7 +13,7 @@ the distributed-slack cross-terms follow the participation factors. Per-iteratio
   `independent_ref` — shared with the residual
 - `Y_diag::Vector{ComplexF64}` — cached `Y_bus_eff` diagonal
 - `yb_nz::Matrix{Int}` — `4 × nnz(Y_bus_eff)`: the `Jv` entries `(P,e) (P,f) (Q,e) (Q,f)` of
-  each Y-bus nonzero's block (row bus, column bus)
+  each off-diagonal Y-bus nonzero's block (row bus, column bus); diagonal columns hold 0
 - `diag_nz::Matrix{Int}` — `4 × n_buses`, same order, for each bus's own block
 - `slack_nz_idx_e`, `slack_nz_idx_f`, `slack_c_k` — distributed-slack
   cross-terms (see [`_build_slack_nz_cache`](@ref))
@@ -190,19 +190,21 @@ end
 """
     _build_rect_yb_nz_cache(Jv, Y_bus_eff, bus_state_offset) -> yb_nz
 
-`nonzeros(Jv)` indices of the 2×2 block of every Y-bus nonzero, by the nonzero's index in
-`Y_bus_eff`, in the order `(P,e) (P,f) (Q,e) (Q,f)`.
+`nonzeros(Jv)` indices of the 2×2 block of every off-diagonal Y-bus nonzero, by the
+nonzero's index in `Y_bus_eff`, in the order `(P,e) (P,f) (Q,e) (Q,f)`. `diag_nz` covers the
+diagonal.
 """
 function _build_rect_yb_nz_cache(
     Jv::SparseMatrixCSC{Float64, J_INDEX_TYPE},
     Y_bus_eff::SparseMatrixCSC{ComplexF64, Int},
     bus_state_offset::Vector{REC_INDEX_TYPE},
 )
-    yb_nz = Matrix{Int}(undef, 4, SparseArrays.nnz(Y_bus_eff))
+    yb_nz = zeros(Int, 4, SparseArrays.nnz(Y_bus_eff))
     Yrows = SparseArrays.rowvals(Y_bus_eff)
     for col in 1:size(Y_bus_eff, 2)
         c = Int(bus_state_offset[col])
         for k in SparseArrays.nzrange(Y_bus_eff, col)
+            Yrows[k] == col && continue
             r = Int(bus_state_offset[Yrows[k]])
             yb_nz[1, k] = _jv_nz_index(Jv, r, c)
             yb_nz[2, k] = _jv_nz_index(Jv, r, c + 1)
