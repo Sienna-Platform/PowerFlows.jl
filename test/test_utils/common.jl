@@ -1301,7 +1301,11 @@ end
 
 # ── Shared VSC test builders ────────────────────────────────────────────────────────────────────
 
-const VSC_SOLUTION_PARAMETERS = SolutionParameters(; model_dc_network = true)
+const VSC_SOLUTION_PARAMETERS =
+    SolutionParameters(; model_dc_network = true, tol = PF.DEFAULT_NR_TOL)
+
+# Pure B′/B″ FD defaults to `DEFAULT_FD_TOL`; NR-parity tests need the Newton tolerance.
+const FD_PARITY_PARAMETERS = SolutionParameters(; tol = PF.DEFAULT_NR_TOL)
 
 # One point-to-point VSC line between the first two PQ buses of c_sys14: from = DC-voltage control
 # (DC slack), to = (P, Q) control. Extra `TwoTerminalVSCLine` fields pass through `vsc_kwargs...`

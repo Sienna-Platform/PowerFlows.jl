@@ -3,7 +3,7 @@
     # `maxIterations` is a static field of the returned NamedTuple; an unresolved value
     # reports the sentinel, resolved to a solver's default by the model constructor.
     @test kwargs.maxIterations == PF.UNSET_MAX_ITERATIONS
-    @test kwargs.tol == PF.DEFAULT_NR_TOL
+    @test kwargs.tol == PF.UNSET_TOL
     @test kwargs.validate_voltage_magnitudes == PF.DEFAULT_VALIDATE_VOLTAGES
     @test kwargs.λ_0 == PF.DEFAULT_λ_0
     @test kwargs.Δt_k == PF.DEFAULT_Δt_k
@@ -111,4 +111,19 @@ end
     pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; correct_bustypes = true)
     data = PF.PowerFlowData(pf, sys)
     @test_throws ErrorException PF.solve_power_flow!(data; maxIterations = -1)
+end
+
+@testset "tol resolves to the solver default" begin
+    _tol(F, S; kwargs...) =
+        PF.get_solver_kwargs(
+            F{S}(; solution_parameters = SolutionParameters(; kwargs...)),
+        ).tol
+    @test _tol(ACPolarPowerFlow, PF.FastDecoupledXB) == PF.DEFAULT_FD_TOL
+    @test _tol(ACPolarPowerFlow, PF.FastDecoupledACPowerFlow) == PF.DEFAULT_FD_TOL
+    @test _tol(ACPolarPowerFlow, PF.FastDecoupledFixed) == PF.DEFAULT_NR_TOL
+    @test _tol(ACRectangularPowerFlow, PF.FastDecoupledACPowerFlow) == PF.DEFAULT_NR_TOL
+    @test _tol(ACPolarPowerFlow, NewtonRaphsonACPowerFlow) == PF.DEFAULT_NR_TOL
+    @test _tol(ACPolarPowerFlow, PF.FastDecoupledXB;
+        handoff_solver = NewtonRaphsonACPowerFlow) == PF.DEFAULT_NR_TOL
+    @test _tol(ACPolarPowerFlow, PF.FastDecoupledXB; tol = 1e-8) == 1e-8
 end

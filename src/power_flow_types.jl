@@ -362,8 +362,24 @@ function _resolved_max_iterations(
     return _default_max_iterations(ACSolver)
 end
 
-"""`params` with `marquardt_scaling` and `maxIterations` resolved to the defaults of formulation
-`F` and solver `ACSolver`; an explicit `marquardt_scaling` is kept."""
+"""The `SolutionParameters` `tol` default for formulation `F`, solver `ACSolver` and handoff
+solver `handoff`, resolved by the formulation constructors when the caller leaves it at
+`UNSET_TOL`. The pure B′/B″ fast decoupled methods live in fast_decoupled_method.jl."""
+_default_tol(::Type, ::Type{<:ACPowerFlowSolverType}, ::Type) = DEFAULT_NR_TOL
+
+"""`params.tol`, resolving `UNSET_TOL` to the default of `F` and `ACSolver`. An explicit value
+is kept as-is."""
+function _resolved_tol(
+    params::SolutionParameters,
+    ::Type{F},
+    ::Type{ACSolver},
+) where {F <: AbstractACPowerFlow, ACSolver <: ACPowerFlowSolverType}
+    params.tol == UNSET_TOL || return params.tol
+    return _default_tol(F, ACSolver, params.handoff_solver)
+end
+
+"""`params` with `marquardt_scaling`, `maxIterations` and `tol` resolved to the defaults of
+formulation `F` and solver `ACSolver`; an explicit `marquardt_scaling` is kept."""
 function _resolve_solver_defaults(
     params::SolutionParameters,
     ::Type{F},
@@ -374,6 +390,7 @@ function _resolve_solver_defaults(
         params;
         marquardt_scaling = something(marquardt_scaling, _default_marquardt_scaling(F)),
         maxIterations = _resolved_max_iterations(params, ACSolver),
+        tol = _resolved_tol(params, F, ACSolver),
     )
 end
 

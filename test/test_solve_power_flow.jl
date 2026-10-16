@@ -120,7 +120,10 @@ function test_ac_3bus_fixed_admittance(ACSolver)
     bus_103 = get_component(PSY.ACBus, sys_3bus, "BUS 3")
     fix_shunt = PSY.FixedAdmittance("FixAdmBus3", true, bus_103, 0.0 + 0.2im)
     add_component!(sys_3bus, fix_shunt)
-    pf = ACPowerFlow{ACSolver}(; correct_bustypes = true)
+    pf = ACPowerFlow{ACSolver}(;
+        correct_bustypes = true,
+        solution_parameters = FD_PARITY_PARAMETERS,
+    )
     df = solve_power_flow(pf, sys_3bus)
     @test isapprox(df["bus_results"].P_gen, p_gen_matpower_3bus, atol = 1e-4)
     @test isapprox(df["bus_results"].Q_gen, q_gen_matpower_3bus, atol = 1e-4)

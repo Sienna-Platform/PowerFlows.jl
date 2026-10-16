@@ -16,6 +16,20 @@ _default_fd_variant(::ACPolarPowerFlow) = FDDecoupled()
 _default_fd_variant(::ACRectangularPowerFlow) = FDFixedJacobian()
 _default_fd_variant(::ACMixedPowerFlow) = FDFixedJacobian()
 
+# Pure B′/B″ (no handoff) gets `DEFAULT_FD_TOL`: a handoff polishes to `tol`, and the frozen-
+# Jacobian variant reaches the Newton tolerance. The bare type is B′/B″ only under polar.
+_default_tol(
+    ::Type,
+    ::Type{FastDecoupledACPowerFlow{FDDecoupled, S}},
+    ::Type{NoHandoff},
+) where {S} = DEFAULT_FD_TOL
+_default_tol(
+    ::Type{<:ACPolarPowerFlow},
+    ::Type{FastDecoupledACPowerFlow},
+    ::Type{NoHandoff},
+) =
+    DEFAULT_FD_TOL
+
 # The variant/scheme carried as the FastDecoupledACPowerFlow type parameters, extracted by
 # dispatching on the solver TYPE (the formulation's first type parameter). A bare, unparametrized
 # `FastDecoupledACPowerFlow` falls back to the per-formulation variant default and the XB scheme.
