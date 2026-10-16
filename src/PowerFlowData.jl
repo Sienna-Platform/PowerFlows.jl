@@ -73,10 +73,11 @@ the respective type of power flow evaluations.
 - `bus_type::Matrix{PSY.ACBusTypes.Value}`:
         matrix containing type of buses present in the system.
 - `bus_magnitude::Matrix{Float64}`:
-        matrix containing the bus voltage magnitudes.
+        solved bus voltage magnitudes. Also the REF setpoint, and the PV setpoint
+        under polar.
 - `bus_voltage_setpoint::Matrix{Float64}`:
-        PV voltage setpoint per bus and time step. The rect and mixed formulations read the
-        PV constraint `|V|² − V_set²` from this matrix. Polar reads `bus_magnitude`.
+        PV voltage setpoints read by rect and mixed. Never written by a solve. To change
+        a PV setpoint, write this and `bus_magnitude`.
 - `bus_angles::Matrix{Float64}`:
         matrix containing the bus voltage angles.
 - `arc_active_power_flow_from_to::Matrix{Float64}`:
