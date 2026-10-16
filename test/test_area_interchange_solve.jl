@@ -498,6 +498,7 @@ end
     sys_fd = _three_area_transfer_fixture(; slack_area3 = true)
     pf_fd = ACPolarPowerFlow{FastDecoupledACPowerFlow{PF.FDDecoupled, PF.FDSchemeXB}}(;
         area_interchange_control = true,
+        solution_parameters = FD_PARITY_PARAMETERS,
     )
     data_fd = PowerFlowData(pf_fd, sys_fd)
     @test solve_power_flow!(data_fd)
@@ -530,6 +531,7 @@ end
     sys_fd = _three_area_transfer_fixture(; slack_area3 = true)
     pf_fd = ACPolarPowerFlow{FastDecoupledACPowerFlow{PF.FDDecoupled, PF.FDSchemeXB}}(;
         area_interchange_control = true,
+        solution_parameters = FD_PARITY_PARAMETERS,
     )
     data_fd = PowerFlowData(pf_fd, sys_fd)
     @test solve_power_flow!(data_fd)
@@ -542,7 +544,9 @@ end
     # Regression: a pure-AC FD solve (no controlled areas) is unaffected by the area-border
     # scratch/substep.
     sys_ac = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
-    pf_ac = ACPolarPowerFlow{FastDecoupledACPowerFlow{PF.FDDecoupled, PF.FDSchemeXB}}()
+    pf_ac = ACPolarPowerFlow{FastDecoupledACPowerFlow{PF.FDDecoupled, PF.FDSchemeXB}}(;
+        solution_parameters = FD_PARITY_PARAMETERS,
+    )
     data_ac = PowerFlowData(pf_ac, sys_ac)
     @test PF.n_controlled_areas(data_ac) == 0
     @test solve_power_flow!(data_ac)
@@ -2068,6 +2072,7 @@ end
     sys_fd = _comprehensive_area_dc_fixture()
     pf_fd = ACPolarPowerFlow{FastDecoupledACPowerFlow{PF.FDDecoupled, PF.FDSchemeXB}}(;
         area_interchange_control = true,
+        solution_parameters = FD_PARITY_PARAMETERS,
     )
     data_fd = PowerFlowData(pf_fd, sys_fd)
     @test solve_power_flow!(data_fd)

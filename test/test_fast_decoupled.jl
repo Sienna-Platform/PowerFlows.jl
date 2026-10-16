@@ -763,12 +763,18 @@ end
         Bpp = Matrix(PF.get_bpp_matrix(PF.extract_bpp(fd, sort(pq))))
         @test isapprox(Bpp, transpose(Bpp); atol = 1e-6, rtol = 0)
     end
+
+    # (c) B′ rows sum to zero under both schemes, so the phase shifter adds no angle shunt.
+    for fd in (fd_xb, fd_bx)
+        Bp_full = Matrix(PF._assemble_bp_full(fd.arc_params, fd.scheme))
+        @test maximum(abs, sum(Bp_full; dims = 2)) < 1e-9
+    end
 end
 
 # Polar :decoupled FD constructor with arbitrary settings.
 _fd_decoupled_pf(; scheme::PF.FDScheme = PF.FDSchemeXB(), kwargs...) =
     ACPowerFlow{PF.FastDecoupledACPowerFlow{PF.FDDecoupled, typeof(scheme)}}(;
-        solution_parameters = SolutionParameters(; kwargs...))
+        solution_parameters = SolutionParameters(; tol = PF.DEFAULT_NR_TOL, kwargs...))
 
 # T2 — Polar FDNR solution parity. For each scheme and system, the pure FD :decoupled
 # solve must (1) converge to tol=1e-9 within DEFAULT_FD_MAX_ITER, (2) match an INDEPENDENT
@@ -1103,7 +1109,8 @@ end
             sys_fd = _build_sys14_qlim()
             pf_fd = ACPowerFlow{_fd_solver(variant)}(;
                 check_reactive_power_limits = true,
-                correct_bustypes = true)
+                correct_bustypes = true,
+                solution_parameters = FD_PARITY_PARAMETERS)
             data_fd = PowerFlowData(pf_fd, sys_fd)
             @test solve_power_flow!(data_fd)
             x_fd = _calc_x(data_fd, 1)
@@ -1291,7 +1298,10 @@ end
     @test solve_power_flow!(data_nr)
 
     sys_fd, _ = simple_lcc_system()
-    data_fd = PF.PowerFlowData(ACPowerFlow{_fd_solver(:decoupled)}(), sys_fd)
+    data_fd = PF.PowerFlowData(
+        ACPowerFlow{_fd_solver(:decoupled)}(; solution_parameters = FD_PARITY_PARAMETERS),
+        sys_fd,
+    )
     @test PF.get_lcc_count(data_fd) > 0
     @test solve_power_flow!(data_fd)
     @test isapprox(data_fd.bus_magnitude[:, 1], data_nr.bus_magnitude[:, 1];
@@ -1414,7 +1424,8 @@ end
     time_steps = 24
 
     pf_fd = ACPowerFlow{_fd_solver(:decoupled)}(;
-        time_steps = time_steps)
+        time_steps = time_steps,
+        solution_parameters = FD_PARITY_PARAMETERS)
     data_fd = PowerFlowData(pf_fd, sys)
     prepare_ts_data!(data_fd, time_steps)
     @test solve_power_flow!(data_fd)
@@ -1515,7 +1526,9 @@ end
     time_steps = 24
     bx_solver = PF.FastDecoupledACPowerFlow{PF.FDDecoupled, PF.FDSchemeBX}
 
-    pf_fd = ACPowerFlow{bx_solver}(; time_steps = time_steps)
+    pf_fd = ACPowerFlow{bx_solver}(;
+        time_steps = time_steps,
+        solution_parameters = FD_PARITY_PARAMETERS)
     data_fd = PowerFlowData(pf_fd, sys)
     prepare_ts_data!(data_fd, time_steps)
     @test solve_power_flow!(data_fd)
@@ -1573,7 +1586,8 @@ end
     pf_fd = ACPowerFlow{_fd_solver(:decoupled)}(;
         time_steps = time_steps,
         check_reactive_power_limits = true,
-        correct_bustypes = true)
+        correct_bustypes = true,
+        solution_parameters = FD_PARITY_PARAMETERS)
     data_fd = PowerFlowData(pf_fd, sys)
     prepare_ts_data!(data_fd, time_steps)
     @test solve_power_flow!(data_fd)
@@ -1779,7 +1793,11 @@ end
         _add_simple_line!(sys, b1, b2, 0.01, 0.1, 0.0)
         data_nr = PowerFlowData(ACPowerFlow{NewtonRaphsonACPowerFlow}(), sys)
         @test solve_power_flow!(data_nr)
-        data_fd = PowerFlowData(ACPowerFlow{PF.FastDecoupledACPowerFlow}(), sys)
+        data_fd = PowerFlowData(
+            ACPowerFlow{PF.FastDecoupledACPowerFlow}(;
+                solution_parameters = FD_PARITY_PARAMETERS),
+            sys,
+        )
         @test solve_power_flow!(data_fd)
         @test isapprox(data_fd.bus_magnitude[:, 1], data_nr.bus_magnitude[:, 1];
             atol = TIGHT_TOLERANCE, rtol = 0)
@@ -1844,7 +1862,8 @@ end
 
         sys_fd = PSB.build_system(PSB.MatpowerTestSystems, "matpower_ACTIVSg2000_sys")
         pf_fd = ACPowerFlow{_fd_solver(:decoupled)}(;
-            correct_bustypes = true)
+            correct_bustypes = true,
+            solution_parameters = FD_PARITY_PARAMETERS)
         data_fd = PowerFlowData(pf_fd, sys_fd)
         @test solve_power_flow!(data_fd)
         @test isapprox(data_fd.bus_magnitude[:, 1], data_nr.bus_magnitude[:, 1];

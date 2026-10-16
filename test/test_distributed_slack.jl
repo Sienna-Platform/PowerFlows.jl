@@ -501,7 +501,8 @@ end
         @testset "$label" begin
             sys_fd = build_c_sys14()
             pf_fd = ACPowerFlow{solver}(;
-                generator_slack_participation_factors = equal_gspf(sys_fd))
+                generator_slack_participation_factors = equal_gspf(sys_fd),
+                solution_parameters = FD_PARITY_PARAMETERS)
             data_fd = PowerFlowData(pf_fd, sys_fd)
             @test solve_power_flow!(data_fd)
             # Voltages match NR.
