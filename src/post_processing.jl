@@ -745,6 +745,7 @@ function write_power_flow_solution!(
 
     # once redistribution is working again, could remove skip_redistribution.
     bus_lookup = get_bus_lookup(data)
+    possible_PV = can_be_PV(sys)
     for (bus_number, reduced_buses) in PNM.get_bus_reduction_map(nrd)
         if length(reduced_buses) == 0
             # no reduction.
@@ -752,7 +753,8 @@ function write_power_flow_solution!(
             bus = PSY.get_component(PSY.ACBus, sys, bus_name)
             ix = bus_lookup[bus_number]
             bustype = data.bus_type[ix, time_step] # may not be the same as bus.bustype!
-            if _bustype_write_back_needed(PSY.get_bustype(bus), bustype)
+            original_bustype = PSY.get_bustype(bus)
+            if _bustype_write_back_needed(original_bustype, bustype)
                 @warn "Changing system bus type at bus $(PSY.get_name(bus)) to match " *
                       "power flow bus type." maxlog = PF_MAX_LOG
                 PSY.set_bustype!(bus, bustype)
@@ -794,6 +796,14 @@ function write_power_flow_solution!(
                 θ = data.bus_angles[ix, time_step]
                 PSY.set_magnitude!(bus, Vm)
                 PSY.set_angle!(bus, θ)
+                # PV bus switched to PQ due to Q limits: write back the clamped Q. A PV bus
+                # that correct_bustypes demoted for having no available source has no
+                # device to write Q onto, so skip it.
+                if original_bustype == PSY.ACBusTypes.PV && bus_number in possible_PV &&
+                   !pf.skip_redistribution
+                    Q_gen = data.bus_reactive_power_injections[ix, time_step]
+                    _reactive_power_redistribution_pv(sys, Q_gen, bus, max_iterations)
+                end
             end
         else
             @warn "Buses $reduced_buses were reduced into bus $bus_number: skipping reactive" *

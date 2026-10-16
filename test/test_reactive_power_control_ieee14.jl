@@ -140,6 +140,36 @@ end
     @test data.bus_type[bus_lookup[1], 1] == ACBusTypes.REF
 end
 
+@testset "reactive power control: PV -> PQ switched generator Q written back to system" begin
+    sys = _make_ieee14_scaled_load_system(1.4)
+    pf = ACPolarPowerFlow(; check_reactive_power_limits = true)
+    @test solve_and_store_power_flow!(pf, sys)
+    base = get_base_power(sys)
+    for (bus_number, qmax) in IEEE14_PV_QMAX_MVAR
+        gens = get_components(
+            g -> get_available(g) && get_number(get_bus(g)) == bus_number,
+            Generator,
+            sys,
+        )
+        @test isapprox(sum(get_reactive_power.(gens)) * base, qmax; atol = 1e-3)
+    end
+end
+
+@testset "PV bus demoted by correct_bustypes: no Q write-back attempted" begin
+    sys = _make_ieee14_scaled_load_system(1.0)
+    for g in get_components(
+        g -> get_number(get_bus(g)) == 6 && !(g isa ElectricLoad),
+        StaticInjection,
+        sys,
+    )
+        set_available!(g, false)
+    end
+    pf = ACPolarPowerFlow(; correct_bustypes = true)
+    @test solve_and_store_power_flow!(pf, sys)
+    @test get_bustype(only(get_components(b -> get_number(b) == 6, ACBus, sys))) ==
+          ACBusTypes.PQ
+end
+
 @testset "reactive power control: FACTS device at Bus 14 -> V=1.0" begin
     sys = _make_ieee14_scaled_load_system(1.4)
     _add_facts_shunt!(sys, 14; voltage_setpoint = 1.0)
