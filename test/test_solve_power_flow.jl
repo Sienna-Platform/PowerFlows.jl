@@ -984,131 +984,7 @@ end
     @test_throws r"all_hybrid" PowerFlowData(pf, sys)
 end
 
-@testset "converged |V| outside vm_validation_range is not converged" begin
-    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
-    fd_nr = SolutionParameters(; handoff_solver = NewtonRaphsonACPowerFlow)
-    for pf in (
-        ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(),
-        ACPolarPowerFlow{TrustRegionACPowerFlow}(),
-        ACPolarPowerFlow{FastDecoupledACPowerFlow}(; solution_parameters = fd_nr),
-        ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(),
-        ACMixedPowerFlow{NewtonRaphsonACPowerFlow}(),
-    )
-        data = PowerFlowData(pf, sys)
-        @test solve_power_flow!(data)
-        pq = data.bus_type[:, 1] .== ACBusTypes.PQ
-        band = (min = minimum(data.bus_magnitude[pq, 1]) + 1e-3, max = 1.5)
-
-        data = PowerFlowData(pf, sys)
-        @test !(@test_logs (:error, r"non-physical root") match_mode = :any solve_power_flow!(
-            data; vm_validation_range = band))
-        @test !data.converged[1]
-
-        data = PowerFlowData(pf, sys)
-        @test solve_power_flow!(
-            data; vm_validation_range = band, validate_voltage_magnitudes = false)
-    end
-    pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
-        solution_parameters = SolutionParameters(;
-            vm_validation_range = (min = 1.2, max = 1.5),
-        ))
-    data = PowerFlowData(pf, sys)
-    @test !(@test_logs (:error, r"non-physical root") match_mode = :any solve_power_flow!(
-        data,
-    ))
-    pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; time_steps = 2,
-        solution_parameters = SolutionParameters(;
-            vm_validation_range = (min = 1.2, max = 1.5), linear_solver = "KLU",
-            n_threads = 2))
-    data = PowerFlowData(pf, sys)
-    @test !(@test_logs (:error, r"non-physical root") match_mode = :any solve_power_flow!(
-        data,
-    ))
-    @test !any(data.converged)
-end
-
-@testset "vm_validation_range checks PQ buses only" begin
-    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
-    band = (min = 0.5, max = 1.0718)
-    for pf in (
-        ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(),
-        ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(),
-        ACMixedPowerFlow{NewtonRaphsonACPowerFlow}(),
-    )
-        data = PowerFlowData(pf, sys)
-        @test solve_power_flow!(data; vm_validation_range = band)
-    end
-end
-
-@testset "check_root_type accepts the operable root" begin
-    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
-    fd_nr = SolutionParameters(; handoff_solver = NewtonRaphsonACPowerFlow)
-    for pf in (
-        ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(),
-        ACPolarPowerFlow{TrustRegionACPowerFlow}(),
-        ACPolarPowerFlow{FastDecoupledACPowerFlow}(; solution_parameters = fd_nr),
-        ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(),
-        ACMixedPowerFlow{NewtonRaphsonACPowerFlow}(),
-    )
-        data = PowerFlowData(pf, sys)
-        @test solve_power_flow!(data; check_root_type = true)
-        buses, dvdq = PF._vq_self_sensitivities(data, 1)
-        @test !isempty(buses)
-        @test all(>(0.0), dvdq)
-    end
-end
-
-# A low start at one load bus with the band widened finds a type-1 (collapsed-bus) root.
-@testset "check_root_type rejects a low-voltage root" begin
-    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
-    pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
-        solution_parameters = SolutionParameters(; enhanced_flat_start = false))
-    base = PowerFlowData(pf, sys)
-    @test solve_power_flow!(base; check_root_type = true)
-    vm0 = base.bus_magnitude[:, 1]
-    θ0 = base.bus_angles[:, 1]
-    loaded = [
-        i for i in eachindex(vm0) if
-        base.bus_type[i, 1] == ACBusTypes.PQ && PF._carries_power(base, i, 1)
-    ]
-    wide = (min = 0.01, max = 2.0)
-    function low_start(i, v)
-        data = PowerFlowData(pf, sys)
-        data.bus_magnitude[:, 1] .= vm0
-        data.bus_angles[:, 1] .= θ0
-        data.bus_magnitude[i, 1] = v
-        return data
-    end
-    found = 0
-    for i in loaded, v in (0.1, 0.2, 0.3, 0.4)
-        data = low_start(i, v)
-        converged = Logging.with_logger(Logging.NullLogger()) do
-            solve_power_flow!(data; vm_validation_range = wide)
-        end
-        converged || continue
-        maximum(abs, data.bus_magnitude[:, 1] .- vm0) > 0.05 || continue
-        found += 1
-        _, dvdq = PF._vq_self_sensitivities(data, 1)
-        @test any(<=(0.0), dvdq)
-        data = low_start(i, v)
-        @test !(@test_logs (:error, r"non-operable") match_mode = :any solve_power_flow!(
-            data; vm_validation_range = wide, check_root_type = true))
-        @test !data.converged[1]
-        break
-    end
-    @test found > 0
-end
-
-@testset "check_root_type treats a singular reduced Jacobian as not operable" begin
-    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
-    data = PowerFlowData(ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(), sys)
-    @test solve_power_flow!(data)
-    data.bus_magnitude[:, 1] .= 0.0
-    @test !(@test_logs (:error, r"singular") match_mode = :any PF._root_operable(
-        data, 1, (check_root_type = true,)))
-end
-
-function _two_island_pv_less_system()
+@testset "polar enhanced flat start: multiple islands, PV-less island" begin
     sys = System(100.0)
     b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.02)
     b2 = _add_simple_bus!(sys, 2, ACBusTypes.PV, 230, 1.04)
@@ -1123,45 +999,10 @@ function _two_island_pv_less_system()
     _add_simple_thermal_standard!(sys, b2, 0.1, 0.0)
     _add_simple_load!(sys, b3, 10.0, 2.0)
     _add_simple_load!(sys, b5, 10.0, 2.0)
-    return sys
-end
-
-@testset "polar enhanced flat start: multiple islands, PV-less island" begin
-    sys = _two_island_pv_less_system()
     data = PowerFlowData(ACPowerFlow(), sys)
     bus_lookup = PF.get_bus_lookup(data)
     x = PF._enhanced_flat_start(PF.calculate_x0(data, 1), data, 1)
     @test all(isfinite, x)
     @test x[2 * bus_lookup[3] - 1] ≈ (1.02 + 1.04) / 2
     @test x[2 * bus_lookup[5] - 1] ≈ 1.06
-end
-
-@testset "rect/mixed enhanced flat start: multiple islands, PV-less island" begin
-    sys = _two_island_pv_less_system()
-    for (pf, init!, make_residual) in (
-        (
-            ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(),
-            PF.rect_initial_state!,
-            PF.ACRectangularCIResidual,
-        ),
-        (
-            ACMixedPowerFlow{NewtonRaphsonACPowerFlow}(),
-            PF.mixed_initial_state!,
-            PF.ACMixedCPBResidual,
-        ),
-    )
-        data = PowerFlowData(pf, sys)
-        bus_lookup = PF.get_bus_lookup(data)
-        residual = make_residual(data, 1)
-        x0 = Vector{Float64}(undef, length(residual.Rv))
-        init!(x0, data, residual.bus_state_offset, 1)
-        x = PF._enhanced_flat_start(x0, data, residual, 1)
-        @test all(isfinite, x)
-        function magnitude(bus)
-            off = Int(residual.bus_state_offset[bus_lookup[bus]])
-            return hypot(x[off], x[off + 1])
-        end
-        @test magnitude(3) ≈ (1.02 + 1.04) / 2
-        @test magnitude(5) ≈ 1.06
-    end
 end

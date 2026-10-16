@@ -115,13 +115,6 @@ Region converge on systems up to 10 000 buses with the same iteration count
 as the polar formulation and a near-degenerate-voltage guard
 (`V_FLOOR2 = 1e-16`, floored $|V_i|^2$) preventing blow-up.
 
-The PQ current rows are not invariant to a common rotation of the bus angles,
-so a Newton step from a flat start can throw PV magnitudes far off their
-setpoints (ACTIVSg2000 then diverges). After each Newton, chord and Iwamoto
-step, every PV bus whose $|V|$ is off its setpoint by more than 5 % is scaled
-back onto it, keeping its angle. Trust Region and Levenberg-Marquardt steps
-are not projected.
-
 Benchmarking on the 2 000- and 10 000-bus ACTIVSg systems shows the mixed
 form is roughly **1.4–1.8× faster than the polar power-balance form** (and
 ~1.7–1.8× per Newton iteration) under flat starts — consistent with, though

@@ -312,3 +312,69 @@ function _update_rect_ci_residual_values!(
     end
     return
 end
+
+"""
+    _converged_at_setpoints!(residual, data, x, time_step, tol) -> Bool
+
+Call this function after `‖F(x)‖∞ < tol`. PF publishes the PV setpoint as |V|, not
+`|e + jf|`. The rectangular method scales each PV `(e, f)` onto the setpoint and evaluates
+the residual again. If the check passes, `x` and `residual` keep the scaled state. If it
+fails, the function restores both.
+Other residual types return `true`.
+"""
+_converged_at_setpoints!(
+    ::Any,
+    ::ACPowerFlowData,
+    ::Vector{Float64},
+    ::Int64,
+    ::Float64,
+) = true
+
+"""
+    _residual_converged!(residual, data, x, time_step, tol) -> Bool
+
+Return `true` when `‖F(x)‖∞ < tol` and `_converged_at_setpoints!` accepts `x`.
+"""
+function _residual_converged!(
+    residual,
+    data::ACPowerFlowData,
+    x::Vector{Float64},
+    time_step::Int64,
+    tol::Float64,
+)
+    return norm(residual.Rv, Inf) < tol &&
+           _converged_at_setpoints!(residual, data, x, time_step, tol)
+end
+
+@inline function _scale_onto_setpoint!(x::Vector{Float64}, off::Int, v_set::Float64)
+    scale = v_set / hypot(x[off], x[off + 1])
+    x[off] *= scale
+    x[off + 1] *= scale
+    return
+end
+
+# The PV row holds e² + f² only to `tol`. Near a low-impedance branch, that gap moves the
+# neighbouring rows by much more.
+function _converged_at_setpoints!(
+    residual::ACRectangularCIResidual,
+    data::ACPowerFlowData,
+    x::Vector{Float64},
+    time_step::Int64,
+    tol::Float64,
+)
+    bus_types = view(data.bus_type, :, time_step)
+    x_set = residual.x_set
+    copyto!(x_set, x)
+    for i in eachindex(bus_types)
+        bus_types[i] == PSY.ACBusTypes.PV || continue
+        off = Int(residual.bus_state_offset[i])
+        _scale_onto_setpoint!(x_set, off, data.bus_magnitude[i, time_step])
+    end
+    residual(data, x_set, time_step)
+    if norm(residual.Rv, Inf) < tol
+        copyto!(x, x_set)
+        return true
+    end
+    residual(data, x, time_step)
+    return false
+end

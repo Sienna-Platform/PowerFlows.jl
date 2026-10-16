@@ -184,15 +184,14 @@ function _maybe_handoff!(
     sv::StateVectorCache,
     residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
     J::Union{Nothing, ACPowerFlowJacobian, ACRectangularCIJacobian, ACMixedCPBJacobian},
-    data::ACPowerFlowData,
+    ::ACPowerFlowData,
     time_step::Int64,
     tol::Float64,
     linear_solver::Union{Nothing, AbstractString},
     solver_name::String,
     stage_iters::Int,
 )
-    converged = _residual_converged!(residual, data, sv.x, time_step, tol)
-    return (converged, 0)
+    return (norm(residual.Rv, Inf) < tol, 0)
 end
 
 function _maybe_handoff!(
@@ -208,7 +207,7 @@ function _maybe_handoff!(
     solver_name::String,
     stage_iters::Int,
 )
-    if _residual_converged!(residual, data, sv.x, time_step, tol)
+    if norm(residual.Rv, Inf) < tol
         return (true, 0)
     end
     J(data, time_step)

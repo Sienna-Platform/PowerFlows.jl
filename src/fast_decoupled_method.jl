@@ -501,8 +501,7 @@ function _fd_fixed_jacobian_power_flow(
             end
             fresh = false
 
-            converged =
-                _residual_converged!(residual, data, sv.x, time_step, stage_tol)
+            converged = norm(residual.Rv, Inf) < stage_tol
             if !converged
                 validate_voltage_magnitudes && _validate_state_magnitudes(
                     residual, sv.x, vm_validation_range, i,

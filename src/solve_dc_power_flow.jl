@@ -40,7 +40,7 @@ injections that change between steps.
 """
 function _make_dc_scratch(data::PowerFlowData)
     n_buses = size(data.bus_active_power_injections, 1)
-    valid_ix = (1:n_buses)[get_valid_ix(data)]  # resolve Not(ref) → Vector{Int}
+    valid_ix = collect(1:n_buses)[get_valid_ix(data)]  # resolve Not(ref) → Vector{Int}
     n_ts = size(data.bus_active_power_injections, 2)
     # Pre-compute from/to bus indices for arc angle differences
     arcs = get_arc_axis(data)
@@ -615,7 +615,7 @@ function dc_loss_factors(data::PTDFPowerFlowData, Rs::Vector{Float64})
 end
 
 function dc_loss_factors(data::vPTDFPowerFlowData, Rs::Vector{Float64})
-    valid_ix = (1:length(get_bus_axis(data)))[get_valid_ix(data)]
+    valid_ix = collect(1:length(get_bus_axis(data)))[get_valid_ix(data)]
     return _vptdf_loss_factors(
         data,
         Rs,

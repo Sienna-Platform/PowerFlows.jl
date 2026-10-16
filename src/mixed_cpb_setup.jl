@@ -187,17 +187,6 @@ function mixed_finalize_bus_injections!(
             end
         end
     end
-    # The converter injection is in Y·V but not in the polar P/Q state: remove it at REF/PV buses.
-    vsc_p = zeros(Float64, n_buses)
-    vsc_q = zeros(Float64, n_buses)
-    dcn = get_dc_network(data)
-    for c in 1:n_vsc_converters(dcn)
-        ix = dcn.converter_ac_bus_ix[c]
-        if bus_types[ix] == PSY.ACBusTypes.REF || bus_types[ix] == PSY.ACBusTypes.PV
-            vsc_p[ix] += dcn.p_c[c, time_step]
-            vsc_q[ix] += dcn.q_c[c, time_step]
-        end
-    end
     for (ref_bus, subnetwork_buses) in subnetworks
         # pass 1: total slack. Buffer covers ALL REF/PV buses (pass 2 writes
         # even non-participating c_k==0 ones); slack accumulates only for c_k!=0.
@@ -222,13 +211,12 @@ function mixed_finalize_bus_injections!(
             # can carry c_k == 0 and still needs its physically-solved P in pass 2.
             if bus_k in independent_ref
                 P_net_k_buf[idx] =
-                    e_state[bus_k] * YVr[bus_k] + f_state[bus_k] * YVi[bus_k] - vsc_p[bus_k]
+                    e_state[bus_k] * YVr[bus_k] + f_state[bus_k] * YVi[bus_k]
                 continue
             end
             bus_slack_participation_factors[bus_k] == 0.0 && continue
             # S_net,k = V_k · conj((Y_raw·V)_k); real part used here.
-            P_net_k =
-                e_state[bus_k] * YVr[bus_k] + f_state[bus_k] * YVi[bus_k] - vsc_p[bus_k]
+            P_net_k = e_state[bus_k] * YVr[bus_k] + f_state[bus_k] * YVi[bus_k]
             P_net_k_buf[idx] = P_net_k
             P_slack_total += P_net_k - P_net_set_polar_k
         end
@@ -244,7 +232,7 @@ function mixed_finalize_bus_injections!(
                 P_net_set_polar[idx] + c_k * P_slack_total
             end
             # Q_net,k = imag(V_k · conj((Y_raw·V)_k)).
-            Q_net = f_state[bus_k] * YVr[bus_k] - e_state[bus_k] * YVi[bus_k] - vsc_q[bus_k]
+            Q_net = f_state[bus_k] * YVr[bus_k] - e_state[bus_k] * YVi[bus_k]
             # Identical to polar `_setpq`.
             data.bus_active_power_injections[bus_k, time_step] =
                 P_net +

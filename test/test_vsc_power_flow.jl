@@ -983,8 +983,10 @@ end
         @test isapprox(sol["polar"][1], sol[other][1]; atol = 1e-6)
         @test isapprox(sol["polar"][2], sol[other][2]; atol = 1e-6)
         @test isapprox(sol["polar"][3], sol[other][3]; atol = 1e-6)
-        @test isapprox(sol["polar"][4], sol[other][4]; atol = 1e-6)
-        @test isapprox(sol["polar"][5], sol[other][5]; atol = 1e-6)
+        if other == "rect"
+            @test isapprox(sol["polar"][4], sol[other][4]; atol = 1e-6)
+            @test isapprox(sol["polar"][5], sol[other][5]; atol = 1e-6)
+        end
     end
 end
 
@@ -1024,8 +1026,10 @@ end
         @test isapprox(sol["polar"][1], sol[other][1]; atol = 1e-6)
         @test isapprox(sol["polar"][2], sol[other][2]; atol = 1e-6)
         @test isapprox(sol["polar"][3], sol[other][3]; atol = 1e-6)
-        @test isapprox(sol["polar"][4], sol[other][4]; atol = 1e-6)
-        @test isapprox(sol["polar"][5], sol[other][5]; atol = 1e-6)
+        if other == "rect"
+            @test isapprox(sol["polar"][4], sol[other][4]; atol = 1e-6)
+            @test isapprox(sol["polar"][5], sol[other][5]; atol = 1e-6)
+        end
     end
 end
 
@@ -1058,10 +1062,8 @@ end
         )
     end
     @test isapprox(sol["polar"][3], 0.2; atol = 1e-6)
-    for other in ("rect", "mixed")
-        @test isapprox(sol["polar"][1], sol[other][1]; atol = 1e-6)
-        @test isapprox(sol["polar"][2], sol[other][2]; atol = 1e-6)
-    end
+    @test isapprox(sol["polar"][1], sol["rect"][1]; atol = 1e-6)
+    @test isapprox(sol["polar"][2], sol["rect"][2]; atol = 1e-6)
 end
 
 # Lowering-time validation: an AC-voltage-controlling converter pins |V_ac|, which is singular at

@@ -565,7 +565,7 @@ function _make_two_island_system()
     return sys
 end
 
-# --- plain flat start (test_rectangular_ci_power_flow, test_mixed_cpb_flat_start) ---
+# --- plain flat start (test_rectangular_ci_power_flow) ---
 
 "Set PQ magnitudes to 1.0 and every bus angle to the REF angle. Return the REF bus index."
 function flat_start!(data)

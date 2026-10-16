@@ -56,7 +56,7 @@ function improve_x0!(x0::Vector{Float64},
     return x0
 end
 
-_large_residual(residual) = !(sum(abs, residual.Rv) <= LARGE_RESIDUAL * length(residual.Rv))
+_large_residual(residual) = sum(abs, residual.Rv) > LARGE_RESIDUAL * length(residual.Rv)
 
 # Every island's non-REF buses at one angle: the start of a case with no solved point, whose REF
 # may keep a case-file angle. Reads the angles of the last iterate `residual` evaluated.

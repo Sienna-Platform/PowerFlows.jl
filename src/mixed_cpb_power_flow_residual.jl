@@ -39,7 +39,6 @@ struct ACMixedCPBResidual
     # aliased by the MCPB Jacobian (the PV power row needs e·Ir + f·Ii).
     Ir_acc::Vector{Float64}             # length n_buses; accumulated Re(I)
     Ii_acc::Vector{Float64}             # length n_buses; accumulated Im(I)
-    x_set::Vector{Float64}              # length of x; `_converged_at_setpoints!` scratch
 end
 
 function ACMixedCPBResidual(data::ACPowerFlowData, time_step::Int64)
@@ -110,7 +109,6 @@ function ACMixedCPBResidual(data::ACPowerFlowData, time_step::Int64)
         Vector{Float64}(undef, n_buses),
         Vector{Float64}(undef, n_buses),
         Vector{Float64}(undef, n_buses),
-        Vector{Float64}(undef, total_state),
     )
 end
 
@@ -315,136 +313,5 @@ function _update_mixed_cpb_residual_values!(
         )
         _set_vsc_tail_residuals_rect!(F, dcn, e_state, f_state, vsc_off, time_step)
     end
-    return
-end
-
-"""
-    _converged_at_setpoints!(residual, data, x, time_step, tol) -> Bool
-
-Called once `‖F(x)‖∞ < tol` (see `_residual_converged!`). The published PV magnitude is the
-setpoint, not `|e + jf|`, so the rectangular and mixed forms re-check the residual with every
-PV `(e, f)` scaled onto it.
-On success `x` and `residual` are left at that state; otherwise both are restored.
-"""
-_converged_at_setpoints!(
-    ::ACPowerFlowResidual,
-    ::ACPowerFlowData,
-    ::Vector{Float64},
-    ::Int64,
-    ::Float64,
-) = true
-
-"""
-    _residual_converged!(residual, data, x, time_step, tol) -> Bool
-
-Return `true` when `‖F(x)‖∞ < tol` and `_converged_at_setpoints!` accepts `x`.
-"""
-function _residual_converged!(
-    residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
-    data::ACPowerFlowData,
-    x::Vector{Float64},
-    time_step::Int64,
-    tol::Float64,
-)
-    return norm(residual.Rv, Inf) < tol &&
-           _converged_at_setpoints!(residual, data, x, time_step, tol)
-end
-
-@inline function _scale_onto_setpoint!(x::Vector{Float64}, off::Int, v_set::Float64)
-    scale = v_set / hypot(x[off], x[off + 1])
-    x[off] *= scale
-    x[off + 1] *= scale
-    return
-end
-
-# The PV row holds e² + f² only to `tol`. Near a low-impedance branch, that gap moves the
-# neighbouring rows by orders of magnitude more.
-function _converged_at_setpoints!(
-    residual::Union{ACRectangularCIResidual, ACMixedCPBResidual},
-    data::ACPowerFlowData,
-    x::Vector{Float64},
-    time_step::Int64,
-    tol::Float64,
-)
-    bus_types = view(data.bus_type, :, time_step)
-    x_set = residual.x_set
-    copyto!(x_set, x)
-    for i in eachindex(bus_types)
-        bus_types[i] == PSY.ACBusTypes.PV || continue
-        off = Int(residual.bus_state_offset[i])
-        _scale_onto_setpoint!(x_set, off, data.bus_magnitude[i, time_step])
-    end
-    residual(data, x_set, time_step)
-    if norm(residual.Rv, Inf) < tol
-        copyto!(x, x_set)
-        return true
-    end
-    residual(data, x, time_step)
-    return false
-end
-
-# Relative |V| − V_set at a PV bus above which a step is projected. Projecting every step costs
-# warm starts an iteration (ACTIVSg2000: 5 → 6); above ~0.07 flat ACTIVSg2000 needs 21 or fails.
-const PV_PROJECTION_THRESHOLD = 0.05
-
-"""
-    _project_pv_setpoints!(residual, data, x, Δx, time_step)
-
-Called right after an iterate moved by `x .+= Δx`, before `F` is evaluated there. The mixed
-form scales each PV `(e, f)` whose magnitude is off its setpoint by more than
-`PV_PROJECTION_THRESHOLD` back onto it, keeping the angle, and adds the shift to `Δx` so
-`x .-= Δx` still undoes the move. Its PQ current rows are not rotation invariant, and without
-this a flat start can diverge. No-op for the other forms. Trust-region and Levenberg-Marquardt
-steps do not call it: a projected trial point leaves their step model.
-"""
-function _project_pv_setpoints!(
-    ::Union{ACPowerFlowResidual, ACRectangularCIResidual},
-    ::ACPowerFlowData,
-    ::Vector{Float64},
-    ::Vector{Float64},
-    ::Int64,
-)
-    return
-end
-
-function _project_pv_setpoints!(
-    residual::ACMixedCPBResidual,
-    data::ACPowerFlowData,
-    x::Vector{Float64},
-    Δx::Vector{Float64},
-    time_step::Int64,
-)
-    bus_types = view(data.bus_type, :, time_step)
-    @inbounds for i in eachindex(bus_types)
-        bus_types[i] == PSY.ACBusTypes.PV || continue
-        off = Int(residual.bus_state_offset[i])
-        vm = hypot(x[off], x[off + 1])
-        v_set = data.bus_magnitude[i, time_step]
-        abs(vm - v_set) > PV_PROJECTION_THRESHOLD * v_set || continue
-        # No angle to keep at the origin; the next step moves the bus off it.
-        iszero(vm) && continue
-        e_old = x[off]
-        f_old = x[off + 1]
-        _scale_onto_setpoint!(x, off, v_set)
-        Δx[off] += x[off] - e_old
-        Δx[off + 1] += x[off + 1] - f_old
-    end
-    return
-end
-
-"""
-    _advance_x!(residual, data, x, Δx, time_step)
-
-Apply `x .+= Δx`, then `_project_pv_setpoints!`.
-"""
-function _advance_x!(
-    residual::Union{ACPowerFlowResidual, ACRectangularCIResidual, ACMixedCPBResidual},
-    data::ACPowerFlowData,
-    x::Vector{Float64},
-    Δx::Vector{Float64},
-    time_step::Int64,
-)
-    x .+= Δx
-    _project_pv_setpoints!(residual, data, x, Δx, time_step)
     return
 end

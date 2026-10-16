@@ -544,7 +544,8 @@ end
 end
 
 @testset "lean LU: rectangular and mixed pause the plan off its bus types" begin
-    # A PV→PQ flip keeps both patterns: the cache, and its plan, are reused.
+    # A PV→PQ flip keeps the pattern in both formulations. The plan pauses while the
+    # bus types differ from the plan's. It resumes when they match again.
     for F in (ACRectangularPowerFlow, ACMixedPowerFlow)
         data = _lean_rm_data(F)
         @test solve_power_flow!(data)
@@ -556,8 +557,8 @@ end
         @test solve_power_flow!(data)
         @test data.solver_cache[] === cache
         @test PF._lean_counts(cache).attempts == attempts
-        @test _KW.has_lean_plan(cache.linSolveCache)
-        @test cache.lean.tried
+        @test _KW.has_lean_plan(data.solver_cache[].linSolveCache)
+        @test data.solver_cache[].lean.tried
         data.bus_type[k, 1] = PSY.ACBusTypes.PV
         data.bus_active_power_withdrawals .*= 1.01
         @test solve_power_flow!(data)

@@ -242,8 +242,7 @@ function _run_power_flow_method(
                 diag_cache, monitor, stop_at_fold) &&
                 return false, i
         end
-        converged =
-            isfinite(λ) && _residual_converged!(residual, data, x, time_step, tol)
+        converged = isfinite(λ) && norm(residual.Rv, Inf) < tol
         i += 1
     end
     if !converged
