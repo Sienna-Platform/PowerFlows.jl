@@ -1542,7 +1542,7 @@ function mtdc_results_dataframe(
 end
 
 # `TModelHVDCLine` DC-branch results, one row per DC line. Steady-state DC current is g·ΔV_dc and the
-# line loss is g·ΔV_dc² (I²r); powers in MW, current in p.u.
+# line loss is g·ΔV_dc² (I²r); powers in MW, current in kA.
 function mtdc_line_results_dataframe(
     sys::PSY.System,
     dcn::DCNetwork,
@@ -1696,7 +1696,7 @@ Per-time-step HVDC results from a solved AC power flow, as a NamedTuple of DataF
 ([`PowerSystems.TModelHVDCLine`](@extref) DC branches). Each table is the corresponding
 single-time-step results frame with a `time_step` column prepended, concatenated over
 `1:get_time_steps(data)`; a family absent from the system yields an empty table. Powers are in
-MW/MVAr; voltages, currents, and taps in p.u.; angles in radians. `sys` is required because
+MW/MVAr; currents in kA; voltages and taps in p.u.; angles in radians. `sys` is required because
 component names are not stored in the solved data. Symmetric to
 [`get_controlled_device_results`](@ref) for discrete-control devices.
 """

@@ -2615,8 +2615,10 @@ function _compute_vsc_converter_fields(
         SMAX * base_power
     end
     # PSY stores currents in kA; PSS/E records A.
-    IMAX = 1000.0 * get_imax(vscline)
-    IMAX = IMAX ≈ PSSE_INFINITY ? 0.0 : IMAX
+    # Revert parser transformation: IMAX == 0.0 ? no-limit current : IMAX. Compared in kA,
+    # before the A conversion; `>=` also catches `Inf`.
+    imax = get_imax(vscline)
+    IMAX = imax >= PSY.INFINITE_CURRENT ? 0.0 : 1000.0 * imax
 
     MAXQ = q_limits.max * base_power
     MINQ = q_limits.min * base_power
