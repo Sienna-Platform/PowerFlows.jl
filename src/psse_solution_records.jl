@@ -444,12 +444,12 @@ default.
 function solution_parameters(values::SolutionRecordValues, base_power::Float64)
     fd = uppercase(values.solver) == SOLUTION_RECORD_SOLVER_DECOUPLED
 
-    # A zero mismatch target is not a tolerance anyone can converge to; fall back rather
-    # than hand a solver `tol = 0`.
+    # A zero mismatch target is not a usable tolerance. Use the solver default instead of
+    # `tol = 0`.
     if values.toln > 0
         tol = values.toln / base_power
     else
-        tol = DEFAULT_NR_TOL
+        tol = UNSET_TOL
     end
 
     if values.itmxn > 0

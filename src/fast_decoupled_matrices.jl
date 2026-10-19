@@ -298,9 +298,10 @@ _bpp_drops_resistance(::FDSchemeBX) = true
     _assemble_bp_full(p::FDArcParams, scheme::FDScheme)
         -> SparseMatrixCSC{Float64, J_INDEX_TYPE}
 
-Assemble the full-bus B′ matrix `−imag(Ybus_temp)`, where `Ybus_temp` is stamped with branch and
-bus shunts = 0 and `|τ| = 1` (phase shift retained → mildly unsymmetric only with phase
-shifters). The REF rows/cols are removed later by the `pvpq` restriction.
+Assemble the full-bus B′ matrix. The off-diagonals are `−imag(Ybus_temp)`. `Ybus_temp` has no
+branch or bus shunts and has `|τ| = 1`. It keeps the phase shift, so B′ is slightly asymmetric
+with phase shifters. Each diagonal is the negative sum of the off-diagonals in its row. The `pvpq`
+restriction removes the REF rows and columns later.
 """
 function _assemble_bp_full(p::FDArcParams, scheme::FDScheme)
     n = p.nbus
@@ -315,12 +316,12 @@ function _assemble_bp_full(p::FDArcParams, scheme::FDScheme)
         ys = _fd_series(p.ys[a], p.x[a], _bp_drops_resistance(scheme))
         phase = cis(angle(p.tau[a]))   # |τ| = 1, retain phase shift
         # shunts = 0:  yff = ys, ytt = ys, yft = −ys/conj(phase), ytf = −ys/phase.
-        b_ff = -imag(ys)
-        b_tt = -imag(ys)
         b_ft = -imag(-ys / conj(phase))
         b_tf = -imag(-ys / phase)
-        diag[f] += b_ff
-        diag[t] += b_tt
+        # The diagonal is the negative row sum, as in ∂P/∂θ at flat start.
+        # With −imag(ys), each phase shifter adds a false angle shunt of (1 − cos φ)/x.
+        diag[f] -= b_ft
+        diag[t] -= b_tf
         push!(I, f)
         push!(Jc, t)
         push!(V, b_ft)

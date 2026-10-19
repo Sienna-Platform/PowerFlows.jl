@@ -34,7 +34,9 @@ is the one exception: it is re-read on every Q-limit retry, so a per-call overri
 take effect.
 
 # Convergence
-- `tol::Float64`: convergence threshold on the ∞-norm of the per-unit mismatch.
+- `tol::Float64`: the convergence threshold on the ∞-norm of the per-unit mismatch. If you do
+  not set it, the formulation constructor uses the solver default. Pure B′/B″ fast decoupled
+  without a handoff uses `DEFAULT_FD_TOL`. All other solvers use `DEFAULT_NR_TOL`.
 - `maxIterations::Int`: iteration cap. Left unset, a formulation constructor (e.g.
   [`ACPolarPowerFlow`](@ref)) resolves it to the solver's own default —
   `DEFAULT_NR_MAX_ITER` for Newton-type solvers, `DEFAULT_FD_MAX_ITER` for fast decoupled.
@@ -94,7 +96,8 @@ take effect.
 Per-call data (`x0`) is not a parameter and is not carried here — pass it at the call site.
 """
 Base.@kwdef struct SolutionParameters
-    tol::Float64 = DEFAULT_NR_TOL
+    # `UNSET_TOL` selects the solver default, as for `maxIterations`.
+    tol::Float64 = UNSET_TOL
     # `UNSET_MAX_ITERATIONS` keeps each solver's own default: 50 for Newton-type solvers,
     # 150 for fast decoupled. A formulation constructor resolves it via
     # `_default_max_iterations`; a concrete `Int` (not `nothing`) keeps the field stable.
