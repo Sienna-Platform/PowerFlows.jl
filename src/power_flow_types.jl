@@ -470,7 +470,9 @@ with the specified solver type.
     the reference bus. If a `Dict{Tuple{DataType, String}, Float64}`, it should map
     `(component_type, component_name)` tuples to participation factors. If a `Vector` of such
     dictionaries, different participation factors can be used for different time steps. Default is `nothing`.
-- `enhanced_flat_start::Bool`: Whether to use enhanced flat start initialization. Default is `true`.
+- `enhanced_flat_start::Bool`: On a cold start (no earlier converged step and flat angles, or a
+    large residual) the solver tries the enhanced flat start and keeps it when it lowers the
+    residual. Default `true`.
 - `robust_power_flow::Bool`: Whether to try DC power flow angles as the starting point when the
     initial residual is large, or when the start is flat (each island's non-REF buses at one
     angle) with no converged earlier time step. Default is `false`.
@@ -729,7 +731,9 @@ polar state layout and have no rectangular equivalent.
 - `exporter::Union{Nothing, PowerFlowEvaluationModel}`: Default `nothing`.
 - `generator_slack_participation_factors`: Same semantics as
     [`ACPolarPowerFlow`](@ref). Default `nothing`.
-- `enhanced_flat_start::Bool`: Default `true`.
+- `enhanced_flat_start::Bool`: On a cold start (no earlier converged step and flat angles, or a
+    large residual) the solver tries the enhanced flat start and keeps it when it lowers the
+    residual. Default `true`.
 - `skip_redistribution::Bool`: Default `false`.
 - `distribute_slack_proportional_to_headroom::Bool`: Default `false`.
 - `network_reductions::Vector{PNM.NetworkReduction}`: Default empty.
@@ -871,7 +875,9 @@ polar state layout and have no mixed current-power equivalent.
 - `exporter::Union{Nothing, PowerFlowEvaluationModel}`: Default `nothing`.
 - `generator_slack_participation_factors`: Same semantics as
     [`ACPolarPowerFlow`](@ref). Default `nothing`.
-- `enhanced_flat_start::Bool`: Default `true`.
+- `enhanced_flat_start::Bool`: On a cold start (no earlier converged step and flat angles, or a
+    large residual) the solver tries the enhanced flat start and keeps it when it lowers the
+    residual. Default `true`.
 - `skip_redistribution::Bool`: Default `false`.
 - `distribute_slack_proportional_to_headroom::Bool`: Default `false`.
 - `network_reductions::Vector{PNM.NetworkReduction}`: Default empty.

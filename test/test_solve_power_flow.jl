@@ -1009,3 +1009,45 @@ end
     @test x[2 * bus_lookup[3] - 1] ≈ (1.02 + 1.04) / 2
     @test x[2 * bus_lookup[5] - 1] ≈ 1.06
 end
+
+# A cold start: flat angles, PQ magnitudes at 1.0, PV and REF setpoints kept.
+function _cold_start!(data)
+    pq = data.bus_type[:, 1] .== PSY.ACBusTypes.PQ
+    data.bus_magnitude[pq, 1] .= 1.0
+    data.bus_angles[:, 1] .= 0.0
+    return data
+end
+
+@testset "enhanced flat start runs on a cold start and stays off a warm one" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+        solution_parameters = SolutionParameters(; linear_solver = "KLU"))
+    data = _cold_start!(PowerFlowData(pf, sys))
+    residual = PF.ACPowerFlowResidual(data, 1)
+    naive = PF.calculate_x0(data, 1)
+    enhanced = PF._enhanced_flat_start(naive, data, 1)
+    @test enhanced != naive
+    x0 =
+        @test_logs (:info, r"success: enhanced flat start") match_mode = :any PF.improve_x0(
+            pf, data, residual, 1)
+    @test x0 == enhanced
+
+    # The fused path of a fresh solve takes the same start.
+    fresh = _cold_start!(PowerFlowData(pf, sys))
+    @test_logs (:info, r"success: enhanced flat start") match_mode = :any @test solve_power_flow!(
+        fresh,
+    )
+    naive_run = _cold_start!(
+        PowerFlowData(
+            ACPowerFlow{NewtonRaphsonACPowerFlow}(; enhanced_flat_start = false,
+                solution_parameters = SolutionParameters(; linear_solver = "KLU")), sys),
+    )
+    @test solve_power_flow!(naive_run)
+    @test PF.get_iterations(fresh)[1] <= PF.get_iterations(naive_run)[1]
+    @test isapprox(fresh.bus_magnitude, naive_run.bus_magnitude; atol = 1e-8)
+
+    # A warm start is left alone.
+    @test solve_power_flow!(data)
+    warm = PF.ACPowerFlowResidual(data, 1)
+    @test PF.improve_x0(pf, data, warm, 1) == PF.calculate_x0(data, 1)
+end

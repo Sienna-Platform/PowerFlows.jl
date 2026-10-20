@@ -23,17 +23,16 @@ function improve_x0!(x0::Vector{Float64},
         newx0 = _previous_solution_start(x0, data, prev)
         _pick_better_x0(x0, newx0, time_step, residual, data, "previous converged solution")
     end
-    if sum(abs, residual.Rv) > LARGE_RESIDUAL * length(residual.Rv) &&
-       get_enhanced_flat_start(pf)
+    # Warm starts (after a converged step, a contingency off a solved base) skip the start
+    # stages; the DC stage still runs on a large residual.
+    large = _large_residual(residual)
+    cold = isnothing(prev) && (large || _is_flat_start(residual, data, time_step))
+    if get_enhanced_flat_start(pf) && (large || cold)
         newx0 = _enhanced_flat_start(x0, data, time_step)
         _pick_better_x0(x0, newx0, time_step, residual, data, "enhanced flat start")
     else
         @debug "skipping enhanced flat start"
     end
-    # Warm starts (after a converged step, a contingency off a solved base) skip both stages;
-    # the DC stage still runs on a large residual.
-    large = _large_residual(residual)
-    cold = isnothing(prev) && (large || _is_flat_start(residual, data, time_step))
     dc_taken = false
     if get_robust_power_flow(pf) && (large || cold)
         dc_taken = dc_power_flow_start!(x0, data, time_step, residual)
@@ -83,6 +82,30 @@ function _is_flat_start(
     return true
 end
 
+# Rectangular/mixed: the angle of a bus is `atan(f, e)` of its voltage state.
+function _is_flat_start(
+    residual::Union{ACRectangularCIResidual, ACMixedCPBResidual},
+    data::ACPowerFlowData,
+    time_step::Int64,
+)
+    bus_types = view(data.bus_type, :, time_step)
+    for buses in values(residual.subnetworks)
+        seen = false
+        θ_flat = 0.0
+        for ix in buses
+            bus_types[ix] == PSY.ACBusTypes.REF && continue
+            θ = atan(residual.f_state[ix], residual.e_state[ix])
+            if !seen
+                seen = true
+                θ_flat = θ
+            elseif abs(θ - θ_flat) > FLAT_ANGLE_TOL
+                return false
+            end
+        end
+    end
+    return true
+end
+
 # `improve_x0!` compares candidate starts only after a converged earlier step; on a cold start
 # `_fused_x0!` decides whether a start stage runs.
 function _x0_has_no_candidates(
@@ -122,8 +145,9 @@ function improve_x0(pf::ACRectangularPowerFlow,
         _rect_fill_state!(newx0, data, residual.bus_state_offset, time_step, prev)
         _pick_better_x0(x0, newx0, time_step, residual, data, "previous converged solution")
     end
-    if sum(abs, residual.Rv) > LARGE_RESIDUAL * length(residual.Rv) &&
-       get_enhanced_flat_start(pf)
+    large = _large_residual(residual)
+    cold = isnothing(prev) && (large || _is_flat_start(residual, data, time_step))
+    if get_enhanced_flat_start(pf) && (large || cold)
         newx0 = _enhanced_flat_start(x0, data, residual, time_step)
         _pick_better_x0(x0, newx0, time_step, residual, data, "enhanced flat start")
     else
@@ -163,8 +187,9 @@ function improve_x0(pf::ACMixedPowerFlow,
         _mixed_fill_state!(newx0, data, residual.bus_state_offset, time_step, prev)
         _pick_better_x0(x0, newx0, time_step, residual, data, "previous converged solution")
     end
-    if sum(abs, residual.Rv) > LARGE_RESIDUAL * length(residual.Rv) &&
-       get_enhanced_flat_start(pf)
+    large = _large_residual(residual)
+    cold = isnothing(prev) && (large || _is_flat_start(residual, data, time_step))
+    if get_enhanced_flat_start(pf) && (large || cold)
         newx0 = _enhanced_flat_start(x0, data, residual, time_step)
         _pick_better_x0(x0, newx0, time_step, residual, data, "enhanced flat start")
     else

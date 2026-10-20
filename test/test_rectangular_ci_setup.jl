@@ -201,3 +201,27 @@ end
         @test all(isfinite, res["bus_results"].Vm)
     end
 end
+
+@testset "Rectangular CI: enhanced flat start runs on a cold start" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    pf = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}()
+    data = PF.PowerFlowData(pf, sys)
+    pq = data.bus_type[:, 1] .== PSY.ACBusTypes.PQ
+    data.bus_magnitude[pq, 1] .= 1.0
+    data.bus_angles[:, 1] .= 0.0
+    residual = PF.ACRectangularCIResidual(data, 1)
+    x0 = Vector{Float64}(undef, length(residual.Rv))
+    PF.rect_initial_state!(x0, data, residual.bus_state_offset, 1)
+    residual(data, x0, 1)
+    @test PF._is_flat_start(residual, data, 1)
+    enhanced = PF._enhanced_flat_start(x0, data, residual, 1)
+    @test enhanced != x0
+    start =
+        @test_logs (:info, r"success: enhanced flat start") match_mode = :any PF.improve_x0(
+            pf, data, residual, 1)
+    @test start == enhanced
+    @test solve_power_flow!(data)
+    PF.rect_initial_state!(x0, data, residual.bus_state_offset, 1)
+    residual(data, x0, 1)
+    @test !PF._is_flat_start(residual, data, 1)
+end

@@ -1810,8 +1810,8 @@ function _fused_x0!(
     _update_residual_and_jacobian!(residual, J, x0, data, time_step)
     large = _large_residual(residual)
     cold_stage = get_robust_power_flow(pf) || get_ga_flat_start(pf)
-    if (large && (get_enhanced_flat_start(pf) || cold_stage)) ||
-       (cold_stage && _is_flat_start(residual, data, time_step))
+    if (get_enhanced_flat_start(pf) || cold_stage) &&
+       (large || _is_flat_start(residual, data, time_step))
         # `bus_state` already holds x0, so this re-evaluation adds exactly 0 on PQ buses.
         improve_x0!(x0, pf, data, residual, time_step)
         return false
