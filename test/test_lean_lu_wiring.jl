@@ -227,6 +227,15 @@ end
     @test _lean_slot(other) !== _lean_slot(fresh)
     @test !_lean_slot(other).tried
 
+    # A shared plan is closed, so parallel copies cannot race to settle it.
+    pending = _lean_sys14_data()
+    open_slot = PF._lean_plan_slot!(pending, 1)
+    @test open_slot.settle_pending
+    copy14 = _lean_sys14_data()
+    PF._inherit_jacobian_structure!(copy14, pending)
+    @test _lean_slot(copy14) === open_slot
+    @test !open_slot.settle_pending
+
     sys5 = PSB.build_system(PSB.PSITestSystems, "c_sys5"; add_forecasts = false)
     c5 = PowerFlowData(
         ACPowerFlow{NewtonRaphsonACPowerFlow}(; solution_parameters = _LEAN_KLU), sys5)

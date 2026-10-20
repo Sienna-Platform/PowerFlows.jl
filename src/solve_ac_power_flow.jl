@@ -307,12 +307,28 @@ function solve_power_flow!(
     return all(ts_converged)
 end
 
+"""Positions of `steps`, taken one at a time from a counter that all workers of a threaded solve
+share. A step goes to the first free worker, so a slow step delays only its own worker."""
+struct ClaimedPositions
+    next::Threads.Atomic{Int}
+    stop::Int
+end
+
+function Base.iterate(claims::ClaimedPositions, ::Nothing = nothing)
+    pos = Threads.atomic_add!(claims.next, 1)
+    if pos > claims.stop
+        return nothing
+    end
+    return pos, nothing
+end
+Base.IteratorSize(::Type{ClaimedPositions}) = Base.SizeUnknown()
+
 function _solve_columns!(
     ts_converged::Vector{Bool},
     data::ACPowerFlowData,
     pf::AbstractACPowerFlow{<:ACPowerFlowSolverType},
     steps::AbstractVector{Int},
-    positions::UnitRange{Int},
+    positions::Union{UnitRange{Int}, ClaimedPositions},
     merged_kwargs::NamedTuple,
 )
     flows = Base.RefValue{ArcFlowScratch}()
@@ -464,9 +480,12 @@ function _solve_column!(
     return converged
 end
 
-"""Solve contiguous chunks of `steps` on `n_work` tasks. Each task gets a `_column_worker`
-view of `data`, so its Newton workspace and KLU factorization are its own. The workers' caches
-live in `data.worker_slots`, so a repeated solve reuses them."""
+"""Solve `steps` on `n_work` tasks. Each task gets a `_column_worker` view of `data`, so its
+Newton workspace and KLU factorization are its own. The workers' caches live in
+`data.worker_slots`, so a repeated solve reuses them. The tasks take steps one at a time from a
+shared counter (`ClaimedPositions`), unless a worker carries state from step to step
+(`_carries_step_state`): then each task solves one contiguous chunk, so the results do not
+depend on timing."""
 function _solve_columns_threaded!(
     ts_converged::Vector{Bool},
     data::ACPowerFlowData,
@@ -478,6 +497,44 @@ function _solve_columns_threaded!(
     backend = _check_threadable(merged_kwargs)
     # Built here, before any task can race to build it, so every worker shares one pivot order.
     _prepare_lean_plan!(pf, data, first(steps), backend)
+    if _carries_step_state(data)
+        return _solve_chunks_threaded!(ts_converged, data, pf, steps, n_work, merged_kwargs)
+    end
+    slots = _worker_slots!(data, n_work)
+    # No worker warm-starts from a step of this call, so the schedule cannot change a result.
+    workers = [_column_worker(data, steps, 1:0, s) for s in slots]
+    head = _head_steps(slots[1].polar_nr_cache[], 1:length(steps))
+    _solve_slot!(ts_converged, workers[1], slots[1], pf, steps, head, merged_kwargs)
+    _settle_lean_plan!(workers[1], first(steps), false)
+    _seed_workers!(workers, fill(first(steps), length(workers)))
+    next = Threads.Atomic{Int}(last(head) + 1)
+    @sync for i in eachindex(workers)
+        claims = ClaimedPositions(next, length(steps))
+        Threads.@spawn _solve_slot!(
+            ts_converged, workers[i], slots[i], pf, steps, claims, merged_kwargs)
+    end
+    return ts_converged
+end
+
+# A worker with a Y-bus copy that controlled taps edit accumulates round-off from step to step,
+# and a relax renumbers a worker's area set. A step's result then depends on the worker's earlier
+# steps, so these runs keep fixed chunks.
+function _carries_step_state(data::ACPowerFlowData)
+    return _has_controlled_taps(get_controlled_devices(data)) ||
+           !isempty(data.area_interchange.pristine_areas)
+end
+_has_controlled_taps(::Nothing) = false
+_has_controlled_taps(cd::ControlledDeviceSet) = !isempty(cd.taps)
+
+"""`_solve_columns_threaded!` with one contiguous chunk of `steps` per task."""
+function _solve_chunks_threaded!(
+    ts_converged::Vector{Bool},
+    data::ACPowerFlowData,
+    pf::AbstractACPowerFlow{<:ACPowerFlowSolverType},
+    steps::AbstractVector{Int},
+    n_work::Int,
+    merged_kwargs::NamedTuple,
+)
     chunks = collect(Iterators.partition(1:length(steps), cld(length(steps), n_work)))
     slots = _worker_slots!(data, length(chunks))
     workers = [_column_worker(data, steps, c, s) for (c, s) in zip(chunks, slots)]
@@ -488,7 +545,7 @@ function _solve_columns_threaded!(
     # The head step settled a fresh plan. Close a plan left pending by an earlier call that
     # raised, so no task writes the shared slot.
     _settle_lean_plan!(workers[1], first(steps), false)
-    _seed_workers!(workers, steps, chunks)
+    _seed_workers!(workers, [steps[first(c)] for c in chunks])
     @sync for (i, positions) in enumerate(chunks)
         worker = workers[i]
         slot = slots[i]
@@ -521,7 +578,7 @@ function _solve_slot!(
     slot::WorkerSlot,
     pf::AbstractACPowerFlow,
     steps::AbstractVector{Int},
-    positions::UnitRange{Int},
+    positions::Union{UnitRange{Int}, ClaimedPositions},
     kwargs::NamedTuple,
 )
     try
@@ -545,16 +602,15 @@ _head_steps(::Nothing, positions::UnitRange{Int}) = first(positions):first(posit
 _head_steps(::AbstractNRCache, positions::UnitRange{Int}) =
     first(positions):(first(positions) - 1)
 
-function _seed_workers!(
-    workers::Vector{<:ACPowerFlowData},
-    steps::AbstractVector{Int},
-    chunks::Vector{UnitRange{Int}},
-)
+# `seed_steps[i]` sets only the initial lean alignment of worker `i`. Each reuse calls
+# `_align_lean_plan!`, which computes the swaps from the plan, so any step is correct.
+# If the step is the first step of the worker, its first re-alignment changes nothing.
+function _seed_workers!(workers::Vector{<:ACPowerFlowData}, seed_steps::Vector{Int})
     seed = workers[1].polar_nr_cache[]
     memo = workers[1].ac_jacobian_structure_cache[]
     for i in 2:length(workers)
         worker = workers[i]
-        _seed_worker!(worker, worker.polar_nr_cache[], seed, memo, steps[first(chunks[i])])
+        _seed_worker!(worker, worker.polar_nr_cache[], seed, memo, seed_steps[i])
         _seed_rect_mixed!(worker, worker.solver_cache[], workers[1].solver_cache[])
     end
     return

@@ -313,13 +313,13 @@ end
 """Rebuild the lean plan of `data`'s Jacobian structure once, on the Jacobian at the solved state
 of `time_step`. It runs at the end of the first step solved after `_plan_at_flat!` built
 the plan, and closes the slot to later calls. A plan built at a solved state keeps the pivots of
-later operating points above the ratio test where the flat plan can fail it (EI515, eight load
-steps: one reject at flat, none after the rebuild), and each reject costs a `klu_factor`. A step
-that did not converge keeps the flat plan. A failed rebuild keeps it too.
+later operating points above the ratio test, where the flat plan can fail it. Each reject costs a
+`klu_factor`. A step that did not converge keeps the flat plan. A failed rebuild keeps it too.
 
-It writes the shared slot without a lock. Call it only where no task shares the slot: after a
-serial step, or before `_solve_columns_threaded!` spawns its tasks. Caches holding the flat plan
-take the new one at their next `_align_lean_plan!`."""
+It writes the slot without a lock, so only one task may find the slot open. The threaded drivers
+close the slot before they spawn tasks, and [`_inherit_jacobian_structure!`](@ref) closes a slot
+it shares. A call in a task then returns at once. Caches holding the flat plan take the new one
+at their next `_align_lean_plan!`."""
 _settle_lean_plan!(data::ACPowerFlowData, time_step::Int, converged::Bool) =
     _settle_lean_plan!(data.ac_jacobian_structure_cache[], data, time_step, converged)
 _settle_lean_plan!(::Nothing, ::ACPowerFlowData, ::Int, ::Bool) = nothing
@@ -507,7 +507,8 @@ _skips_refinement(::PNM.LinearSolverCache) = false
 """Seed `work`'s Jacobian-structure memo, and with it the lean-LU plan, from `base`'s (an empty
 rect/mixed NR cache too, [`_seed_rect_mixed!`](@ref)). For a working copy whose Ybus is a value
 copy of `base`'s with the same pattern, so every copy pivots like `base` instead of on whatever it
-solves first. An unbuilt plan is not shared: the copies would race to build it."""
+solves first. An unbuilt plan is not shared: the copies would race to build it. A shared plan is
+closed to [`_settle_lean_plan!`](@ref) for the same reason."""
 function _inherit_jacobian_structure!(work::ACPowerFlowData, base::ACPowerFlowData)
     _seed_rect_mixed!(work, work.solver_cache[], base.solver_cache[])
     _inherit_jacobian_structure!(work, base.ac_jacobian_structure_cache[])
@@ -525,6 +526,7 @@ function _inherit_jacobian_structure!(work::ACPowerFlowData, memo::ACJacobianStr
     if !lean.tried
         lean = LeanPlanSlot()
     end
+    lean.settle_pending = false
     work.ac_jacobian_structure_cache[] = ACJacobianStructureCache(
         work.power_network_matrix, memo.slack_slots, memo.structure,
         work.area_interchange,
