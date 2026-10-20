@@ -190,6 +190,8 @@ function build_controlled_device_set(
     n_time_steps::Int = 1,
 )
     nrd = PNM.get_network_reduction_data(ybus)
+    Yft = ybus.arc_admittance_from_to
+    Ytf = ybus.arc_admittance_to_from
     taps = ControlledTap[]
     for (name, branch, circuit, device_name, circuit_index) in
         _voltage_controlled_tap_candidates(sys)
@@ -233,6 +235,7 @@ function build_controlled_device_set(
                 locked at its current ratio."
             continue
         end
+        ft_slots, tf_slots = _tap_arc_slots(name, fix, tix, Yft, Ytf)
         push!(
             taps,
             ControlledTap(
@@ -254,6 +257,8 @@ function build_controlled_device_set(
                 tap0,   # current
                 device_name,
                 circuit_index,
+                ft_slots,
+                tf_slots,
             ),
         )
     end
@@ -332,7 +337,9 @@ function build_controlled_device_set(
     facts = ControlledFACTS[]
     _enroll_facts!(facts, sys, bus_lookup, reverse_bus_search_map)
 
-    return ControlledDeviceSet(taps, shunts, facts, n_time_steps)
+    set = ControlledDeviceSet(taps, shunts, facts, n_time_steps)
+    capture_tap_baseline!(set, ybus)
+    return set
 end
 
 # Continuous shunt FACTS (SVC/STATCOM) voltage control. `rating` (SHMX) bounds the SVC

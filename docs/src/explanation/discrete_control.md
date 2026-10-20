@@ -70,10 +70,10 @@ per-time-step store (one column per step, sized at construction); around each
 step's continuation the solver loads that step's device state into the scalar
 scratch the engine mutates and saves it back afterwards. Shunt/FACTS state is a
 plain scalar swap — their control deltas land in the per-column withdrawal
-matrices. Taps mutate the *shared* Y-bus, so each step instead resets the tap to
-its enrollment baseline via a Y-bus delta-update before regulating
-(reset-to-baseline design), and branch flows are computed inside the time-step
-loop so every step's flows reflect that step's tap position.
+matrices. Taps mutate the *shared* Y-bus. Each step starts by writing the
+admittance baseline back into the tapped Y-bus and arc-row entries, so no round-off
+accumulates across steps or solves. Branch flows are computed inside the time-step
+loop, so every step's flows reflect that step's tap position.
 
 Two multiperiod-specific behaviors:
 

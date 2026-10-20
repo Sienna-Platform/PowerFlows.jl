@@ -28,6 +28,11 @@ mutable struct ControlledTap <: AbstractBranchControl
     # for a 3W) cannot resolve it. `PSY.get_circuits(parent)[circuit_index]` can, for both.
     device_name::String
     circuit_index::Int
+    # Entry k is the `nzval` index in `Yft` (`Ytf`) of term k of `_branch_terms`
+    # (ff, ft, tf), or 0 when that matrix does not store the term. All zero when the arc
+    # rows are absent.
+    ft_slots::NTuple{3, Int}
+    tf_slots::NTuple{3, Int}
 end
 
 """Voltage-controlling switched shunt, snapped onto the PSS/E cumulative
@@ -75,19 +80,31 @@ mutable struct ControlledFACTS <: AbstractShuntControl
     saturated::Bool    # post-solve classification: held at the V-dependent |b| bound, off setpoint
 end
 
+"""Admittance baseline: the `nzval` entries a tap writes, with their values at the initial
+ratio. Parallel branches share entries, so the unit is the entry."""
+struct AdmittanceBaseline
+    nz_indices::Vector{Int}
+    values::Vector{ComplexF32}
+end
+AdmittanceBaseline() = AdmittanceBaseline(Int[], ComplexF32[])
+
 struct ControlledDeviceSet
     taps::Vector{ControlledTap}
     shunts::Vector{ControlledSwitchedShunt}
     facts::Vector{ControlledFACTS}
     # Per-time-step scalar state [device, ts]; `load_device_state!`/`save_device_state!` swap it
-    # in/out of the device scratch. Taps mutate the SHARED Y-bus, so their store is reconciled via
-    # `apply_parameter!` (reset to `d.initial` each step), not a scalar swap.
+    # in/out of the device scratch. Taps mutate the SHARED Y-bus, so each step restores the
+    # admittance baseline instead of swapping a scalar.
     shunt_current::Matrix{Float64}
     shunt_block_n::Matrix{Vector{Int}}
     facts_current::Matrix{Float64}
     facts_b_lim::Matrix{Float64}
     facts_saturated::Matrix{Bool}
     tap_current::Matrix{Float64}
+    # Captured by `capture_tap_baseline!`.
+    ybus_baseline::AdmittanceBaseline
+    arc_ft_baseline::AdmittanceBaseline
+    arc_tf_baseline::AdmittanceBaseline
     # Perf counters for the last `_control_continuation!` (counts, not wall-clock; the regression
     # harness). symbolic_factors stays O(1) per continuation with PolarNRCache reuse. See getters.
     inner_solves::Base.RefValue{Int}
@@ -116,6 +133,9 @@ function ControlledDeviceSet(
         facts_b_lim,
         facts_saturated,
         tap_current,
+        AdmittanceBaseline(),
+        AdmittanceBaseline(),
+        AdmittanceBaseline(),
         Ref(0),
         Ref(0),
         Ref(0),
@@ -125,10 +145,10 @@ function Base.isempty(s::ControlledDeviceSet)
     return isempty(s.taps) && isempty(s.shunts) && isempty(s.facts)
 end
 
-"""Load time step `ts`'s persisted state into the device scratch `_control_continuation!` mutates.
-Shunt/FACTS is a plain scalar swap; taps instead reset to their enrollment baseline (`d.initial`)
-via a Y-bus delta-update, since they mutate the shared Y-bus and every step must regulate from the
-same baseline network (reset-to-baseline design; a no-op on step 1)."""
+"""Load the persisted state of time step `ts` into the device scratch that
+`_control_continuation!` mutates. Shunt and FACTS state is a plain scalar swap. Taps write
+the admittance baseline back into the Y-bus and the arc rows and return to `d.initial`.
+Every step then regulates from the same network."""
 function load_device_state!(set::ControlledDeviceSet, data, ts::Int)
     for (i, d) in enumerate(set.shunts)
         d.current = set.shunt_current[i, ts]
@@ -139,16 +159,88 @@ function load_device_state!(set::ControlledDeviceSet, data, ts::Int)
         d.b_lim = set.facts_b_lim[i, ts]
         d.saturated = set.facts_saturated[i, ts]
     end
+    isempty(set.taps) && return
+    pnm = data.power_network_matrix
+    _restore_baseline!(pnm.data.nzval, set.ybus_baseline)
+    _restore_baseline!(pnm.arc_admittance_from_to, set.arc_ft_baseline)
+    _restore_baseline!(pnm.arc_admittance_to_from, set.arc_tf_baseline)
     for d in set.taps
-        apply_parameter!(d, data, d.initial, ts)
+        d.current = d.initial
+        d.synced = d.initial
     end
     return
 end
 load_device_state!(::Nothing, data, ts::Int) = nothing
 
+function _restore_baseline!(nzval::Vector{ComplexF32}, snap::AdmittanceBaseline)
+    nzval[snap.nz_indices] = snap.values
+    return
+end
+_restore_baseline!(::Nothing, ::AdmittanceBaseline) = nothing
+_restore_baseline!(Y::PNM.ArcAdmittanceMatrix, snap::AdmittanceBaseline) =
+    _restore_baseline!(Y.data.nzval, snap)
+
+function _capture_baseline!(
+    snap::AdmittanceBaseline,
+    nzval::Vector{ComplexF32},
+    entries::Vector{Int},
+)
+    sort!(unique!(entries))
+    copy!(snap.nz_indices, entries)
+    copy!(snap.values, nzval[entries])
+    return
+end
+function _capture_baseline!(snap::AdmittanceBaseline, ::Nothing, ::Vector{Int})
+    empty!(snap.nz_indices)
+    empty!(snap.values)
+    return
+end
+_capture_baseline!(
+    snap::AdmittanceBaseline,
+    Y::PNM.ArcAdmittanceMatrix,
+    entries::Vector{Int},
+) =
+    _capture_baseline!(snap, Y.data.nzval, entries)
+
+"""Capture the admittance baseline: the Y-bus and arc-row entries the taps write. Every tap
+must be at its `initial` position. The set builder calls it. A caller that edits a Y-bus or
+arc-row entry a tap writes (a contingency) must call it again before the next solve, with
+every tap at `initial`. Otherwise the step start reverts the edit."""
+function capture_tap_baseline!(set::ControlledDeviceSet, ybus::PNM.Ybus)::Nothing
+    for d in set.taps
+        if d.current != d.initial
+            error(
+                "capture_tap_baseline!: tap \"$(d.name)\" is at $(d.current), not at " *
+                "its initial position $(d.initial).",
+            )
+        end
+        d.synced = d.initial
+    end
+    ybus_slots = Int[]
+    slots_ft = Int[]
+    slots_tf = Int[]
+    for d in set.taps
+        append!(ybus_slots, d.nz_offsets[1:3])
+        _push_nonzero!(slots_ft, d.ft_slots)
+        _push_nonzero!(slots_tf, d.tf_slots)
+    end
+    _capture_baseline!(set.ybus_baseline, ybus.data.nzval, ybus_slots)
+    _capture_baseline!(set.arc_ft_baseline, ybus.arc_admittance_from_to, slots_ft)
+    _capture_baseline!(set.arc_tf_baseline, ybus.arc_admittance_to_from, slots_tf)
+    return
+end
+capture_tap_baseline!(::Nothing, ::PNM.Ybus) = nothing
+
+function _push_nonzero!(slots::Vector{Int}, terms::NTuple{3, Int})
+    for s in terms
+        iszero(s) || push!(slots, s)
+    end
+    return
+end
+
 """Persist the device scratch for time step `ts` into the per-ts store after `_control_continuation!`
 runs for that step. Taps persist their converged position for reporting; the next `load_device_state!`
-resets the Y-bus to baseline before the next step regulates."""
+restores the admittance baseline before the next step regulates."""
 function save_device_state!(set::ControlledDeviceSet, data, ts::Int)
     for (i, d) in enumerate(set.shunts)
         set.shunt_current[i, ts] = d.current
@@ -447,47 +539,62 @@ end
     return (d.yt / abs2(t), -d.yt / conj(t), -d.yt / t)
 end
 
+# `(ft_slots, tf_slots)` of a tap (see `ControlledTap`). The arc is stored in the normal
+# orientation, or reversed (from/to roles of the terms swap). All zero when the arc matrices
+# are not built or the arc row is missing.
+_tap_arc_slots(::String, ::Int, ::Int, ::Nothing, ::Nothing) = ((0, 0, 0), (0, 0, 0))
+function _tap_arc_slots(
+    name::String,
+    d_from_ix::Int,
+    d_to_ix::Int,
+    Yft::PNM.ArcAdmittanceMatrix,
+    Ytf::PNM.ArcAdmittanceMatrix,
+)
+    bus_axis = PNM.get_bus_axis(Yft)
+    arc_row = PNM.get_arc_lookup(Yft)
+    fb = bus_axis[d_from_ix]
+    tb = bus_axis[d_to_ix]
+    r = get(arc_row, (fb, tb), 0)
+    if !iszero(r)
+        ff = _nz_index(Yft.data, r, d_from_ix)
+        ft = _nz_index(Yft.data, r, d_to_ix)
+        tf = _nz_index(Ytf.data, r, d_from_ix)
+        return ((ff, ft, 0), (0, 0, tf))
+    end
+    r = get(arc_row, (tb, fb), 0)
+    if iszero(r)
+        @warn "discrete control: arc ($fb, $tb) of device \"$name\" not found \
+            in the arc-admittance axes; reported flows on that branch reflect its \
+            original parameter."
+        return ((0, 0, 0), (0, 0, 0))
+    end
+    ff = _nz_index(Ytf.data, r, d_from_ix)
+    ft = _nz_index(Ytf.data, r, d_to_ix)
+    tf = _nz_index(Yft.data, r, d_from_ix)
+    return ((0, 0, tf), (ff, ft, 0))
+end
+
+function _add_terms!(nzval::Vector{ComplexF32}, slots::NTuple{3, Int}, deltas)
+    for k in 1:3
+        s = slots[k]
+        iszero(s) || (nzval[s] += deltas[k])
+    end
+    return
+end
+
 # Delta-update the from/to arc-admittance rows to `d.current` (parallel branches sharing the arc
 # row are preserved; `d.synced` tracks the reflected value). Reported flows are computed from
 # these matrices right after each time step, so an unsynced branch would report flows at its
-# original tap.
+# original tap. The tt term (= yt) is parameter-independent and has no slot.
 function _sync_branch_arc_rows!(
     Yft::SparseArrays.SparseMatrixCSC,
     Ytf::SparseArrays.SparseMatrixCSC,
     d::ControlledTap,
-    arc_row::Dict{Tuple{Int, Int}, Int},
-    ix_to_number::Dict{Int, Int},
 )
     d.current == d.synced && return
-    fb = ix_to_number[d.from_ix]
-    tb = ix_to_number[d.to_ix]
-    ff_new, ft_new, tf_new = _branch_terms(d, d.current)
-    ff_old, ft_old, tf_old = _branch_terms(d, d.synced)
-    r = get(arc_row, (fb, tb), 0)
-    if !iszero(r)
-        @inbounds begin
-            Yft.nzval[_nz_index(Yft, r, d.from_ix)] += ff_new - ff_old
-            Yft.nzval[_nz_index(Yft, r, d.to_ix)] += ft_new - ft_old
-            Ytf.nzval[_nz_index(Ytf, r, d.from_ix)] += tf_new - tf_old
-            # Ytf(r, to_ix) holds the tt term (= yt): parameter-independent, skipped.
-        end
-    else
-        # The branch may be stored under the reversed arc orientation; the from/to roles
-        # of the four terms swap accordingly (its "from side" is our to bus).
-        r = get(arc_row, (tb, fb), 0)
-        if iszero(r)
-            @warn "discrete control: arc ($fb, $tb) of device \"$(d.name)\" not found \
-                in the arc-admittance axes; reported flows on that branch reflect its \
-                original parameter." maxlog = 1
-            return
-        end
-        @inbounds begin
-            Yft.nzval[_nz_index(Yft, r, d.from_ix)] += tf_new - tf_old
-            Ytf.nzval[_nz_index(Ytf, r, d.to_ix)] += ft_new - ft_old
-            Ytf.nzval[_nz_index(Ytf, r, d.from_ix)] += ff_new - ff_old
-            # Yft(r, to_ix) is the reversed arc's from-side self term (= yt): skipped.
-        end
-    end
+    deltas = _branch_terms(d, d.current) .- _branch_terms(d, d.synced)
+    _add_terms!(Yft.nzval, d.ft_slots, deltas)
+    _add_terms!(Ytf.nzval, d.tf_slots, deltas)
     d.synced = d.current
     return
 end
@@ -501,11 +608,8 @@ function _sync_arc_admittances!(data, set::ControlledDeviceSet)
     Ytf = data.power_network_matrix.arc_admittance_to_from
     (isnothing(Yft) || isnothing(Ytf)) && return
     isempty(set.taps) && return
-    bus_lookup = PNM.get_bus_lookup(Yft)
-    ix_to_number = Dict{Int, Int}(v => k for (k, v) in bus_lookup)
-    arc_row = get_arc_lookup(data)   # (from_no, to_no) => arc row index
     for d in set.taps
-        _sync_branch_arc_rows!(Yft.data, Ytf.data, d, arc_row, ix_to_number)
+        _sync_branch_arc_rows!(Yft.data, Ytf.data, d)
     end
     return
 end

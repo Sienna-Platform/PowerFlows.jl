@@ -381,10 +381,12 @@ end
     δ = 0.02
     tap = PowerFlows.ControlledTap("tp", 1, 2, 2, 1.0, 1.0, 1.0,
         1.0 / (0.01 + 0.1im), 0.0, 0.9, 1.1,
-        collect(range(0.9, 1.1; length = 33)), (1, 2, 3, 4), 1.0, 1.0, 1.0, "tp", 1)
+        collect(range(0.9, 1.1; length = 33)), (1, 2, 3, 4), 1.0, 1.0, 1.0, "tp", 1,
+        (0, 0, 0), (0, 0, 0))
     remote = PowerFlows.ControlledTap("ts", 1, 2, 1, 1.0, 1.0, 1.0,
         1.0 / (0.01 + 0.1im), 0.0, 0.9, 1.1,
-        collect(range(0.9, 1.1; length = 33)), (1, 2, 3, 4), 1.0, 1.0, 1.0, "ts", 1)
+        collect(range(0.9, 1.1; length = 33)), (1, 2, 3, 4), 1.0, 1.0, 1.0, "ts", 1,
+        (0, 0, 0), (0, 0, 0))
     shunt = PowerFlows.ControlledSwitchedShunt("sh", 3, 3, 1.0, 0.95, 1.05,
         [4], [0.05], 0.0, 0.2, zeros(Int, 1), false, 0.0, 0.0, false)
     for d in (tap, remote, shunt)
@@ -406,7 +408,7 @@ end
     # iterate alternate every step and tripped the oscillation-freeze detector.)
     d = PowerFlows.ControlledTap("t", 1, 2, 2, 1.0, 1.0, 1.0, 1.0 / (0.01 + 0.1im),
         0.0, 0.9, 1.1, collect(range(0.9, 1.1; length = 33)),
-        (1, 2, 3, 4), 1.0, 1.0, 1.0, "t", 1)
+        (1, 2, 3, 4), 1.0, 1.0, 1.0, "t", 1, (0, 0, 0), (0, 0, 0))
     lo, hi = PowerFlows.parameter_limits(d)
     for S in (1.0e2, 1.0e3, 5.0e3), dVdp in (-5.0, -1.0, -0.1, 0.1, 1.0, 5.0)
         ω = PowerFlows._relaxation(d, S, dVdp)
@@ -450,7 +452,7 @@ end
 @testset "discrete control: snap" begin
     d = PowerFlows.ControlledTap("t", 1, 2, 2, 1.0, 1.0, 1.0, 1.0 + 0im,
         0.0, 0.9, 1.1, collect(range(0.9, 1.1; length = 5)),
-        (1, 2, 3, 4), 1.0, 1.0, 1.0, "t", 1)  # levels: 0.9,0.95,1.0,1.05,1.1
+        (1, 2, 3, 4), 1.0, 1.0, 1.0, "t", 1, (0, 0, 0), (0, 0, 0))  # levels: 0.9,0.95,1.0,1.05,1.1
     @test PowerFlows.snap_to_discrete(d, 1.03) == 1.05
     @test PowerFlows.snap_to_discrete(d, 1.20) == 1.1   # clamp
     block_dB_sh_snap = [0.05]
@@ -500,6 +502,50 @@ end
     disc = PowerFlows.ControlledSwitchedShunt("d", 3, 3, 1.0, 0.95, 1.05,
         [4], block_dB, 0.0, 0.2, zeros(Int, length(block_dB)), false, 0.0, 0.0, false)
     @test PowerFlows.snap_to_discrete(disc, 0.12) == 0.10
+end
+
+@testset "taps restore the admittance baseline at each step" begin
+    T = 6
+    pf = ACPolarPowerFlow(; time_steps = T, control_discrete_devices = true,
+        solution_parameters = SolutionParameters(; linear_solver = "KLU"))
+    data = PowerFlowData(pf, _make_multiperiod_tap_system())
+    _set_multiperiod_tap_loads!(data, T)
+    set = PF.get_controlled_devices(data)
+    A = data.power_network_matrix.data
+    Yft = data.power_network_matrix.arc_admittance_from_to.data
+    Ytf = data.power_network_matrix.arc_admittance_to_from.data
+    ybus_base = set.ybus_baseline
+    @test !isempty(ybus_base.nz_indices)
+    @test A.nzval[ybus_base.nz_indices] == ybus_base.values
+    @test Yft.nzval[set.arc_ft_baseline.nz_indices] == set.arc_ft_baseline.values
+    @test Ytf.nzval[set.arc_tf_baseline.nz_indices] == set.arc_tf_baseline.values
+    @test solve_power_flow!(data)
+    # The scratch holds the last step's taps.
+    @test any(set.tap_current .!= [d.initial for d in set.taps])
+    d = set.taps[1]
+    PF.apply_parameter!(d, data, d.initial + 0.01, 1)
+    @test A.nzval[ybus_base.nz_indices] != ybus_base.values
+    PF.load_device_state!(set, data, 1)
+    @test A.nzval[ybus_base.nz_indices] == ybus_base.values
+    @test Yft.nzval[set.arc_ft_baseline.nz_indices] == set.arc_ft_baseline.values
+    @test Ytf.nzval[set.arc_tf_baseline.nz_indices] == set.arc_tf_baseline.values
+    @test all(d -> d.current == d.initial && d.synced == d.initial, set.taps)
+
+    # The same inputs give the same bits on every repeat: no drift across solves.
+    _set_multiperiod_tap_loads!(data, T)
+    @test solve_power_flow!(data)
+    first_vm = copy(data.bus_magnitude)
+    first_y = copy(A.nzval)
+    for _ in 1:3
+        _set_multiperiod_tap_loads!(data, T)
+        @test solve_power_flow!(data)
+        @test data.bus_magnitude == first_vm
+        @test A.nzval == first_y
+    end
+
+    # A baseline captured with a moved tap is refused.
+    set.taps[1].current = set.taps[1].initial + 1e-3
+    @test_throws ErrorException PF.capture_tap_baseline!(set, data.power_network_matrix)
 end
 
 @testset "discrete control: in-place Ybus == rebuild" begin
@@ -947,7 +993,7 @@ end
     # Taps carry a VMI/VMA band and are held anywhere inside it.
     tap = PowerFlows.ControlledTap("t", 1, 2, 2, 1.0, 0.98, 1.02, 1.0 + 0im,
         0.0, 0.9, 1.1, collect(range(0.9, 1.1; length = 5)),
-        (1, 2, 3, 4), 1.0, 1.0, 1.0, "t", 1)
+        (1, 2, 3, 4), 1.0, 1.0, 1.0, "t", 1, (0, 0, 0), (0, 0, 0))
     @test PowerFlows._in_deadband(tap, 1.0)
     @test PowerFlows._in_deadband(tap, 0.99)
     @test !PowerFlows._in_deadband(tap, 0.97)

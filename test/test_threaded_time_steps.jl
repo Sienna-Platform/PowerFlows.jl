@@ -172,3 +172,53 @@ end
         end
     end
 end
+
+@testset "a failed head leaves the slot open and tasks never write it" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    capped = SolutionParameters(; linear_solver = "KLU", n_threads = 4, maxIterations = 1)
+    data = PowerFlowData(
+        ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+            time_steps = 8,
+            solution_parameters = capped,
+        ),
+        sys,
+    )
+    prepare_ts_data!(data, 8)
+    @test !with_logger(() -> solve_power_flow!(data), NullLogger())
+    memo = data.ac_jacobian_structure_cache[]
+    @test !PF._slot_tried(memo)
+    # The head consumed every step, so the tasks got none.
+    @test all(isnothing(s.polar_nr_cache[]) for s in data.worker_slots[2:end])
+    # Workers ran on plain KLU.
+    for s in data.worker_slots
+        c = s.polar_nr_cache[]
+        isnothing(c) && continue
+        @test !PNM.KLUWrapper.has_lean_plan(c.linSolveCache)
+    end
+end
+
+@testset "a head that fails once still builds the plan at the first converged step" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    function failing_first_step(n_threads)
+        params = SolutionParameters(; linear_solver = "KLU", n_threads = n_threads)
+        data = PowerFlowData(
+            ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+                time_steps = 8,
+                solution_parameters = params,
+            ),
+            sys,
+        )
+        prepare_ts_data!(data, 8)
+        data.bus_active_power_withdrawals[:, 1] .*= 50.0
+        return data
+    end
+    data = failing_first_step(4)
+    @test !with_logger(() -> solve_power_flow!(data), NullLogger())
+    @test !data.converged[1]
+    @test all(data.converged[2:8])
+    @test PF._slot_tried(data.ac_jacobian_structure_cache[])
+    serial = failing_first_step(1)
+    @test !with_logger(() -> solve_power_flow!(serial), NullLogger())
+    @test isequal(data.bus_magnitude[:, 2:8], serial.bus_magnitude[:, 2:8])
+    @test isequal(data.bus_angles[:, 2:8], serial.bus_angles[:, 2:8])
+end
