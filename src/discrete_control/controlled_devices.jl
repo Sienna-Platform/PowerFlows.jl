@@ -2,33 +2,57 @@ abstract type AbstractControlledDevice end
 abstract type AbstractBranchControl <: AbstractControlledDevice end
 abstract type AbstractShuntControl <: AbstractControlledDevice end
 
-"""Voltage-controlling tap transformer. `nz_offsets` are the 4 cached
-`nzval` linear indices of the (from,to)×(from,to) Y-bus block. The control
-orientation is NOT stored: it comes from the measured plant sensitivity dV/dp
-(see `_control_target`), which is correct for any wiring of the controlled bus."""
-mutable struct ControlledTap <: AbstractBranchControl
+"""Quantity that a branch device moves."""
+abstract type BranchActuator end
+"""The device moves the tap ratio. The phase shift stays fixed."""
+struct TapRatio <: BranchActuator end
+"""The device moves the phase-shift angle. The tap ratio stays fixed."""
+struct PhaseAngle <: BranchActuator end
+
+"""Quantity that a branch device regulates."""
+abstract type ControlledQuantity end
+"""The voltage magnitude at the controlled bus."""
+struct BusVoltage <: ControlledQuantity end
+"""The reactive-power flow into the branch at the from bus."""
+struct ReactivePowerFlow <: ControlledQuantity end
+"""The active-power flow into the branch at the from bus."""
+struct ActivePowerFlow <: ControlledQuantity end
+
+"""Transformer circuit that moves one actuator `A` to regulate one quantity `Q`.
+`nz_offsets` are the 4 cached `nzval` linear indices of the (from,to)x(from,to) Y-bus
+block. The control orientation is NOT stored: it comes from the measured plant sensitivity
+dy/dp (see `_control_target`), which is correct for any wiring of the controlled bus.
+`setpoint` is the midpoint of the target band `[band_lo, band_hi]`. `fixed` is the part of the
+complex tap that the actuator does not move: the phase shift for `TapRatio`, the ratio for
+`PhaseAngle`. `y_fr` is the from-side shunt. It does not depend on the actuator."""
+mutable struct ControlledBranch{A <: BranchActuator, Q <: ControlledQuantity} <:
+               AbstractBranchControl
     name::String
     from_ix::Int
     to_ix::Int
     controlled_ix::Int
-    vset::Float64
-    vset_lo::Float64                 # VMI/VMA deadband: held anywhere inside
-    vset_hi::Float64
+    setpoint::Float64
+    band_lo::Float64                 # VMI/VMA deadband: held anywhere inside
+    band_hi::Float64
     yt::ComplexF64                   # 1/(r+jx)
-    alpha::Float64                   # winding-group phase shift (PSY.get_α)
+    y_fr::ComplexF64                 # from-side shunt admittance
+    fixed::Float64
     p_min::Float64
     p_max::Float64
-    levels::Vector{Float64}          # discrete tap ratios
+    levels::Vector{Float64}          # discrete actuator positions
     nz_offsets::NTuple{4, Int}       # nzval idx for Y11,Y12,Y21,Y22
-    initial::Float64                 # enrollment-time tap (reporting)
-    synced::Float64                  # tap reflected in the arc-admittance rows
+    initial::Float64                 # enrollment-time actuator value (reporting)
+    synced::Float64                  # actuator value reflected in the arc-admittance rows
     current::Float64
-    # Write-back address. A regulating tap lives on a `PSY.TransformerCircuit`, and under psy6
-    # that circuit may belong to either arity, so `name` alone (which is suffixed per circuit
-    # for a 3W) cannot resolve it. `PSY.get_circuits(parent)[circuit_index]` can, for both.
+    # Write-back address. A regulating circuit lives on a `PSY.TransformerCircuit`, and under
+    # psy6 that circuit may belong to either arity, so `name` alone (which is suffixed per
+    # circuit for a 3W) cannot resolve it. `PSY.get_circuits(parent)[circuit_index]` can, for both.
     device_name::String
     circuit_index::Int
 end
+
+"""Voltage-controlling tap transformer."""
+const ControlledTap = ControlledBranch{TapRatio, BusVoltage}
 
 """Voltage-controlling switched shunt, snapped onto the PSS/E cumulative
 block-activation chain (blocks switch on in listed order, off in reverse)."""
@@ -77,17 +101,21 @@ end
 
 struct ControlledDeviceSet
     taps::Vector{ControlledTap}
+    flow_taps::Vector{ControlledBranch{TapRatio, ReactivePowerFlow}}
+    phase_shifters::Vector{ControlledBranch{PhaseAngle, ActivePowerFlow}}
     shunts::Vector{ControlledSwitchedShunt}
     facts::Vector{ControlledFACTS}
     # Per-time-step scalar state [device, ts]; `load_device_state!`/`save_device_state!` swap it
-    # in/out of the device scratch. Taps mutate the SHARED Y-bus, so their store is reconciled via
-    # `apply_parameter!` (reset to `d.initial` each step), not a scalar swap.
+    # in/out of the device scratch. Branch devices mutate the SHARED Y-bus, so their stores are
+    # reconciled via `apply_parameter!` (reset to `d.initial` each step), not a scalar swap.
     shunt_current::Matrix{Float64}
     shunt_block_n::Matrix{Vector{Int}}
     facts_current::Matrix{Float64}
     facts_b_lim::Matrix{Float64}
     facts_saturated::Matrix{Bool}
     tap_current::Matrix{Float64}
+    flow_tap_current::Matrix{Float64}
+    phase_shifter_current::Matrix{Float64}
     # Perf counters for the last `_control_continuation!` (counts, not wall-clock; the regression
     # harness). symbolic_factors stays O(1) per continuation with PolarNRCache reuse. See getters.
     inner_solves::Base.RefValue{Int}
@@ -96,6 +124,8 @@ struct ControlledDeviceSet
 end
 function ControlledDeviceSet(
     taps::Vector{ControlledTap},
+    flow_taps::Vector{ControlledBranch{TapRatio, ReactivePowerFlow}},
+    phase_shifters::Vector{ControlledBranch{PhaseAngle, ActivePowerFlow}},
     shunts::Vector{ControlledSwitchedShunt},
     facts::Vector{ControlledFACTS},
     n_time_steps::Int = 1,
@@ -106,8 +136,12 @@ function ControlledDeviceSet(
     facts_b_lim = [d.b_lim for d in facts, _ in 1:n_time_steps]
     facts_saturated = [d.saturated for d in facts, _ in 1:n_time_steps]
     tap_current = [d.current for d in taps, _ in 1:n_time_steps]
+    flow_tap_current = [d.current for d in flow_taps, _ in 1:n_time_steps]
+    phase_shifter_current = [d.current for d in phase_shifters, _ in 1:n_time_steps]
     return ControlledDeviceSet(
         taps,
+        flow_taps,
+        phase_shifters,
         shunts,
         facts,
         shunt_current,
@@ -116,19 +150,47 @@ function ControlledDeviceSet(
         facts_b_lim,
         facts_saturated,
         tap_current,
+        flow_tap_current,
+        phase_shifter_current,
         Ref(0),
         Ref(0),
         Ref(0),
     )
 end
 function Base.isempty(s::ControlledDeviceSet)
-    return isempty(s.taps) && isempty(s.shunts) && isempty(s.facts)
+    return isempty(s.taps) &&
+           isempty(s.flow_taps) &&
+           isempty(s.phase_shifters) &&
+           isempty(s.shunts) &&
+           isempty(s.facts)
+end
+
+"""`true` when the set holds a device that edits the Y-bus."""
+function _has_branch_devices(s::ControlledDeviceSet)
+    return !(isempty(s.taps) && isempty(s.flow_taps) && isempty(s.phase_shifters))
+end
+
+"""Index offsets of each device group in the per-device bookkeeping vectors. The group
+order is `taps, flow_taps, phase_shifters, shunts, facts`, so the taps offset is 0."""
+struct GroupOffsets
+    flow_taps::Int
+    phase_shifters::Int
+    shunts::Int
+    facts::Int
+    total::Int
+end
+function GroupOffsets(set::ControlledDeviceSet)
+    flow_taps = length(set.taps)
+    phase_shifters = flow_taps + length(set.flow_taps)
+    shunts = phase_shifters + length(set.phase_shifters)
+    facts = shunts + length(set.shunts)
+    return GroupOffsets(flow_taps, phase_shifters, shunts, facts, facts + length(set.facts))
 end
 
 """Load time step `ts`'s persisted state into the device scratch `_control_continuation!` mutates.
-Shunt/FACTS is a plain scalar swap; taps instead reset to their enrollment baseline (`d.initial`)
-via a Y-bus delta-update, since they mutate the shared Y-bus and every step must regulate from the
-same baseline network (reset-to-baseline design; a no-op on step 1)."""
+Shunt/FACTS is a plain scalar swap; branch devices instead reset to their enrollment baseline
+(`d.initial`) via a Y-bus delta-update, since they mutate the shared Y-bus and every step must
+regulate from the same baseline network (reset-to-baseline design; a no-op on step 1)."""
 function load_device_state!(set::ControlledDeviceSet, data, ts::Int)
     for (i, d) in enumerate(set.shunts)
         d.current = set.shunt_current[i, ts]
@@ -139,16 +201,23 @@ function load_device_state!(set::ControlledDeviceSet, data, ts::Int)
         d.b_lim = set.facts_b_lim[i, ts]
         d.saturated = set.facts_saturated[i, ts]
     end
-    for d in set.taps
-        apply_parameter!(d, data, d.initial, ts)
-    end
+    _reset_to_initial!(set.taps, data, ts)
+    _reset_to_initial!(set.flow_taps, data, ts)
+    _reset_to_initial!(set.phase_shifters, data, ts)
     return
 end
 load_device_state!(::Nothing, data, ts::Int) = nothing
 
+function _reset_to_initial!(devices, data, ts::Int)
+    for d in devices
+        apply_parameter!(d, data, d.initial, ts)
+    end
+    return
+end
+
 """Persist the device scratch for time step `ts` into the per-ts store after `_control_continuation!`
-runs for that step. Taps persist their converged position for reporting; the next `load_device_state!`
-resets the Y-bus to baseline before the next step regulates."""
+runs for that step. Branch devices persist their converged position for reporting; the next
+`load_device_state!` resets the Y-bus to baseline before the next step regulates."""
 function save_device_state!(set::ControlledDeviceSet, data, ts::Int)
     for (i, d) in enumerate(set.shunts)
         set.shunt_current[i, ts] = d.current
@@ -161,6 +230,12 @@ function save_device_state!(set::ControlledDeviceSet, data, ts::Int)
     end
     for (i, d) in enumerate(set.taps)
         set.tap_current[i, ts] = d.current
+    end
+    for (i, d) in enumerate(set.flow_taps)
+        set.flow_tap_current[i, ts] = d.current
+    end
+    for (i, d) in enumerate(set.phase_shifters)
+        set.phase_shifter_current[i, ts] = d.current
     end
     return
 end
@@ -227,6 +302,18 @@ controlled_bus_ix(d::AbstractControlledDevice) = d.controlled_ix
 # an `isa` branch, over the mixed device loop.
 stored_current(set::ControlledDeviceSet, ::ControlledTap, i::Int, ts::Int) =
     set.tap_current[i, ts]
+stored_current(
+    set::ControlledDeviceSet,
+    ::ControlledBranch{TapRatio, ReactivePowerFlow},
+    i::Int,
+    ts::Int,
+) = set.flow_tap_current[i, ts]
+stored_current(
+    set::ControlledDeviceSet,
+    ::ControlledBranch{PhaseAngle, ActivePowerFlow},
+    i::Int,
+    ts::Int,
+) = set.phase_shifter_current[i, ts]
 stored_current(set::ControlledDeviceSet, ::ControlledSwitchedShunt, i::Int, ts::Int) =
     set.shunt_current[i, ts]
 stored_current(set::ControlledDeviceSet, ::ControlledFACTS, i::Int, ts::Int) =
@@ -256,31 +343,64 @@ stored_parameter_limits(::ControlledDeviceSet, d::AbstractControlledDevice, ::In
 stored_parameter_limits(set::ControlledDeviceSet, ::ControlledFACTS, i::Int, ts::Int) =
     (-set.facts_b_lim[i, ts], set.facts_b_lim[i, ts])
 
-voltage_setpoint(d::AbstractControlledDevice) = d.vset
-parameter_limits(d::ControlledTap) = (d.p_min, d.p_max)
+parameter_limits(d::ControlledBranch) = (d.p_min, d.p_max)
 parameter_limits(d::ControlledSwitchedShunt) = (d.b_min, d.b_max)
 parameter_limits(d::ControlledFACTS) = (-d.b_lim, d.b_lim)
 current_parameter(d::AbstractControlledDevice) = d.current
 
-# The continuation drives `measured_value(d, data, ts)` toward `control_setpoint(d)`. Every
-# supported family regulates bus voltage, so these default to the controlled-bus magnitude and
-# `vset` on the supertype — the only quantity-specific seam, overridable per family for a future
-# non-voltage device; the rest of the continuation engine is agnostic to what is being regulated.
+# The continuation drives `measured_value(d, data, ts)` toward `control_setpoint(d)`.
+# `_measure` is the only quantity-specific seam: the rest of the continuation engine does not
+# know what the device regulates.
 measured_value(d::AbstractControlledDevice, data, ts::Int) =
-    data.bus_magnitude[controlled_bus_ix(d), ts]
-control_setpoint(d::AbstractControlledDevice) = voltage_setpoint(d)
+    _measure(regulated_quantity(d), d, data, ts)
+_measure(::BusVoltage, d, data, ts::Int) = data.bus_magnitude[controlled_bus_ix(d), ts]
+_measure(q::Union{ReactivePowerFlow, ActivePowerFlow}, d, data, ts::Int) =
+    _flow_component(q, _from_side_flow(d, data, ts))
+
+_flow_component(::ReactivePowerFlow, S::ComplexF64) = imag(S)
+_flow_component(::ActivePowerFlow, S::ComplexF64) = real(S)
+
+control_setpoint(d::AbstractShuntControl) = d.vset
+control_setpoint(d::ControlledBranch) = d.setpoint
+
+"""The quantity that a device regulates, as a dispatch tag."""
+regulated_quantity(::ControlledBranch{A, Q}) where {A, Q} = Q()
+regulated_quantity(::AbstractShuntControl) = BusVoltage()
+
+# Devices that regulate a bus voltage split the correction when they share the bus.
+_shares_bus(::BusVoltage) = true
+_shares_bus(::Union{ReactivePowerFlow, ActivePowerFlow}) = false
+
+"""`S_f = V_f·conj(I_f)` terms: the effective `Y_ff` (with the from-side shunt), `Y_ft` and `I_f`."""
+function _from_side_terms(d::ControlledBranch, Vf::ComplexF64, Vt::ComplexF64)
+    Yff, Yft, _ = _branch_terms(d, d.current)
+    Yff += d.y_fr
+    return Yff, Yft, Yff * Vf + Yft * Vt
+end
+
+_polar_bus_voltage(data, ix::Int, ts::Int) =
+    ComplexF64(data.bus_magnitude[ix, ts] * cis(data.bus_angles[ix, ts]))
+
+"""Complex power into the branch at the from bus, at the applied actuator value `d.current`.
+The power is on the system base."""
+function _from_side_flow(d::ControlledBranch, data, ts::Int)
+    Vf = _polar_bus_voltage(data, d.from_ix, ts)
+    Vt = _polar_bus_voltage(data, d.to_ix, ts)
+    _, _, If = _from_side_terms(d, Vf, Vt)
+    return Vf * conj(If)
+end
 
 # Seam: future implicit embedding dispatches here. Never called by the outer loop.
 stamp_control!(d::AbstractControlledDevice, args...) =
     error("implicit embedding not implemented for $(typeof(d))")
 
-# PSS/E deadband semantics: the device is held while the controlled voltage is anywhere INSIDE
-# its band — [VSWLO, VSWHI] for a switched shunt, [VMI, VMA] (the circuit's
-# `controlled_voltage_limits`) for a tap changer; only excursions outside trigger a move.
+# PSS/E deadband semantics: the device is held while the regulated quantity is anywhere INSIDE
+# its band — [VSWLO, VSWHI] for a switched shunt, [VMI, VMA] (the circuit's controlled
+# voltage or flow limits) for a transformer circuit; only excursions outside trigger a move.
 # Families with a point setpoint and no parsed band always regulate.
 _in_deadband(::AbstractControlledDevice, ::Float64) = false
 _in_deadband(d::ControlledSwitchedShunt, y::Float64) = d.vset_lo <= y <= d.vset_hi
-_in_deadband(d::ControlledTap, y::Float64) = d.vset_lo <= y <= d.vset_hi
+_in_deadband(d::ControlledBranch, y::Float64) = d.band_lo <= y <= d.band_hi
 
 function _nz_index(A::SparseArrays.SparseMatrixCSC, row::Int, col::Int)
     @inbounds for k in SparseArrays.nzrange(A, col)
@@ -299,15 +419,19 @@ function _ybus_block_offsets(ybus, i::Int, j::Int)
     )
 end
 
+# The complex tap t = ratio·e^{iα}. `p` is the actuator value; `d.fixed` is the other part.
+_complex_tap(d::ControlledBranch{TapRatio}, p::Float64) = p * cis(d.fixed)
+_complex_tap(d::ControlledBranch{PhaseAngle}, a::Float64) = d.fixed * cis(a)
+
 # Y11/Y12/Y21 are delta-updated (new−old) so parallel branches' contributions
 # in the shared nzval slots are preserved; Y22=Yt is tap-independent (zero delta,
 # even with parallels) so it is skipped. The nzval is single-precision ComplexF32;
 # correctness of the running sum relies on `old_tap` coming from `d.current`
 # (the last applied value), never read back from the lossy nzval.
-function apply_parameter!(d::ControlledTap, data, p::Float64, ::Int)
+function apply_parameter!(d::ControlledBranch, data, p::Float64, ::Int)
     A = data.power_network_matrix.data
-    old_tap = d.current * cis(d.alpha)
-    new_tap = p * cis(d.alpha)
+    old_tap = _complex_tap(d, d.current)
+    new_tap = _complex_tap(d, p)
     o = d.nz_offsets
     @inbounds begin
         A.nzval[o[1]] += d.yt / abs2(new_tap) - d.yt / abs2(old_tap)
@@ -336,7 +460,7 @@ end
     return (hi - lo) / (1.0 + exp(S * (x - xset))) + lo
 end
 
-function snap_to_discrete(d::ControlledTap, p::Float64)
+function snap_to_discrete(d::ControlledBranch, p::Float64)
     pc = clamp(p, d.p_min, d.p_max)
     best = d.levels[1]
     @inbounds for lv in d.levels
@@ -440,10 +564,10 @@ function classify_facts_saturation!(d::ControlledFACTS, vmag::Float64)
     return d.saturated
 end
 
-# The parameter-dependent from-side arc-admittance terms (ff, ft, tf) of a tap device;
+# The parameter-dependent from-side arc-admittance terms (ff, ft, tf) of a branch device;
 # the tt term (= yt) is tap-independent.
-@inline function _branch_terms(d::ControlledTap, p::Float64)
-    t = p * cis(d.alpha)
+@inline function _branch_terms(d::ControlledBranch, p::Float64)
+    t = _complex_tap(d, p)
     return (d.yt / abs2(t), -d.yt / conj(t), -d.yt / t)
 end
 
@@ -454,7 +578,7 @@ end
 function _sync_branch_arc_rows!(
     Yft::SparseArrays.SparseMatrixCSC,
     Ytf::SparseArrays.SparseMatrixCSC,
-    d::ControlledTap,
+    d::ControlledBranch,
     arc_row::Dict{Tuple{Int, Int}, Int},
     ix_to_number::Dict{Int, Int},
 )
@@ -492,7 +616,7 @@ function _sync_branch_arc_rows!(
     return
 end
 
-"""One-shot post-continuation sync: bring the arc-admittance rows of every moved tap device
+"""One-shot post-continuation sync: bring the arc-admittance rows of every moved branch device
 in line with its final parameter so the branch flows reported by `solve_power_flow!` match
 the network the voltages were solved on. Shunt-side devices never touch the arc matrices.
 No-op when the arc admittance matrices were not built."""
@@ -500,12 +624,19 @@ function _sync_arc_admittances!(data, set::ControlledDeviceSet)
     Yft = data.power_network_matrix.arc_admittance_from_to
     Ytf = data.power_network_matrix.arc_admittance_to_from
     (isnothing(Yft) || isnothing(Ytf)) && return
-    isempty(set.taps) && return
+    _has_branch_devices(set) || return
     bus_lookup = PNM.get_bus_lookup(Yft)
     ix_to_number = Dict{Int, Int}(v => k for (k, v) in bus_lookup)
     arc_row = get_arc_lookup(data)   # (from_no, to_no) => arc row index
-    for d in set.taps
-        _sync_branch_arc_rows!(Yft.data, Ytf.data, d, arc_row, ix_to_number)
+    _sync_branch_group!(Yft.data, Ytf.data, set.taps, arc_row, ix_to_number)
+    _sync_branch_group!(Yft.data, Ytf.data, set.flow_taps, arc_row, ix_to_number)
+    _sync_branch_group!(Yft.data, Ytf.data, set.phase_shifters, arc_row, ix_to_number)
+    return
+end
+
+function _sync_branch_group!(Yft, Ytf, devices, arc_row, ix_to_number)
+    for d in devices
+        _sync_branch_arc_rows!(Yft, Ytf, d, arc_row, ix_to_number)
     end
     return
 end

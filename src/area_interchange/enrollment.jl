@@ -170,7 +170,7 @@ _tie_corridor_member(fix::Int, tix::Int, tie::AreaTie) =
     (fix == tie.from_bus_ix && tix == tie.to_bus_ix) ||
     (fix == tie.to_bus_ix && tix == tie.from_bus_ix)
 
-# Guard 7a: a voltage-controlling tap incident to a tie endpoint bus, but between a
+# Guard 7a: a regulating transformer circuit incident to a tie endpoint bus, but between a
 # DIFFERENT bus pair than that tie's own corridor.
 function _warn_tap_pollution_hazard(tap_name::String, fix::Int, tix::Int, tie::AreaTie)
     _tie_corridor_member(fix, tix, tie) && return
@@ -209,7 +209,7 @@ function _warn_diag_pollution_hazards(
     reverse_bus_search_map::Dict{Int, Int},
 )
     isempty(ties) && return
-    for (name, _, circuit, _, _) in _voltage_controlled_tap_candidates(sys)
+    for (name, _, circuit, _, _) in _controlled_circuit_candidates(sys)
         arc = PSY.get_arc(circuit)
         fix = _resolve_bus_ix(
             bus_lookup, reverse_bus_search_map, PSY.get_number(PSY.get_from(arc)))

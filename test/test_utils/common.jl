@@ -672,6 +672,90 @@ function _make_solvable_tap_shunt_system()
     return sys
 end
 
+"""Build a 3-bus system with one `TwoWindingTransformer` whose circuit regulates the reactive
+power flow at its from bus (`REACTIVE_POWER_FLOW`) by moving its tap ratio.
+
+REF(1) ─tap─ PQ(2); REF(1) ─line─ PQ(3); PQ(3) ─line─ PQ(2). The loop lets the tap drive a
+circulating reactive flow, so the from-bus flow responds to the ratio. At tap = 1.0 the from-bus
+flow is outside the target band `q_band` (p.u. on the circuit base, 100 MVA), and the band is
+reachable inside `tap_ratio_limits = (0.9, 1.1)`."""
+function _make_flow_tap_system(;
+    q_band = (min = 0.29, max = 0.31),
+    tap = 1.0,
+    circuit_base_power = 100.0,
+)
+    sys = System(100.0)
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.0, 0.0)
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.PQ, 230, 1.0, 0.0)
+    b3 = _add_simple_bus!(sys, 3, ACBusTypes.PQ, 230, 1.0, 0.0)
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    _add_mp_load!(sys, b2, 0.5, 0.25)
+    _add_mp_load!(sys, b3, 0.05, 0.025)
+    _add_simple_line!(sys, b1, b3, 1e-2, 1e-2, 0.0)
+    _add_simple_line!(sys, b3, b2, 1e-2, 5e-2, 0.0)
+    tx = TwoWindingTransformer(;
+        name = "flow_tap_1_2",
+        circuit = TransformerCircuit(;
+            available = true,
+            arc = Arc(; from = b1, to = b2),
+            r = 0.01,
+            x = 0.10,
+            tap = tap,
+            rating = 1.0,
+            base_power = circuit_base_power,
+            control_objective = PSY.TransformerControlObjective.REACTIVE_POWER_FLOW,
+            tap_ratio_limits = (min = 0.9, max = 1.1),
+            controlled_reactive_power_flow_limits = q_band,
+            input_basis = u"CU",
+        ), input_basis = u"CU",
+    )
+    add_component!(sys, tx)
+    return sys
+end
+
+"""Build a 3-bus loop with one `TwoWindingTransformer` whose circuit regulates the active power
+flow at its from bus (`ACTIVE_POWER_FLOW`) by moving its phase-shift angle.
+
+REF(1) ─xfmr─ PQ(2); REF(1) ─line─ PQ(3); PQ(3) ─line─ PQ(2). The loop splits the bus-2 load
+between the transformer and the path through bus 3, so the angle sets the transformer flow.
+At α = 0 the from-bus flow is outside the target band `p_band` (p.u. on the circuit base,
+100 MVA), and the
+band is reachable inside `phase_angle_limits = ±30°`."""
+function _make_phase_shifter_system(;
+    p_band = (min = 0.95, max = 1.05),
+    α = 0.0,
+    circuit_base_power = 100.0,
+)
+    sys = System(100.0)
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.0, 0.0)
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.PQ, 230, 1.0, 0.0)
+    b3 = _add_simple_bus!(sys, 3, ACBusTypes.PQ, 230, 1.0, 0.0)
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    _add_mp_load!(sys, b2, 0.6, 0.1)
+    _add_mp_load!(sys, b3, 0.2, 0.05)
+    _add_simple_line!(sys, b1, b3, 1e-2, 5e-2, 0.0)
+    _add_simple_line!(sys, b3, b2, 1e-2, 5e-2, 0.0)
+    tx = TwoWindingTransformer(;
+        name = "phase_shifter_1_2",
+        circuit = TransformerCircuit(;
+            available = true,
+            arc = Arc(; from = b1, to = b2),
+            r = 0.01,
+            x = 0.10,
+            tap = 1.0,
+            α = α,
+            rating = 1.0,
+            base_power = circuit_base_power,
+            control_objective = PSY.TransformerControlObjective.ACTIVE_POWER_FLOW,
+            phase_angle_limits = (min = -pi / 6, max = pi / 6),
+            controlled_active_power_flow_limits = p_band,
+            input_basis = u"CU",
+        ), input_basis = u"CU",
+    )
+    add_component!(sys, tx)
+    return sys
+end
+
 """Build a 2-bus system with a weak PQ bus regulated by a `FACTSControlDevice` (SVC/STATCOM).
 
 REF(1) ─line(x=0.10)─ PQ(2); bus 2 carries a reactive load that pulls its voltage below
