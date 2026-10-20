@@ -519,9 +519,10 @@ end
 # A worker with a Y-bus copy that controlled taps edit accumulates round-off from step to step,
 # and a relax renumbers a worker's area set. A step's result then depends on the worker's earlier
 # steps, so these runs keep fixed chunks.
-_carries_step_state(data::ACPowerFlowData) =
-    _has_controlled_taps(get_controlled_devices(data)) ||
-    !isempty(data.area_interchange.pristine_areas)
+function _carries_step_state(data::ACPowerFlowData)
+    return _has_controlled_taps(get_controlled_devices(data)) ||
+           !isempty(data.area_interchange.pristine_areas)
+end
 _has_controlled_taps(::Nothing) = false
 _has_controlled_taps(cd::ControlledDeviceSet) = !isempty(cd.taps)
 
@@ -601,8 +602,9 @@ _head_steps(::Nothing, positions::UnitRange{Int}) = first(positions):first(posit
 _head_steps(::AbstractNRCache, positions::UnitRange{Int}) =
     first(positions):(first(positions) - 1)
 
-# `seed_steps[i]` is the time step worker `i` aligns its seeded cache to. Each later step
-# re-aligns it on reuse.
+# `seed_steps[i]` sets only the initial lean alignment of worker `i`. Each reuse calls
+# `_align_lean_plan!`, which computes the swaps from the plan, so any step is correct.
+# If the step is the first step of the worker, its first re-alignment changes nothing.
 function _seed_workers!(workers::Vector{<:ACPowerFlowData}, seed_steps::Vector{Int})
     seed = workers[1].polar_nr_cache[]
     memo = workers[1].ac_jacobian_structure_cache[]
