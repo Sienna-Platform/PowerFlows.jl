@@ -1690,3 +1690,12 @@ function _assert_schedule_relaxed(data, area_name::String; time_step::Int = 1)
     )
     return logs
 end
+
+function _without_lean(f)
+    PF._USE_LEAN_LU[] = false
+    try
+        return f()
+    finally
+        PF._USE_LEAN_LU[] = true
+    end
+end

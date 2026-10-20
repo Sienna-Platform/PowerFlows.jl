@@ -14,15 +14,6 @@ function _lean_sys14_data(; T = 1, n_threads = 1, kwargs...)
     return data
 end
 
-function _without_lean(f)
-    PF._USE_LEAN_LU[] = false
-    try
-        return f()
-    finally
-        PF._USE_LEAN_LU[] = true
-    end
-end
-
 _lean_slot(data) = data.ac_jacobian_structure_cache[].lean
 
 # Settle the plan on a converged solve, then put the state back so the next solve runs

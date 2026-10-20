@@ -516,9 +516,10 @@ end
 Newton workspace and KLU factorization are its own. The workers' caches live in
 `data.worker_slots`, so a repeated solve reuses them. Every run takes steps from a shared
 counter (`ClaimedPositions`). The head phase runs when the lean slot has no plan or the
-first worker has no cache. It solves steps serially on the first worker until one converges.
-A converged polar step builds the plan. Every task then reads the plan and never writes it.
-Each worker merges its area results from the steps it claimed."""
+first worker has no cache. It solves one step serially on the first worker, converged or
+not. A converged polar head step builds the plan; the tasks then read it and never write
+it. A failed head step leaves the slot untried: the tasks run on plain KLU and the next
+call runs the head again. Each worker merges its area results from the steps it claimed."""
 function _solve_columns_threaded!(
     ts_converged::Vector{Bool},
     data::ACPowerFlowData,
@@ -533,15 +534,10 @@ function _solve_columns_threaded!(
     next = Threads.Atomic{Int}(1)
     claims = [ClaimedPositions(next, length(steps)) for _ in workers]
     if _head_needed(pf, backend, data, slots[1])
-        while true
-            pos = Threads.atomic_add!(next, 1)
-            pos > length(steps) && break
-            _solve_slot!(
-                ts_converged, workers[1], slots[1], pf, steps, pos:pos, backend,
-                merged_kwargs)
-            push!(claims[1].taken, pos)
-            ts_converged[pos] && break
-        end
+        pos = Threads.atomic_add!(next, 1)
+        _solve_slot!(
+            ts_converged, workers[1], slots[1], pf, steps, pos:pos, backend, merged_kwargs)
+        push!(claims[1].taken, pos)
     end
     _seed_workers!(data, workers, fill(first(steps), length(workers)))
     @sync for i in eachindex(workers)
