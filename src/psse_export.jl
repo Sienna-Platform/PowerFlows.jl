@@ -532,11 +532,23 @@ function _map_psse_container_names(container_names::Vector{String})
 end
 
 """
-Setting a value of zero 0.0 when having a value greater than or equal to INFINITE_BOUND
-reverses the operation done in the PSY parsing side, according to PSSE Manual.
+A rating as written to PSS/E, in MVA. PSS/E reads 0 as "no rating": the parser maps a zero
+RATE1 to the unbounded placeholder (`INFINITE_BOUND` per unit, i.e. `INFINITE_BOUND` times
+the system base in MVA) and a zero RATE2/RATE3 to `nothing`. Both an unset rating and any
+rating of at least `INFINITE_BOUND` MVA are therefore written as 0.
 """
-_fix_3w_transformer_rating(::AbstractString) = 0.0
-_fix_3w_transformer_rating(rate::Number) = rate >= INFINITE_BOUND ? 0.0 : rate
+_psse_rating(::Nothing) = 0.0
+_psse_rating(rate::Number) = rate >= INFINITE_BOUND ? 0.0 : rate
+
+"""
+RATE1/RATE2/RATE3 (v33 branch records: RATEA/RATEB/RATEC) of a branch or transformer
+circuit, in MVA, from `rating`, `rating_b` and `rating_c`.
+"""
+_psse_ratings(device::Union{PSY.ACBranch, PSY.TransformerCircuit}) = (
+    _psse_rating(PSY.get_rating(device, u"NU")),
+    _psse_rating(PSY.get_rating_b(device, u"NU")),
+    _psse_rating(PSY.get_rating_c(device, u"NU")),
+)
 
 # WRITTEN TO SPEC: PSS/E 33.3/35.4 POM 5.2.1 Case Identification Data
 function write_to_buffers!(
@@ -973,17 +985,7 @@ function _write_2w_transformer_record3_winding1!(
 
     if exporter.psse_version == :v35
         # Using 0.0 as default for rating exporter, since PSSEv35 does not allow blank values
-        RATA1 = _fix_3w_transformer_rating(
-            _value_or_default(PSY.get_rating(circuit, u"NU"), 0.0),
-        )
-        RATB1 = _fix_3w_transformer_rating(
-            _value_or_default(PSY.get_rating_b(circuit, u"NU"), 0.0),
-        )
-        RATC1 = _fix_3w_transformer_rating(
-            _value_or_default(PSY.get_rating_c(circuit, u"NU"), 0.0),
-        )
-
-        rates_1 = [RATA1, RATB1, RATC1]
+        rates_1 = collect(_psse_ratings(circuit))
         for _ in 4:12
             push!(rates_1, 0.0)
         end
@@ -1071,17 +1073,7 @@ function _collect_3w_winding_data(
 
         if exporter.psse_version == :v35
             # Using 0.0 as default for rating exporter, since PSSEv35 does not allow blank values
-            rates = [
-                _fix_3w_transformer_rating(
-                    _value_or_default(PSY.get_rating(circuit, u"NU"), 0.0),
-                ),
-                _fix_3w_transformer_rating(
-                    _value_or_default(PSY.get_rating_b(circuit, u"NU"), 0.0),
-                ),
-                _fix_3w_transformer_rating(
-                    _value_or_default(PSY.get_rating_c(circuit, u"NU"), 0.0),
-                ),
-            ]
+            rates = collect(_psse_ratings(circuit))
             for _ in 4:12
                 push!(rates, 0.0)
             end
@@ -1813,11 +1805,7 @@ function _write_regular_branch_record!(
     BI = 0.0
     BJ = 0.0
 
-    RATEA = _value_or_default(PSY.get_rating(branch, u"NU"), PSSE_DEFAULT)
-    RATEB = _value_or_default(PSY.get_rating_b(branch, u"NU"), PSSE_DEFAULT)
-    RATEC = _value_or_default(PSY.get_rating_c(branch, u"NU"), PSSE_DEFAULT)
-    (RATEA, RATEB, RATEC) =
-        (_fix_3w_transformer_rating(x) for x in (RATEA, RATEB, RATEC))
+    (RATEA, RATEB, RATEC) = _psse_ratings(branch)
 
     if exporter.psse_version == :v35
         NAME = _psse_branch_name(branch)
@@ -1863,12 +1851,7 @@ function _write_discrete_branch_record!(
     GJ = 0.0
     BJ = 0.0
 
-    RATEA = _value_or_default(PSY.get_rating(branch, u"NU"), PSSE_DEFAULT)
-    RATEB = 0.0
-    RATEC = 0.0
-    if RATEA >= INFINITE_BOUND
-        RATEA = 0.0
-    end
+    (RATEA, RATEB, RATEC) = _psse_ratings(branch)
 
     @fastprintdelim_unroll(io, false, I, J, CKT, R, X, B,
         RATEA, RATEB, RATEC, GI, BI,
@@ -2001,16 +1984,7 @@ function write_to_buffers!(
         CKT = _psse_quote_string(CKT)
 
         X = PSY.get_x(branch, u"SU")
-        RATE1 = _value_or_default(PSY.get_rating(branch, u"NU"), PSSE_DEFAULT)
-        if RATE1 >= INFINITE_BOUND
-            RATE1 = 0.0
-        end
-
-        rates = [RATE1]
-        # Using 0.0 as default for rating exporter, since PSSEv35 does not allow blank values
-        for _ in 2:12
-            push!(rates, 0.0)
-        end
+        RATES = _psse_ratings(branch)
 
         STAT = PSY.get_available(branch) ? 1 : 0
         NSTAT = PSSE_DEFAULT
@@ -2027,8 +2001,12 @@ function write_to_buffers!(
         NAME = _psse_branch_name(branch)
 
         @fastprintdelim_unroll(io, false, I, J, CKT, X)
-        for rate in rates
+        for rate in RATES
             fastprintdelim(io, rate)
+        end
+        # PSSEv35 does not allow blank values, so the unused RATE4..RATE12 are written as 0.
+        for _ in 4:12
+            fastprintdelim(io, 0.0)
         end
         @fastprintdelim_unroll(io, true, STAT, NSTAT, MET, STYPE, NAME)
     end

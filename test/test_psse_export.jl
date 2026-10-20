@@ -1266,7 +1266,7 @@ end
     @test PSY.get_dc_power_setpoint_to(vsc2, u"NU") > 0.0
 end
 
-@testset "PSSE Exporter: switching-device RATE1 round-trips in MVA" begin
+function _single_switch_system(branch_type, rating, rating_b, rating_c)
     sys = System(100.0)
     b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230.0)
     b2 = _add_simple_bus!(sys, 2, ACBusTypes.PQ, 230.0)
@@ -1275,24 +1275,57 @@ end
     arc = Arc(; from = b1, to = b2)
     add_component!(sys, arc)
     sw = DiscreteControlledACBranch(;
-        name = "brk_1_2",
+        name = "sw_1_2",
         available = true,
         active_power_flow = 0.0,
         reactive_power_flow = 0.0,
         arc = arc,
         r = 0.001,
         x = 0.01,
-        rating = 12.06,  # 1206 MVA on a 100 MVA system base
-        discrete_branch_type = DiscreteControlledBranchType.BREAKER,
+        rating = rating,
+        rating_b = rating_b,
+        rating_c = rating_c,
+        discrete_branch_type = branch_type,
         branch_status = DiscreteControlledBranchStatus.CLOSED, input_basis = u"CU",
     )
     add_component!(sys, sw)
-    @test PSY.get_rating(sw, u"NU") ≈ 1206.0
+    return sys
+end
 
-    export_location = joinpath(test_psse_export_dir, "v35", "breaker_rate1")
-    exporter = PSSEExporter(sys, :v35, export_location; overwrite = true)
-    write_export(exporter, "breaker_rate1"; overwrite = true)
-    sys2 = read_system_with_metadata(joinpath(export_location, "breaker_rate1"))
-    sw2 = only(PSY.get_components(PSY.DiscreteControlledACBranch, sys2))
-    @test PSY.get_rating(sw2, u"NU") ≈ PSY.get_rating(sw, u"NU")
+_rating_round_trips(actual, expected::Nothing) = isnothing(actual)
+_rating_round_trips(actual, expected::Float64) =
+    !isnothing(actual) && isapprox(actual, expected)
+
+@testset "PSSE Exporter: switching-device RATE1..RATE3 round-trip in MVA ($version)" for version in
+                                                                                         PF.PSSE_EXPORT_SUPPORTED_VERSIONS
+    # Ratings are given in per unit on the 100 MVA system base and compared in MVA. The
+    # parser reads a zero RATE1 as `INFINITE_BOUND` per unit and a zero RATE2/RATE3 as
+    # `nothing`, and the exporter writes an unset or unbounded rating as 0.
+    unbounded_mva = PF.INFINITE_BOUND * 100.0
+    cases = (
+        (label = "emergency", branch_type = DiscreteControlledBranchType.SWITCH,
+            ratings = (12.06, 13.0, 14.5), expected = (1206.0, 1300.0, 1450.0)),
+        (label = "breaker_emergency",
+            branch_type = DiscreteControlledBranchType.BREAKER,
+            ratings = (12.06, 13.0, 14.5), expected = (1206.0, 1300.0, 1450.0)),
+        (label = "unset", branch_type = DiscreteControlledBranchType.SWITCH,
+            ratings = (12.06, nothing, nothing), expected = (1206.0, nothing, nothing),
+        ),
+        (label = "unbounded", branch_type = DiscreteControlledBranchType.SWITCH,
+            ratings = (PF.INFINITE_BOUND, PF.INFINITE_BOUND, PF.INFINITE_BOUND),
+            expected = (unbounded_mva, nothing, nothing)),
+    )
+    @testset "$(case.label)" for case in cases
+        sys = _single_switch_system(case.branch_type, case.ratings...)
+        export_location =
+            joinpath(test_psse_export_dir, string(version), "switch_ratings_$(case.label)")
+        exporter = PSSEExporter(sys, version, export_location; overwrite = true)
+        write_export(exporter, "switch_ratings"; overwrite = true)
+        sys2 = read_system_with_metadata(joinpath(export_location, "switch_ratings"))
+        sw2 = only(PSY.get_components(PSY.DiscreteControlledACBranch, sys2))
+        @test PSY.get_discrete_branch_type(sw2) == case.branch_type
+        @test PSY.get_rating(sw2, u"NU") ≈ case.expected[1]
+        @test _rating_round_trips(PSY.get_rating_b(sw2, u"NU"), case.expected[2])
+        @test _rating_round_trips(PSY.get_rating_c(sw2, u"NU"), case.expected[3])
+    end
 end
