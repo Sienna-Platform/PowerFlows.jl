@@ -490,7 +490,7 @@ end
     residual(data, x, 1)
     J(data, 1)  # reuses the residual's phasors
     @test SparseArrays.nonzeros(J.Jv) == fresh_jv(deepcopy(data))
-    data.bus_angles[:, 1] .+= 0.05  # edited behind the bus state's back
+    data.bus_angles[2, 1] += 0.05  # one bus, so angle differences change; edited behind the bus state's back
     J(data, 1)
     @test isapprox(SparseArrays.nonzeros(J.Jv), fresh_jv(deepcopy(data)); rtol = 1e-14)
 end
