@@ -472,3 +472,25 @@ end
     @test n_slotted >= 1
     @test n_tailed == 3
 end
+
+@testset "Jacobian refills cis(θ) only when the angles in data changed" begin
+    c14 = PSB.build_system(PSITestSystems, "c_sys14")
+    data = PF.PowerFlowData(nr(; correct_bustypes = true), c14)
+    residual = PF.ACPowerFlowResidual(data, 1)
+    J = PF.ACPowerFlowJacobian(data, residual, 1)
+    x = PF.calculate_x0(data, 1)
+    Random.seed!(3)
+    x .+= 0.02 .* randn(length(x))
+    function fresh_jv(d)
+        r = PF.ACPowerFlowResidual(d, 1)
+        Jf = PF.ACPowerFlowJacobian(d, r, 1)
+        Jf(d, 1)
+        return SparseArrays.nonzeros(Jf.Jv)
+    end
+    residual(data, x, 1)
+    J(data, 1)  # reuses the residual's phasors
+    @test SparseArrays.nonzeros(J.Jv) == fresh_jv(deepcopy(data))
+    data.bus_angles[:, 1] .+= 0.05  # edited behind the bus state's back
+    J(data, 1)
+    @test isapprox(SparseArrays.nonzeros(J.Jv), fresh_jv(deepcopy(data)); rtol = 1e-14)
+end
