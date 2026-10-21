@@ -136,13 +136,13 @@ Always present on [`PowerFlowData`](@ref) — empty vectors when control is off,
 - `pristine_areas::Vector{ControlledArea}`, `pristine_ties::Vector{AreaTie}`,
   `pristine_dc_ties::Vector{DCTie}`: the FULL enrolled set as originally built by
   `build_area_interchange_data`, never mutated. Greedy relax shrinks only the WORKING set,
-  for the rest of the CURRENT time step's attempts; `_ensure_pristine_area_set!` resets the
-  working set from these before the next time step. Also the only source for a relaxed
+  for the rest of the CURRENT time step's attempts; `_restore_pristine_area_set!` resets the
+  working set from these at the end of the time step. Also the only source for a relaxed
   area's achieved net interchange in the results table, since its tail is translated to `0`
   out of the WORKING `ties` the moment it is de-enrolled.
 - `pristine_delta_p::Matrix{Float64}`: persistent, PRISTINE-`tail_ix`-indexed mirror of
   `delta_p` — its row layout never changes under de-enrollment renumbering, so it survives
-  across time steps. `_ensure_pristine_area_set!` reseeds the working `delta_p` from it;
+  across time steps. `_restore_pristine_area_set!` reseeds the working `delta_p` from it;
   `_sync_pristine_delta_p!` writes back into it once a time step's solve converges.
 - `relaxed::Dict{Int, Vector{RelaxedAreaRecord}}`: per-time-step record of areas relaxed
   away that time step (absent/empty = none), keyed by `time_step` so a multi-period
