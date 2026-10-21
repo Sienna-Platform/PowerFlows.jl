@@ -34,7 +34,10 @@ function improve_x0!(x0::Vector{Float64},
         @debug "skipping enhanced flat start"
     end
     dc_taken = false
-    if get_robust_power_flow(pf) && (large || cold)
+    # A flat start puts zero angle across each phase shifter. The residual then sees a large
+    # false flow that the first step must remove. The DC angles include the phase shift.
+    shifted_cold = get_enhanced_flat_start(pf) && cold && _has_phase_shifters(data)
+    if (get_robust_power_flow(pf) && (large || cold)) || shifted_cold
         dc_taken = dc_power_flow_start!(x0, data, time_step, residual)
     else
         @debug "skipping running DC power flow fallback"
@@ -56,6 +59,8 @@ function improve_x0!(x0::Vector{Float64},
 end
 
 _large_residual(residual) = sum(abs, residual.Rv) > LARGE_RESIDUAL * length(residual.Rv)
+
+_has_phase_shifters(data::ACPowerFlowData) = any(!iszero, data.bus_phase_shift_injections)
 
 # Every island's non-REF buses at one angle: the start of a case with no solved point, whose REF
 # may keep a case-file angle. Reads the angles of the last iterate `residual` evaluated.
@@ -346,14 +351,18 @@ end
 
 const _DC_FALLBACK_LOCK = ReentrantLock()
 
+# `robust_power_flow` factors the ABA at construction. The phase-shifter flat start can run
+# without it, so it factors one for this solve only.
+_dc_start_aba(aba::PNM.ABA_Matrix, ::PNM.Ybus) = aba
+_dc_start_aba(::Nothing, ybus::PNM.Ybus) = PNM.ABA_Matrix(ybus; factorize = true)
+
 """When solving AC power flows, if the initial guess has large residual, we run a DC power
 flow as a fallback. This runs a DC power flow on `data::ACPowerFlowData` for the given
 `time_step`, and writes the solution to `data.bus_angles`."""
 function _dc_power_flow_fallback!(data::ACPowerFlowData, time_step::Int)
     # dev note: for DC, we can efficiently solve for all time_steps at once, and we want branch
     # flows. For AC fallback, we're only interested in the current time_step, and no branch flows
-    solver_cache = get_aux_network_matrix(data).K
-    # factored in constructor; no need to factor again (as long as network is same)
+    solver_cache = _dc_start_aba(get_aux_network_matrix(data), data.power_network_matrix).K
     valid_ix = get_valid_ix(data)
     p_inj =
         data.bus_active_power_injections[valid_ix, time_step] -

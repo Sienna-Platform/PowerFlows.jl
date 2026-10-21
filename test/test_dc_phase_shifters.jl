@@ -300,3 +300,27 @@ end
     end
     @test !iszero(ac.bus_angles[ac_lookup[3], 1])
 end
+
+@testset "AC flat start takes the DC angles when the network has a phase shifter" begin
+    sys = _dc_pst_loop_sys()
+    dc_taken = "DC power flow fallback yields smaller residual"
+    function flat_solve(pf)
+        data = PowerFlowData(pf, sys)
+        data.bus_angles .= 0.0
+        logs, ok = Test.collect_test_logs(; min_level = Logging.Debug) do
+            return solve_power_flow!(data)
+        end
+        return count(l -> occursin(dc_taken, string(l.message)), logs), ok, data
+    end
+    pf = ACPowerFlow(; correct_bustypes = true)
+    @test isnothing(PF.get_aux_network_matrix(PowerFlowData(pf, sys)))
+    n_dc, ok, data = flat_solve(pf)
+    @test ok
+    @test n_dc == 1
+    n_dc_off, ok_off, data_off = flat_solve(
+        ACPowerFlow(; correct_bustypes = true, enhanced_flat_start = false))
+    @test n_dc_off == 0
+    if ok_off
+        @test isapprox(data.bus_angles, data_off.bus_angles; atol = 1e-8)
+    end
+end

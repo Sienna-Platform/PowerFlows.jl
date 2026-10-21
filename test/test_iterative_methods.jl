@@ -501,13 +501,18 @@ end
 # Zero-impedance transformers keep a 1e-6 substitute reactance, so the warm start carries a
 # ~3e5 pu mismatch and the first Newton step is ~1e5 long: the trust region must be able to grow
 # to it. The stored arc flows use ComplexF32 admittances, ~1e-3 off on those |y| ~ 1e6 arcs.
+# The system has a phase shifter, so a polar flat start takes the DC angles and rect/mixed do not.
+# With |y| ~ 1e6 in a ComplexF32 Ybus the two starts end ~5e-6 apart, so every solver starts flat.
 @testset "TR, LM and store on retained zero-impedance transformers" begin
     name = "psse_14_zero_impedance_branch_test_system"
-    nr = PowerFlowData(ACPolarPowerFlow(; correct_bustypes = true),
+    nr = PowerFlowData(
+        ACPolarPowerFlow(; correct_bustypes = true, enhanced_flat_start = false),
         PSB.build_system(PSB.PSSEParsingTestSystems, name))
     @test solve_power_flow!(nr)
     for form in (ACPolarPowerFlow, ACRectangularPowerFlow, ACMixedPowerFlow)
-        data = PowerFlowData(form{TrustRegionACPowerFlow}(; correct_bustypes = true),
+        data = PowerFlowData(
+            form{TrustRegionACPowerFlow}(;
+                correct_bustypes = true, enhanced_flat_start = false),
             PSB.build_system(PSB.PSSEParsingTestSystems, name))
         @test solve_power_flow!(data)
         @test isapprox(data.bus_magnitude, nr.bus_magnitude; atol = 1e-8)
@@ -519,7 +524,8 @@ end
         lm = PowerFlowData(
             form{LevenbergMarquardtACPowerFlow}(;
                 correct_bustypes = true,
-                solution_parameters = SolutionParameters(; maxIterations = 100)),
+                solution_parameters = SolutionParameters(;
+                    maxIterations = 100, enhanced_flat_start = false)),
             PSB.build_system(PSB.PSSEParsingTestSystems, name))
         @test solve_power_flow!(lm)
         @test isapprox(lm.bus_magnitude, nr.bus_magnitude; atol = 1e-8)
