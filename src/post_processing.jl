@@ -1365,7 +1365,7 @@ rows report `delta_p = 0.0`. `ni_solved` is recomputed from the tie-flow kernels
 the pristine AC and DC tie lists (`_area_net_interchange`), not trusted off a stale
 residual row, so it is correct for a relaxed area too; `ni_solved - pdes` is that area's
 infeasibility certificate. An enforced row's `delta_p` reads `pristine_delta_p` (never the
-WORKING `aid.delta_p`, which reflects whatever time step last relaxed on this `data`).
+WORKING `aid.delta_p`, which a relaxed step resets from `pristine_delta_p` at its end).
 Powers in MW.
 """
 function area_interchange_results_dataframe(
