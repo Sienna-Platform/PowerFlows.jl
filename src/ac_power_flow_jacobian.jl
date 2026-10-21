@@ -60,8 +60,7 @@ J(data, time_step)  # Updates the Jacobian matrix Jv
 ```
 """
 function (J::ACPowerFlowJacobian)(data::ACPowerFlowData, time_step::Int64)
-    _sync_from_data!(J.bus_state, data, time_step)
-    _fill_bus_phasor!(J.bus_state)
+    _sync_phasors_from_data!(J.bus_state, data, time_step)
     _update_jacobian_matrix_values!(J, data, time_step)
     return
 end
