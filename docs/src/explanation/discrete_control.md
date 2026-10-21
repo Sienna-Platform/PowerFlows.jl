@@ -1,8 +1,9 @@
 # Discrete Control Devices via λ-Continuation
 
 PowerFlows.jl supports three families of controlled devices, solved by a common
-outer-loop continuation: **tap-changing transformers**, **switched (stepping)
-shunts**, and **shunt FACTS devices** (SVC/STATCOM). This page explains what
+outer-loop continuation: **regulating transformer circuits** (tap changers and
+phase shifters), **switched (stepping) shunts**, and **shunt FACTS devices**
+(SVC/STATCOM). This page explains what
 those devices are, why an outer-loop continuation strategy is used instead of
 embedding the control law in the Jacobian, how the sigmoid control law and its
 steepness ramp work, and what happens when the continuous solution is snapped
@@ -92,7 +93,7 @@ Two multiperiod-specific behaviors:
 Two abstract families sit under `AbstractControlledDevice`:
 
   - `AbstractBranchControl` — devices that mutate the branch's 2×2 Y-bus block:
-    `ControlledTap` (a voltage-controlling `PSY.TransformerCircuit`, of either
+    `ControlledBranch{A, Q}` (a regulating `PSY.TransformerCircuit`, of either
     transformer arity).
   - `AbstractShuntControl` — devices that mutate the bus reactive
     constant-impedance withdrawal: `ControlledSwitchedShunt`
@@ -107,12 +108,31 @@ the per-device kernels
 itself allocates small snapshot buffers, which is immaterial next to the inner
 solves).
 
-For `ControlledTap`, `apply_parameter!` rewrites three of the four cached `nzval`
+`ControlledBranch{A, Q}` has two type parameters. The actuator `A` is the quantity
+that the device moves. `TapRatio` moves the ratio and keeps the phase shift
+fixed. `PhaseAngle` moves the phase-shift angle α and keeps the ratio fixed. The
+quantity `Q` is what the device regulates: `BusVoltage`, `ReactivePowerFlow` or
+`ActivePowerFlow`. Three combinations exist, and each has its own vector in
+`ControlledDeviceSet`:
+
+| Circuit objective     | Actuator `A` | Quantity `Q`        | Vector           |
+|:--------------------- |:------------ |:------------------- |:---------------- |
+| `VOLTAGE`             | `TapRatio`   | `BusVoltage`        | `taps`           |
+| `REACTIVE_POWER_FLOW` | `TapRatio`   | `ReactivePowerFlow` | `flow_taps`      |
+| `ACTIVE_POWER_FLOW`   | `PhaseAngle` | `ActivePowerFlow`   | `phase_shifters` |
+
+The alias `ControlledTap` names the voltage-regulating combination. The group
+order in every per-device bookkeeping vector is `taps`, `flow_taps`,
+`phase_shifters`, `shunts`, `facts`.
+
+For `ControlledBranch`, `apply_parameter!` rewrites three of the four cached `nzval`
 entries of the sparse Y-bus in place (Y11, Y12, Y21) using cached linear offsets
 (`nz_offsets::NTuple{4,Int}`) resolved once at device-set construction; Y22 = Yt
-is tap-independent and is skipped. The complex tap includes the winding-group
-phase shift `α = PSY.get_α(tx)`, matching PowerNetworkMatrices' stamping
-`t = p·e^{iα}`. The delta update `nzval[k] += Y_new − Y_old` preserves any
+is independent of the actuator and is skipped. The complex tap is built in one
+place, `_complex_tap`, and matches PowerNetworkMatrices' stamping
+`t = p·e^{iα}`. The field `fixed` holds the part of the tap that the actuator does
+not move: α for `TapRatio`, the ratio for `PhaseAngle`. The delta update
+`nzval[k] += Y_new − Y_old` preserves any
 parallel-branch contributions already in the shared slot; the device's stored
 `current` value (not the lossy `nzval`) is the authoritative source for the old
 parameter. For
@@ -123,7 +143,8 @@ so co-located constant-impedance contributions on the same bus are preserved.
 ## The sigmoid control law
 
 The continuous target for each device is a sigmoid function of the regulated
-quantity ``y`` (the controlled-bus voltage magnitude):
+quantity ``y`` (the controlled-bus voltage magnitude, or the from-bus reactive or
+active power flow of a flow-regulating circuit, in per unit on the system base):
 
 ```math
 \sigma(\ell, h, S, y, y_\text{set}) = \frac{h - \ell}{1 + e^{S(y - y_\text{set})}} + \ell
@@ -204,8 +225,19 @@ trajectory — it is a safeguard, not an unconditional convergence proof.
 
 **Deadband.** A switched shunt whose controlled voltage is anywhere inside its
 parsed `[VSWLO, VSWHI]` band is held, not driven toward the band midpoint —
-the PSS/E semantics. Other device families carry a point setpoint (the parser
+the PSS/E semantics. A transformer circuit has the same posture: it is held while
+its regulated quantity (voltage or from-bus flow) is anywhere inside the
+`[VMI, VMA]` band, and it regulates toward the band midpoint on an excursion.
+Other device families carry a point setpoint (the parser
 persists no band for them) and always regulate.
+
+**Scale of the regulated quantity.** The steepness ``S`` is dimensionless for every
+quantity. A voltage error enters the sigmoid as it is. A flow error is first
+expressed as a fraction of the actuator's full-range authority
+``|dy/dp|\cdot(p_\max - p_\min)``: the sigmoid and the relaxation bound use
+``S/\text{scale}`` in place of ``S``, with scale 1 for a voltage. For a flow device
+the closed-loop gain bound is then ``0.25\,S``, whatever the flow units and the
+actuator range are.
 
 **Incremental applicator.** `_continuation_to!` tries the full damped move
 first — in the common case one warm-started inner solve accepts it. Only when
@@ -242,9 +274,9 @@ of locking oscillating adjustments after a fixed iteration count.
 After the continuous outer loop converges (or reaches its iteration limit),
 `snap_and_restore!` discretizes every device:
 
-  - **Tap.** The continuous parameter is snapped to the nearest value in the
-    pre-computed `levels` vector (a uniform grid of `NTP` tap positions from
-    `p_min` to `p_max`).
+  - **Branch device.** The continuous parameter is snapped to the nearest value in the
+    pre-computed `levels` vector (a uniform grid of `NTP` positions from
+    `p_min` to `p_max`, a ratio for `TapRatio` and an angle for `PhaseAngle`).
   - **Shunt.** The target susceptance is snapped to the nearest point of the
     PSS/E cumulative block-activation chain: blocks switch on in listed order
     (and off in reverse), so the physically realizable totals are exactly the
@@ -290,12 +322,11 @@ documented default, or the device is de-enrolled.
 
 The control objective lives on the circuit, not the transformer, so candidates
 are collected per circuit and only those with
-`get_control_objective(circuit) == VOLTAGE` are included. This is uniform across
+`get_control_objective(circuit) == VOLTAGE` enroll as a `ControlledTap`. This is uniform across
 arities: a two-winding transformer contributes its single circuit, and a
 three-winding transformer contributes each available circuit independently — it
-may regulate on one winding while the other two are fixed. Active-power control
-objectives are excluded by construction; they are a different control law,
-handled as an angle rather than a ratio.
+may regulate on one winding while the other two are fixed. The other two
+regulating objectives are described [below](@ref discrete-control-flow-circuits).
 
 | Parameter      | First-class field on the circuit          |
 |:-------------- |:----------------------------------------- |
@@ -317,6 +348,39 @@ Results follow the same circuit-level shape for both arities — see
 [`get_controlled_device_results`](@ref), whose `device_name` and `circuit_index`
 columns address the owning circuit as
 `PSY.get_circuits(device_name)[circuit_index]`.
+
+### [`PSY.TransformerCircuit` flow objectives](@id discrete-control-flow-circuits)
+
+A circuit with `control_objective == REACTIVE_POWER_FLOW` regulates the
+reactive-power flow at its from (winding-1) bus by moving its tap ratio. A
+circuit with `control_objective == ACTIVE_POWER_FLOW` regulates the
+active-power flow at its from bus by moving its phase-shift angle α. Both follow
+PSS/E `COD = 2` and `COD = 3`.
+
+| Parameter       | `REACTIVE_POWER_FLOW`                                       | `ACTIVE_POWER_FLOW`                                       |
+|:--------------- |:----------------------------------------------------------- |:--------------------------------------------------------- |
+| Actuator band   | `tap_ratio_limits` (ratio)                                  | `phase_angle_limits` (radians)                            |
+| Target band     | `controlled_reactive_power_flow_limits` (p.u., system base) | `controlled_active_power_flow_limits` (p.u., system base) |
+| Positions       | `number_of_tap_positions`                                   | `number_of_tap_positions`                                 |
+| Measuring point | from bus, positive into the transformer                     | from bus, positive into the transformer                   |
+| Regulated bus   | not used (`regulated_bus_number` is ignored)                | not used (`regulated_bus_number` is ignored)              |
+| Starts from     | `PSY.get_tap(circuit)`                                      | `PSY.get_α(circuit)`                                      |
+
+The solver reads the two flow bands with `PSY.get_controlled_reactive_power_flow_limits(circuit, u"SU")`
+and the matching active-power getter, so the band is on the system base whatever
+the circuit's own `base_power` is. The setpoint is the band midpoint. The discrete
+levels are `range(p_min, p_max; length=NTP)`. A missing band is an error. A band
+that is not finite or not ordered, an actuator band with `p_min ≥ p_max`, fewer than two
+positions, or an initial actuator value outside the actuator band de-enroll the
+device with a warning.
+
+The measured flow is `S_f = V_f·conj(Y_ff·V_f + Y_ft·V_t)`, with the from-side shunt
+included in `Y_ff`. The analytic sensitivity `dS_f/dp` adds the explicit change of
+`Y_ff`, `Y_ft` and the response of the two terminal voltages. The flow groups do not
+share a controlled bus, so they never split the correction.
+
+The write-back sets `PSY.set_tap!` for a `TapRatio` device and `PSY.set_α!` for a
+`PhaseAngle` device.
 
 ### `SwitchedAdmittance` → `ControlledSwitchedShunt`
 
