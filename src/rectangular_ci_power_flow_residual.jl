@@ -88,9 +88,10 @@ function ACRectangularCIResidual(data::ACPowerFlowData, time_step::Int64)
             data.bus_active_power_constant_current_withdrawals[ix, time_step]
         const_I_Q[ix] =
             data.bus_reactive_power_constant_current_withdrawals[ix, time_step]
-        # P_net_set tracks the initial P injection at setup (for slack delta)
-        P_net_set[ix] = P_net_const[ix] -
-                        const_I_P[ix] * data.bus_magnitude[ix, time_step]
+        # P_net_set tracks the initial P injection at setup (for slack delta). It
+        # excludes the const-I draw, like the REF P-slot: the REF row subtracts
+        # `const_I_P·|V|` itself, so subtracting it here too counts it twice (#511).
+        P_net_set[ix] = P_net_const[ix]
     end
 
     bus_slack_participation_factors =

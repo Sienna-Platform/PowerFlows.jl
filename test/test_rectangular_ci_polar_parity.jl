@@ -173,6 +173,29 @@ end
     )
 end
 
+# Distributed slack + ZIP-I load at the REF bus (#511): the const-I draw must be
+# counted once in the slack accounting, not in both `P_net_set` and the REF row.
+function _build_c_sys14_zip_i_on_ref()
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    ref = only(get_components(b -> get_bustype(b) == ACBusTypes.REF, ACBus, sys))
+    _add_simple_zip_load!(sys, ref; constant_current_active_power = 0.4)
+    return sys
+end
+
+_c_sys14_thermal_spf(sys) = Dict{Tuple{DataType, String}, Float64}(
+    (ThermalStandard, get_name(g)) => 1.0 for g in get_components(ThermalStandard, sys)
+)
+
+@testset "Rectangular CI polar parity: distributed slack + ZIP-I at REF (#511)" begin
+    sys_p = _build_c_sys14_zip_i_on_ref()
+    sys_r = deepcopy(sys_p)
+    _rect_polar_parity(
+        sys_p,
+        sys_r;
+        pf_kwargs = (; generator_slack_participation_factors = _c_sys14_thermal_spf(sys_p)),
+    )
+end
+
 @testset "Rectangular CI polar parity: ACTIVSg2000 (large-scale)" begin
     sys_p = build_system(MatpowerTestSystems, "matpower_ACTIVSg2000_sys")
     sys_r = build_system(MatpowerTestSystems, "matpower_ACTIVSg2000_sys")

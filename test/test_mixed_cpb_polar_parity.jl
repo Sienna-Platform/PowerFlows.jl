@@ -208,6 +208,17 @@ const MIXED_PARITY_SOLVERS =
             solver = solver,
         )
     end
+
+    @testset "distributed slack + ZIP-I at REF (c_sys14, #511)" begin
+        sys_p = _build_c_sys14_zip_i_on_ref()
+        _mixed_polar_parity(
+            sys_p, deepcopy(sys_p);
+            pf_kwargs = (;
+                generator_slack_participation_factors = _c_sys14_thermal_spf(sys_p)
+            ),
+            solver = solver,
+        )
+    end
 end
 
 # Levenberg-Marquardt on the MCPB Jacobian. The LM driver dispatches on
