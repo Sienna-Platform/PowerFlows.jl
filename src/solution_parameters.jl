@@ -44,8 +44,8 @@ take effect.
 # Network controls
 - `check_reactive_power_limits::Bool`: enforce generator reactive limits by switching PV
   buses to PQ between solves.
-- `enhanced_flat_start::Bool`: fall back to the enhanced flat start when the initial
-  residual is large.
+- `enhanced_flat_start::Bool`: try the enhanced flat start on a cold start or a large
+  residual. A polar model with phase shifters also takes the DC angles on a cold start.
 - `control_discrete_devices::Bool`: run discrete device control (tap changers, switched
   shunts) via λ-continuation.
 - `area_interchange_control::Bool`: embed per-area net-interchange control in the solve.
@@ -70,6 +70,7 @@ take effect.
 - `handoff_solver` (`NoHandoff` for pure FD), `handoff_tol`, `refreeze_on_stall`,
   `fd_non_divergent`, `fd_blowup`, `fd_dvlim`, `fd_vm_abort`, `fd_ndvfct`,
   `fd_max_step_halvings`.
+  The default of `fd_vm_abort` is `vm_validation_range.min`.
 
 # Robust homotopy
 - `Δt_k`: continuation step size.
@@ -137,7 +138,7 @@ Base.@kwdef struct SolutionParameters
     fd_non_divergent::Bool = DEFAULT_FD_NON_DIVERGENT
     fd_blowup::Float64 = DEFAULT_FD_BLOWUP
     fd_dvlim::Float64 = DEFAULT_FD_DVLIM
-    fd_vm_abort::Float64 = DEFAULT_FD_VM_ABORT
+    fd_vm_abort::Float64 = vm_validation_range.min
     fd_ndvfct::Float64 = DEFAULT_FD_NDVFCT
     fd_max_step_halvings::Int = DEFAULT_FD_MAX_STEP_HALVINGS
 

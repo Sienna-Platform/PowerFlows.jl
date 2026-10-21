@@ -1,3 +1,10 @@
+@testset "fd_vm_abort default follows vm_validation_range" begin
+    @test PF.SolutionParameters(;
+        vm_validation_range = (min = 0.3, max = 1.5),
+    ).fd_vm_abort == 0.3
+    @test PF.SolutionParameters().fd_vm_abort == PF.DEFAULT_FD_VM_ABORT
+end
+
 # ---------------------------------------------------------------------------------------------
 # Bridge the variant SYMBOLS used in the parametrized loops below to the FastDecoupledACPowerFlow
 # type parameters — the variant/scheme are now solver TYPE PARAMETERS, not solver_settings kwargs.
@@ -1893,6 +1900,9 @@ end
         )
         @test ok
         @test minimum(data.bus_magnitude[:, 1]) >= PF.DEFAULT_FD_VM_ABORT
+        if handoff === NewtonRaphsonACPowerFlow
+            @test PF.get_iterations(data)[1] <= 10
+        end
     end
     # The default enhanced flat start takes the DC angles, which include the phase shift.
     ok, _ = flat_solve(

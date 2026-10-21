@@ -313,7 +313,22 @@ end
         return count(l -> occursin(dc_taken, string(l.message)), logs), ok, data
     end
     pf = ACPowerFlow(; correct_bustypes = true)
-    @test isnothing(PF.get_aux_network_matrix(PowerFlowData(pf, sys)))
+    @test !isnothing(PF.get_aux_network_matrix(PowerFlowData(pf, sys)))
+    @test isnothing(
+        PF.get_aux_network_matrix(
+            PowerFlowData(
+                ACPowerFlow(; correct_bustypes = true, enhanced_flat_start = false), sys),
+        ),
+    )
+    @test isnothing(
+        PF.get_aux_network_matrix(
+            PowerFlowData(
+                ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(; correct_bustypes = true),
+                sys),
+        ),
+    )
+    c14 = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    @test isnothing(PF.get_aux_network_matrix(PowerFlowData(pf, c14)))
     n_dc, ok, data = flat_solve(pf)
     @test ok
     @test n_dc == 1

@@ -472,7 +472,8 @@ with the specified solver type.
     dictionaries, different participation factors can be used for different time steps. Default is `nothing`.
 - `enhanced_flat_start::Bool`: On a cold start (no earlier converged step and flat angles, or a
     large residual) the solver tries the enhanced flat start and keeps it when it lowers the
-    residual. Default `true`.
+    residual. On a polar model with phase shifters, it also runs the DC-angle stage.
+    Rectangular and mixed models have no DC stage. Default `true`.
 - `robust_power_flow::Bool`: Whether to try DC power flow angles as the starting point when the
     initial residual is large, or when the start is flat (each island's non-REF buses at one
     angle) with no converged earlier time step. Default is `false`.

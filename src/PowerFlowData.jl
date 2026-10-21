@@ -714,6 +714,21 @@ function _build_controlled_devices(
     return set
 end
 
+function _has_phase_shift_arcs(ybus::PNM.Ybus)
+    nrd = PNM.get_network_reduction_data(ybus)
+    for arc in PNM.get_arc_axis(ybus.arc_admittance_from_to)
+        iszero(PNM.arc_dc_shift_injection(nrd, arc)) || return true
+    end
+    return false
+end
+
+_needs_dc_start_aba(pf::AbstractACPowerFlow, ::PNM.Ybus) = get_robust_power_flow(pf)
+
+function _needs_dc_start_aba(pf::ACPolarPowerFlow, ybus::PNM.Ybus)
+    return get_robust_power_flow(pf) ||
+           (get_enhanced_flat_start(pf) && _has_phase_shift_arcs(ybus))
+end
+
 """
     PowerFlowData(
         pf::AbstractACPowerFlow{<:ACPowerFlowSolverType},
@@ -758,7 +773,7 @@ function PowerFlowData(
     )
     neighbors = _calculate_neighbors(power_network_matrix)
 
-    if get_robust_power_flow(pf)
+    if _needs_dc_start_aba(pf, power_network_matrix)
         aux_network_matrix =
             PNM.ABA_Matrix(power_network_matrix; factorize = true)
     else

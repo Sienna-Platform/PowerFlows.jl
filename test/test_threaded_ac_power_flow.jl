@@ -192,7 +192,7 @@ end
 @testset "a worker's own data holds no slots" begin
     d = _slot_data(8, 2)
     slot = PF.WorkerSlot()
-    w = PF._column_worker(d, 1:8, 1:4, slot)
+    w = PF._column_worker(d, 1:8, slot)
     @test isempty(w.worker_slots)
     @test w.polar_nr_cache === slot.polar_nr_cache
 end
@@ -203,7 +203,7 @@ end
     slot = d.worker_slots[2]
     @test !isnothing(slot.polar_nr_cache[])
     @test_throws Exception PF._solve_slot!(
-        fill(false, 8), PF._column_worker(d, 1:8, 5:8, slot), slot,
+        fill(false, 8), PF._column_worker(d, 1:8, slot), slot,
         d.pf, 1:8, 5:99, PF.resolve_linear_solver_backend("KLU"), (;))
     @test isnothing(slot.polar_nr_cache[])
     @test isnothing(slot.solver_cache[])
@@ -390,7 +390,7 @@ end
     @test dup2.linSolveCache.lean_plan === slot.plan
 end
 
-@testset "threaded area relax keeps the worker caches and the shared plan" begin
+@testset "threaded area relax keeps the shared plan and serial parity" begin
     T = 4
     function build_data(n)
         pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
@@ -415,13 +415,7 @@ end
     for _ in 1:2
         @test quiet_solve!(ref)
         @test quiet_solve!(thr)
-        slot = thr.ac_jacobian_structure_cache[].lean
-        @test slot.tried
-        for s in thr.worker_slots
-            c = s.polar_nr_cache[]
-            isnothing(c) && continue
-            @test c.lean === slot
-        end
+        @test thr.ac_jacobian_structure_cache[].lean.tried
         _test_threaded_parity(ref, thr)
         @test thr.bus_magnitude == ref.bus_magnitude
         @test thr.bus_angles == ref.bus_angles
@@ -444,4 +438,42 @@ end
     @test isnothing(d.polar_nr_cache[])
     PF._seed_worker!(d, nothing, seed, memo, 1)
     @test !isnothing(d.polar_nr_cache[])
+end
+
+@testset "a memo rebuilt after the slot is tried does not empty the plan types (threaded)" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    spf = Dict{Tuple{DataType, String}, Float64}(
+        (PSY.ThermalStandard, PSY.get_name(g)) => 1.0 for
+        g in PSY.get_components(PSY.ThermalStandard, sys)
+    )
+    function solve_three(n)
+        pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+            generator_slack_participation_factors = spf,
+            time_steps = 4,
+            solution_parameters = _threaded_params(n),
+        )
+        data = PowerFlowData(pf, sys)
+        F = data.bus_slack_participation_factors
+        ref_bus = findfirst(==(PSY.ACBusTypes.REF), data.bus_type[:, 1])
+        saved = copy(F[:, 1])
+        for t in axes(F, 2)
+            F[:, t] .= 0.0
+            F[ref_bus, t] = 1.0
+        end
+        _replicate_col1_to_all_steps!(data, 4)
+        @test solve_power_flow!(data)
+        for t in axes(F, 2)
+            F[:, t] .= saved
+        end
+        data.bus_active_power_withdrawals .*= 1.01
+        @test solve_power_flow!(data)
+        data.bus_active_power_withdrawals .*= 1.01
+        @test solve_power_flow!(data)
+        @test length(data.ac_jacobian_structure_cache[].lean.bus_types) ==
+              size(data.bus_type, 1)
+        return data
+    end
+    thr = solve_three(2)
+    ref = solve_three(1)
+    _test_threaded_parity(ref, thr)
 end

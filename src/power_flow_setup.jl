@@ -23,8 +23,7 @@ function improve_x0!(x0::Vector{Float64},
         newx0 = _previous_solution_start(x0, data, prev)
         _pick_better_x0(x0, newx0, time_step, residual, data, "previous converged solution")
     end
-    # Warm starts (after a converged step, a contingency off a solved base) skip the start
-    # stages; the DC stage still runs on a large residual.
+    # Warm starts skip the start stages unless the residual is large.
     large = _large_residual(residual)
     cold = isnothing(prev) && (large || _is_flat_start(residual, data, time_step))
     if get_enhanced_flat_start(pf) && (large || cold)
@@ -351,18 +350,22 @@ end
 
 const _DC_FALLBACK_LOCK = ReentrantLock()
 
-# `robust_power_flow` factors the ABA at construction. The phase-shifter flat start can run
-# without it, so it factors one for this solve only.
-_dc_start_aba(aba::PNM.ABA_Matrix, ::PNM.Ybus) = aba
-_dc_start_aba(::Nothing, ybus::PNM.Ybus) = PNM.ABA_Matrix(ybus; factorize = true)
+_dc_start_aba(aba::PNM.ABA_Matrix) = aba
 
-"""When solving AC power flows, if the initial guess has large residual, we run a DC power
+function _dc_start_aba(::Nothing)
+    error(
+        "The DC start needs a factored ABA, but the constructor built none. " *
+        "`_needs_dc_start_aba` gives the conditions under which it builds one.",
+    )
+end
+
+"""When solving AC power flows, on a cold start or a large residual, we run a DC power
 flow as a fallback. This runs a DC power flow on `data::ACPowerFlowData` for the given
 `time_step`, and writes the solution to `data.bus_angles`."""
 function _dc_power_flow_fallback!(data::ACPowerFlowData, time_step::Int)
     # dev note: for DC, we can efficiently solve for all time_steps at once, and we want branch
     # flows. For AC fallback, we're only interested in the current time_step, and no branch flows
-    solver_cache = _dc_start_aba(get_aux_network_matrix(data), data.power_network_matrix).K
+    solver_cache = _dc_start_aba(get_aux_network_matrix(data)).K
     valid_ix = get_valid_ix(data)
     p_inj =
         data.bus_active_power_injections[valid_ix, time_step] -
@@ -371,7 +374,8 @@ function _dc_power_flow_fallback!(data::ACPowerFlowData, time_step::Int)
         data.bus_phase_shift_injections[valid_ix]
     # PNM's KLUWrapper.KLULinSolveCache exposes solve! (in-place) instead of ldiv!.
     # Threaded time-step workers share the factored ABA, and a KLU solve writes its numeric
-    # workspace. One global lock is enough: the fallback runs only on a large residual.
+    # workspace. One global lock is enough: the DC start runs only on a cold start or a large
+    # residual.
     @lock _DC_FALLBACK_LOCK PNM.solve!(solver_cache, p_inj)
     data.bus_angles[valid_ix, time_step] .= p_inj
     # The reduced solve is referenced to 0 at each ref bus, but the AC solve holds each
