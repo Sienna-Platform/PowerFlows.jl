@@ -250,7 +250,6 @@ function build_controlled_device_set(
                 collect(range(md.pmin, md.pmax; length = md.ntp)),
                 _ybus_block_offsets(ybus, fix, tix),
                 tap0,   # initial (reporting)
-                tap0,   # synced (arc-admittance rows reflect this tap)
                 tap0,   # current
                 device_name,
                 circuit_index,
@@ -332,7 +331,9 @@ function build_controlled_device_set(
     facts = ControlledFACTS[]
     _enroll_facts!(facts, sys, bus_lookup, reverse_bus_search_map)
 
-    return ControlledDeviceSet(taps, shunts, facts, n_time_steps)
+    set = ControlledDeviceSet(taps, shunts, facts, n_time_steps)
+    capture_tap_baseline!(set, ybus)
+    return set
 end
 
 # Continuous shunt FACTS (SVC/STATCOM) voltage control. `rating` (SHMX) bounds the SVC
