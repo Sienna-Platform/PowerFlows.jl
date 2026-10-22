@@ -415,6 +415,10 @@ end
     )
     data_n, c1 = solved(pf, d -> (d.bus_slack_participation_factors[k, 1] = 1.0))
     @test data_n.polar_nr_cache[] !== c1
+    data_n.bus_active_power_withdrawals[:, 1] .*= 1.01
+    @test solve_power_flow!(data_n)
+    slot = data_n.ac_jacobian_structure_cache[].lean
+    @test length(slot.bus_types) == size(data_n.bus_type, 1)
 
     # Slots span every bus with a factor, whatever its type: dropping a participant's factor
     # or flipping it to PQ keeps the pattern.

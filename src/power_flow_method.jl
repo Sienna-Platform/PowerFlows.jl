@@ -256,44 +256,24 @@ const _USE_LEAN_LU = Ref(true)
 _slot_tried(::Nothing) = false
 _slot_tried(memo::ACJacobianStructureCache) = memo.lean.tried
 
-"""Copy the bus types of `time_step` into `buf`, unless the plan of the Jacobian structure
-of `data` is built. [`_plan_at_solved!`](@ref) needs the types the step started with."""
+"""Copy the bus types of `time_step` into `buf`. [`_plan_at_solved!`](@ref) needs the types
+the step started with. A step can install a new memo, so the copy runs on every step."""
 function _snapshot_start_types!(
     buf::Vector{PSY.ACBusTypes.Value},
     data::ACPowerFlowData,
     time_step::Int,
 )
-    _slot_tried(data.ac_jacobian_structure_cache[]) && return
     resize!(buf, size(data.bus_type, 1))
     copyto!(buf, view(data.bus_type, :, time_step))
     return
 end
 
-# The generic arm covers every formulation and backend that has no lean plan.
-_settle_lean_plan!(
-    ::AbstractACPowerFlow,
-    ::PNM.LinearSolverType,
-    ::ACPowerFlowData,
-    ::Int,
-    ::Bool,
-    ::Vector{PSY.ACBusTypes.Value},
-) = nothing
-
-_settle_lean_plan!(
-    ::ACPolarPowerFlow{<:Union{NewtonRaphsonACPowerFlow, TrustRegionACPowerFlow}},
-    ::PNM.KLUSolver,
-    data::ACPowerFlowData,
-    time_step::Int,
-    converged::Bool,
-    start_types::Vector{PSY.ACBusTypes.Value},
-) = _plan_at_solved!(data, time_step, converged, start_types)
-
-# Mirrors the arms of `_settle_lean_plan!`.
 _plans_lean(::AbstractACPowerFlow, ::PNM.LinearSolverType) = false
 _plans_lean(
     ::ACPolarPowerFlow{<:Union{NewtonRaphsonACPowerFlow, TrustRegionACPowerFlow}},
     ::PNM.KLUSolver,
 ) = true
+# A staged solver's NR/TR handoff runs on the lean plan too (`_new_handoff_cache`).
 _plans_lean(
     pf::ACPolarPowerFlow{
         <:Union{FastDecoupledACPowerFlow, GeneralizedAdmittanceACPowerFlow},
@@ -306,34 +286,19 @@ _handoff_plans_lean(
     ::Type{<:Union{NewtonRaphsonACPowerFlow, TrustRegionACPowerFlow}},
 ) = true
 
-# A staged solver's NR/TR handoff runs on the lean plan too (`_new_handoff_cache`).
-_settle_lean_plan!(
-    pf::ACPolarPowerFlow{
-        <:Union{FastDecoupledACPowerFlow, GeneralizedAdmittanceACPowerFlow},
-    },
-    ::PNM.KLUSolver,
+function _settle_lean_plan!(
+    pf::AbstractACPowerFlow,
+    backend::PNM.LinearSolverType,
     data::ACPowerFlowData,
     time_step::Int,
     converged::Bool,
     start_types::Vector{PSY.ACBusTypes.Value},
-) = _settle_handoff_plan!(
-    get_solution_parameters(pf).handoff_solver, data, time_step, converged, start_types,
 )
-
-_settle_handoff_plan!(
-    ::Type,
-    ::ACPowerFlowData,
-    ::Int,
-    ::Bool,
-    ::Vector{PSY.ACBusTypes.Value},
-) = nothing
-_settle_handoff_plan!(
-    ::Type{<:Union{NewtonRaphsonACPowerFlow, TrustRegionACPowerFlow}},
-    data::ACPowerFlowData,
-    time_step::Int,
-    converged::Bool,
-    start_types::Vector{PSY.ACBusTypes.Value},
-) = _plan_at_solved!(data, time_step, converged, start_types)
+    if _plans_lean(pf, backend)
+        _plan_at_solved!(data, time_step, converged, start_types)
+    end
+    return
+end
 
 """Build the lean plan of the Jacobian structure of `data`, once. Call it after a serial
 step. The plan uses `start_types`, the bus types the step began with, at the voltages the
@@ -527,7 +492,8 @@ _skips_refinement(::PNM.LinearSolverCache) = false
 """Seed `work`'s Jacobian-structure memo, and with it the lean-LU plan, from `base`'s (an empty
 rect/mixed NR cache too, [`_seed_rect_mixed!`](@ref)). For a working copy whose Ybus is a value
 copy of `base`'s with the same pattern, so every copy pivots like `base` instead of on whatever it
-solves first. An unbuilt plan is not shared: the copies would race to build it."""
+solves first. A copy with its own matrix gets a fresh slot when the plan is not built. The
+identity branch shares the slot: only the serial driver writes it, before the tasks start."""
 function _inherit_jacobian_structure!(work::ACPowerFlowData, base::ACPowerFlowData)
     _seed_rect_mixed!(work, work.solver_cache[], base.solver_cache[])
     _inherit_jacobian_structure!(work, base.ac_jacobian_structure_cache[])
@@ -2002,7 +1968,7 @@ function _build_rect_mixed_cache!(
 end
 
 # A bus-type change rewrites a rect bus's second row (ΔQ ↔ |V|²) or moves a mixed block's entries,
-# so rect/mixed cannot take polar's flat plan with column swaps: the plan is built on the Jacobian a
+# so rect/mixed cannot take polar's plan with column swaps: the plan is built on the Jacobian a
 # fresh cache is built for (at the solve's start) and used only while the bus types are the plan's.
 # A re-plan per type change (a Q-limit flip) costs more than the lean steps it saves.
 function _rect_mixed_symbolic!(
