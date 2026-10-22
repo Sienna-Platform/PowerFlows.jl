@@ -1,0 +1,621 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>HVDC Converters (VSC &amp; LCC) · PowerFlows.jl</title><meta name="title" content="HVDC Converters (VSC &amp; LCC) · PowerFlows.jl"/><meta property="og:title" content="HVDC Converters (VSC &amp; LCC) · PowerFlows.jl"/><meta property="twitter:title" content="HVDC Converters (VSC &amp; LCC) · PowerFlows.jl"/><meta name="description" content="Documentation for PowerFlows.jl."/><meta property="og:description" content="Documentation for PowerFlows.jl."/><meta property="twitter:description" content="Documentation for PowerFlows.jl."/><script data-outdated-warner src="../../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.050/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL="../.."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../../assets/documenter.js"></script><script src="../../search_index.js"></script><script src="../../siteinfo.js"></script><script src="../../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../../assets/themeswap.js"></script></head><body><div id="documenter"><nav class="docs-sidebar"><a class="docs-logo" href="../../"><img src="../../assets/logo.png" alt="PowerFlows.jl logo"/></a><div class="docs-package-name"><span class="docs-autofit"><a href="../../">PowerFlows.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../../">Welcome Page</a></li><li><span class="tocitem">Tutorials</span><ul><li><a class="tocitem" href="../generated_solving_a_power_flow/">Solving a Power Flow</a></li><li><a class="tocitem" href="../generated_discrete_control_14bus/">Discrete Shunt Voltage Control</a></li><li class="is-active"><a class="tocitem" href>HVDC Converters (VSC &amp; LCC)</a><ul class="internal"><li><a class="tocitem" href="#Loading-the-needed-packages"><span>Loading the needed packages</span></a></li><li><a class="tocitem" href="#VSC-case"><span>VSC case</span></a></li><li><a class="tocitem" href="#LCC-case"><span>LCC case</span></a></li><li><a class="tocitem" href="#When-each-is-modeled"><span>When each is modeled</span></a></li></ul></li></ul></li><li><span class="tocitem">How-to-Guides</span><ul><li><a class="tocitem" href="../../how-tos/choose_ac_formulation_and_solver/">How to choose an AC formulation and solver</a></li></ul></li><li><span class="tocitem">Explanation</span><ul><li><a class="tocitem" href="../../explanation/models-and-solvers/">Evaluation Models vs. Solver Algorithms</a></li><li><a class="tocitem" href="../../explanation/mixed_cpb_formulation/">Mixed Current-Power Balance Formulation</a></li><li><a class="tocitem" href="../../explanation/fast_decoupled/">Fast/Fixed Decoupled Power Flow</a></li><li><a class="tocitem" href="../../explanation/lm_vs_gauss_seidel/">Levenberg-Marquardt vs Gauss-Seidel</a></li><li><a class="tocitem" href="../../explanation/folds_and_diagnostics/">Folds, Voltage Collapse, and Solver Diagnostics</a></li><li><a class="tocitem" href="../../explanation/lcc_model/">LCC Model Implementation</a></li><li><a class="tocitem" href="../../explanation/lcc_hessian/">LCC Second Derivatives (Hessian Blocks)</a></li><li><a class="tocitem" href="../../explanation/vsc_model/">VSC Model Implementation</a></li><li><a class="tocitem" href="../../explanation/discrete_control/">Discrete Control via λ-Continuation</a></li></ul></li><li><span class="tocitem">Reference</span><ul><li><a class="tocitem" href="../../reference/api/public/">Public API Reference</a></li><li><a class="tocitem" href="../../reference/api/internal/">Internal API Reference - Core</a></li><li><a class="tocitem" href="../../reference/api/internal_solvers/">Internal API Reference - Solvers &amp; Utilities</a></li><li><input class="collapse-toggle" id="menuitem-5-4" type="checkbox"/><label class="tocitem" for="menuitem-5-4"><span class="docs-label">Code Base Developer Guide</span><i class="docs-chevron"></i></label><ul class="collapsed"><li><a class="tocitem" href="../../reference/developers/developer/">Guidelines</a></li><li><a class="tocitem" href="../../reference/developers/power_flow/">Power Flow Overview for Developers</a></li></ul></li></ul></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li><a class="is-disabled">Tutorials</a></li><li class="is-active"><a href>HVDC Converters (VSC &amp; LCC)</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>HVDC Converters (VSC &amp; LCC)</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/Sienna-Platform/PowerFlows.jl" title="View the repository on GitHub"><span class="docs-icon fa-brands"></span><span class="docs-label is-hidden-touch">GitHub</span></a><a class="docs-navbar-link" href="https://github.com/Sienna-Platform/PowerFlows.jl/blob/main/docs/src/tutorials/hvdc_converters_14bus.jl" title="Edit source on GitHub"><span class="docs-icon fa-solid"></span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><h1 id="HVDC-Converters-(VSC-and-LCC)"><a class="docs-heading-anchor" href="#HVDC-Converters-(VSC-and-LCC)">HVDC Converters (VSC &amp; LCC)</a><a id="HVDC-Converters-(VSC-and-LCC)-1"></a><a class="docs-heading-anchor-permalink" href="#HVDC-Converters-(VSC-and-LCC)" title="Permalink"></a></h1><p><em>To follow along, you can download this tutorial as a <a href="https://sienna-platform.github.io/PowerFlows.jl/previews/PR413/tutorials/hvdc_converters_14bus.jl">Julia script (.jl)</a> or <a href="https://sienna-platform.github.io/PowerFlows.jl/previews/PR413/tutorials/generated_hvdc_converters_14bus.ipynb">Jupyter notebook (.ipynb)</a>.</em></p><p>An HVDC link moves power between two AC buses through a DC stage: an AC/DC converter at each end, joined by a DC line. PowerFlows co-solves this DC stage together with the surrounding AC network, so an AC power flow with an HVDC branch converges to one consistent solution rather than being solved as two separate problems. PowerFlows represents two converter technologies:</p><ul><li><strong>VSC</strong> (voltage-source converter): self-commutated, so each terminal independently controls its own active power (or DC voltage) and reactive power (or AC voltage).</li><li><strong>LCC</strong> (line-commutated converter): thyristor-based, so the only controls are each terminal&#39;s firing/extinction angle and transformer tap, and the converter always draws reactive power from the AC system it connects to.</li></ul><p>This tutorial builds one 14-bus system for each technology and solves them with the same <a href="../../reference/api/public/#PowerFlows.ACPowerFlow"><code>ACPowerFlow</code></a> solver used elsewhere in these docs.</p><h2 id="Loading-the-needed-packages"><a class="docs-heading-anchor" href="#Loading-the-needed-packages">Loading the needed packages</a><a id="Loading-the-needed-packages-1"></a><a class="docs-heading-anchor-permalink" href="#Loading-the-needed-packages" title="Permalink"></a></h2><pre><code class="language-julia hljs">using PowerSystemCaseBuilder
+using PowerSystems
+using PowerFlows</code></pre><h2 id="VSC-case"><a class="docs-heading-anchor" href="#VSC-case">VSC case</a><a id="VSC-case-1"></a><a class="docs-heading-anchor-permalink" href="#VSC-case" title="Permalink"></a></h2><p>Build the 14-bus test system with a single <a href="https://sienna-platform.github.io/PowerSystems.jl/stable/model_library/generated_TwoTerminalVSCLine/#PowerSystems.TwoTerminalVSCLine"><code>PowerSystems.TwoTerminalVSCLine</code></a> replacing the AC line on the bus 2↔3 arc:</p><pre><code class="language-julia hljs">sys_vsc = build_system(
+    PSITestSystems,
+    &quot;c_sys14_hvdc_vsc&quot;;
+    force_build = true,
+    add_forecasts = false,
+)</code></pre><table>
+  <thead>
+    <tr class = "title">
+      <td colspan = "2" style = "font-size: x-large; font-weight: bold; text-align: center;">System</td>
+    </tr>
+    <tr class = "columnLabelRow">
+      <th style = "font-weight: bold; text-align: left;">Property</th>
+      <th style = "font-weight: bold; text-align: left;">Value</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr class = "dataRow">
+      <td style = "text-align: left;">Name</td>
+      <td style = "text-align: left;"></td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: left;">Description</td>
+      <td style = "text-align: left;"></td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: left;">System Units Base</td>
+      <td style = "text-align: left;">SYSTEM_BASE</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: left;">Base Power</td>
+      <td style = "text-align: left;">100.0</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: left;">Base Frequency</td>
+      <td style = "text-align: left;">60.0</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: left;">Num Components</td>
+      <td style = "text-align: left;">70</td>
+    </tr>
+  </tbody>
+</table>
+
+<table>
+  <thead>
+    <tr class = "title">
+      <td colspan = "2" style = "font-size: x-large; font-weight: bold; text-align: center;">Static Components</td>
+    </tr>
+    <tr class = "columnLabelRow">
+      <th style = "font-weight: bold; text-align: left;">Type</th>
+      <th style = "font-weight: bold; text-align: left;">Count</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr class = "dataRow">
+      <td style = "text-align: left;">ACBus</td>
+      <td style = "text-align: left;">14</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: left;">Arc</td>
+      <td style = "text-align: left;">20</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: left;">Line</td>
+      <td style = "text-align: left;">15</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: left;">PowerLoad</td>
+      <td style = "text-align: left;">11</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: left;">TapTransformer</td>
+      <td style = "text-align: left;">3</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: left;">ThermalStandard</td>
+      <td style = "text-align: left;">5</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: left;">Transformer2W</td>
+      <td style = "text-align: left;">1</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: left;">TwoTerminalVSCLine</td>
+      <td style = "text-align: left;">1</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>Solve it with <a href="../../reference/api/public/#PowerFlows.ACPowerFlow"><code>ACPowerFlow</code></a>, the same convenience wrapper used for a plain AC-only system — no special solver settings are needed for a VSC line:</p><pre><code class="language-julia hljs">vsc_results = solve_power_flow(ACPowerFlow(), sys_vsc)</code></pre><pre><code class="nohighlight hljs">Dict{String, DataFrame} with 6 entries:
+  &quot;flow_results&quot; =&gt; 19×10 DataFrame
+ Row │ flow_name  bus_from  bus_to  P_from_to      Q_from_to   P_to_from       Q_to_from   P_losses      Q_losses    angle_difference
+     │ String     Int64     Int64   Float64        Float64     Float64         Float64     Float64       Float64     Float64
+─────┼────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   1 │ 1-2               1       2  151.206        -19.0678    -147.217         25.3951     3.98818      6.32733          0.0836842
+   2 │ 1-5               1       5   83.4989         5.1547     -80.1161         3.5094     3.38278      8.6641           0.169872
+   3 │ 2-4               2       4   71.8485        -1.92205    -69.1016         6.65797    2.74697      4.73593          0.120062
+   4 │ 2-5               2       5   53.3743         0.688583   -51.8851         0.185282   1.48914      0.873864         0.0861876
+   5 │ 3-4               3       4  -54.2           22.4956      56.4817       -17.9808     2.28172      4.51474         -0.10602
+   6 │ 4-5               4       5  -76.768         18.6542      77.5809       -16.0902     0.812856     2.564           -0.0338745
+   7 │ 4-7               4       7   26.4901        -6.33111    -26.4901         7.77863    3.33067e-14  1.44753          0.0510156
+   8 │ 4-9               4       9   15.0978         2.89982    -15.0978        -1.69565   -5.55112e-15  1.20417          0.0779145
+   9 │ 5-6               5       6   46.8203        10.7953     -46.8203        -5.89344    2.22045e-14  4.90188          0.101394
+  10 │ 6-11              6      11    8.87323        8.19859     -8.75215       -7.94503    0.12108      0.253556         0.00880368
+  11 │ 6-12              6      12    8.12053        3.07436     -8.03959       -2.9059     0.0809395    0.168458         0.0150775
+  12 │ 6-13              6      13   18.6266         9.62763    -18.3726        -9.12739    0.254015     0.500235         0.0159768
+  13 │ 7-8               7       8   -5.30825e-13  -24.2014       5.30825e-13   25.1383     0.0          0.93692         -8.32667e-16
+  14 │ 7-9               7       9   26.4901        16.4227     -26.4901       -15.4522     0.0          0.970468         0.0268988
+  15 │ 9-10              9      10    3.80107       -0.219032    -3.79674        0.230521   0.00432521   0.0114895        0.003081
+  16 │ 9-14              9      14    8.28684        0.766913    -8.20426       -0.591263   0.0825761    0.17565          0.0203397
+  17 │ 10-11            10      11   -5.20324       -6.03052      5.25216        6.14503    0.0489183    0.114512        -0.0046723
+  18 │ 12-13            12      13    1.93958        1.3059      -1.92869       -1.29605    0.010884     0.00984746       0.00089934
+  19 │ 13-14            13      14    6.80122        4.62352     -6.69574       -4.40876    0.105481     0.214763         0.0147578
+  &quot;bus_results&quot; =&gt; 14×9 DataFrame
+ Row │ bus_number  Vm       θ           P_gen    P_load   P_net    Q_gen     Q_load   Q_net
+     │ Int64       Float64  Float64     Float64  Float64  Float64  Float64   Float64  Float64
+─────┼─────────────────────────────────────────────────────────────────────────────────────────
+   1 │          1  1.06      0.0        234.704      0.0  234.704  -13.913       0.0  -13.913
+   2 │          2  1.045    -0.0836842   40.0       21.7   18.3     31.8617     12.7   19.1617
+   3 │          3  1.01     -0.309766     0.0       94.2  -94.2     31.4956     19.0   12.4956
+   4 │          4  1.01245  -0.203746     0.0       47.8  -47.8      0.0        -3.9    3.9
+   5 │          5  1.01539  -0.169872     0.0        7.6   -7.6      0.0         1.6   -1.6
+   6 │          6  1.07     -0.271266     0.0       11.2  -11.2     22.5071      7.5   15.0071
+   7 │          7  1.04938  -0.254762     0.0        0.0    0.0      0.0         0.0    0.0
+   8 │          8  1.09     -0.254762     0.0        0.0    0.0     25.1383      0.0   25.1383
+   9 │          9  1.03253  -0.281661     0.0       29.5  -29.5      0.0        16.6  -16.6
+  10 │         10  1.03155  -0.284742     0.0        9.0   -9.0      0.0         5.8   -5.8
+  11 │         11  1.04692  -0.280069     0.0        3.5   -3.5      0.0         1.8   -1.8
+  12 │         12  1.05344  -0.286343     0.0        6.1   -6.1      0.0         1.6   -1.6
+  13 │         13  1.0469   -0.287243     0.0       13.5  -13.5      0.0         5.8   -5.8
+  14 │         14  1.02053  -0.302        0.0       14.9  -14.9      0.0         5.0   -5.0
+  &quot;mtdc_line_results&quot; =&gt; 0×5 DataFrame
+ Row │ line_name  dc_bus_from  dc_bus_to  dc_current  P_losses
+     │ String     Int64        Int64      Float64     Float64
+─────┴─────────────────────────────────────────────────────────
+  &quot;vsc_results&quot; =&gt; 1×11 DataFrame
+ Row │ line_name  bus_from  bus_to  P_from_to  P_to_from  Q_from_to  Q_to_from  dc_current  Vdc_from  Vdc_to   P_losses
+     │ String     Int64     Int64   Float64    Float64    Float64    Float64    Float64     Float64   Float64  Float64
+─────┼──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   1 │ VSC_2_3           2       3    40.2945      -40.0        5.0       10.0    0.383758      1.05  1.04232   0.29454
+  &quot;mtdc_results&quot; =&gt; 0×8 DataFrame
+ Row │ converter_name  ac_bus  dc_bus  P_dc     Q        Vac      Vdc      mode
+     │ String          Int64   Int64   Float64  Float64  Float64  Float64  String
+─────┴────────────────────────────────────────────────────────────────────────────
+  &quot;lcc_results&quot; =&gt; 0×13 DataFrame
+ Row │ line_name  bus_from  bus_to  rectifier_tap  inverter_tap  rectifier_delay_angle  inverter_extinction_angle  P_from_to  P_to_from  Q_from_to  Q_to_from  P_losses  Q_losses
+     │ String     Int64     Int64   Float64        Float64       Float64                Float64                    Float64    Float64    Float64    Float64    Float64   Float64
+─────┴────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</code></pre><p>The result <code>Dict</code> carries the usual AC keys (<code>&quot;bus_results&quot;</code>, <code>&quot;flow_results&quot;</code>) plus HVDC-specific tables. For a VSC line, the relevant one is <code>&quot;vsc_results&quot;</code>:</p><pre><code class="language-julia hljs">vsc_results[&quot;vsc_results&quot;]</code></pre><table>
+  <thead>
+    <tr class = "columnLabelRow">
+      <th style = "font-weight: bold; text-align: right;">line_name</th>
+      <th style = "font-weight: bold; text-align: right;">bus_from</th>
+      <th style = "font-weight: bold; text-align: right;">bus_to</th>
+      <th style = "font-weight: bold; text-align: right;">P_from_to</th>
+      <th style = "font-weight: bold; text-align: right;">P_to_from</th>
+      <th style = "font-weight: bold; text-align: right;">Q_from_to</th>
+      <th style = "font-weight: bold; text-align: right;">Q_to_from</th>
+      <th style = "font-weight: bold; text-align: right;">dc_current</th>
+      <th style = "font-weight: bold; text-align: right;">Vdc_from</th>
+      <th style = "font-weight: bold; text-align: right;">Vdc_to</th>
+      <th style = "font-weight: bold; text-align: right;">P_losses</th>
+    </tr>
+    <tr class = "columnLabelRow">
+      <th style = "text-align: right;">String</th>
+      <th style = "text-align: right;">Int64</th>
+      <th style = "text-align: right;">Int64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">VSC_2_3</td>
+      <td style = "text-align: right;">2</td>
+      <td style = "text-align: right;">3</td>
+      <td style = "text-align: right;">40.29453966932661</td>
+      <td style = "text-align: right;">-40.0</td>
+      <td style = "text-align: right;">5.0</td>
+      <td style = "text-align: right;">10.0</td>
+      <td style = "text-align: right;">0.3837575206602534</td>
+      <td style = "text-align: right;">1.05</td>
+      <td style = "text-align: right;">1.042324849586795</td>
+      <td style = "text-align: right;">0.29453966932661</td>
+    </tr>
+  </tbody>
+</table>
+<p><code>P_from_to</code> is the active power (MW) the <code>from</code>-side AC bus delivers into the converter; <code>Q_from_to</code>/<code>Q_to_from</code> are the reactive power each AC terminal exchanges with its own bus; <code>dc_current</code>, <code>Vdc_from</code>, <code>Vdc_to</code> describe the state of the (here two-node) internal DC network; and <code>P_losses</code> is the combined DC-side loss (converter losses plus the DC line&#39;s own resistive drop).</p><p>The two converters play different roles. This system&#39;s <code>from</code> converter is configured with <code>dc_control_from = VSCDCControlModes.DC_VOLTAGE</code>: it holds the DC network at its scheduled voltage, acting as the DC-side slack. The <code>to</code> converter is configured with <code>dc_control_to = VSCDCControlModes.DC_POWER</code>: it is dispatched to a scheduled active-power transfer, and the <code>from</code> converter&#39;s power then adjusts to balance that transfer plus DC losses — which is exactly the relationship between <code>P_from_to</code> and <code>P_losses</code> above. Independently of this DC-side role, each converter also holds its own AC-side reactive-power setpoint (<code>ac_control_from</code>/<code>ac_control_to = VSCACControlModes.AC_REACTIVE_POWER</code> here), so <code>Q_from_to</code> and <code>Q_to_from</code> are unrelated numbers rather than mirror images of each other.</p><p>Bus voltages solve normally alongside the DC network:</p><pre><code class="language-julia hljs">vsc_results[&quot;bus_results&quot;]</code></pre><div>
+  <div style = "float: right; font-style: italic;">
+    <span>4 rows omitted</span>
+  </div>
+  <div style = "clear: both;"></div>
+</div>
+<table>
+  <thead>
+    <tr class = "columnLabelRow">
+      <th style = "font-weight: bold; text-align: right;">bus_number</th>
+      <th style = "font-weight: bold; text-align: right;">Vm</th>
+      <th style = "font-weight: bold; text-align: right;">θ</th>
+      <th style = "font-weight: bold; text-align: right;">P_gen</th>
+      <th style = "font-weight: bold; text-align: right;">P_load</th>
+      <th style = "font-weight: bold; text-align: right;">P_net</th>
+      <th style = "font-weight: bold; text-align: right;">Q_gen</th>
+      <th style = "font-weight: bold; text-align: right;">Q_load</th>
+      <th style = "font-weight: bold; text-align: right;">Q_net</th>
+    </tr>
+    <tr class = "columnLabelRow">
+      <th style = "text-align: right;">Int64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">1</td>
+      <td style = "text-align: right;">1.06</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">234.70446489882693</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">234.70446489882693</td>
+      <td style = "text-align: right;">-13.913021798342488</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">-13.913021798342488</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">2</td>
+      <td style = "text-align: right;">1.045</td>
+      <td style = "text-align: right;">-0.08368416344667391</td>
+      <td style = "text-align: right;">40.0</td>
+      <td style = "text-align: right;">21.7</td>
+      <td style = "text-align: right;">18.3</td>
+      <td style = "text-align: right;">31.86174384166173</td>
+      <td style = "text-align: right;">12.7</td>
+      <td style = "text-align: right;">19.161743841661732</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">3</td>
+      <td style = "text-align: right;">1.01</td>
+      <td style = "text-align: right;">-0.3097663750172548</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">94.19999999999999</td>
+      <td style = "text-align: right;">-94.19999999999999</td>
+      <td style = "text-align: right;">31.495575041799846</td>
+      <td style = "text-align: right;">19.0</td>
+      <td style = "text-align: right;">12.495575041799844</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">4</td>
+      <td style = "text-align: right;">1.0124457670918174</td>
+      <td style = "text-align: right;">-0.20374625536865054</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">47.8</td>
+      <td style = "text-align: right;">-47.8</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">-3.9</td>
+      <td style = "text-align: right;">3.9</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">5</td>
+      <td style = "text-align: right;">1.0153921142961957</td>
+      <td style = "text-align: right;">-0.1698717250002936</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">7.6</td>
+      <td style = "text-align: right;">-7.6</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">1.6</td>
+      <td style = "text-align: right;">-1.6</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">6</td>
+      <td style = "text-align: right;">1.07</td>
+      <td style = "text-align: right;">-0.271265739694749</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">11.200000000000001</td>
+      <td style = "text-align: right;">-11.200000000000001</td>
+      <td style = "text-align: right;">22.507111190315804</td>
+      <td style = "text-align: right;">7.5</td>
+      <td style = "text-align: right;">15.007111190315802</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">7</td>
+      <td style = "text-align: right;">1.0493750708989091</td>
+      <td style = "text-align: right;">-0.2547619007971649</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.0</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">8</td>
+      <td style = "text-align: right;">1.09</td>
+      <td style = "text-align: right;">-0.25476190079716404</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">25.13833327333852</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">25.13833327333852</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">9</td>
+      <td style = "text-align: right;">1.0325320744216007</td>
+      <td style = "text-align: right;">-0.28166072443970774</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">29.5</td>
+      <td style = "text-align: right;">-29.5</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">16.6</td>
+      <td style = "text-align: right;">-16.6</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">10</td>
+      <td style = "text-align: right;">1.031545197148625</td>
+      <td style = "text-align: right;">-0.2847417221263094</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">9.0</td>
+      <td style = "text-align: right;">-9.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">5.800000000000001</td>
+      <td style = "text-align: right;">-5.800000000000001</td>
+    </tr>
+    <tr>
+      <td style = "text-align: right;">&vellip;</td>
+      <td style = "text-align: right;">&vellip;</td>
+      <td style = "text-align: right;">&vellip;</td>
+      <td style = "text-align: right;">&vellip;</td>
+      <td style = "text-align: right;">&vellip;</td>
+      <td style = "text-align: right;">&vellip;</td>
+      <td style = "text-align: right;">&vellip;</td>
+      <td style = "text-align: right;">&vellip;</td>
+      <td style = "text-align: right;">&vellip;</td>
+    </tr>
+  </tbody>
+</table>
+<h2 id="LCC-case"><a class="docs-heading-anchor" href="#LCC-case">LCC case</a><a id="LCC-case-1"></a><a class="docs-heading-anchor-permalink" href="#LCC-case" title="Permalink"></a></h2><p>Build the matching system with a single <a href="https://sienna-platform.github.io/PowerSystems.jl/stable/model_library/generated_TwoTerminalLCCLine/#PowerSystems.TwoTerminalLCCLine"><code>PowerSystems.TwoTerminalLCCLine</code></a> on the same 2↔3 arc, and solve it the same way:</p><pre><code class="language-julia hljs">sys_lcc = build_system(
+    PSITestSystems,
+    &quot;c_sys14_hvdc_lcc&quot;;
+    force_build = true,
+    add_forecasts = false,
+)
+lcc_results = solve_power_flow(ACPowerFlow(), sys_lcc)</code></pre><pre><code class="nohighlight hljs">Dict{String, DataFrame} with 6 entries:
+  &quot;flow_results&quot; =&gt; 19×10 DataFrame
+ Row │ flow_name  bus_from  bus_to  P_from_to      Q_from_to   P_to_from       Q_to_from   P_losses      Q_losses    angle_difference
+     │ String     Int64     Int64   Float64        Float64     Float64         Float64     Float64       Float64     Float64
+─────┼────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   1 │ 1-2               1       2  152.969        -19.4851    -148.886         26.1021     4.08306      6.61703          0.0847029
+   2 │ 1-5               1       5   81.1987         5.02285    -77.9991         2.88196    3.19961      7.90481          0.165001
+   3 │ 2-4               2       4   67.2199        -1.34845    -64.8154         5.04322    2.40458      3.69477          0.111906
+   4 │ 2-5               2       5   49.9663         1.126      -48.6595        -0.811242   1.30675      0.314762         0.0802976
+   5 │ 3-4               3       4  -45.3912        17.6128      46.9638       -14.9088     1.5726       2.704           -0.0879452
+   6 │ 4-5               4       5  -71.8724        16.967       72.5818       -14.7296     0.709339     2.23747         -0.0316087
+   7 │ 4-7               4       7   26.7028        -6.1635     -26.7028         7.62713    5.55112e-15  1.46363          0.0513757
+   8 │ 4-9               4       9   15.2212         2.96206    -15.2212        -1.73855    0.0          1.22351          0.0784713
+   9 │ 5-6               5       6   46.4769        11.0586     -46.4769        -6.21864   -3.33067e-14  4.84001          0.100585
+  10 │ 6-11              6      11    8.66495        8.19544     -8.54694       -7.94832    0.118007     0.247121         0.00843502
+  11 │ 6-12              6      12    8.0932         3.07793     -8.01271       -2.91041    0.0804874    0.167517         0.0150112
+  12 │ 6-13              6      13   18.5187         9.62347    -18.267         -9.12789    0.251654     0.495585         0.0158528
+  13 │ 7-8               7       8   -1.32533e-13  -24.0052       1.32533e-13   24.9264     0.0          0.921191        -2.498e-16
+  14 │ 7-9               7       9   26.7028        16.378      -26.7028       -15.3983     0.0          0.979671         0.0270956
+  15 │ 9-10              9      10    4.00518       -0.224733    -4.00038        0.237477   0.00479765   0.0127445        0.00324229
+  16 │ 9-14              9      14    8.41889        0.761642    -8.33376       -0.580558   0.0851305    0.181084         0.0206716
+  17 │ 10-11            10      11   -4.99961       -6.03748      5.04696        6.14832    0.0473495    0.11084         -0.00430264
+  18 │ 12-13            12      13    1.9127         1.31041     -1.902         -1.30073    0.010701     0.00968183       0.000841509
+  19 │ 13-14            13      14    6.66901        4.6287      -6.56624       -4.41947    0.102764     0.209232         0.0143142
+  &quot;bus_results&quot; =&gt; 14×9 DataFrame
+ Row │ bus_number  Vm       θ           P_gen    P_load   P_net    Q_gen     Q_load   Q_net
+     │ Int64       Float64  Float64     Float64  Float64  Float64  Float64   Float64  Float64
+─────┼─────────────────────────────────────────────────────────────────────────────────────────
+   1 │          1  1.06      0.0        234.168      0.0  234.168  -14.4622      0.0  -14.4622
+   2 │          2  1.045    -0.0847029   40.0       21.7   18.3     46.7101     12.7   34.0101
+   3 │          3  1.01     -0.284554     0.0       94.2  -94.2     54.9443     19.0   35.9443
+   4 │          4  1.0131   -0.196609     0.0       47.8  -47.8      0.0        -3.9    3.9
+   5 │          5  1.01603  -0.165001     0.0        7.6   -7.6      0.0         1.6   -1.6
+   6 │          6  1.07     -0.265585     0.0       11.2  -11.2     22.1782      7.5   14.6782
+   7 │          7  1.04972  -0.247985     0.0        0.0    0.0      0.0         0.0    0.0
+   8 │          8  1.09     -0.247985     0.0        0.0    0.0     24.9264      0.0   24.9264
+   9 │          9  1.03293  -0.275081     0.0       29.5  -29.5      0.0        16.6  -16.6
+  10 │         10  1.03189  -0.278323     0.0        9.0   -9.0      0.0         5.8   -5.8
+  11 │         11  1.04711  -0.27402      0.0        3.5   -3.5      0.0         1.8   -1.8
+  12 │         12  1.05346  -0.280596     0.0        6.1   -6.1      0.0         1.6   -1.6
+  13 │         13  1.04697  -0.281438     0.0       13.5  -13.5      0.0         5.8   -5.8
+  14 │         14  1.0208   -0.295752     0.0       14.9  -14.9      0.0         5.0   -5.0
+  &quot;mtdc_line_results&quot; =&gt; 0×5 DataFrame
+ Row │ line_name  dc_bus_from  dc_bus_to  dc_current  P_losses
+     │ String     Int64        Int64      Float64     Float64
+─────┴─────────────────────────────────────────────────────────
+  &quot;vsc_results&quot; =&gt; 0×11 DataFrame
+ Row │ line_name  bus_from  bus_to  P_from_to  P_to_from  Q_from_to  Q_to_from  dc_current  Vdc_from  Vdc_to   P_losses
+     │ String     Int64     Int64   Float64    Float64    Float64    Float64    Float64     Float64   Float64  Float64
+─────┴──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  &quot;mtdc_results&quot; =&gt; 0×8 DataFrame
+ Row │ converter_name  ac_bus  dc_bus  P_dc     Q        Vac      Vdc      mode
+     │ String          Int64   Int64   Float64  Float64  Float64  Float64  String
+─────┴────────────────────────────────────────────────────────────────────────────
+  &quot;lcc_results&quot; =&gt; 1×13 DataFrame
+ Row │ line_name  bus_from  bus_to  rectifier_tap  inverter_tap  rectifier_delay_angle  inverter_extinction_angle  P_from_to  P_to_from  Q_from_to  Q_to_from  P_losses  Q_losses
+     │ String     Int64     Int64   Float64        Float64       Float64                Float64                    Float64    Float64    Float64    Float64    Float64   Float64
+─────┼────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   1 │ LCC_2_3           2       3        1.27379       1.35646                    0.0                   0.296706       50.0   -48.8088    8.13037    18.3315   1.19115   26.4618</code></pre><p>The matching result table is <code>&quot;lcc_results&quot;</code>:</p><pre><code class="language-julia hljs">lcc_results[&quot;lcc_results&quot;]</code></pre><table>
+  <thead>
+    <tr class = "columnLabelRow">
+      <th style = "font-weight: bold; text-align: right;">line_name</th>
+      <th style = "font-weight: bold; text-align: right;">bus_from</th>
+      <th style = "font-weight: bold; text-align: right;">bus_to</th>
+      <th style = "font-weight: bold; text-align: right;">rectifier_tap</th>
+      <th style = "font-weight: bold; text-align: right;">inverter_tap</th>
+      <th style = "font-weight: bold; text-align: right;">rectifier_delay_angle</th>
+      <th style = "font-weight: bold; text-align: right;">inverter_extinction_angle</th>
+      <th style = "font-weight: bold; text-align: right;">P_from_to</th>
+      <th style = "font-weight: bold; text-align: right;">P_to_from</th>
+      <th style = "font-weight: bold; text-align: right;">Q_from_to</th>
+      <th style = "font-weight: bold; text-align: right;">Q_to_from</th>
+      <th style = "font-weight: bold; text-align: right;">P_losses</th>
+      <th style = "font-weight: bold; text-align: right;">Q_losses</th>
+    </tr>
+    <tr class = "columnLabelRow">
+      <th style = "text-align: right;">String</th>
+      <th style = "text-align: right;">Int64</th>
+      <th style = "text-align: right;">Int64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">LCC_2_3</td>
+      <td style = "text-align: right;">2</td>
+      <td style = "text-align: right;">3</td>
+      <td style = "text-align: right;">1.2737858888888838</td>
+      <td style = "text-align: right;">1.356459216677401</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.29670597283903605</td>
+      <td style = "text-align: right;">50.0</td>
+      <td style = "text-align: right;">-48.808848170151535</td>
+      <td style = "text-align: right;">8.130370146724644</td>
+      <td style = "text-align: right;">18.331477764564745</td>
+      <td style = "text-align: right;">1.1911518298484636</td>
+      <td style = "text-align: right;">26.46184791128939</td>
+    </tr>
+  </tbody>
+</table>
+<p>An LCC has no independent control over its terminal voltages or reactive power. The rectifier and inverter each have one control angle — <code>rectifier_delay_angle</code> (firing angle) and <code>inverter_extinction_angle</code> (extinction angle) — plus a transformer tap, <code>rectifier_tap</code>/ <code>inverter_tap</code>. PowerFlows keeps both thyristor angles at their minimum physical limits (<code>rectifier_delay_angle_limits</code>/ <code>inverter_extinction_angle_limits</code> on the component) and instead uses the tap ratios to hold the line&#39;s scheduled DC power transfer — here the line&#39;s <code>transfer_setpoint</code> of 50 MW appears directly as <code>P_from_to</code>.</p><p>Because thyristors can only be switched on, not off, on demand, an LCC always draws reactive power from the AC system at both ends to commutate — it cannot supply it. <code>Q_from_to</code> and <code>Q_to_from</code> are both positive (absorbed from the AC network), in contrast to the VSC case above, where each converter&#39;s reactive power is an independent setpoint that can be positive, negative, or zero.</p><pre><code class="language-julia hljs">lcc_results[&quot;bus_results&quot;]</code></pre><div>
+  <div style = "float: right; font-style: italic;">
+    <span>4 rows omitted</span>
+  </div>
+  <div style = "clear: both;"></div>
+</div>
+<table>
+  <thead>
+    <tr class = "columnLabelRow">
+      <th style = "font-weight: bold; text-align: right;">bus_number</th>
+      <th style = "font-weight: bold; text-align: right;">Vm</th>
+      <th style = "font-weight: bold; text-align: right;">θ</th>
+      <th style = "font-weight: bold; text-align: right;">P_gen</th>
+      <th style = "font-weight: bold; text-align: right;">P_load</th>
+      <th style = "font-weight: bold; text-align: right;">P_net</th>
+      <th style = "font-weight: bold; text-align: right;">Q_gen</th>
+      <th style = "font-weight: bold; text-align: right;">Q_load</th>
+      <th style = "font-weight: bold; text-align: right;">Q_net</th>
+    </tr>
+    <tr class = "columnLabelRow">
+      <th style = "text-align: right;">Int64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">1</td>
+      <td style = "text-align: right;">1.06</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">234.16804797003087</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">234.16804797003087</td>
+      <td style = "text-align: right;">-14.462180723202398</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">-14.462180723202398</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">2</td>
+      <td style = "text-align: right;">1.045</td>
+      <td style = "text-align: right;">-0.08470294455086101</td>
+      <td style = "text-align: right;">40.0</td>
+      <td style = "text-align: right;">21.7</td>
+      <td style = "text-align: right;">18.3</td>
+      <td style = "text-align: right;">46.710133847591706</td>
+      <td style = "text-align: right;">12.7</td>
+      <td style = "text-align: right;">34.0101338475917</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">3</td>
+      <td style = "text-align: right;">1.01</td>
+      <td style = "text-align: right;">-0.2845544567506656</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">94.19999999999999</td>
+      <td style = "text-align: right;">-94.19999999999999</td>
+      <td style = "text-align: right;">54.94425015772357</td>
+      <td style = "text-align: right;">19.0</td>
+      <td style = "text-align: right;">35.94425015772357</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">4</td>
+      <td style = "text-align: right;">1.0131003362369728</td>
+      <td style = "text-align: right;">-0.1966092908293052</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">47.8</td>
+      <td style = "text-align: right;">-47.8</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">-3.9</td>
+      <td style = "text-align: right;">3.9</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">5</td>
+      <td style = "text-align: right;">1.0160263215193588</td>
+      <td style = "text-align: right;">-0.1650005894215484</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">7.6</td>
+      <td style = "text-align: right;">-7.6</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">1.6</td>
+      <td style = "text-align: right;">-1.6</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">6</td>
+      <td style = "text-align: right;">1.07</td>
+      <td style = "text-align: right;">-0.26558518030657585</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">11.200000000000001</td>
+      <td style = "text-align: right;">-11.200000000000001</td>
+      <td style = "text-align: right;">22.17817853246846</td>
+      <td style = "text-align: right;">7.5</td>
+      <td style = "text-align: right;">14.678178532468461</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">7</td>
+      <td style = "text-align: right;">1.049717526472408</td>
+      <td style = "text-align: right;">-0.24798499322427772</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.0</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">8</td>
+      <td style = "text-align: right;">1.09</td>
+      <td style = "text-align: right;">-0.24798499322427747</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">24.92642490750469</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">24.92642490750469</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">9</td>
+      <td style = "text-align: right;">1.032932594115382</td>
+      <td style = "text-align: right;">-0.2750805471919239</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">29.5</td>
+      <td style = "text-align: right;">-29.5</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">16.6</td>
+      <td style = "text-align: right;">-16.6</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">10</td>
+      <td style = "text-align: right;">1.0318884362688723</td>
+      <td style = "text-align: right;">-0.2783228409812764</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">9.0</td>
+      <td style = "text-align: right;">-9.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">5.800000000000001</td>
+      <td style = "text-align: right;">-5.800000000000001</td>
+    </tr>
+    <tr>
+      <td style = "text-align: right;">&vellip;</td>
+      <td style = "text-align: right;">&vellip;</td>
+      <td style = "text-align: right;">&vellip;</td>
+      <td style = "text-align: right;">&vellip;</td>
+      <td style = "text-align: right;">&vellip;</td>
+      <td style = "text-align: right;">&vellip;</td>
+      <td style = "text-align: right;">&vellip;</td>
+      <td style = "text-align: right;">&vellip;</td>
+      <td style = "text-align: right;">&vellip;</td>
+    </tr>
+  </tbody>
+</table>
+<h2 id="When-each-is-modeled"><a class="docs-heading-anchor" href="#When-each-is-modeled">When each is modeled</a><a id="When-each-is-modeled-1"></a><a class="docs-heading-anchor-permalink" href="#When-each-is-modeled" title="Permalink"></a></h2><p>Reach for VSC when a converter has independent control over active power, reactive power (or AC voltage), and DC voltage — the behavior of modern IGBT-based HVDC links. Reach for LCC to model classic thyristor-based HVDC, where the only controls are firing/extinction angles and transformer taps, and the converter is always a net reactive-power sink on the AC side. PowerFlows solves both inside the same AC power flow as the surrounding network, so no separate DC power-flow step is needed for either technology.</p></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../generated_discrete_control_14bus/">« Discrete Shunt Voltage Control</a><a class="docs-footer-nextpage" href="../../how-tos/choose_ac_formulation_and_solver/">How to choose an AC formulation and solver »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.17.0 on <span class="colophon-date" title="Friday 17 July 2026 16:48">Friday 17 July 2026</span>. Using Julia version 1.12.6.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
