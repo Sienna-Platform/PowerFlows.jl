@@ -902,6 +902,19 @@ function _write_vsc_solution!(
     return
 end
 
+# The DC network works per unit on the system base and the line's DC voltage base, so its
+# currents are per unit of `sys_base / V_dc` (MVA / kV = kA).
+function _vsc_current_base_ka(line::PSY.TwoTerminalVSCLine, sys_base::Float64)
+    v_dc_kv = PSY.get_rated_dc_voltage(line)
+    v_dc_kv > 0.0 || throw(
+        ArgumentError(
+            "TwoTerminalVSCLine $(PSY.get_name(line)) has no rated_dc_voltage to express " *
+            "its DC current in kA.",
+        ),
+    )
+    return sys_base / v_dc_kv
+end
+
 function _write_vsc_line_solution!(
     sys::PSY.System,
     data::ACPowerFlowData,
@@ -945,7 +958,8 @@ function _write_vsc_line_solution!(
         # the from converter injects −P_dc/V_dc into the line; dc_current is positive from→to
         PSY.set_dc_current!(
             vsc,
-            -_vsc_pdc(dcn, cf, Vm_from, time_step) / Vdc_from,
+            -_vsc_pdc(dcn, cf, Vm_from, time_step) / Vdc_from *
+            _vsc_current_base_ka(vsc, PSY.get_base_power(sys)),
         )
     end
     return
@@ -1468,7 +1482,8 @@ function vsc_results_dataframe(
                 # flowing from the AC terminal into the VSC DC line.
                 Q_from_to = -sys_basepower * dcn.q_c[cf, time_step],
                 Q_to_from = -sys_basepower * dcn.q_c[ct, time_step],
-                dc_current = -_vsc_pdc(dcn, cf, Vm_from, time_step) / Vdc_from,
+                dc_current = -_vsc_pdc(dcn, cf, Vm_from, time_step) / Vdc_from *
+                             _vsc_current_base_ka(vsc, sys_basepower),
                 Vdc_from = Vdc_from,
                 Vdc_to = Vdc_to,
                 # p_c is bus-injection signed (sending end < 0), so the link loss is the negated sum
@@ -1527,7 +1542,7 @@ function mtdc_results_dataframe(
 end
 
 # `TModelHVDCLine` DC-branch results, one row per DC line. Steady-state DC current is g·ΔV_dc and the
-# line loss is g·ΔV_dc² (I²r); powers in MW, current in p.u.
+# line loss is g·ΔV_dc² (I²r); powers in MW, current in kA.
 function mtdc_line_results_dataframe(
     sys::PSY.System,
     dcn::DCNetwork,
@@ -1549,20 +1564,18 @@ function mtdc_line_results_dataframe(
         (haskey(num_to_node, from_number) && haskey(num_to_node, to_number)) || continue
         nf = num_to_node[from_number]
         nt = num_to_node[to_number]
-        r = PSY.get_r(dcline)
-        if iszero(r)
-            g = 1.0e6
-        else
-            g = 1.0 / r
-        end
+        # Node voltages are per unit on the line's DC voltage base, so the conductance must be
+        # too; the per-unit current is then in units of `sys_base / V_dc` (MVA / kV = kA).
+        g = _tmodel_branch_g_pu(dcline, sys_basepower)
         dV = dcn.node_vdc[nf, time_step] - dcn.node_vdc[nt, time_step]
+        v_dc_kv = PSY.get_base_voltage(PSY.get_from(arc))
         push!(
             df,
             (
                 line_name = PSY.get_name(dcline),
                 dc_bus_from = from_number,
                 dc_bus_to = to_number,
-                dc_current = g * dV,
+                dc_current = g * dV * sys_basepower / v_dc_kv,
                 P_losses = sys_basepower * g * dV * dV,
             ),
         )
@@ -1683,7 +1696,7 @@ Per-time-step HVDC results from a solved AC power flow, as a NamedTuple of DataF
 ([`PowerSystems.TModelHVDCLine`](@extref) DC branches). Each table is the corresponding
 single-time-step results frame with a `time_step` column prepended, concatenated over
 `1:get_time_steps(data)`; a family absent from the system yields an empty table. Powers are in
-MW/MVAr; voltages, currents, and taps in p.u.; angles in radians. `sys` is required because
+MW/MVAr; currents in kA; voltages and taps in p.u.; angles in radians. `sys` is required because
 component names are not stored in the solved data. Symmetric to
 [`get_controlled_device_results`](@ref) for discrete-control devices.
 """
