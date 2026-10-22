@@ -697,3 +697,15 @@ end
     @test _lean_slot(fresh).tried && _lean_slot(fresh).valid
     @test _lean_plan_hash(_lean_slot(fresh).plan) == _lean_plan_hash(_lean_slot(data).plan)
 end
+
+@testset "lean LU: the plan is built on the Jacobian at the solved state" begin
+    data = _lean_sys14_data()
+    @test solve_power_flow!(data)
+    slot = _lean_slot(data)
+    @test slot.valid
+    residual = PF.ACPowerFlowResidual(data, 1)
+    J = PF.ACPowerFlowJacobian(data, residual, 1)
+    J(data, 1)
+    # `rcond0` comes from the build matrix's values, so the hash also checks the values.
+    @test _lean_plan_hash(slot.plan) == _lean_plan_hash(_KW.build_lean_plan(J.Jv))
+end

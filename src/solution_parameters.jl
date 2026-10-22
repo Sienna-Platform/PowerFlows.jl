@@ -86,10 +86,9 @@ take effect.
   The tasks take the steps one at a time from a shared counter, so a slow step delays only
   its own task. `1` (the default) solves the time steps in order on the calling thread.
   Every AC formulation and solver supports threads. Above `1`, the linear solver must be
-  `"KLU"`; the constructor checks this. A first solve equals the serial solve bitwise
-  when its first step converges, controlled taps and area interchange included. On a
-  re-solve, a step can warm-start differently, because a task does not use the steps of
-  the same call as warm starts.
+  `"KLU"`; the constructor checks this. The results agree with a serial solve to within
+  the solver tolerance. When the first step converges, the tasks use the serial solve's
+  pivot order, and a first solve is bitwise equal to the serial solve.
   Julia needs at least that many threads (`--threads`) to show a speedup.
 
 Per-call data (`x0`) is not a parameter and is not carried here — pass it at the call site.

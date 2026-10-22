@@ -310,9 +310,12 @@ end
 
 """The positions of `steps` that one worker of a threaded solve claims. All workers share the
 atomic counter `next`, and each iteration takes the next position from it. So a step goes to
-the first free worker, and a slow step delays only its own worker. Each claimed position is
-recorded in `taken`, which belongs to this worker alone: iterate each instance from one task
-only."""
+the first free worker, and a slow step delays only its own worker.
+
+Each claimed position is recorded in `taken`. The worker writes area results into its own copy
+of the area data, and after the tasks finish, [`_merge_worker_area!`](@ref) uses `taken` to
+copy those steps back into `data`. `taken` belongs to this worker alone: iterate each instance
+from one task only."""
 struct ClaimedPositions
     next::Threads.Atomic{Int}
     stop::Int
@@ -491,14 +494,20 @@ end
 
 """Solve `steps` on `n_work` tasks. Each task gets a `_column_worker` view of `data`, so its
 Newton workspace and KLU factorization are its own. The workers' caches live in
-`data.worker_slots`, so a repeated solve reuses them. Every run takes steps from a shared
-counter (`ClaimedPositions`). Every worker must pivot alike, so the workers share what one
-serial head step builds: the polar lean plan, and the first worker's cache that seeds the
-others (a rect/mixed cache carries its own plan). The head runs when either is missing
-([`_head_needed`](@ref)). It solves one step on the first worker, converged or not, with
-`build_plan = true`. A failed head step leaves the slot untried: the tasks run on plain KLU
-and the next call runs the head again. Tasks run with `build_plan = false` and never write
-the slot. Each worker merges its area results from the steps it claimed."""
+`data.worker_slots`, so a repeated solve reuses them. The tasks take steps from a shared
+counter (`ClaimedPositions`).
+
+All workers must use the same pivot order. Two things give them that order: the polar lean
+plan, and the first worker's cache, which seeds the caches of the other workers. A rect/mixed
+cache holds its own plan. When either is missing ([`_head_needed`](@ref)), a serial head step
+builds it before the tasks start. The head step solves one step on the first worker with
+`build_plan = true`. When that step does not converge, the slot stays untried, the tasks use
+plain KLU, and the next call runs the head step again.
+
+The tasks run with `build_plan = false`, so they never write the slot. A task that rebuilds
+the memo for new slack slots cannot plan it, so the driver gives that memo to `data` after the
+tasks finish. The next call's head step then plans it. Each worker merges the area results of
+the steps it claimed."""
 function _solve_columns_threaded!(
     ts_converged::Vector{Bool},
     data::ACPowerFlowData,
@@ -528,7 +537,20 @@ function _solve_columns_threaded!(
     for i in eachindex(workers)
         _merge_worker_area!(data, workers[i], steps, claims[i].taken)
     end
+    _adopt_rebuilt_memo!(data, workers)
     return ts_converged
+end
+
+function _adopt_rebuilt_memo!(data::ACPowerFlowData, workers::Vector{<:ACPowerFlowData})
+    for worker in workers
+        memo = worker.ac_jacobian_structure_cache[]
+        if !isnothing(memo) && memo !== data.ac_jacobian_structure_cache[] &&
+           !_slot_tried(memo)
+            data.ac_jacobian_structure_cache[] = memo
+            return
+        end
+    end
+    return
 end
 
 function _head_needed(
@@ -590,6 +612,7 @@ function _seed_workers!(
     for i in 2:length(workers)
         worker = workers[i]
         isnothing(memo) || (worker.ac_jacobian_structure_cache[] = memo)
+        _drop_stale_cache!(worker, memo)
         _seed_worker!(worker, worker.polar_nr_cache[], seed, memo, seed_step)
         _seed_rect_mixed!(worker, worker.solver_cache[], workers[1].solver_cache[])
     end
@@ -601,7 +624,7 @@ columns) with the slot's solver caches, a private `converged` with every step cl
 `improve_x0` never warm-starts from a step), and private copies of the state a solve
 mutates outside its column: the controlled-device scratch and counters, the network matrix when
 taps are controlled, the LCC branch admittances, and the area-interchange data when it is active.
-The worker takes `data`'s Jacobian-structure memo ([`_inherit_jacobian_structure!`](@ref)). See [`SolutionParameters`](@ref)'s
+The worker shares `data`'s Jacobian-structure memo. See [`SolutionParameters`](@ref)'s
 `n_threads` for how results compare to a serial solve."""
 function _column_worker(
     data::D,
@@ -628,7 +651,9 @@ function _column_worker(
     )
     args = map(f -> get(fresh, f, getfield(data, f)), fieldnames(D))
     worker = D(args...)
-    _inherit_jacobian_structure!(worker, data.ac_jacobian_structure_cache[])
+    # The worker matrix is a value copy of `data`'s, so the pattern is the same. The memo is
+    # shared even when its plan is not built: only the head step writes the slot.
+    worker.ac_jacobian_structure_cache[] = data.ac_jacobian_structure_cache[]
     return worker
 end
 

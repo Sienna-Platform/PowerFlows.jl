@@ -169,6 +169,17 @@ function _seed_worker!(
     return
 end
 
+"""Drop `worker`'s polar NR cache when it was built on another lean slot than `memo`'s (a memo
+that a task rebuilt for new slack slots), so that it is seeded again."""
+function _drop_stale_cache!(worker::ACPowerFlowData, memo::ACJacobianStructureCache)
+    entry = worker.polar_nr_cache[]
+    if entry isa PolarNRCache && entry.lean !== memo.lean
+        worker.polar_nr_cache[] = nothing
+    end
+    return
+end
+_drop_stale_cache!(::ACPowerFlowData, ::Nothing) = nothing
+
 """Mark the retained polar NR cache's island partition stale, so its next reuse re-derives it.
 For callers that edit Ybus values in a way that can split or merge islands (zeroing a bridge's
 admittances, restoring it) without necessarily changing bus types."""
@@ -300,12 +311,15 @@ function _settle_lean_plan!(
     return
 end
 
-"""Build the lean plan of the Jacobian structure of `data`, once. Call it after a serial
-step. The plan uses `start_types`, the bus types the step began with, at the voltages the
-step solved. A Q-limit switch during the step changes the types in `data`. The build writes
-`start_types` into the column and restores the solved types after. The next steps start on
-the plan types. Nothing happens when the step did not converge or the slot is tried. The
-function writes the slot without a lock, so only the serial driver calls it."""
+"""Build the lean plan of the Jacobian structure of `data`, once. The plan uses
+`start_types`, the bus types the step began with, at the voltages the step solved. A Q-limit
+switch during the step changes the types in `data`, and the later steps start on the plan
+types. So the build writes `start_types` into the column and restores the solved types after.
+Nothing happens when the step did not converge or the slot is tried.
+
+The function writes the slot and the column without a lock. Only a solve with
+`build_plan = true` calls it: the serial driver, and the head step of a threaded solve, which
+ends before the tasks start."""
 function _plan_at_solved!(
     data::ACPowerFlowData,
     time_step::Int,
@@ -321,10 +335,9 @@ function _plan_at_solved!(
     try
         residual = ACPowerFlowResidual(data, time_step)
         J = ACPowerFlowJacobian(data, residual, time_step)
-        s = J.bus_state
-        s.Vm .= view(data.bus_magnitude, :, time_step)
-        s.θ .= view(data.bus_angles, :, time_step)
-        s.phasor .= s.Vm .* cis.(s.θ)
+        # The solved |V| and θ, with `phasor = cis(θ)`.
+        _load_bus_state!(J.bus_state, data, time_step)
+        _fill_bus_phasor!(J.bus_state)
         _update_jacobian_matrix_values!(J, data, time_step)
         slot = (data.ac_jacobian_structure_cache[]::ACJacobianStructureCache).lean
         slot.tried = true
@@ -489,12 +502,14 @@ _pivoted_fresh_at_start(::PNM.LinearSolverCache, ::NamedTuple) = false
 _skips_refinement(c::PNM.KLULinSolveCache) = PNM.KLUWrapper.lean_active(c)
 _skips_refinement(::PNM.LinearSolverCache) = false
 
-"""Seed `work`'s Jacobian-structure memo, and with it the lean-LU plan, from `base`'s (an empty
-rect/mixed NR cache too, [`_seed_rect_mixed!`](@ref)). For a working copy whose Ybus has the same
-pattern as `base`'s, so every copy pivots like `base` instead of on whatever it solves first.
-`work` shares the memo when its plan is built. An unbuilt plan is not shared: copies solved
-concurrently would race to build it. The threaded driver hands the head step's memo to every
-worker itself ([`_seed_workers!`](@ref))."""
+"""Give `work` the Jacobian-structure memo of `base`, and with it the lean-LU plan. Also seed
+an empty rect/mixed NR cache of `work` from `base`'s ([`_seed_rect_mixed!`](@ref)). Use it for
+a separate `PowerFlowData` whose Ybus has the same pattern as `base`'s, so that `work` pivots
+like `base` and not on the first step it solves. An error is raised when the patterns differ.
+
+`work` shares the memo only when the plan is built. Two copies solved at the same time could
+otherwise both build it. The workers of a threaded solve do not use this function: they share
+`data`'s memo directly ([`_column_worker`](@ref))."""
 function _inherit_jacobian_structure!(work::ACPowerFlowData, base::ACPowerFlowData)
     _seed_rect_mixed!(work, work.solver_cache[], base.solver_cache[])
     _inherit_jacobian_structure!(work, base.ac_jacobian_structure_cache[])
@@ -2174,6 +2189,8 @@ function _polar_newton_workspace!(
         # The reuse path always recomputes the start point via `_polar_start!`, so it can't honor
         # a caller-provided `x0`; excluding it here keeps that path from being silently ignored.
         !haskey(init_kwargs, :x0) &&
+        # A cache aligns on its own slot, so it must be the slot of the memo in use.
+        entry.lean === _lean_slot(data.ac_jacobian_structure_cache[]) &&
         _refresh_polar_residual!(entry, data, time_step)
     can_reuse ||
         return _polar_newton_workspace!(
