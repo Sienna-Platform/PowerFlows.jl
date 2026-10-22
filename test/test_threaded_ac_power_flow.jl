@@ -477,3 +477,46 @@ end
     ref = solve_three(1)
     _test_threaded_parity(ref, thr)
 end
+
+# The head step solves the first step only. When it fails, the tasks solve the other steps on
+# plain KLU and build no plan; the next call runs the head again.
+@testset "a failed head step: the other steps solve, and the next call plans" begin
+    T = 6
+    function build_data(n)
+        pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
+            time_steps = T,
+            solution_parameters = _threaded_params(n),
+            area_interchange_control = true,
+        )
+        data = PowerFlowData(pf, _three_area_transfer_fixture())
+        _replicate_col1_to_all_steps!(data, T)
+        return data
+    end
+    quiet_solve!(data) = with_logger(() -> solve_power_flow!(data), NullLogger())
+    seq, thr = build_data(1), build_data(4)
+    # A failed step overwrites its column with NaN (OVERWRITE_NON_CONVERGED), the setpoints
+    # in the injections included. Keep step 1's start to put back before the next call.
+    fields = (:bus_magnitude, :bus_angles, :bus_active_power_injections,
+        :bus_reactive_power_injections)
+    start = Dict(f => getfield(thr, f)[:, 1] for f in fields)
+    for data in (seq, thr)
+        # Far past the network's loadability, so step 1 cannot converge.
+        data.bus_active_power_withdrawals[:, 1] .*= 50
+        data.bus_reactive_power_withdrawals[:, 1] .*= 50
+        @test !quiet_solve!(data)
+    end
+    @test seq.converged == thr.converged == [false; trues(T - 1)]
+    _test_threaded_parity(seq, thr)
+    # The serial driver plans on the first converged step; the threaded tasks never plan.
+    @test seq.ac_jacobian_structure_cache[].lean.tried
+    @test !thr.ac_jacobian_structure_cache[].lean.tried
+
+    thr.bus_active_power_withdrawals[:, 1] .= thr.bus_active_power_withdrawals[:, 2]
+    thr.bus_reactive_power_withdrawals[:, 1] .= thr.bus_reactive_power_withdrawals[:, 2]
+    for f in fields
+        getfield(thr, f)[:, 1] .= start[f]
+    end
+    @test quiet_solve!(thr)
+    @test thr.ac_jacobian_structure_cache[].lean.tried
+    @test thr.ac_jacobian_structure_cache[].lean.valid
+end
