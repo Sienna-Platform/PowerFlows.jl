@@ -47,9 +47,10 @@ LeanPlanSlot() =
 """Memoized AC-Jacobian sparse structure, stored in its OWN `PowerFlowData` field (not the shared
 `solver_cache` slot): the NR/TR AC Jacobian and a [`SolverCache`](@ref) can both be live in one
 solve — e.g. a FastDecoupled solve that hands off to NR uses a `FastDecoupledCache` *and* this
-structure — so the two must not contend for a single slot. Cache key is the network-matrix
-identity + the distributed-slack slots the Ybus pattern lacks (`_extra_slack_slots`); see
-`_get_or_build_jacobian_structure`. `lean` holds the KLU lean-LU pivot order shared by every
+structure — so the two must not contend for a single slot. Cache key is the distributed-slack
+slots the Ybus pattern lacks (`_extra_slack_slots`); see `_get_or_build_jacobian_structure`.
+`matrix` and `area_data` are what the structure was built from, for the pattern check of
+[`_inherit_jacobian_structure!`](@ref). `lean` holds the KLU lean-LU pivot order shared by every
 polar NR cache built on `structure` ([`LeanPlanSlot`](@ref))."""
 struct ACJacobianStructureCache
     matrix::PNM.AC_Ybus_Matrix

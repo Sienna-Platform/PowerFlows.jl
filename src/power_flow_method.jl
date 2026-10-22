@@ -490,10 +490,11 @@ _skips_refinement(c::PNM.KLULinSolveCache) = PNM.KLUWrapper.lean_active(c)
 _skips_refinement(::PNM.LinearSolverCache) = false
 
 """Seed `work`'s Jacobian-structure memo, and with it the lean-LU plan, from `base`'s (an empty
-rect/mixed NR cache too, [`_seed_rect_mixed!`](@ref)). For a working copy whose Ybus is a value
-copy of `base`'s with the same pattern, so every copy pivots like `base` instead of on whatever it
-solves first. A copy with its own matrix gets a fresh slot when the plan is not built. The
-identity branch shares the slot: only the serial driver writes it, before the tasks start."""
+rect/mixed NR cache too, [`_seed_rect_mixed!`](@ref)). For a working copy whose Ybus has the same
+pattern as `base`'s, so every copy pivots like `base` instead of on whatever it solves first.
+`work` shares the memo when its plan is built. An unbuilt plan is not shared: copies solved
+concurrently would race to build it. The threaded driver hands the head step's memo to every
+worker itself ([`_seed_workers!`](@ref))."""
 function _inherit_jacobian_structure!(work::ACPowerFlowData, base::ACPowerFlowData)
     _seed_rect_mixed!(work, work.solver_cache[], base.solver_cache[])
     _inherit_jacobian_structure!(work, base.ac_jacobian_structure_cache[])
@@ -502,10 +503,6 @@ end
 _inherit_jacobian_structure!(::ACPowerFlowData, ::Nothing) = nothing
 
 function _inherit_jacobian_structure!(work::ACPowerFlowData, memo::ACJacobianStructureCache)
-    if memo.matrix === work.power_network_matrix && memo.area_data === work.area_interchange
-        work.ac_jacobian_structure_cache[] = memo
-        return
-    end
     _same_sparsity(memo.matrix.data, work.power_network_matrix.data) ||
         error(
             "The working copy's Ybus pattern differs from the base's; cannot share its " *
@@ -519,14 +516,12 @@ function _inherit_jacobian_structure!(work::ACPowerFlowData, memo::ACJacobianStr
             "$(length(memo.area_data.pristine_areas)) but the working copy has $n_work; " *
             "cannot share its Jacobian structure.",
         )
-    lean = memo.lean
-    if !lean.tried
-        lean = LeanPlanSlot()
+    if !memo.lean.tried
+        memo = ACJacobianStructureCache(
+            memo.matrix, memo.slack_slots, memo.structure, memo.area_data,
+            LeanPlanSlot())
     end
-    work.ac_jacobian_structure_cache[] = ACJacobianStructureCache(
-        work.power_network_matrix, memo.slack_slots, memo.structure,
-        work.area_interchange,
-        lean)
+    work.ac_jacobian_structure_cache[] = memo
     return
 end
 

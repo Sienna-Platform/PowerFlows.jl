@@ -294,7 +294,7 @@ function solve_power_flow!(
         backend = resolve_linear_solver_backend(get(merged_kwargs, :linear_solver, nothing))
         _solve_columns!(
             ts_converged, data, pf, sorted_time_steps, 1:length(sorted_time_steps),
-            backend, merged_kwargs)
+            backend, merged_kwargs; build_plan = true)
     end
 
     # Written after the solves: `improve_x0` reads `converged` as of entry.
@@ -308,8 +308,11 @@ function solve_power_flow!(
     return all(ts_converged)
 end
 
-"""Positions of `steps`, taken one at a time from a counter that all workers of a threaded solve
-share. A step goes to the first free worker, so a slow step delays only its own worker."""
+"""The positions of `steps` that one worker of a threaded solve claims. All workers share the
+atomic counter `next`, and each iteration takes the next position from it. So a step goes to
+the first free worker, and a slow step delays only its own worker. Each claimed position is
+recorded in `taken`, which belongs to this worker alone: iterate each instance from one task
+only."""
 struct ClaimedPositions
     next::Threads.Atomic{Int}
     stop::Int
@@ -322,61 +325,35 @@ function Base.iterate(claims::ClaimedPositions, ::Nothing = nothing)
     if pos > claims.stop
         return nothing
     end
+    push!(claims.taken, pos)
     return pos, nothing
 end
 Base.IteratorSize(::Type{ClaimedPositions}) = Base.SizeUnknown()
 
-# The serial driver builds the lean plan. A task never writes the shared lean slot.
+# `build_plan` is true on the serial driver only: it builds the lean plan after its first
+# converged step. A task never writes the shared lean slot.
 function _solve_columns!(
     ts_converged::Vector{Bool},
     data::ACPowerFlowData,
     pf::AbstractACPowerFlow{<:ACPowerFlowSolverType},
     steps::AbstractVector{Int},
-    positions::Union{UnitRange{Int}, ClaimedPositions},
+    positions,
     backend::PNM.LinearSolverType,
-    merged_kwargs::NamedTuple,
+    merged_kwargs::NamedTuple;
+    build_plan::Bool,
 )
     flows = Base.RefValue{ArcFlowScratch}()
     cd = get_controlled_devices(data)
     start_types = PSY.ACBusTypes.Value[]
     for pos in positions
         t = steps[pos]
-        _before_step!(positions, start_types, data, t)
+        build_plan && _snapshot_start_types!(start_types, data, t)
         converged = _solve_column!(data, pf, t, flows, cd, merged_kwargs)
         ts_converged[pos] = converged
-        _after_step!(positions, pos, pf, backend, data, t, converged, start_types)
+        build_plan && _settle_lean_plan!(pf, backend, data, t, converged, start_types)
     end
     @debug "lean LU refactors on this cache so far" lean = _lean_counts(data)
     return ts_converged
-end
-
-_before_step!(::UnitRange{Int}, start_types, data::ACPowerFlowData, t::Int) =
-    _snapshot_start_types!(start_types, data, t)
-_before_step!(::ClaimedPositions, start_types, data::ACPowerFlowData, t::Int) = nothing
-
-_after_step!(
-    ::UnitRange{Int},
-    ::Int,
-    pf::AbstractACPowerFlow,
-    backend::PNM.LinearSolverType,
-    data::ACPowerFlowData,
-    t::Int,
-    converged::Bool,
-    start_types::Vector{PSY.ACBusTypes.Value},
-) = _settle_lean_plan!(pf, backend, data, t, converged, start_types)
-
-function _after_step!(
-    claims::ClaimedPositions,
-    pos::Int,
-    ::AbstractACPowerFlow,
-    ::PNM.LinearSolverType,
-    ::ACPowerFlowData,
-    ::Int,
-    ::Bool,
-    ::Vector{PSY.ACBusTypes.Value},
-)
-    push!(claims.taken, pos)
-    return
 end
 
 # Fetched after the solve, so a first solve's fresh polar cache lends its scratch instead of a
@@ -515,11 +492,13 @@ end
 """Solve `steps` on `n_work` tasks. Each task gets a `_column_worker` view of `data`, so its
 Newton workspace and KLU factorization are its own. The workers' caches live in
 `data.worker_slots`, so a repeated solve reuses them. Every run takes steps from a shared
-counter (`ClaimedPositions`). The head phase runs when the lean slot has no plan or the
-first worker has no cache. It solves one step serially on the first worker, converged or
-not. A converged polar head step builds the plan; the tasks then read it and never write
-it. A failed head step leaves the slot untried: the tasks run on plain KLU and the next
-call runs the head again. Each worker merges its area results from the steps it claimed."""
+counter (`ClaimedPositions`). Every worker must pivot alike, so the workers share what one
+serial head step builds: the polar lean plan, and the first worker's cache that seeds the
+others (a rect/mixed cache carries its own plan). The head runs when either is missing
+([`_head_needed`](@ref)). It solves one step on the first worker, converged or not, with
+`build_plan = true`. A failed head step leaves the slot untried: the tasks run on plain KLU
+and the next call runs the head again. Tasks run with `build_plan = false` and never write
+the slot. Each worker merges its area results from the steps it claimed."""
 function _solve_columns_threaded!(
     ts_converged::Vector{Bool},
     data::ACPowerFlowData,
@@ -535,16 +514,16 @@ function _solve_columns_threaded!(
     claims = [ClaimedPositions(next, length(steps)) for _ in workers]
     if _head_needed(pf, backend, data, slots[1])
         pos = Threads.atomic_add!(next, 1)
-        # A UnitRange selects the serial step hooks, which build the lean plan.
-        _solve_slot!(
-            ts_converged, workers[1], slots[1], pf, steps, pos:pos, backend, merged_kwargs)
         push!(claims[1].taken, pos)
+        _solve_slot!(
+            ts_converged, workers[1], slots[1], pf, steps, pos:pos, backend,
+            merged_kwargs; build_plan = true)
     end
     _seed_workers!(data, workers, first(steps))
     @sync for i in eachindex(workers)
         Threads.@spawn _solve_slot!(
             ts_converged, workers[i], slots[i], pf, steps, claims[i], backend,
-            merged_kwargs)
+            merged_kwargs; build_plan = false)
     end
     for i in eachindex(workers)
         _merge_worker_area!(data, workers[i], steps, claims[i].taken)
@@ -558,14 +537,12 @@ function _head_needed(
     data::ACPowerFlowData,
     slot::WorkerSlot,
 )
-    if _plans_lean(pf, backend) && !_slot_tried(data.ac_jacobian_structure_cache[])
+    if _USE_LEAN_LU[] && _plans_lean(pf, backend) &&
+       !_slot_tried(data.ac_jacobian_structure_cache[])
         return true
     end
-    return !_cache_present(slot.polar_nr_cache[]) && !_cache_present(slot.solver_cache[])
+    return isnothing(slot.polar_nr_cache[]) && isnothing(slot.solver_cache[])
 end
-
-_cache_present(::Nothing) = false
-_cache_present(::Any) = true
 
 function _worker_slots!(data::ACPowerFlowData, n::Int)
     slots = data.worker_slots
@@ -583,12 +560,14 @@ function _solve_slot!(
     slot::WorkerSlot,
     pf::AbstractACPowerFlow,
     steps::AbstractVector{Int},
-    positions::Union{UnitRange{Int}, ClaimedPositions},
+    positions,
     backend::PNM.LinearSolverType,
-    kwargs::NamedTuple,
+    kwargs::NamedTuple;
+    build_plan::Bool,
 )
     try
-        _solve_columns!(ts_converged, worker, pf, steps, positions, backend, kwargs)
+        _solve_columns!(
+            ts_converged, worker, pf, steps, positions, backend, kwargs; build_plan)
     catch
         slot.polar_nr_cache[] = nothing
         slot.solver_cache[] = nothing
@@ -605,11 +584,12 @@ function _seed_workers!(
     seed_step::Int,
 )
     seed = workers[1].polar_nr_cache[]
+    # The head step may have built a new memo (new slack slots); everyone takes it.
     memo = workers[1].ac_jacobian_structure_cache[]
-    _inherit_jacobian_structure!(data, memo)
+    isnothing(memo) || (data.ac_jacobian_structure_cache[] = memo)
     for i in 2:length(workers)
         worker = workers[i]
-        _inherit_jacobian_structure!(worker, memo)
+        isnothing(memo) || (worker.ac_jacobian_structure_cache[] = memo)
         _seed_worker!(worker, worker.polar_nr_cache[], seed, memo, seed_step)
         _seed_rect_mixed!(worker, worker.solver_cache[], workers[1].solver_cache[])
     end
@@ -621,8 +601,7 @@ columns) with the slot's solver caches, a private `converged` with every step cl
 `improve_x0` never warm-starts from a step), and private copies of the state a solve
 mutates outside its column: the controlled-device scratch and counters, the network matrix when
 taps are controlled, the LCC branch admittances, and the area-interchange data when it is active.
-The Jacobian-structure memo is keyed on the worker's own network matrix and area data, and
-shares the lean-LU plan slot of `data`'s memo. See [`SolutionParameters`](@ref)'s
+The worker takes `data`'s Jacobian-structure memo ([`_inherit_jacobian_structure!`](@ref)). See [`SolutionParameters`](@ref)'s
 `n_threads` for how results compare to a serial solve."""
 function _column_worker(
     data::D,

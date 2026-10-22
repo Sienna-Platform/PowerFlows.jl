@@ -204,7 +204,7 @@ end
     @test !isnothing(slot.polar_nr_cache[])
     @test_throws Exception PF._solve_slot!(
         fill(false, 8), PF._column_worker(d, 1:8, slot), slot,
-        d.pf, 1:8, 5:99, PF.resolve_linear_solver_backend("KLU"), (;))
+        d.pf, 1:8, 5:99, PF.resolve_linear_solver_backend("KLU"), (;); build_plan = false)
     @test isnothing(slot.polar_nr_cache[])
     @test isnothing(slot.solver_cache[])
     @test solve_power_flow!(d)
