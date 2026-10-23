@@ -171,14 +171,20 @@ end
 
 """Drop `worker`'s polar NR cache when it was built on another lean slot than `memo`'s (a memo
 that a task rebuilt for new slack slots), so that it is seeded again."""
-function _drop_stale_cache!(worker::ACPowerFlowData, memo::ACJacobianStructureCache)
-    entry = worker.polar_nr_cache[]
-    if entry isa PolarNRCache && entry.lean !== memo.lean
+_drop_stale_cache!(worker::ACPowerFlowData, memo::ACJacobianStructureCache) =
+    _drop_stale_cache!(worker, worker.polar_nr_cache[], memo)
+_drop_stale_cache!(::ACPowerFlowData, ::Nothing) = nothing
+function _drop_stale_cache!(
+    worker::ACPowerFlowData,
+    entry::PolarNRCache,
+    memo::ACJacobianStructureCache,
+)
+    if entry.lean !== memo.lean
         worker.polar_nr_cache[] = nothing
     end
     return
 end
-_drop_stale_cache!(::ACPowerFlowData, ::Nothing) = nothing
+_drop_stale_cache!(::ACPowerFlowData, ::Any, ::ACJacobianStructureCache) = nothing
 
 """Mark the retained polar NR cache's island partition stale, so its next reuse re-derives it.
 For callers that edit Ybus values in a way that can split or merge islands (zeroing a bridge's

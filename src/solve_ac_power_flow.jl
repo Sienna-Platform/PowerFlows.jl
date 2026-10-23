@@ -333,8 +333,8 @@ function Base.iterate(claims::ClaimedPositions, ::Nothing = nothing)
 end
 Base.IteratorSize(::Type{ClaimedPositions}) = Base.SizeUnknown()
 
-# `build_plan` is true on the serial driver only: it builds the lean plan after its first
-# converged step. A task never writes the shared lean slot.
+# `build_plan` is true on the serial driver and on the threaded head step: each builds the
+# lean plan after its first converged step. A task never writes the shared lean slot.
 function _solve_columns!(
     ts_converged::Vector{Bool},
     data::ACPowerFlowData,
