@@ -163,11 +163,28 @@ function _seed_worker!(
     memo::ACJacobianStructureCache,
     time_step::Int,
 )
-    _lean_plan_tried(memo, worker) || return
+    memo.lean.tried || return
     seed.lean === memo.lean || return
     worker.polar_nr_cache[] = _copy_for_task(seed, memo.lean, worker, time_step)
     return
 end
+
+"""Drop `worker`'s polar NR cache when it was built on another lean slot than `memo`'s (a memo
+that a task rebuilt for new slack slots), so that it is seeded again."""
+_drop_stale_cache!(worker::ACPowerFlowData, memo::ACJacobianStructureCache) =
+    _drop_stale_cache!(worker, worker.polar_nr_cache[], memo)
+_drop_stale_cache!(::ACPowerFlowData, ::Nothing) = nothing
+function _drop_stale_cache!(
+    worker::ACPowerFlowData,
+    entry::PolarNRCache,
+    memo::ACJacobianStructureCache,
+)
+    if entry.lean !== memo.lean
+        worker.polar_nr_cache[] = nothing
+    end
+    return
+end
+_drop_stale_cache!(::ACPowerFlowData, ::Any, ::ACJacobianStructureCache) = nothing
 
 """Mark the retained polar NR cache's island partition stale, so its next reuse re-derives it.
 For callers that edit Ybus values in a way that can split or merge islands (zeroing a bridge's
@@ -253,100 +270,88 @@ end
 # Test-only switch: `false` keeps every polar NR cache on plain KLU, for comparing against it.
 const _USE_LEAN_LU = Ref(true)
 
-"""The [`LeanPlanSlot`](@ref) of the Jacobian structure `data` uses at `time_step`, building
-its plan on first use from a separately built Jacobian (a fresh serial solve of a system with
-no LCC plans on its own Jacobian instead, in `_symbolic_step!`). The plan is factored with the AC
-block evaluated at |V| = 1, θ = 0. The LCC and area-interchange entries read the state in `data`
-at `time_step`, so the plan depends on that state at the first build. Every cache, task and
-contingency that shares the slot uses the same pivot order. The pivot-ratio check and the cold
-retry keep a plan that fits a later state badly from changing a result.
+_slot_tried(::Nothing) = false
+_slot_tried(memo::ACJacobianStructureCache) = memo.lean.tried
 
-It writes the slot without a lock. Build the slot before you spawn tasks that share it, as
-`_solve_columns_threaded!` does. The tasks then only read it."""
-function _lean_plan_slot!(data::ACPowerFlowData, time_step::Int64)
-    residual = ACPowerFlowResidual(data, time_step)
-    J = ACPowerFlowJacobian(data, residual, time_step)
-    # J's structure was just taken from (or stored into) this memo.
-    slot = (data.ac_jacobian_structure_cache[]::ACJacobianStructureCache).lean
-    slot.tried && return slot
-    _plan_at_flat!(slot, J, data, time_step)
-    return slot
-end
-
-function _plan_at_flat!(
-    slot::LeanPlanSlot,
-    J::ACPowerFlowJacobian,
+"""Copy the bus types of `time_step` into `buf`. [`_plan_at_solved!`](@ref) needs the types
+the step started with. A step can install a new memo, so the copy runs on every step."""
+function _snapshot_start_types!(
+    buf::Vector{PSY.ACBusTypes.Value},
     data::ACPowerFlowData,
-    time_step::Int64,
+    time_step::Int,
 )
-    slot.tried = true
-    slot.settle_pending = true
-    slot.bus_types = data.bus_type[:, time_step]
-    s = J.bus_state
-    fill!(s.Vm, 1.0)
-    fill!(s.θ, 0.0)
-    fill!(s.phasor, one(ComplexF64))
-    _update_jacobian_matrix_values!(J, data, time_step)
-    _build_lean_plan!(slot, J.Jv, time_step)
+    resize!(buf, size(data.bus_type, 1))
+    copyto!(buf, view(data.bus_type, :, time_step))
     return
 end
 
-# A solve's own `J`, already evaluated at its start: plan at flat, then restore `J` and the bus
-# state it shares with the residual, sparing `_lean_plan_slot!`'s second residual and Jacobian.
-function _plan_at_flat_in_place!(
-    slot::LeanPlanSlot,
-    J::ACPowerFlowJacobian,
-    data::ACPowerFlowData,
-    time_step::Int64,
-)
-    s = J.bus_state
-    Vm, θ, phasor, nz =
-        copy(s.Vm), copy(s.θ), copy(s.phasor), copy(SparseArrays.nonzeros(J.Jv))
-    _plan_at_flat!(slot, J, data, time_step)
-    copyto!(s.Vm, Vm)
-    copyto!(s.θ, θ)
-    copyto!(s.phasor, phasor)
-    copyto!(SparseArrays.nonzeros(J.Jv), nz)
-    return
-end
+_plans_lean(::AbstractACPowerFlow, ::PNM.LinearSolverType) = false
+_plans_lean(
+    ::ACPolarPowerFlow{<:Union{NewtonRaphsonACPowerFlow, TrustRegionACPowerFlow}},
+    ::PNM.KLUSolver,
+) = true
+# A staged solver's NR/TR handoff runs on the lean plan too (`_new_handoff_cache`).
+_plans_lean(
+    pf::ACPolarPowerFlow{
+        <:Union{FastDecoupledACPowerFlow, GeneralizedAdmittanceACPowerFlow},
+    },
+    ::PNM.KLUSolver,
+) = _handoff_plans_lean(get_solution_parameters(pf).handoff_solver)
 
-"""Rebuild the lean plan of `data`'s Jacobian structure once, on the Jacobian at the solved state
-of `time_step`. It runs at the end of the first step solved after `_plan_at_flat!` built
-the plan, and closes the slot to later calls. A plan built at a solved state keeps the pivots of
-later operating points above the ratio test, where the flat plan can fail it. Each reject costs a
-`klu_factor`. A step that did not converge keeps the flat plan. A failed rebuild keeps it too.
+_handoff_plans_lean(::Type) = false
+_handoff_plans_lean(
+    ::Type{<:Union{NewtonRaphsonACPowerFlow, TrustRegionACPowerFlow}},
+) = true
 
-It writes the slot without a lock, so only one task may find the slot open. The threaded drivers
-close the slot before they spawn tasks, and [`_inherit_jacobian_structure!`](@ref) closes a slot
-it shares. A call in a task then returns at once. Caches holding the flat plan take the new one
-at their next `_align_lean_plan!`."""
-_settle_lean_plan!(data::ACPowerFlowData, time_step::Int, converged::Bool) =
-    _settle_lean_plan!(data.ac_jacobian_structure_cache[], data, time_step, converged)
-_settle_lean_plan!(::Nothing, ::ACPowerFlowData, ::Int, ::Bool) = nothing
 function _settle_lean_plan!(
-    memo::ACJacobianStructureCache,
+    pf::AbstractACPowerFlow,
+    backend::PNM.LinearSolverType,
     data::ACPowerFlowData,
     time_step::Int,
     converged::Bool,
+    start_types::Vector{PSY.ACBusTypes.Value},
 )
-    slot = memo.lean
-    slot.settle_pending || return
-    slot.settle_pending = false
-    (converged && slot.valid) || return
-    bus_type = view(data.bus_type, :, time_step)
-    # A Q-limit switch since the flat build would plan for types the next steps start without.
-    bus_type == slot.bus_types || return
-    residual = ACPowerFlowResidual(data, time_step)
-    J = ACPowerFlowJacobian(data, residual, time_step)
-    s = J.bus_state
-    s.Vm .= view(data.bus_magnitude, :, time_step)
-    s.θ .= view(data.bus_angles, :, time_step)
-    s.phasor .= s.Vm .* cis.(s.θ)
-    _update_jacobian_matrix_values!(J, data, time_step)
-    settled = LeanPlanSlot()
-    _build_lean_plan!(settled, J.Jv, time_step)
-    settled.valid || return
-    slot.plan = settled.plan
+    if _plans_lean(pf, backend)
+        _plan_at_solved!(data, time_step, converged, start_types)
+    end
+    return
+end
+
+"""Build the lean plan of the Jacobian structure of `data`, once. The plan uses
+`start_types`, the bus types the step began with, at the voltages the step solved. A Q-limit
+switch during the step changes the types in `data`, and the later steps start on the plan
+types. So the build writes `start_types` into the column and restores the solved types after.
+Nothing happens when the step did not converge or the slot is tried.
+
+The function writes the slot and the column without a lock. Only a solve with
+`build_plan = true` calls it: the serial driver, and the head step of a threaded solve, which
+ends before the tasks start."""
+function _plan_at_solved!(
+    data::ACPowerFlowData,
+    time_step::Int,
+    converged::Bool,
+    start_types::Vector{PSY.ACBusTypes.Value},
+)
+    converged || return
+    _USE_LEAN_LU[] || return
+    _slot_tried(data.ac_jacobian_structure_cache[]) && return
+    column = view(data.bus_type, :, time_step)
+    solved_types = copy(column)
+    copyto!(column, start_types)
+    try
+        residual = ACPowerFlowResidual(data, time_step)
+        J = ACPowerFlowJacobian(data, residual, time_step)
+        # The solved |V| and θ, with `phasor = cis(θ)`.
+        _load_bus_state!(J.bus_state, data, time_step)
+        _fill_bus_phasor!(J.bus_state)
+        _update_jacobian_matrix_values!(J, data, time_step)
+        slot = (data.ac_jacobian_structure_cache[]::ACJacobianStructureCache).lean
+        slot.tried = true
+        slot.bus_types = copy(start_types)
+        _build_lean_plan!(slot, J.Jv, time_step)
+    finally
+        copyto!(column, solved_types)
+    end
     return
 end
 
@@ -385,7 +390,6 @@ function _symbolic_step!(
     end
     # J's structure was just taken from (or stored into) this memo.
     slot = (data.ac_jacobian_structure_cache[]::ACJacobianStructureCache).lean
-    slot.tried || _plan_at_flat_in_place!(slot, J, data, time_step)
     _seed_lean_plan!(c, J.Jv, slot, data, time_step)
     return
 end
@@ -429,10 +433,10 @@ function _align_lean_plan!(
     slot::LeanPlanSlot,
     bus_type::AbstractVector{PSY.ACBusTypes.Value},
 )
-    PNM.KLUWrapper.has_lean_plan(c) || return
-    # `_settle_lean_plan!` replaced the slot's plan after this cache took it. A swapped order
-    # keeps its plan's `p`, as `swap_lean_columns!` checks.
-    c.lean_plan.p === slot.plan.p || PNM.KLUWrapper.set_lean_plan!(c, slot.plan)
+    if !PNM.KLUWrapper.has_lean_plan(c)
+        slot.valid || return
+        PNM.KLUWrapper.set_lean_plan!(c, slot.plan)
+    end
     plan_types = slot.bus_types
     swaps(i) = _swaps_state_columns(plan_types[i], bus_type[i])
     pairs = ((2i - 1, 2i) for i in eachindex(bus_type, plan_types) if swaps(i))
@@ -504,11 +508,14 @@ _pivoted_fresh_at_start(::PNM.LinearSolverCache, ::NamedTuple) = false
 _skips_refinement(c::PNM.KLULinSolveCache) = PNM.KLUWrapper.lean_active(c)
 _skips_refinement(::PNM.LinearSolverCache) = false
 
-"""Seed `work`'s Jacobian-structure memo, and with it the lean-LU plan, from `base`'s (an empty
-rect/mixed NR cache too, [`_seed_rect_mixed!`](@ref)). For a working copy whose Ybus is a value
-copy of `base`'s with the same pattern, so every copy pivots like `base` instead of on whatever it
-solves first. An unbuilt plan is not shared: the copies would race to build it. A shared plan is
-closed to [`_settle_lean_plan!`](@ref) for the same reason."""
+"""Give `work` the Jacobian-structure memo of `base`, and with it the lean-LU plan. Also seed
+an empty rect/mixed NR cache of `work` from `base`'s ([`_seed_rect_mixed!`](@ref)). Use it for
+a separate `PowerFlowData` whose Ybus has the same pattern as `base`'s, so that `work` pivots
+like `base` and not on the first step it solves. An error is raised when the patterns differ.
+
+`work` shares the memo only when the plan is built. Two copies solved at the same time could
+otherwise both build it. The workers of a threaded solve do not use this function: they share
+`data`'s memo directly ([`_column_worker`](@ref))."""
 function _inherit_jacobian_structure!(work::ACPowerFlowData, base::ACPowerFlowData)
     _seed_rect_mixed!(work, work.solver_cache[], base.solver_cache[])
     _inherit_jacobian_structure!(work, base.ac_jacobian_structure_cache[])
@@ -522,15 +529,20 @@ function _inherit_jacobian_structure!(work::ACPowerFlowData, memo::ACJacobianStr
             "The working copy's Ybus pattern differs from the base's; cannot share its " *
             "Jacobian structure.",
         )
-    lean = memo.lean
-    if !lean.tried
-        lean = LeanPlanSlot()
+    n_memo = length(memo.area_data.areas)
+    n_work = length(work.area_interchange.areas)
+    (n_memo == n_work && n_memo == length(memo.area_data.pristine_areas)) ||
+        error(
+            "The memo was built for $n_memo enrolled areas of " *
+            "$(length(memo.area_data.pristine_areas)) but the working copy has $n_work; " *
+            "cannot share its Jacobian structure.",
+        )
+    if !memo.lean.tried
+        memo = ACJacobianStructureCache(
+            memo.matrix, memo.slack_slots, memo.structure, memo.area_data,
+            LeanPlanSlot())
     end
-    lean.settle_pending = false
-    work.ac_jacobian_structure_cache[] = ACJacobianStructureCache(
-        work.power_network_matrix, memo.slack_slots, memo.structure,
-        work.area_interchange,
-        lean)
+    work.ac_jacobian_structure_cache[] = memo
     return
 end
 
@@ -1767,8 +1779,8 @@ function _polar_start!(
 end
 
 """Evaluate F and J at `x0` in one fused sweep. When a start stage of `improve_x0!` would run
-(a large residual with a fallback start enabled, or a flat start under `robust_power_flow` or
-`ga_flat_start`), run `improve_x0!` instead and return `false`: J is then stale."""
+(a large residual or a flat start, with `enhanced_flat_start`, `robust_power_flow` or
+`ga_flat_start` enabled), run `improve_x0!` instead and return `false`: J is then stale."""
 function _fused_x0!(
     x0::Vector{Float64},
     pf::ACPolarPowerFlow,
@@ -1972,7 +1984,7 @@ function _build_rect_mixed_cache!(
 end
 
 # A bus-type change rewrites a rect bus's second row (ΔQ ↔ |V|²) or moves a mixed block's entries,
-# so rect/mixed cannot take polar's flat plan with column swaps: the plan is built on the Jacobian a
+# so rect/mixed cannot take polar's plan with column swaps: the plan is built on the Jacobian a
 # fresh cache is built for (at the solve's start) and used only while the bus types are the plan's.
 # A re-plan per type change (a Q-limit flip) costs more than the lean steps it saves.
 function _rect_mixed_symbolic!(
@@ -2183,6 +2195,8 @@ function _polar_newton_workspace!(
         # The reuse path always recomputes the start point via `_polar_start!`, so it can't honor
         # a caller-provided `x0`; excluding it here keeps that path from being silently ignored.
         !haskey(init_kwargs, :x0) &&
+        # A cache aligns on its own slot, so it must be the slot of the memo in use.
+        entry.lean === _lean_slot(data.ac_jacobian_structure_cache[]) &&
         _refresh_polar_residual!(entry, data, time_step)
     can_reuse ||
         return _polar_newton_workspace!(

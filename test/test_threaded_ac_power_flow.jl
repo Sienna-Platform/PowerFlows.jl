@@ -192,7 +192,7 @@ end
 @testset "a worker's own data holds no slots" begin
     d = _slot_data(8, 2)
     slot = PF.WorkerSlot()
-    w = PF._column_worker(d, 1:8, 1:4, slot)
+    w = PF._column_worker(d, 1:8, slot)
     @test isempty(w.worker_slots)
     @test w.polar_nr_cache === slot.polar_nr_cache
 end
@@ -203,8 +203,8 @@ end
     slot = d.worker_slots[2]
     @test !isnothing(slot.polar_nr_cache[])
     @test_throws Exception PF._solve_slot!(
-        fill(false, 8), PF._column_worker(d, 1:8, 5:8, slot), slot,
-        d.pf, 1:8, 5:99, (;))
+        fill(false, 8), PF._column_worker(d, 1:8, slot), slot,
+        d.pf, 1:8, 5:99, PF.resolve_linear_solver_backend("KLU"), (;); build_plan = false)
     @test isnothing(slot.polar_nr_cache[])
     @test isnothing(slot.solver_cache[])
     @test solve_power_flow!(d)
@@ -244,39 +244,34 @@ end
     )
 end
 
-# Taps update the ComplexF32 Y-bus by deltas. The sequential solve accumulates round-off across
-# steps (~8e-6 pu in reactive injections here), but each worker starts from a fresh copy. Thus,
-# with one step per task, each threaded step must match a single-step solve at that step's load.
-@testset "threaded taps match single-step solves" begin
-    time_steps = 6
-    pf = ACPolarPowerFlow(;
-        time_steps = time_steps,
-        control_discrete_devices = true,
-        solution_parameters = _threaded_params(time_steps),
-    )
-    data = PowerFlowData(pf, _make_multiperiod_tap_system())
-    _set_multiperiod_tap_loads!(data, time_steps)
-    @test solve_power_flow!(data)
-    results = PF.get_controlled_device_results(data)
-    for t in 1:time_steps
-        pf_ref = ACPolarPowerFlow(;
-            control_discrete_devices = true,
-            solution_parameters = _threaded_params(1),
-        )
-        ref = PowerFlowData(pf_ref, _make_multiperiod_tap_system())
-        _set_single_tap_load!(ref, t)
-        @test solve_power_flow!(ref)
+# Every step rewrites the tap entries from the captured baseline and all solves share one plan,
+# so the serial and the threaded solves are bitwise equal.
+@testset "threaded taps equal the serial solve bitwise" begin
+    T = 6
+    function tap_data(n)
+        pf = ACPolarPowerFlow(; time_steps = T, control_discrete_devices = true,
+            solution_parameters = _threaded_params(n))
+        data = PowerFlowData(pf, _make_multiperiod_tap_system())
+        _set_multiperiod_tap_loads!(data, T)
+        return data
+    end
+    serial = tap_data(1)
+    @test solve_power_flow!(serial)
+    for _ in 1:3
+        thr = tap_data(T)
+        @test solve_power_flow!(thr)
         for f in (:bus_magnitude, :bus_angles, :bus_reactive_power_injections,
             :arc_reactive_power_flow_from_to, :arc_reactive_power_flow_to_from)
-            @test (
-                f,
-                t,
-                isapprox(getfield(data, f)[:, t], getfield(ref, f)[:, 1];
-                    atol = THREADED_PARITY_ATOL),
-            ) == (f, t, true)
+            @test getfield(thr, f) == getfield(serial, f)
         end
-        @test results[results.time_step .== t, :].final ==
-              PF.get_controlled_device_results(ref).final
+        @test PF.get_controlled_device_results(thr).final ==
+              PF.get_controlled_device_results(serial).final
+        # A single-step solve runs serially on the base Y-bus and moves its tap entries. The
+        # re-solve then copies a moved base Y-bus into the workers.
+        @test solve_power_flow!(thr; time_steps = [T])
+        _set_multiperiod_tap_loads!(thr, T)
+        @test solve_power_flow!(thr)
+        @test thr.bus_magnitude == serial.bus_magnitude
     end
 end
 
@@ -298,6 +293,26 @@ end
     )
     @test all(seq.converged)
     _test_threaded_parity(seq, thr)
+end
+
+@testset "threaded area interchange equals the serial solve bitwise, every run" begin
+    seq, thr = _solve_sequential_and_threaded(
+        _three_area_transfer_fixture,
+        _replicate_col1_to_all_steps!;
+        time_steps = 6, area_interchange_control = true,
+    )
+    @test all(seq.converged)
+    for _ in 1:3
+        _, again = _solve_sequential_and_threaded(
+            _three_area_transfer_fixture,
+            _replicate_col1_to_all_steps!;
+            time_steps = 6, area_interchange_control = true,
+        )
+        @test again.bus_magnitude == seq.bus_magnitude
+        @test again.bus_angles == seq.bus_angles
+        @test again.area_interchange.pristine_delta_p ==
+              seq.area_interchange.pristine_delta_p
+    end
 end
 
 # Races are intermittent: repeat the threaded solve and require identical results each time.
@@ -375,7 +390,7 @@ end
     @test dup2.linSolveCache.lean_plan === slot.plan
 end
 
-@testset "threaded area relax re-solves with a fresh cache" begin
+@testset "threaded area relax keeps the shared plan and serial parity" begin
     T = 4
     function build_data(n)
         pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
@@ -400,9 +415,10 @@ end
     for _ in 1:2
         @test quiet_solve!(ref)
         @test quiet_solve!(thr)
-        @test all(isnothing(s.polar_nr_cache[]) for s in thr.worker_slots)
-        @test all(isnothing(s.solver_cache[]) for s in thr.worker_slots)
+        @test thr.ac_jacobian_structure_cache[].lean.tried
         _test_threaded_parity(ref, thr)
+        @test thr.bus_magnitude == ref.bus_magnitude
+        @test thr.bus_angles == ref.bus_angles
     end
 end
 
@@ -411,7 +427,7 @@ end
     @test solve_power_flow!(d)
     seed = d.polar_nr_cache[]
     memo = d.ac_jacobian_structure_cache[]
-    @test PF._lean_plan_tried(memo, d)
+    @test memo.lean.tried
     other = PF.PolarNRCache(
         seed.residual, seed.J, seed.linSolveCache, seed.stateVector, seed.backend,
         seed.bus_type_snapshot, seed.arc_flows, PF.LeanPlanSlot(), seed.x0,
@@ -424,17 +440,119 @@ end
     @test !isnothing(d.polar_nr_cache[])
 end
 
-@testset "threaded schedule: fixed chunks only when a worker carries state" begin
-    plain = PowerFlowData(
-        ACPolarPowerFlow(; time_steps = 4, solution_parameters = _threaded_params(4)),
-        _make_multiperiod_tap_system(),
+@testset "a memo rebuilt after the slot is tried does not empty the plan types (threaded)" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    spf = Dict{Tuple{DataType, String}, Float64}(
+        (PSY.ThermalStandard, PSY.get_name(g)) => 1.0 for
+        g in PSY.get_components(PSY.ThermalStandard, sys)
     )
-    @test !PF._carries_step_state(plain)
-    taps = PowerFlowData(
-        ACPolarPowerFlow(;
-            time_steps = 4, control_discrete_devices = true,
-            solution_parameters = _threaded_params(4)),
-        _make_multiperiod_tap_system(),
+    function solve_three(n)
+        pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+            generator_slack_participation_factors = spf,
+            time_steps = 4,
+            solution_parameters = _threaded_params(n),
+        )
+        data = PowerFlowData(pf, sys)
+        F = data.bus_slack_participation_factors
+        ref_bus = findfirst(==(PSY.ACBusTypes.REF), data.bus_type[:, 1])
+        saved = copy(F[:, 1])
+        for t in axes(F, 2)
+            F[:, t] .= 0.0
+            F[ref_bus, t] = 1.0
+        end
+        _replicate_col1_to_all_steps!(data, 4)
+        @test solve_power_flow!(data)
+        for t in axes(F, 2)
+            F[:, t] .= saved
+        end
+        data.bus_active_power_withdrawals .*= 1.01
+        @test solve_power_flow!(data)
+        data.bus_active_power_withdrawals .*= 1.01
+        @test solve_power_flow!(data)
+        @test length(data.ac_jacobian_structure_cache[].lean.bus_types) ==
+              size(data.bus_type, 1)
+        return data
+    end
+    thr = solve_three(2)
+    ref = solve_three(1)
+    _test_threaded_parity(ref, thr)
+    # The second call's tasks rebuilt the memo for the new slack slots but could not plan it.
+    # The third call's head step planned it, and every worker now uses that plan.
+    memo = thr.ac_jacobian_structure_cache[]
+    @test memo.lean.tried && memo.lean.valid
+    caches = [s.polar_nr_cache[] for s in thr.worker_slots]
+    @test all(c -> c.lean === memo.lean, caches)
+    attempts = sum(c -> PF._lean_counts(c).attempts, caches)
+    thr.bus_active_power_withdrawals .*= 1.01
+    @test solve_power_flow!(thr)
+    @test sum(s -> PF._lean_counts(s.polar_nr_cache[]).attempts, thr.worker_slots) >
+          attempts
+end
+
+# The head step solves the first step only. When it fails, the tasks solve the other steps on
+# plain KLU and build no plan; the next call runs the head again, and every worker then uses the
+# plan it builds.
+@testset "a failed head step: the other steps solve, and the next call plans" begin
+    T = 6
+    cases = (
+        (
+            "area interchange",
+            _three_area_transfer_fixture,
+            (; area_interchange_control = true),
+            _replicate_col1_to_all_steps!,
+        ),
+        (
+            "controlled taps",
+            _make_multiperiod_tap_system,
+            (; control_discrete_devices = true),
+            _set_multiperiod_tap_loads!,
+        ),
     )
-    @test PF._carries_step_state(taps)
+    @testset "$name" for (name, build_sys, pf_kwargs, setup!) in cases
+        function build_data(n)
+            pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
+                time_steps = T,
+                solution_parameters = _threaded_params(n),
+                pf_kwargs...,
+            )
+            data = PowerFlowData(pf, build_sys())
+            setup!(data, T)
+            return data
+        end
+        quiet_solve!(data) = with_logger(() -> solve_power_flow!(data), NullLogger())
+        seq, thr = build_data(1), build_data(4)
+        # A failed step overwrites its column with NaN (OVERWRITE_NON_CONVERGED), the
+        # setpoints in the injections included. Keep step 1's start to put back later.
+        fields = (:bus_magnitude, :bus_angles, :bus_active_power_injections,
+            :bus_reactive_power_injections, :bus_active_power_withdrawals,
+            :bus_reactive_power_withdrawals)
+        start = Dict(f => getfield(thr, f)[:, 1] for f in fields)
+        for data in (seq, thr)
+            # Far past the network's loadability, so step 1 cannot converge.
+            data.bus_active_power_withdrawals[:, 1] .*= 50
+            data.bus_reactive_power_withdrawals[:, 1] .*= 50
+            @test !quiet_solve!(data)
+        end
+        @test seq.converged == thr.converged == [false; trues(T - 1)]
+        _test_threaded_parity(seq, thr)
+        # The serial driver plans on the first converged step; the threaded tasks never plan.
+        @test seq.ac_jacobian_structure_cache[].lean.tried
+        @test !thr.ac_jacobian_structure_cache[].lean.tried
+
+        for f in fields
+            getfield(thr, f)[:, 1] .= start[f]
+        end
+        @test quiet_solve!(thr)
+        memo = thr.ac_jacobian_structure_cache[]
+        @test memo.lean.tried && memo.lean.valid
+        # Every worker cache uses the plan the head step built, including the caches built
+        # on the failed call.
+        caches = [s.polar_nr_cache[] for s in thr.worker_slots]
+        @test all(c -> c.lean === memo.lean, caches)
+        attempts = sum(c -> PF._lean_counts(c).attempts, caches)
+        thr.bus_active_power_withdrawals .*= 1.01
+        @test quiet_solve!(thr)
+        @test all(s -> s.polar_nr_cache[] in caches, thr.worker_slots)
+        @test sum(c -> PF._lean_counts(c).attempts, caches) > attempts
+    end
 end

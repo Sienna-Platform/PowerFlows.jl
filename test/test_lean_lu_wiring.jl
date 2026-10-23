@@ -14,16 +14,38 @@ function _lean_sys14_data(; T = 1, n_threads = 1, kwargs...)
     return data
 end
 
-function _without_lean(f)
-    PF._USE_LEAN_LU[] = false
-    try
-        return f()
-    finally
-        PF._USE_LEAN_LU[] = true
-    end
+_lean_slot(data) = data.ac_jacobian_structure_cache[].lean
+
+# Settle the plan on a converged solve, then put the state back so the next solve runs
+# every Newton step on that plan.
+function _settled_slot!(data)
+    vm0, va0 = copy(data.bus_magnitude), copy(data.bus_angles)
+    with_logger(() -> solve_power_flow!(data), NullLogger())
+    copyto!(data.bus_magnitude, vm0)
+    copyto!(data.bus_angles, va0)
+    data.polar_nr_cache[] = nothing
+    return _lean_slot(data)
 end
 
-_lean_slot(data) = data.ac_jacobian_structure_cache[].lean
+# A twin with the same settings settles the plan, so `data` starts from its own untouched
+# state on the plan it inherits.
+function _on_settled_plan(make = _lean_sys14_data; kwargs...)
+    twin = make(; (k => v for (k, v) in kwargs if k != :solution_parameters)...)
+    slot = _settled_slot!(twin)
+    data = make(; kwargs...)
+    PF._inherit_jacobian_structure!(data, twin)
+    return data, slot
+end
+
+# The first step settles the plan and runs on plain KLU. A second solve moves the polar cache
+# onto the plan.
+function _lean_cache_data(; kwargs...)
+    data = _lean_sys14_data(; kwargs...)
+    @test solve_power_flow!(data)
+    data.bus_active_power_withdrawals .*= 1.01
+    @test solve_power_flow!(data)
+    return data
+end
 _lean_ar(data) = (PF._lean_counts(data).attempts, PF._lean_counts(data).rejects)
 
 function _lean_plan_hash(plan)
@@ -46,8 +68,8 @@ end
         (; attempts, rejects, solve_failures, late_analyses) = PF._lean_counts(lean)
         @test attempts > 0
         @test iszero(rejects) && iszero(solve_failures)
-        # A solve that stays lean never runs the cache's own klu_analyze.
-        @test iszero(late_analyses) && cache.symbolic == C_NULL
+        # Only the first step, which runs before the plan exists, analyzes on plain KLU.
+        @test iszero(late_analyses)
         @test PF._lean_counts(klu) == PF._NO_LEAN_COUNTS
         @test lean.converged == klu.converged
         @test lean.bus_type == klu.bus_type
@@ -87,14 +109,19 @@ end
     @test _lean_slot(data) === slot
     @test _lean_plan_hash(slot.plan) == h
 
-    worker = PF._column_worker(data, 1:24, 1:6, PF.WorkerSlot())
-    @test worker.ac_jacobian_structure_cache[] === data.ac_jacobian_structure_cache[]
+    worker = PF._column_worker(data, 1:24, PF.WorkerSlot())
+    @test worker.ac_jacobian_structure_cache[].lean === slot
     @test isnothing(worker.polar_nr_cache[])
+
+    # Every worker holds a memo keyed on its own data and the one shared slot.
+    for s in data.worker_slots
+        @test s.polar_nr_cache[].lean === slot
+    end
+    @test PF._slot_tried(data.ac_jacobian_structure_cache[])
 end
 
 @testset "lean LU: Numeric drop, re-pivot and condest on a lean cache" begin
-    data = _lean_sys14_data()
-    @test solve_power_flow!(data)
+    data = _lean_cache_data()
     cache = data.polar_nr_cache[].linSolveCache
     Jv = data.polar_nr_cache[].J.Jv
     PF.numeric_refactor!(cache, Jv)
@@ -108,16 +135,15 @@ end
     b = collect(1.0:size(Jv, 1))
     x_lean = PF.solve!(cache, copy(b))
 
-    # The re-pivot guard's factorization is KLU's own, on the cache's first (deferred) analysis,
-    # so tsolve!/condest! work after it.
-    @test cache.symbolic == C_NULL
+    # The re-pivot guard's factorization is KLU's own, on the cache's analysis, so
+    # tsolve!/condest! work after it.
     before = PF._lean_counts(data)
     PF._repivot!(cache, Jv)
     @test !cache.lean_active && cache.numeric != C_NULL && cache.symbolic != C_NULL
     @test _KW.has_lean_plan(cache)
     after = PF._lean_counts(data)
     @test after.solve_failures == before.solve_failures + 1
-    @test after.late_analyses == before.late_analyses + 1
+    @test after.late_analyses == before.late_analyses
     @test isapprox(PF.solve!(cache, copy(b)), x_lean; rtol = 1e-10)
     @test isapprox(PF.tsolve!(cache, copy(b)), transpose(Matrix(Jv)) \ b; rtol = 1e-8)
 
@@ -133,8 +159,7 @@ end
 end
 
 @testset "lean LU: a rejected refactor finishes the solve on KLU" begin
-    data = _lean_sys14_data()
-    @test solve_power_flow!(data)
+    data = _lean_cache_data()
     cache = data.polar_nr_cache[].linSolveCache
     Jv = copy(data.polar_nr_cache[].J.Jv)
     plan = cache.lean_plan
@@ -227,15 +252,6 @@ end
     @test _lean_slot(other) !== _lean_slot(fresh)
     @test !_lean_slot(other).tried
 
-    # A shared plan is closed, so parallel copies cannot race to settle it.
-    pending = _lean_sys14_data()
-    open_slot = PF._lean_plan_slot!(pending, 1)
-    @test open_slot.settle_pending
-    copy14 = _lean_sys14_data()
-    PF._inherit_jacobian_structure!(copy14, pending)
-    @test _lean_slot(copy14) === open_slot
-    @test !open_slot.settle_pending
-
     sys5 = PSB.build_system(PSB.PSITestSystems, "c_sys5"; add_forecasts = false)
     c5 = PowerFlowData(
         ACPowerFlow{NewtonRaphsonACPowerFlow}(; solution_parameters = _LEAN_KLU), sys5)
@@ -253,43 +269,43 @@ end
     end
 end
 
-@testset "lean LU: a stored plan skips the residual and Jacobian builds" begin
+@testset "lean LU: a settled slot skips the residual and Jacobian builds" begin
     data = _lean_sys14_data()
     @test solve_power_flow!(data)
     memo = data.ac_jacobian_structure_cache[]
-    @test PF._lean_plan_tried(memo, data)
+    @test memo.lean.tried
     pf = PF.get_pf(data)
-    PF._prepare_lean_plan!(pf, data, 1, PNM.KLUSolver())
-    @test (@allocated PF._prepare_lean_plan!(pf, data, 1, PNM.KLUSolver())) == 0
+    types = data.bus_type[:, 1]
+    PF._settle_lean_plan!(pf, PNM.KLUSolver(), data, 1, true, types)
+    @test (@allocated PF._settle_lean_plan!(pf, PNM.KLUSolver(), data, 1, true, types)) == 0
     @test data.ac_jacobian_structure_cache[] === memo
 end
 
-@testset "lean LU: a fresh solve plans on its own Jacobian and leaves it as it was" begin
-    data = _lean_sys14_data()
-    residual = PF.ACPowerFlowResidual(data, 1)
-    J = PF.ACPowerFlowJacobian(data, residual, 1)
-    J(data, 1)
-    s = J.bus_state
-    before = (copy(s.Vm), copy(s.θ), copy(s.phasor), copy(SparseArrays.nonzeros(J.Jv)))
-    slot = PF.LeanPlanSlot()
-    PF._plan_at_flat_in_place!(slot, J, data, 1)
+@testset "lean LU: the plan is built once, after the first converged step" begin
+    data = _lean_sys14_data(; T = 4)
+    @test solve_power_flow!(data)
+    slot = _lean_slot(data)
     @test slot.tried && slot.valid
-    @test (s.Vm, s.θ, s.phasor, SparseArrays.nonzeros(J.Jv)) == before
-    @test _lean_plan_hash(slot.plan) == _lean_plan_hash(PF._lean_plan_slot!(data, 1).plan)
+    @test slot.bus_types == data.bus_type[:, 1]
+    settled = slot.plan
+    # Step 1 ran on plain KLU: its cache holds a KLU symbolic analysis and the plan.
+    cache = data.polar_nr_cache[].linSolveCache
+    @test cache.symbolic != C_NULL
+    @test cache.lean_plan === settled
+    data.bus_active_power_withdrawals .*= 1.01
+    @test solve_power_flow!(data)
+    @test slot.plan === settled
+    @test PF._lean_counts(data).rejects == 0
+    @test PF._lean_counts(data).attempts > 0
 
-    planned = _lean_sys14_data()
-    PF._lean_plan_slot!(planned, 1)
-    @test solve_power_flow!(planned)
-    fresh = _lean_sys14_data()
-    @test solve_power_flow!(fresh)
-    @test _lean_plan_hash(_lean_slot(fresh).plan) ==
-          _lean_plan_hash(_lean_slot(planned).plan)
-    @test fresh.bus_magnitude == planned.bus_magnitude
-    @test fresh.bus_angles == planned.bus_angles
-    @test PF._lean_counts(fresh) == PF._lean_counts(planned)
+    # A step that did not converge leaves the slot untried.
+    capped = SolutionParameters(; linear_solver = "KLU", maxIterations = 1)
+    failed = _lean_sys14_data(; solution_parameters = capped)
+    @test !with_logger(() -> solve_power_flow!(failed), NullLogger())
+    @test !_lean_slot(failed).tried
 end
 
-@testset "lean LU: an LCC system plans before the solve, serial and threaded alike" begin
+@testset "lean LU: an LCC system settles the same plan, serial and threaded alike" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14_hvdc_lcc")
     function lcc_data(n_threads)
         pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
@@ -297,25 +313,21 @@ end
             solution_parameters = SolutionParameters(; linear_solver = "KLU", n_threads))
         return PowerFlowData(pf, sys)
     end
-    planned = lcc_data(1)
-    PF._lean_plan_slot!(planned, 1)
     serial = lcc_data(1)
     threaded = lcc_data(2)
-    for data in (planned, serial, threaded)
+    for data in (serial, threaded)
         @test solve_power_flow!(data)
     end
-    for data in (serial, threaded)
-        @test _lean_plan_hash(_lean_slot(data).plan) ==
-              _lean_plan_hash(_lean_slot(planned).plan)
-        @test data.bus_magnitude == planned.bus_magnitude
-        @test data.bus_angles == planned.bus_angles
-    end
+    @test _lean_plan_hash(_lean_slot(threaded).plan) ==
+          _lean_plan_hash(_lean_slot(serial).plan)
+    @test threaded.bus_magnitude == serial.bus_magnitude
+    @test threaded.bus_angles == serial.bus_angles
 end
 
 @testset "lean LU: accepted lean factors skip residual refinement" begin
     # With a negative threshold every refinement check fails, re-pivoting the factorization.
     never = SolutionParameters(; linear_solver = "KLU", refinement_threshold = -1.0)
-    lean = _lean_sys14_data(; solution_parameters = never)
+    lean, _ = _on_settled_plan(; solution_parameters = never)
     @test solve_power_flow!(lean)
     (; attempts, rejects, solve_failures) = PF._lean_counts(lean)
     @test attempts > 0 && iszero(rejects)
@@ -344,8 +356,7 @@ function _wrong_matrix_plan(plan)
 end
 
 function _wrong_plan_data(; kwargs...)
-    data = _lean_sys14_data(; kwargs...)
-    slot = PF._lean_plan_slot!(data, 1)
+    data, slot = _on_settled_plan(; kwargs...)
     slot.plan = _wrong_matrix_plan(slot.plan)
     return data
 end
@@ -389,8 +400,7 @@ end
 
 @testset "lean LU: a solve that pivoted fresh at its start is not rerun" begin
     capped = SolutionParameters(; linear_solver = "KLU", maxIterations = 1)
-    bad = _lean_sys14_data(; solution_parameters = capped)
-    slot = PF._lean_plan_slot!(bad, 1)
+    bad, slot = _on_settled_plan(; solution_parameters = capped)
     p = slot.plan
     # An unreachable pivot ratio: the first lean refactor is rejected for a klu_factor at x0.
     slot.plan = _KW.LeanLUPlan(p.n, 1e300, p.p, p.q, p.cp, p.dpos, p.row, p.a_row,
@@ -430,8 +440,7 @@ end
     klu = _zip_sys14_data(; solution_parameters = sp)
     @test _without_lean(() -> solve_power_flow!(klu))
     for seed in (5, 18)
-        bad = _zip_sys14_data(; solution_parameters = sp)
-        slot = PF._lean_plan_slot!(bad, 1)
+        bad, slot = _on_settled_plan(_zip_sys14_data; solution_parameters = sp)
         slot.plan = _scrambled_plan(slot.plan, MersenneTwister(seed))
         @test with_logger(() -> solve_power_flow!(bad), NullLogger())
         @test PF._cold_retries(bad) == 1
@@ -455,6 +464,7 @@ end
     @test solve_power_flow!(fd)
     @test _lean_slot(fd).tried
     h = fd.solver_cache[].handoff[].cache
+    @test !_KW.has_lean_plan(h)
     @test isapprox(fd.bus_magnitude, nr.bus_magnitude; atol = 1e-9, rtol = 0)
     @test isapprox(fd.bus_angles, nr.bus_angles; atol = 1e-9, rtol = 0)
     (; attempts) = PF._lean_counts(h)
@@ -500,8 +510,8 @@ end
 
     for (handoff, planned) in ((NewtonRaphsonACPowerFlow, true), (PF.NoHandoff, false))
         data = staged(PF.FastDecoupledXB, handoff)
-        PF._prepare_lean_plan!(PF.get_pf(data), data, 1, PNM.KLUSolver())
-        @test PF._lean_plan_tried(data.ac_jacobian_structure_cache[], data) == planned
+        solve_power_flow!(data)
+        @test PF._lean_slot(data.ac_jacobian_structure_cache[]).tried == planned
     end
 end
 
@@ -625,6 +635,9 @@ end
     for F in (ACRectangularPowerFlow, ACMixedPowerFlow)
         threaded = _lean_rm_data(F; T = 24, n_threads = 2)
         @test solve_power_flow!(threaded)
+        @test count(s -> !isnothing(s.solver_cache[]), threaded.worker_slots) > 1
+        @test !PF._head_needed(
+            PF.get_pf(threaded), PNM.KLUSolver(), threaded, threaded.worker_slots[1])
         a, b = (s.solver_cache[] for s in threaded.worker_slots)
         @test a.lean.valid && b.lean === a.lean
         @test b.linSolveCache.lean_plan === a.lean.plan
@@ -645,27 +658,54 @@ end
     end
 end
 
-@testset "lean LU: the first converged step settles the plan once" begin
-    data = _lean_sys14_data(; T = 4)
+@testset "lean LU: a Q-limit flip on the first step still plans, on the start types" begin
+    q = (; check_reactive_power_limits = true, correct_bustypes = true)
+    data = _lean_sys14_data(; T = 3, q...)
+    # Force a flip: a PV bus with a zero reactive band.
+    k = findfirst(==(PSY.ACBusTypes.PV), data.bus_type[:, 1])
+    for t in 1:3
+        data.bus_reactive_power_bounds[k, t] = (0.0, 0.0)
+    end
+    start = data.bus_type[:, 1]
+    @test with_logger(() -> solve_power_flow!(data), NullLogger())
+    @test data.bus_type[k, 1] == PSY.ACBusTypes.PQ
+    slot = _lean_slot(data)
+    @test slot.tried && slot.valid
+    @test slot.bus_types == start
+    @test PF._lean_counts(data).rejects == 0
+    klu = _lean_sys14_data(; T = 3, q...)
+    for t in 1:3
+        klu.bus_reactive_power_bounds[k, t] = (0.0, 0.0)
+    end
+    @test _without_lean(() -> with_logger(() -> solve_power_flow!(klu), NullLogger()))
+    @test data.bus_type == klu.bus_type
+    @test isapprox(data.bus_magnitude, klu.bus_magnitude; atol = 1e-8)
+end
+
+@testset "lean LU: a converged 0-iteration step builds the plan from the stored state" begin
+    kw = (; generator_slack_participation_factors = nothing)
+    data = _lean_sys14_data(; kw...)
+    @test solve_power_flow!(data)
+    fresh = _lean_sys14_data(; kw...)
+    # The solved injections too: the stored state then meets the tolerance as it stands.
+    for field in (:bus_magnitude, :bus_angles, :bus_active_power_injections,
+        :bus_reactive_power_injections)
+        copyto!(getfield(fresh, field), getfield(data, field))
+    end
+    @test solve_power_flow!(fresh)
+    @test iszero(PF.get_iterations(fresh)[1])
+    @test _lean_slot(fresh).tried && _lean_slot(fresh).valid
+    @test _lean_plan_hash(_lean_slot(fresh).plan) == _lean_plan_hash(_lean_slot(data).plan)
+end
+
+@testset "lean LU: the plan is built on the Jacobian at the solved state" begin
+    data = _lean_sys14_data()
     @test solve_power_flow!(data)
     slot = _lean_slot(data)
-    @test !slot.settle_pending
-    settled = slot.plan
-    flat = _lean_sys14_data()
-    @test _lean_plan_hash(settled) != _lean_plan_hash(PF._lean_plan_slot!(flat, 1).plan)
-    @test data.polar_nr_cache[].linSolveCache.lean_plan.p === settled.p
-
-    data.bus_active_power_withdrawals .*= 1.01
-    @test solve_power_flow!(data)
-    @test slot.plan === settled
-    @test PF._lean_counts(data).rejects == 0
-
-    # A step that did not converge keeps the flat plan and closes the slot.
-    pending = _lean_sys14_data()
-    open_slot = PF._lean_plan_slot!(pending, 1)
-    @test open_slot.settle_pending
-    flat_plan = open_slot.plan
-    PF._settle_lean_plan!(pending, 1, false)
-    @test open_slot.plan === flat_plan
-    @test !open_slot.settle_pending
+    @test slot.valid
+    residual = PF.ACPowerFlowResidual(data, 1)
+    J = PF.ACPowerFlowJacobian(data, residual, 1)
+    J(data, 1)
+    # `rcond0` comes from the build matrix's values, so the hash also checks the values.
+    @test _lean_plan_hash(slot.plan) == _lean_plan_hash(_KW.build_lean_plan(J.Jv))
 end

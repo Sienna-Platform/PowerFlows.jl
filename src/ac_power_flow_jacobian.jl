@@ -170,16 +170,18 @@ function _slack_slots_cover(
 end
 
 # Memoize the expensive Jacobian sparse-structure build (~3.2 MB on 2000 buses) so it is built
-# once and reused across the Q-limit loop, repeated solves and value-only network edits. The key
-# is the network-matrix identity and the area interchange data. The cached slack slots must cover
-# `_extra_slack_slots`, so an outage that drops a slot still reuses the structure and its lean
-# plan. Returns a full `copy` so each `ACPowerFlowJacobian` owns its buffer, or `nothing` to
+# once and reused across the Q-limit loop, repeated solves and value-only network edits. The memo
+# belongs to the `data` that holds it: the Ybus pattern is fixed for its life, an area relax clears
+# and restores the memo itself, and a copy takes a memo only through
+# [`_inherit_jacobian_structure!`](@ref), which checks the pattern. So the only key is the slack
+# slots: the cached slots must cover `_extra_slack_slots`, so an outage that drops a slot still
+# reuses the structure and its lean plan. Returns a full `copy` so each `ACPowerFlowJacobian` owns its buffer, or `nothing` to
 # signal a rebuild. Lives in its own `data.ac_jacobian_structure_cache` field
 # ([`ACJacobianStructureCache`](@ref)) so it never collides with the FastDecoupled/DC caches in
 # `data.solver_cache[]`.
-_reuse_ac_jac_structure(::Nothing, matrix, slots, area_data) = nothing
-function _reuse_ac_jac_structure(e::ACJacobianStructureCache, matrix, slots, area_data)
-    if e.matrix === matrix && e.area_data === area_data && issubset(slots, e.slack_slots)
+_reuse_ac_jac_structure(::Nothing, slots) = nothing
+function _reuse_ac_jac_structure(e::ACJacobianStructureCache, slots)
+    if issubset(slots, e.slack_slots)
         return copy(e.structure)
     end
     return nothing
@@ -191,15 +193,10 @@ function _get_or_build_jacobian_structure(
     time_step::Int64,
 )
     slots = _extra_slack_slots(data, subnetworks, time_step)
-    reused = _reuse_ac_jac_structure(
-        data.ac_jacobian_structure_cache[], data.power_network_matrix, slots,
-        data.area_interchange)
+    reused = _reuse_ac_jac_structure(data.ac_jacobian_structure_cache[], slots)
     isnothing(reused) || return reused
     Jv0 = _create_jacobian_matrix_structure(data, slots)
-    # Cache a pristine copy; `Jv0` is about to be mutated by the Newton loop. `area_data`
-    # is stored by IDENTITY (not copied) — a rebuilt `PowerFlowData` gets a fresh
-    # `AreaInterchangeData`, forcing a rebuild; a Q-limit flip keeps the same object, so
-    # reuse still works.
+    # Cache a pristine copy; `Jv0` is about to be mutated by the Newton loop.
     data.ac_jacobian_structure_cache[] =
         ACJacobianStructureCache(
             data.power_network_matrix, slots, copy(Jv0), data.area_interchange,

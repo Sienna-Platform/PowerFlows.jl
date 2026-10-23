@@ -172,3 +172,81 @@ end
         end
     end
 end
+
+@testset "a failed head leaves the slot open and tasks never write it" begin
+    sys = PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+    capped = SolutionParameters(; linear_solver = "KLU", n_threads = 4, maxIterations = 1)
+    data = PowerFlowData(
+        ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+            time_steps = 8,
+            solution_parameters = capped,
+        ),
+        sys,
+    )
+    prepare_ts_data!(data, 8)
+    @test !with_logger(() -> solve_power_flow!(data), NullLogger())
+    memo = data.ac_jacobian_structure_cache[]
+    @test !PF._slot_tried(memo)
+    @test !any(data.converged)
+    # Workers ran on plain KLU.
+    for s in data.worker_slots
+        c = s.polar_nr_cache[]
+        isnothing(c) && continue
+        @test !PNM.KLUWrapper.has_lean_plan(c.linSolveCache)
+    end
+end
+
+function _failing_first_step(sys, n_threads)
+    params = SolutionParameters(; linear_solver = "KLU", n_threads = n_threads)
+    data = PowerFlowData(
+        ACPowerFlow{NewtonRaphsonACPowerFlow}(;
+            time_steps = 8,
+            solution_parameters = params,
+        ),
+        sys,
+    )
+    prepare_ts_data!(data, 8)
+    data.bus_active_power_withdrawals[:, 1] .*= 50.0
+    return data
+end
+
+const _FAILING_HEAD_SYS =
+    PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false)
+
+@testset "a failed head step hands the remaining steps to the tasks" begin
+    data = _failing_first_step(_FAILING_HEAD_SYS, 4)
+    @test !with_logger(() -> solve_power_flow!(data), NullLogger())
+    @test !data.converged[1]
+    @test all(data.converged[2:8])
+    # The head claimed one step and it failed, so nothing built the plan.
+    @test !PF._slot_tried(data.ac_jacobian_structure_cache[])
+    for s in data.worker_slots
+        c = s.polar_nr_cache[]
+        isnothing(c) && continue
+        @test !PNM.KLUWrapper.has_lean_plan(c.linSolveCache)
+    end
+    # The tasks ran on plain KLU, so they equal a serial solve on plain KLU bitwise.
+    serial = _failing_first_step(_FAILING_HEAD_SYS, 1)
+    @test !_without_lean(() -> with_logger(() -> solve_power_flow!(serial), NullLogger()))
+    @test isequal(data.bus_magnitude[:, 2:8], serial.bus_magnitude[:, 2:8])
+    @test isequal(data.bus_angles[:, 2:8], serial.bus_angles[:, 2:8])
+end
+
+@testset "the next call runs the head again" begin
+    data = _failing_first_step(_FAILING_HEAD_SYS, 4)
+    # A failed step overwrites its injections with NaN; `prepare_ts_data!` restores only
+    # the active ones.
+    q1 = copy(data.bus_reactive_power_injections[:, 1])
+    @test !with_logger(() -> solve_power_flow!(data), NullLogger())
+    @test !PF._slot_tried(data.ac_jacobian_structure_cache[])
+    # Restore the inputs of step 1 and start it from the solution of step 2.
+    prepare_ts_data!(data, 8)
+    data.bus_reactive_power_injections[:, 1] .= q1
+    data.bus_magnitude[:, 1] .= data.bus_magnitude[:, 2]
+    data.bus_angles[:, 1] .= data.bus_angles[:, 2]
+    @test solve_power_flow!(data)
+    @test all(data.converged)
+    slot = data.ac_jacobian_structure_cache[].lean
+    @test slot.tried
+    @test slot.valid
+end

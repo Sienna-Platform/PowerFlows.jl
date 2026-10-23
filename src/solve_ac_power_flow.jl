@@ -291,9 +291,10 @@ function solve_power_flow!(
         _solve_columns_threaded!(
             ts_converged, data, pf, sorted_time_steps, n_work, merged_kwargs)
     else
+        backend = resolve_linear_solver_backend(get(merged_kwargs, :linear_solver, nothing))
         _solve_columns!(
             ts_converged, data, pf, sorted_time_steps, 1:length(sorted_time_steps),
-            merged_kwargs)
+            backend, merged_kwargs; build_plan = true)
     end
 
     # Written after the solves: `improve_x0` reads `converged` as of entry.
@@ -307,35 +308,52 @@ function solve_power_flow!(
     return all(ts_converged)
 end
 
-"""Positions of `steps`, taken one at a time from a counter that all workers of a threaded solve
-share. A step goes to the first free worker, so a slow step delays only its own worker."""
+"""The positions of `steps` that one worker of a threaded solve claims. All workers share the
+atomic counter `next`, and each iteration takes the next position from it. So a step goes to
+the first free worker, and a slow step delays only its own worker.
+
+Each claimed position is recorded in `taken`. The worker writes area results into its own copy
+of the area data, and after the tasks finish, [`_merge_worker_area!`](@ref) uses `taken` to
+copy those steps back into `data`. `taken` belongs to this worker alone: iterate each instance
+from one task only."""
 struct ClaimedPositions
     next::Threads.Atomic{Int}
     stop::Int
+    taken::Vector{Int}
 end
+ClaimedPositions(next, stop) = ClaimedPositions(next, stop, Int[])
 
 function Base.iterate(claims::ClaimedPositions, ::Nothing = nothing)
     pos = Threads.atomic_add!(claims.next, 1)
     if pos > claims.stop
         return nothing
     end
+    push!(claims.taken, pos)
     return pos, nothing
 end
 Base.IteratorSize(::Type{ClaimedPositions}) = Base.SizeUnknown()
 
+# `build_plan` is true on the serial driver and on the threaded head step: each builds the
+# lean plan after its first converged step. A task never writes the shared lean slot.
 function _solve_columns!(
     ts_converged::Vector{Bool},
     data::ACPowerFlowData,
     pf::AbstractACPowerFlow{<:ACPowerFlowSolverType},
     steps::AbstractVector{Int},
-    positions::Union{UnitRange{Int}, ClaimedPositions},
-    merged_kwargs::NamedTuple,
+    positions,
+    backend::PNM.LinearSolverType,
+    merged_kwargs::NamedTuple;
+    build_plan::Bool,
 )
     flows = Base.RefValue{ArcFlowScratch}()
     cd = get_controlled_devices(data)
+    start_types = PSY.ACBusTypes.Value[]
     for pos in positions
-        ts_converged[pos] = _solve_column!(data, pf, steps[pos], flows, cd, merged_kwargs)
-        _settle_lean_plan!(data, steps[pos], ts_converged[pos])
+        t = steps[pos]
+        build_plan && _snapshot_start_types!(start_types, data, t)
+        converged = _solve_column!(data, pf, t, flows, cd, merged_kwargs)
+        ts_converged[pos] = converged
+        build_plan && _settle_lean_plan!(pf, backend, data, t, converged, start_types)
     end
     @debug "lean LU refactors on this cache so far" lean = _lean_counts(data)
     return ts_converged
@@ -418,12 +436,6 @@ function _solve_column!(
 
     load_device_state!(cd, data, time_step)
     data.iterations[time_step] = 0
-    # The LCC Jacobian tails read LCC state that the solve's start residual rewrites, so an LCC
-    # system plans before the solve, as a threaded run does.
-    if get_lcc_count(data) > 0
-        _prepare_lean_plan!(pf, data, time_step,
-            resolve_linear_solver_backend(get(merged_kwargs, :linear_solver, nothing)))
-    end
     converged = _ac_power_flow_with_area_relax!(data, pf, time_step; merged_kwargs...)
     converged = converged && _voltages_in_band(pf, data, time_step, merged_kwargs)
     save_device_state!(cd, data, time_step)
@@ -482,10 +494,20 @@ end
 
 """Solve `steps` on `n_work` tasks. Each task gets a `_column_worker` view of `data`, so its
 Newton workspace and KLU factorization are its own. The workers' caches live in
-`data.worker_slots`, so a repeated solve reuses them. The tasks take steps one at a time from a
-shared counter (`ClaimedPositions`), unless a worker carries state from step to step
-(`_carries_step_state`): then each task solves one contiguous chunk, so the results do not
-depend on timing."""
+`data.worker_slots`, so a repeated solve reuses them. The tasks take steps from a shared
+counter (`ClaimedPositions`).
+
+All workers must use the same pivot order. Two things give them that order: the polar lean
+plan, and the first worker's cache, which seeds the caches of the other workers. A rect/mixed
+cache holds its own plan. When either is missing ([`_head_needed`](@ref)), a serial head step
+builds it before the tasks start. The head step solves one step on the first worker with
+`build_plan = true`. When that step does not converge, the slot stays untried, the tasks use
+plain KLU, and the next call runs the head step again.
+
+The tasks run with `build_plan = false`, so they never write the slot. A task that rebuilds
+the memo for new slack slots cannot plan it, so the driver gives that memo to `data` after the
+tasks finish. The next call's head step then plans it. Each worker merges the area results of
+the steps it claimed."""
 function _solve_columns_threaded!(
     ts_converged::Vector{Bool},
     data::ACPowerFlowData,
@@ -495,71 +517,53 @@ function _solve_columns_threaded!(
     merged_kwargs::NamedTuple,
 )
     backend = _check_threadable(merged_kwargs)
-    # Built here, before any task can race to build it, so every worker shares one pivot order.
-    _prepare_lean_plan!(pf, data, first(steps), backend)
-    if _carries_step_state(data)
-        return _solve_chunks_threaded!(ts_converged, data, pf, steps, n_work, merged_kwargs)
-    end
     slots = _worker_slots!(data, n_work)
-    # No worker warm-starts from a step of this call, so the schedule cannot change a result.
-    workers = [_column_worker(data, steps, 1:0, s) for s in slots]
-    head = _head_steps(slots[1].polar_nr_cache[], 1:length(steps))
-    _solve_slot!(ts_converged, workers[1], slots[1], pf, steps, head, merged_kwargs)
-    _settle_lean_plan!(workers[1], first(steps), false)
-    _seed_workers!(workers, fill(first(steps), length(workers)))
-    next = Threads.Atomic{Int}(last(head) + 1)
+    workers = [_column_worker(data, steps, s) for s in slots]
+    next = Threads.Atomic{Int}(1)
+    claims = [ClaimedPositions(next, length(steps)) for _ in workers]
+    if _head_needed(pf, backend, data, slots[1])
+        pos = Threads.atomic_add!(next, 1)
+        push!(claims[1].taken, pos)
+        _solve_slot!(
+            ts_converged, workers[1], slots[1], pf, steps, pos:pos, backend,
+            merged_kwargs; build_plan = true)
+    end
+    _seed_workers!(data, workers, first(steps))
     @sync for i in eachindex(workers)
-        claims = ClaimedPositions(next, length(steps))
         Threads.@spawn _solve_slot!(
-            ts_converged, workers[i], slots[i], pf, steps, claims, merged_kwargs)
+            ts_converged, workers[i], slots[i], pf, steps, claims[i], backend,
+            merged_kwargs; build_plan = false)
     end
+    for i in eachindex(workers)
+        _merge_worker_area!(data, workers[i], steps, claims[i].taken)
+    end
+    _adopt_rebuilt_memo!(data, workers)
     return ts_converged
 end
 
-# A worker with a Y-bus copy that controlled taps edit accumulates round-off from step to step,
-# and a relax renumbers a worker's area set. A step's result then depends on the worker's earlier
-# steps, so these runs keep fixed chunks.
-function _carries_step_state(data::ACPowerFlowData)
-    return _has_controlled_taps(get_controlled_devices(data)) ||
-           !isempty(data.area_interchange.pristine_areas)
-end
-_has_controlled_taps(::Nothing) = false
-_has_controlled_taps(cd::ControlledDeviceSet) = !isempty(cd.taps)
-
-"""`_solve_columns_threaded!` with one contiguous chunk of `steps` per task."""
-function _solve_chunks_threaded!(
-    ts_converged::Vector{Bool},
-    data::ACPowerFlowData,
-    pf::AbstractACPowerFlow{<:ACPowerFlowSolverType},
-    steps::AbstractVector{Int},
-    n_work::Int,
-    merged_kwargs::NamedTuple,
-)
-    chunks = collect(Iterators.partition(1:length(steps), cld(length(steps), n_work)))
-    slots = _worker_slots!(data, length(chunks))
-    workers = [_column_worker(data, steps, c, s) for (c, s) in zip(chunks, slots)]
-    # With no stored cache, the first chunk's first step solves before any task starts, so its
-    # cache can seed the other workers: they share its read-only maps instead of building their own.
-    head = _head_steps(slots[1].polar_nr_cache[], chunks[1])
-    _solve_slot!(ts_converged, workers[1], slots[1], pf, steps, head, merged_kwargs)
-    # The head step settled a fresh plan. Close a plan left pending by an earlier call that
-    # raised, so no task writes the shared slot.
-    _settle_lean_plan!(workers[1], first(steps), false)
-    _seed_workers!(workers, [steps[first(c)] for c in chunks])
-    @sync for (i, positions) in enumerate(chunks)
-        worker = workers[i]
-        slot = slots[i]
-        rest = positions
-        if isone(i)
-            rest = (last(head) + 1):last(positions)
+function _adopt_rebuilt_memo!(data::ACPowerFlowData, workers::Vector{<:ACPowerFlowData})
+    for worker in workers
+        memo = worker.ac_jacobian_structure_cache[]
+        if !isnothing(memo) && memo !== data.ac_jacobian_structure_cache[] &&
+           !_slot_tried(memo)
+            data.ac_jacobian_structure_cache[] = memo
+            return
         end
-        Threads.@spawn _solve_slot!(
-            ts_converged, worker, slot, pf, steps, $rest, merged_kwargs)
     end
-    for (worker, positions) in zip(workers, chunks)
-        _merge_worker_area!(data, worker, steps, positions)
+    return
+end
+
+function _head_needed(
+    pf::AbstractACPowerFlow,
+    backend::PNM.LinearSolverType,
+    data::ACPowerFlowData,
+    slot::WorkerSlot,
+)
+    if _USE_LEAN_LU[] && _plans_lean(pf, backend) &&
+       !_slot_tried(data.ac_jacobian_structure_cache[])
+        return true
     end
-    return ts_converged
+    return isnothing(slot.polar_nr_cache[]) && isnothing(slot.solver_cache[])
 end
 
 function _worker_slots!(data::ACPowerFlowData, n::Int)
@@ -578,18 +582,14 @@ function _solve_slot!(
     slot::WorkerSlot,
     pf::AbstractACPowerFlow,
     steps::AbstractVector{Int},
-    positions::Union{UnitRange{Int}, ClaimedPositions},
-    kwargs::NamedTuple,
+    positions,
+    backend::PNM.LinearSolverType,
+    kwargs::NamedTuple;
+    build_plan::Bool,
 )
     try
-        _solve_columns!(ts_converged, worker, pf, steps, positions, kwargs)
-        # A relax only removes areas, so the pristine count means the full set. A cache sized
-        # for a reduced set cannot serve the next call.
-        aid = worker.area_interchange
-        if length(aid.areas) != length(aid.pristine_areas)
-            slot.polar_nr_cache[] = nothing
-            slot.solver_cache[] = nothing
-        end
+        _solve_columns!(
+            ts_converged, worker, pf, steps, positions, backend, kwargs; build_plan)
     catch
         slot.polar_nr_cache[] = nothing
         slot.solver_cache[] = nothing
@@ -598,91 +598,41 @@ function _solve_slot!(
     return
 end
 
-_head_steps(::Nothing, positions::UnitRange{Int}) = first(positions):first(positions)
-_head_steps(::AbstractNRCache, positions::UnitRange{Int}) =
-    first(positions):(first(positions) - 1)
-
-# `seed_steps[i]` sets only the initial lean alignment of worker `i`. Each reuse calls
+# `seed_step` sets only the initial lean alignment of each worker. Each reuse calls
 # `_align_lean_plan!`, which computes the swaps from the plan, so any step is correct.
-# If the step is the first step of the worker, its first re-alignment changes nothing.
-function _seed_workers!(workers::Vector{<:ACPowerFlowData}, seed_steps::Vector{Int})
+function _seed_workers!(
+    data::ACPowerFlowData,
+    workers::Vector{<:ACPowerFlowData},
+    seed_step::Int,
+)
     seed = workers[1].polar_nr_cache[]
+    # The head step may have built a new memo (new slack slots); everyone takes it.
     memo = workers[1].ac_jacobian_structure_cache[]
+    isnothing(memo) || (data.ac_jacobian_structure_cache[] = memo)
     for i in 2:length(workers)
         worker = workers[i]
-        _seed_worker!(worker, worker.polar_nr_cache[], seed, memo, seed_steps[i])
+        isnothing(memo) || (worker.ac_jacobian_structure_cache[] = memo)
+        _drop_stale_cache!(worker, memo)
+        _seed_worker!(worker, worker.polar_nr_cache[], seed, memo, seed_step)
         _seed_rect_mixed!(worker, worker.solver_cache[], workers[1].solver_cache[])
     end
     return
 end
 
-_prepare_lean_plan!(
-    ::AbstractACPowerFlow,
-    ::ACPowerFlowData,
-    ::Int,
-    ::PNM.LinearSolverType,
-) =
-    nothing
-
-_prepare_lean_plan!(
-    ::ACPolarPowerFlow{<:Union{NewtonRaphsonACPowerFlow, TrustRegionACPowerFlow}},
-    data::ACPowerFlowData,
-    time_step::Int,
-    ::PNM.KLUSolver,
-) = _prepare_newton_plan!(data, time_step)
-
-# A staged solver's NR/TR handoff runs on the lean plan too (`_new_handoff_cache`).
-_prepare_lean_plan!(
-    pf::ACPolarPowerFlow{
-        <:Union{FastDecoupledACPowerFlow, GeneralizedAdmittanceACPowerFlow},
-    },
-    data::ACPowerFlowData,
-    time_step::Int,
-    ::PNM.KLUSolver,
-) = _prepare_handoff_plan!(get_solution_parameters(pf).handoff_solver, data, time_step)
-
-_prepare_handoff_plan!(::Type, ::ACPowerFlowData, ::Int) = nothing
-_prepare_handoff_plan!(
-    ::Type{<:Union{NewtonRaphsonACPowerFlow, TrustRegionACPowerFlow}},
-    data::ACPowerFlowData,
-    time_step::Int,
-) = _prepare_newton_plan!(data, time_step)
-
-function _prepare_newton_plan!(data::ACPowerFlowData, time_step::Int)
-    _USE_LEAN_LU[] || return
-    _lean_plan_tried(data.ac_jacobian_structure_cache[], data) && return
-    _lean_plan_slot!(data, time_step)
-    return
-end
-
-# Skips the residual and Jacobian builds of `_lean_plan_slot!` while `data` keeps its memo. A memo
-# whose slack slots no longer fit is replaced by the solve, which then builds its plan itself.
-_lean_plan_tried(::Nothing, ::ACPowerFlowData) = false
-function _lean_plan_tried(memo::ACJacobianStructureCache, data::ACPowerFlowData)
-    return memo.lean.tried && memo.matrix === data.power_network_matrix &&
-           memo.area_data === data.area_interchange
-end
-
 """A `PowerFlowData` sharing every time-indexed array of `data` (each task writes only its own
-columns) with the slot's solver caches, a private `converged` (steps owned by other tasks are
-cleared, so `improve_x0` never warm-starts from them), and private copies of the state a solve
+columns) with the slot's solver caches, a private `converged` with every step cleared (so
+`improve_x0` never warm-starts from a step), and private copies of the state a solve
 mutates outside its column: the controlled-device scratch and counters, the network matrix when
 taps are controlled, the LCC branch admittances, and the area-interchange data when it is active.
-The read-only Jacobian-structure memo, which carries the lean-LU plan, is shared; a worker with its
-own network matrix or area data misses it and plans itself. See [`SolutionParameters`](@ref)'s
+The worker shares `data`'s Jacobian-structure memo. See [`SolutionParameters`](@ref)'s
 `n_threads` for how results compare to a serial solve."""
 function _column_worker(
     data::D,
     steps::AbstractVector{Int},
-    positions::UnitRange{Int},
     slot::WorkerSlot,
 ) where {D <: ACPowerFlowData}
     converged = copy(data.converged)
-    for (pos, t) in enumerate(steps)
-        if !(pos in positions)
-            converged[t] = false
-        end
-    end
+    converged[steps] .= false
     cd = get_controlled_devices(data)
     fresh = (
         converged = converged,
@@ -694,17 +644,22 @@ function _column_worker(
         ac_jacobian_structure_cache = Base.RefValue{
             Union{Nothing, ACJacobianStructureCache},
         }(
-            data.ac_jacobian_structure_cache[],
+            nothing,
         ),
         polar_nr_cache = slot.polar_nr_cache,
         worker_slots = WorkerSlot[],
     )
     args = map(f -> get(fresh, f, getfield(data, f)), fieldnames(D))
-    return D(args...)
+    worker = D(args...)
+    # The worker matrix is a value copy of `data`'s, so the pattern is the same. The memo is
+    # shared even when its plan is not built: only the head step writes the slot.
+    worker.ac_jacobian_structure_cache[] = data.ac_jacobian_structure_cache[]
+    return worker
 end
 
 _worker_devices(::Nothing) = nothing
-# The per-step stores stay shared: each step reads and writes only its own column.
+# The per-step stores and the three tap-entry tables stay shared: each step reads and
+# writes only its own column, and the entries are read-only after `capture_tap_baseline!`.
 function _worker_devices(cd::ControlledDeviceSet)
     return _override(cd;
         taps = deepcopy(cd.taps),
@@ -742,13 +697,14 @@ function _worker_area_data(aid::AreaInterchangeData)
     return deepcopy(aid)
 end
 
-"""Copy what post-processing reads for the worker's own steps back into `data`: the
-`pristine_delta_p` columns and the `relaxed` records."""
+"""Copy what post-processing reads for the steps the worker claimed back into `data`: the
+`pristine_delta_p` columns and the `relaxed` records. `positions` are the claimed
+positions."""
 function _merge_worker_area!(
     data::ACPowerFlowData,
     worker::ACPowerFlowData,
     steps::AbstractVector{Int},
-    positions::UnitRange{Int},
+    positions::AbstractVector{Int},
 )
     aid = data.area_interchange
     isempty(aid.pristine_areas) && return
@@ -855,8 +811,9 @@ network non-convergence plus a terminal diagnostic (`_report_area_interchange_fa
 Relaxation is never silent: an `@error` at each de-enrollment and a solve-end summary;
 converging after a relax still returns `true`.
 
-Resets to the full pristine enrollment before each time step's attempt
-(`_ensure_pristine_area_set!`) so a previous step's relax never carries over. The
+Resets to the full pristine enrollment at the end of the time step
+(`_restore_pristine_area_set!`), and puts back the Jacobian-structure memo saved before the
+first de-enrollment, so a relax never carries over to the next step. The
 never-enrolled short-circuit deliberately tests the PRISTINE set, not the WORKING one —
 a previous time step's relax may have emptied the working set, and short-circuiting on it
 would permanently disable area control for the rest of `data`'s lifetime.
@@ -867,54 +824,61 @@ function _ac_power_flow_with_area_relax!(
     time_step::Int64;
     kwargs...,
 )
-    aid = data.area_interchange
-    isempty(aid.pristine_areas) &&
+    isempty(data.area_interchange.pristine_areas) &&
         return _ac_power_flow(data, pf, time_step; kwargs...)
-    _ensure_pristine_area_set!(data, time_step)
-    relaxed_this_step = RelaxedAreaRecord[]
-    converged = false
-    while true
-        converged = _ac_power_flow(data, pf, time_step; kwargs...)
-        converged && break
-        iszero(n_controlled_areas(data)) && break
-        gaps = _area_residual_gaps(data, time_step)
-        gap, worst_ix = findmax(abs, gaps)
-        area = data.area_interchange.areas[worst_ix]
-        @error "Area interchange: Newton did not converge with area \"$(area.name)\" " *
-               "controlled (target PDES = $(area.pdes), NI gap at the failed iterate = " *
-               "$gap); de-enrolling it and re-solving with the remaining " *
-               "$(n_controlled_areas(data) - 1) controlled area(s)."
-        push!(relaxed_this_step, RelaxedAreaRecord(area.name, area.pdes))
-        _deenroll_area!(data, worst_ix)
-    end
-    if !converged
-        _report_area_interchange_failure(data, time_step)
-        return converged
-    end
-    _sync_pristine_delta_p!(data, time_step)
-    _warn_area_violations(data, time_step)
-    isempty(relaxed_this_step) && return converged
-    data.area_interchange.relaxed[time_step] = relaxed_this_step
-    pristine_tail_of = Dict(a.name => a.tail_ix for a in aid.pristine_areas)
-    relaxed_detail = join(
-        (
-            let tail_ix = pristine_tail_of[r.name],
-                ni_solved = _area_net_interchange(
-                    aid.pristine_ties, aid.pristine_dc_ties, tail_ix, data,
-                    time_step,
-                )
-
-                "$(r.name) (ni_solved=$(ni_solved), pdes=$(r.pdes), " *
-                "gap=$(ni_solved - r.pdes))"
+    full_memo = nothing
+    try
+        aid = data.area_interchange
+        relaxed_this_step = RelaxedAreaRecord[]
+        converged = false
+        while true
+            converged = _ac_power_flow(data, pf, time_step; kwargs...)
+            converged && break
+            iszero(n_controlled_areas(data)) && break
+            gaps = _area_residual_gaps(data, time_step)
+            gap, worst_ix = findmax(abs, gaps)
+            area = data.area_interchange.areas[worst_ix]
+            @error "Area interchange: Newton did not converge with area \"$(area.name)\" " *
+                   "controlled (target PDES = $(area.pdes), NI gap at the failed " *
+                   "iterate = $gap); de-enrolling it and re-solving with the remaining " *
+                   "$(n_controlled_areas(data) - 1) controlled area(s)."
+            if isempty(relaxed_this_step)
+                full_memo = data.ac_jacobian_structure_cache[]
             end
-            for r in relaxed_this_step
-        ),
-        ", ",
-    )
-    @error "Area interchange: time step $time_step converged only after relaxing " *
-           "$(length(relaxed_this_step)) area(s): $relaxed_detail. Their schedules were " *
-           "infeasible given network/tie capacity."
-    return converged
+            push!(relaxed_this_step, RelaxedAreaRecord(area.name, area.pdes))
+            _deenroll_area!(data, worst_ix)
+        end
+        if !converged
+            _report_area_interchange_failure(data, time_step)
+            return converged
+        end
+        _sync_pristine_delta_p!(data, time_step)
+        _warn_area_violations(data, time_step)
+        isempty(relaxed_this_step) && return converged
+        data.area_interchange.relaxed[time_step] = relaxed_this_step
+        pristine_tail_of = Dict(a.name => a.tail_ix for a in aid.pristine_areas)
+        relaxed_detail = join(
+            (
+                let tail_ix = pristine_tail_of[r.name],
+                    ni_solved = _area_net_interchange(
+                        aid.pristine_ties, aid.pristine_dc_ties, tail_ix, data,
+                        time_step,
+                    )
+
+                    "$(r.name) (ni_solved=$(ni_solved), pdes=$(r.pdes), " *
+                    "gap=$(ni_solved - r.pdes))"
+                end
+                for r in relaxed_this_step
+            ),
+            ", ",
+        )
+        @error "Area interchange: time step $time_step converged only after relaxing " *
+               "$(length(relaxed_this_step)) area(s): $relaxed_detail. Their schedules " *
+               "were infeasible given network/tie capacity."
+        return converged
+    finally
+        _restore_pristine_area_set!(data, full_memo)
+    end
 end
 
 function _check_q_limit_bounds!(
