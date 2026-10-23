@@ -337,9 +337,12 @@ end
         () -> solve_power_flow!(klu))
 end
 
-_with_a_row(plan, a_row) =
-    _KW.LeanLUPlan(plan.n, 1e-300, plan.p, plan.q, plan.cp, plan.dpos,
-        plan.row, a_row, plan.dep_lb, plan.dep_le, plan.a_colptr, plan.a_rowval)
+# A copy of `plan` with the fields in `kw` replaced.
+_plan_with(plan; kw...) = _KW.LeanLUPlan(
+    (get(kw, f, getfield(plan, f)) for f in fieldnames(_KW.LeanLUPlan))...,
+)
+
+_with_a_row(plan, a_row) = _plan_with(plan; rcond0 = 1e-300, a_row)
 
 # The plan's scatter map with two off-diagonal entries of each column swapped: a plan for the
 # wrong matrix whose pivots stay nonzero, accepted whatever their ratio.
@@ -403,8 +406,7 @@ end
     bad, slot = _on_settled_plan(; solution_parameters = capped)
     p = slot.plan
     # An unreachable pivot ratio: the first lean refactor is rejected for a klu_factor at x0.
-    slot.plan = _KW.LeanLUPlan(p.n, 1e300, p.p, p.q, p.cp, p.dpos, p.row, p.a_row,
-        p.dep_lb, p.dep_le, p.a_colptr, p.a_rowval)
+    slot.plan = _plan_with(p; rcond0 = 1e300)
     @test !with_logger(() -> solve_power_flow!(bad), NullLogger())
     @test _lean_ar(bad) == (1, 1)
     @test iszero(PF._cold_retries(bad))
