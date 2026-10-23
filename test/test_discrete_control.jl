@@ -1571,3 +1571,52 @@ end
     @test PowerFlows._supports_batched_refresh(ctx)
     @test PowerFlows._maybe_repromote(ctx, pf, data, ts) === ctx
 end
+
+@testset "discrete control: Q-limited start that only converges once devices move" begin
+    # REF(1) ─weak line─ PV(2, |Q| ≤ 0.5) ─ PQ(3, heavy Q load + switched shunt). At the
+    # initial shunt setting the Q-limited solve diverges, so regulation must start from a
+    # solve without Q limits and enforce them only after the shunt has moved.
+    function _q_limited_shunt_system()
+        sys = System(100.0)
+        b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.0, 0.0)
+        b2 = _add_simple_bus!(sys, 2, ACBusTypes.PV, 230, 1.0, 0.0)
+        b3 = _add_simple_bus!(sys, 3, ACBusTypes.PQ, 230, 1.0, 0.0)
+        _add_simple_source!(sys, b1, 0.0, 0.0)
+        gen = _add_simple_thermal_standard!(sys, b2, 0.0, 0.0)
+        set_reactive_power_limits!(gen, (min = -0.5 * u"SU", max = 0.5 * u"SU"))
+        _add_simple_line!(sys, b1, b2, 0.01, 0.4, 0.0)
+        _add_simple_line!(sys, b2, b3, 0.01, 0.1, 0.0)
+        _add_simple_load!(sys, b3, 50.0, 150.0)
+        add_component!(sys,
+            SwitchedAdmittance(;
+                name = "shunt_3",
+                available = true,
+                bus = b3,
+                number_engaged = [0],
+                number_of_steps = [10],
+                Y_increase = [0.0 + 0.2im],
+                voltage_limits = (min = 0.98, max = 1.02),
+                control_mode = PSY.SwitchedAdmittanceControlMode.DISCRETE_VOLTAGE,
+            ))
+        return sys
+    end
+    no_control = PowerFlowData(
+        ACPolarPowerFlow(; check_reactive_power_limits = true),
+        _q_limited_shunt_system(),
+    )
+    @test !with_logger(NullLogger()) do
+        solve_power_flow!(no_control)
+    end
+    pf = ACPolarPowerFlow(;
+        check_reactive_power_limits = true,
+        control_discrete_devices = true,
+    )
+    data = PowerFlowData(pf, _q_limited_shunt_system())
+    @test_logs (:warn, r"regulating devices without the limits") match_mode = :any solve_power_flow!(
+        data)
+    @test all(data.converged)
+    gen_ix = PowerFlows.get_bus_lookup(data)[2]
+    q_min, q_max = data.bus_reactive_power_bounds[gen_ix, 1]
+    @test q_min - 1e-6 <= data.bus_reactive_power_injections[gen_ix, 1] <= q_max + 1e-6
+    @test only(data.controlled_devices.shunts).current > 0
+end
