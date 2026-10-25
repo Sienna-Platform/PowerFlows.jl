@@ -668,9 +668,46 @@ function _control_continuation!(
     set.inner_solves[] = 0
     set.symbolic_factors[] = 0
     set.numeric_refactors[] = 0
-    converged = _ctrl_solve!(pf, data, ts; kwargs...)
-    converged || return false
+    pre = _snapshot_state(data, ts)
+    if _ctrl_solve!(pf, data, ts; kwargs...)
+        ok = _regulate_devices!(pf, data, set, ts; kwargs...)
+    elseif get(kwargs, :check_reactive_power_limits, get_check_reactive_power_limits(pf))
+        # Bad starting device settings can make the Q-limited solve fail, and regulation
+        # needs a converged start. Regulate without Q limits, then enforce them at the end.
+        @warn "discrete control: the initial solve with reactive power limits did not \
+            converge at time step $ts; regulating devices without the limits, then \
+            re-solving with them"
+        _restore_state!(data, ts, pre)
+        ok =
+            _ctrl_solve!(pf, data, ts; kwargs..., check_reactive_power_limits = false) &&
+            _regulate_devices!(pf, data, set, ts;
+                kwargs..., check_reactive_power_limits = false) &&
+            _ctrl_solve!(pf, data, ts; kwargs...)
+    else
+        return false
+    end
+    # Classify each FACTS endpoint against its final voltage-dependent bound and setpoint
+    # (`saturated` reported by `get_controlled_device_results` and written back to PSY). Uses
+    # the final converged voltages.
+    for d in set.facts
+        classify_facts_saturation!(d, measured_value(d, data, ts))
+    end
+    # Reported branch flows are computed from the arc-admittance matrices right after
+    # this time step in `solve_power_flow!`; bring the moved branch devices' rows in
+    # line with their final parameters so flows match the solved network.
+    _sync_arc_admittances!(data, set)
+    return ok
+end
 
+"""Run the steepness continuation and the snap/restore from a converged state. Returns
+whether the final snapped solve converged."""
+function _regulate_devices!(
+    pf,
+    data,
+    set::ControlledDeviceSet,
+    ts::Int;
+    kwargs...,
+)::Bool
     n_taps = length(set.taps)
     n_shunts = length(set.shunts)
     n_facts = length(set.facts)
@@ -775,18 +812,7 @@ function _control_continuation!(
             MAX_CONTROL_PASSES_PER_STAGE=$(MAX_CONTROL_PASSES_PER_STAGE) passes \
             (S=$S); regulation may be loose at time step $ts"
     end
-    ok = snap_and_restore!(pf, data, set, ts, scratch_snap; kwargs...)
-    # Classify each FACTS endpoint against its final voltage-dependent bound and setpoint
-    # (`saturated` reported by `get_controlled_device_results` and written back to PSY). Uses
-    # the final converged voltages from `snap_and_restore!`.
-    for d in set.facts
-        classify_facts_saturation!(d, measured_value(d, data, ts))
-    end
-    # Reported branch flows are computed from the arc-admittance matrices right after
-    # this time step in `solve_power_flow!`; bring the moved branch devices' rows in
-    # line with their final parameters so flows match the solved network.
-    _sync_arc_admittances!(data, set)
-    return ok
+    return snap_and_restore!(pf, data, set, ts, scratch_snap; kwargs...)
 end
 
 # Incremental λ-restore of one device from its snapped value toward the
