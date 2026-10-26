@@ -130,15 +130,14 @@ end
     @test isapprox(data.bus_magnitude, data_off.bus_magnitude; atol = 1e-8)
     @test isapprox(data.bus_angles, data_off.bus_angles; atol = 1e-8)
 
-    # `ga_flat_start` implies the DC warm start. GA runs first, then the DC angles compete.
+    # `ga_flat_start` implies the DC warm start. GA runs first; a GA start at `handoff_tol`
+    # skips the DC angles.
     pf_ga_only = ACPowerFlow(; dc_warm_start = false, ga_flat_start = true)
     @test PF.get_dc_warm_start(pf_ga_only)
     logs, ok = solve_logged!(flat_data(pf_ga_only), pf_ga_only)
     @test ok
     @test count_logs(logs, ga_ran) == 1
-    ga_ix = findfirst(l -> occursin(ga_ran, string(l.message)), logs)
-    dc_ix = findfirst(l -> occursin("DC power flow angles", string(l.message)), logs)
-    @test ga_ix < dc_ix
+    @test count_logs(logs, "DC power flow angles") == 0
 
     # `converged` is read as of entry, so a first multi-period solve starts every step flat.
     pf_ga = ACPowerFlow(; ga_flat_start = true, time_steps = 3)

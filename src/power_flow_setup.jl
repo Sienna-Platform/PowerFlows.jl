@@ -49,6 +49,8 @@ function _dc_warm_start!(
     newx0 = _enhanced_flat_start(x0, data, residual, time_step)
     _pick_better_x0(x0, newx0, time_step, residual, data, "flat-start magnitudes")
     cold && _ga_start!(x0, pf, data, residual, time_step)
+    # The DC angles do not improve a start that is already at `handoff_tol`.
+    norm(residual.Rv, Inf) <= get_solution_parameters(pf).handoff_tol && return
     # A flat start puts zero angle across each phase shifter, which the residual sees as a
     # large false flow. The DC angles include the phase shift.
     _dc_power_flow_fallback!(data, time_step)
