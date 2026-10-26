@@ -1884,4 +1884,14 @@ end
     data.bus_angles .= 0.0
     @test solve_power_flow!(data)
     @test minimum(data.bus_magnitude[:, 1]) >= PF.DEFAULT_FD_VM_ABORT
+    # The fixed-Jacobian stage stalls, and its NR handoff reaches a low-voltage root.
+    pf = ACPolarPowerFlow{PF.FastDecoupledFixed}(; correct_bustypes = true,
+        solution_parameters = SolutionParameters(;
+            handoff_solver = NewtonRaphsonACPowerFlow,
+        ))
+    data = PowerFlowData(pf, sys)
+    data.bus_magnitude[data.bus_type[:, 1] .== PSY.ACBusTypes.PQ, 1] .= 1.0
+    data.bus_angles .= 0.0
+    ok = @test_logs (:warn, r"handoff converged") match_mode = :any solve_power_flow!(data)
+    @test !ok
 end

@@ -448,6 +448,7 @@ function _fd_fixed_jacobian_power_flow(
             ss = dot(residual.Rv, residual.Rv)
 
             # A stale J refreezes at the cycle start when its step fails or drives |V| below the floor.
+            # With fd_non_divergent, a low-|V| cycle backtracks below; without it, the stage stops.
             stale = fd_non_divergent && refreeze_on_stall && !fresh
             vm_abort = _fd_vm_abort(vm_view, fd_vm_abort)
             failed = vm_abort || !(ss < fd_ndvfct * sg.prev_ss)
@@ -465,7 +466,7 @@ function _fd_fixed_jacobian_power_flow(
                 continue
             end
 
-            if vm_abort
+            if vm_abort && !fd_non_divergent
                 @warn(
                     "$solver_name: a bus voltage magnitude was driven below " *
                     "$(fd_vm_abort); aborting FD stage."
@@ -552,6 +553,15 @@ function _fd_fixed_jacobian_power_flow(
         J(data, time_step)
     end
     _finalize_formulation!(pf, data, x_final, residual, time_step)
+    # From a stalled stage the handoff can reach a low-voltage root the stage itself rejects.
+    if converged && handoff_iters > 0 &&
+       _fd_vm_abort(view(data.bus_magnitude, :, time_step), fd_vm_abort)
+        @warn(
+            "$solver_name: the handoff converged to a state with a bus voltage magnitude " *
+            "below $(fd_vm_abort); reporting non-convergence."
+        )
+        converged = false
+    end
     result = _finalize_power_flow(
         converged, i, solver_name, residual, data, J.Jv, time_step,
     )
