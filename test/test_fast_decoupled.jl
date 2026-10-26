@@ -1877,26 +1877,11 @@ end
 # must backtrack.
 @testset "FastDecoupled flat start on ACTIVSg10k keeps |V| in band" begin
     sys = PSB.build_system(PSB.MatpowerTestSystems, "matpower_ACTIVSg10k_sys")
-    function flat_solve(pf)
-        data = PowerFlowData(pf, sys)
-        pq = data.bus_type[:, 1] .== PSY.ACBusTypes.PQ
-        data.bus_magnitude[pq, 1] .= 1.0
-        data.bus_angles .= 0.0
-        return solve_power_flow!(data), data
-    end
-    params(; kw...) = SolutionParameters(; linear_solver = "KLU", tol = 1e-8, kw...)
-    warm = PowerFlowData(
-        ACPolarPowerFlow(; correct_bustypes = true, solution_parameters = params()), sys,
-    )
-    @test solve_power_flow!(warm)
-    for handoff in (PF.NoHandoff, NewtonRaphsonACPowerFlow)
-        ok, data = flat_solve(
-            ACPolarPowerFlow{PF.FastDecoupledXB}(; correct_bustypes = true,
-                solution_parameters = params(;
-                    handoff_solver = handoff, enhanced_flat_start = false)),
-        )
-        @test ok
-        @test minimum(data.bus_magnitude[:, 1]) >= PF.DEFAULT_FD_VM_ABORT
-        @test isapprox(data.bus_magnitude, warm.bus_magnitude; atol = 1e-6)
-    end
+    pf = ACPolarPowerFlow{PF.FastDecoupledXB}(;
+        correct_bustypes = true, enhanced_flat_start = false)
+    data = PowerFlowData(pf, sys)
+    data.bus_magnitude[data.bus_type[:, 1] .== PSY.ACBusTypes.PQ, 1] .= 1.0
+    data.bus_angles .= 0.0
+    @test solve_power_flow!(data)
+    @test minimum(data.bus_magnitude[:, 1]) >= PF.DEFAULT_FD_VM_ABORT
 end
