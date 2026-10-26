@@ -447,7 +447,7 @@ function _fd_fixed_jacobian_power_flow(
             residual(data, sv.x, time_step)
             ss = dot(residual.Rv, residual.Rv)
 
-            # A stale J refreezes at the cycle start when its step fails or drives |V|≈0.
+            # A stale J refreezes at the cycle start when its step fails or drives |V| below the floor.
             stale = fd_non_divergent && refreeze_on_stall && !fresh
             vm_abort = _fd_vm_abort(vm_view, fd_vm_abort)
             failed = vm_abort || !(ss < fd_ndvfct * sg.prev_ss)
@@ -1289,8 +1289,8 @@ function _fd_decoupled_power_flow(
     rinf_prev = Inf
     i = 0
 
-    # One FD half-step + explicit sync + residual refresh, returning whether it diverged on a
-    # BLOWUP/V≈0 guard (only consulted when fd_non_divergent is off).
+    # One FD half-step + explicit sync + residual refresh, returning whether it diverged on the
+    # BLOWUP guard (only consulted when fd_non_divergent is off).
     while i < maxIterations && !converged
         _fd_begin_cycle!(sg, sv.x, ss)
         diverged = false

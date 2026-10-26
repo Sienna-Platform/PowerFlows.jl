@@ -175,7 +175,7 @@ const GA_CONSISTENCY_FACTOR = 10.0 # no-handoff case: gap ≤ tol but residual >
 const DEFAULT_VALIDATE_VOLTAGES = true
 const MinMax = NamedTuple{(:min, :max), Tuple{Float64, Float64}}
 const DEFAULT_VALIDATION_RANGE = (min = 0.5, max = 1.5)
-# The DVLIM guard can leave |V| at 0.01·|V|, so a floor of 0.01 accepts that state.
+# The DVLIM guard can leave |V| at 0.01·|V|. The floor is the validation minimum, above that.
 const DEFAULT_FD_VM_ABORT = DEFAULT_VALIDATION_RANGE.min
 # const MAX_INDS_TO_PRINT = 10
 
