@@ -339,12 +339,18 @@ function _dc_power_flow_fallback!(data::ACPowerFlowData, time_step::Int)
     # Threaded time-step workers share the factored ABA, and a KLU solve writes its numeric
     # workspace. One global lock is enough: the fallback runs only on a large residual.
     @lock _DC_FALLBACK_LOCK PNM.solve!(solver_cache, p_inj)
+    # The ABA keeps one REF per island, so it solves for the angle of any other REF bus. The AC
+    # solve holds every REF angle fixed: keep the stored ones.
+    ref_ix = findall(==(PSY.ACBusTypes.REF), view(data.bus_type, :, time_step))
+    θ_ref = data.bus_angles[ref_ix, time_step]
     data.bus_angles[valid_ix, time_step] .= p_inj
     # The reduced solve is referenced to 0 at each ref bus, but the AC solve holds each
     # ref bus fixed at its stored angle: shift the warm start onto the AC reference so
     # arcs incident to a ref bus with nonzero stored angle don't start with a spurious
     # angle difference. Only this column — others may hold solved AC states.
     _shift_angles_to_stored_reference!(data, time_step)
+    data.bus_angles[ref_ix, time_step] .= θ_ref
+    return
 end
 
 """
