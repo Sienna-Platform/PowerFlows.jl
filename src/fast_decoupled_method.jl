@@ -226,8 +226,7 @@ end
 """
     _fd_vm_abort(vm, vm_abort) -> Bool
 
-V≈0 abort: returns `true` if any bus voltage magnitude has been driven below
-`vm_abort`."""
+Low-|V| test: returns `true` if any bus voltage magnitude is below `vm_abort` or not finite."""
 function _fd_vm_abort(vm::AbstractVector{Float64}, vm_abort::Float64)
     @inbounds for v in vm
         (isfinite(v) && v >= vm_abort) || return true
@@ -1367,8 +1366,9 @@ function _fd_decoupled_power_flow(
 
         ss = dot(residual.Rv, residual.Rv)
 
-        # V≈0 abort.
-        if _fd_vm_abort(Vm, fd_vm_abort)
+        # With fd_non_divergent, a low-|V| cycle backtracks. Without it, the stage stops.
+        vm_low = _fd_vm_abort(Vm, fd_vm_abort)
+        if vm_low && !fd_non_divergent
             @warn(
                 "$solver_name: a bus voltage magnitude was driven below $(fd_vm_abort); " *
                 "aborting FD stage."
@@ -1388,7 +1388,7 @@ function _fd_decoupled_power_flow(
 
         # --- non-divergent backtracking: if the full cycle failed to improve Σ(Rv²) enough,
         # re-apply a halved cycle step from the cycle-start state (a NaN `ss` fails it too). ---
-        if fd_non_divergent && !(ss < fd_ndvfct * sg.prev_ss)
+        if fd_non_divergent && (vm_low || !(ss < fd_ndvfct * sg.prev_ss))
             accepted = false
             factor = 1.0
             # Snapshot the full-cycle step ONCE. Backtracking re-applies a scaled copy from the

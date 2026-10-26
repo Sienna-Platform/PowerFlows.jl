@@ -114,7 +114,6 @@ const DEFAULT_FD_NDVFCT = 0.99 # non-divergent improvement factor (accept a half
 const DEFAULT_FD_MAX_STEP_HALVINGS = 10 # ≤10 inner mismatch calculations (step factor down to ~0.002)
 const DEFAULT_FD_BLOWUP = 5.0 # largest unscaled per-half-step |Δθ| (rad) / |ΔV/V| abort threshold
 const DEFAULT_FD_DVLIM = 0.99 # uniform ΔV-vector scale-down so largest applied |ΔV| ≤ this, + ΔV/V ≤ −1 guard
-const DEFAULT_FD_VM_ABORT = 0.01 # abort if any bus |V| driven to ≈0
 """
 Warn-once threshold for branch reactance `|x|` in the fast/fixed-decoupled methods.
 """
@@ -176,6 +175,8 @@ const GA_CONSISTENCY_FACTOR = 10.0 # no-handoff case: gap ≤ tol but residual >
 const DEFAULT_VALIDATE_VOLTAGES = true
 const MinMax = NamedTuple{(:min, :max), Tuple{Float64, Float64}}
 const DEFAULT_VALIDATION_RANGE = (min = 0.5, max = 1.5)
+# The DVLIM guard can leave |V| at 0.01·|V|, so a floor of 0.01 accepts that state.
+const DEFAULT_FD_VM_ABORT = DEFAULT_VALIDATION_RANGE.min
 # const MAX_INDS_TO_PRINT = 10
 
 const FACTS_MODE_MAP = Dict(
