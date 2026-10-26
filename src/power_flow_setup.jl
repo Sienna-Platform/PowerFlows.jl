@@ -23,16 +23,7 @@ function improve_x0!(x0::Vector{Float64},
         newx0 = _previous_solution_start(x0, data, prev)
         _pick_better_x0(x0, newx0, time_step, residual, data, "previous converged solution")
     end
-    cold = _dc_warm_start!(x0, pf, data, residual, time_step, prev)
-    handoff_tol = get_solution_parameters(pf).handoff_tol
-    if get_ga_flat_start(pf) && cold && norm(residual.Rv, Inf) > handoff_tol
-        backend = resolve_linear_solver_backend(get_solution_parameters(pf).linear_solver)
-        newx0 = _ga_flat_start(x0, data, residual, time_step, handoff_tol, backend)
-        # The GA stage leaves `data` and `residual` at its own iterate, not at `x0`.
-        residual(data, x0, time_step)
-        _pick_better_x0(x0, newx0, time_step, residual, data,
-            "generalized-admittance flat start")
-    end
+    _dc_warm_start!(x0, pf, data, residual, time_step, prev)
     _large_residual(residual) && _warn_large_initial_residual(residual, data, time_step)
     return x0
 end
@@ -40,7 +31,7 @@ end
 _large_residual(residual) = sum(abs, residual.Rv) > LARGE_RESIDUAL * length(residual.Rv)
 
 # Warm starts (after a converged step, a contingency off a solved base) skip the stage unless
-# the residual is large. Returns whether the start was cold.
+# the residual is large.
 function _dc_warm_start!(
     x0::Vector{Float64},
     pf::AbstractACPowerFlow,
@@ -53,10 +44,11 @@ function _dc_warm_start!(
     cold = isnothing(prev) && (large || _is_flat_start(residual, data, time_step))
     if !(_has_dc_start(data) && (large || cold))
         @debug "skipping DC warm start"
-        return cold
+        return
     end
     newx0 = _enhanced_flat_start(x0, data, residual, time_step)
     _pick_better_x0(x0, newx0, time_step, residual, data, "flat-start magnitudes")
+    cold && _ga_start!(x0, pf, data, residual, time_step)
     # A flat start puts zero angle across each phase shifter, which the residual sees as a
     # large false flow. The DC angles include the phase shift.
     _dc_power_flow_fallback!(data, time_step)
@@ -65,7 +57,29 @@ function _dc_warm_start!(
     # The DC solve overwrote `data`'s angles: re-establish `_pick_better_x0`'s precondition.
     residual(data, x0, time_step)
     _pick_better_x0(x0, newx0, time_step, residual, data, "DC power flow angles")
-    return cold
+    return
+end
+
+_ga_start!(x0, ::AbstractACPowerFlow, data, residual, time_step) = nothing
+
+# GA runs before the DC angles: from the DC angles it stagnates (EI: 40 iterations, no gain).
+function _ga_start!(
+    x0::Vector{Float64},
+    pf::ACPolarPowerFlow,
+    data::ACPowerFlowData,
+    residual::ACPowerFlowResidual,
+    time_step::Int64,
+)
+    handoff_tol = get_solution_parameters(pf).handoff_tol
+    if get_ga_flat_start(pf) && norm(residual.Rv, Inf) > handoff_tol
+        backend = resolve_linear_solver_backend(get_solution_parameters(pf).linear_solver)
+        newx0 = _ga_flat_start(x0, data, residual, time_step, handoff_tol, backend)
+        # The GA stage leaves `data` and `residual` at its own iterate, not at `x0`.
+        residual(data, x0, time_step)
+        _pick_better_x0(x0, newx0, time_step, residual, data,
+            "generalized-admittance flat start")
+    end
+    return
 end
 
 # Polar state: θ sits in the second slot of each PV and PQ bus.

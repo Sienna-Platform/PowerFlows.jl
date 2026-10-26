@@ -474,10 +474,11 @@ with the specified solver type.
 - `dc_warm_start::Bool`: Whether to start from DC power flow angles and per-island PQ
     magnitudes when the initial residual is large, or when the start is flat (each island's
     non-REF buses at one angle) with no converged earlier time step. Default is `true`.
-- `ga_flat_start::Bool`: Whether to improve the DC warm start with a
-    [`GeneralizedAdmittanceACPowerFlow`](@ref) stage run to `handoff_tol` when the mismatch
-    exceeds it, there is no converged earlier time step, and the start is flat or its
-    residual is large. Implies `dc_warm_start`. Default is `false`.
+- `ga_flat_start::Bool`: Whether to run a [`GeneralizedAdmittanceACPowerFlow`](@ref) stage
+    to `handoff_tol` before the DC angles of the DC warm start, when the mismatch exceeds it,
+    there is no converged earlier time step, and the start is flat or its residual is large.
+    The DC angles are then kept only if they decrease the residual. Implies `dc_warm_start`.
+    Default is `false`.
 - `skip_redistribution::Bool`: Whether to skip slack redistribution. Default is `false`.
 - `network_reductions::Vector{PNM.NetworkReduction}`: Network reductions to apply.
     Default is an empty vector. A `PNM.ZeroImpedanceBranchReduction` placed here is routed to
