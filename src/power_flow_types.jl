@@ -471,15 +471,13 @@ with the specified solver type.
     the reference bus. If a `Dict{Tuple{DataType, String}, Float64}`, it should map
     `(component_type, component_name)` tuples to participation factors. If a `Vector` of such
     dictionaries, different participation factors can be used for different time steps. Default is `nothing`.
-- `enhanced_flat_start::Bool`: Whether to use enhanced flat start initialization. Default is `true`.
-- `robust_power_flow::Bool`: Whether to try DC power flow angles as the starting point when the
-    initial residual is large, or when the start is flat (each island's non-REF buses at one
-    angle) with no converged earlier time step. Default is `false`.
-- `ga_flat_start::Bool`: Whether to improve the starting point with a
-    [`GeneralizedAdmittanceACPowerFlow`](@ref) stage run to `handoff_tol` when the initial
-    mismatch exceeds it, there is no converged earlier time step, and the start is flat or its
-    residual is large. With `robust_power_flow`, it runs only when the DC start was not taken.
-    Recommended for large systems solved from a flat start. Default is `false`.
+- `dc_warm_start::Bool`: Whether to start from DC power flow angles and per-island PQ
+    magnitudes when the initial residual is large, or when the start is flat (each island's
+    non-REF buses at one angle) with no converged earlier time step. Default is `true`.
+- `ga_flat_start::Bool`: Whether to improve the DC warm start with a
+    [`GeneralizedAdmittanceACPowerFlow`](@ref) stage run to `handoff_tol` when the mismatch
+    exceeds it, there is no converged earlier time step, and the start is flat or its
+    residual is large. Implies `dc_warm_start`. Default is `false`.
 - `skip_redistribution::Bool`: Whether to skip slack redistribution. Default is `false`.
 - `network_reductions::Vector{PNM.NetworkReduction}`: Network reductions to apply.
     Default is an empty vector. A `PNM.ZeroImpedanceBranchReduction` placed here is routed to
@@ -501,7 +499,7 @@ with the specified solver type.
     `:lines_and_loads` (PSS/E control code 2) is reserved. Default is `:lines_only`.
 - `solution_parameters::SolutionParameters`: The solve parameters — convergence targets,
     step-control limits, network controls and the linear-solver backend. Also the home of
-    `check_reactive_power_limits`, `enhanced_flat_start`, `control_discrete_devices`,
+    `check_reactive_power_limits`, `dc_warm_start`, `control_discrete_devices`,
     `area_interchange_control`, `interchange_tolerance` and `tie_definition`, which remain
     accepted as keywords here and are folded into the stored parameters.
 """
@@ -515,7 +513,6 @@ struct ACPolarPowerFlow{ACSolver <: ACPowerFlowSolverType} <: AbstractACPowerFlo
         Dict{Tuple{DataType, String}, Float64},
         Vector{Dict{Tuple{DataType, String}, Float64}},
     }
-    robust_power_flow::Bool
     ga_flat_start::Bool
     skip_redistribution::Bool
     distribute_slack_proportional_to_headroom::Bool
@@ -570,8 +567,7 @@ function ACPolarPowerFlow{ACSolver}(;
         Dict{Tuple{DataType, String}, Float64},
         Vector{Dict{Tuple{DataType, String}, Float64}},
     } = nothing,
-    enhanced_flat_start::Union{Nothing, Bool} = nothing,
-    robust_power_flow::Bool = false,
+    dc_warm_start::Union{Nothing, Bool} = nothing,
     ga_flat_start::Bool = false,
     skip_redistribution::Bool = false,
     distribute_slack_proportional_to_headroom::Bool = false,
@@ -592,7 +588,7 @@ function ACPolarPowerFlow{ACSolver}(;
     params = _apply_legacy_kwargs(
         solution_parameters;
         check_reactive_power_limits,
-        enhanced_flat_start,
+        dc_warm_start,
         control_discrete_devices,
         area_interchange_control,
         interchange_tolerance,
@@ -629,7 +625,6 @@ function ACPolarPowerFlow{ACSolver}(;
         calculate_voltage_stability_factors,
         log_solver_diagnostics,
         generator_slack_participation_factors,
-        robust_power_flow,
         ga_flat_start,
         skip_redistribution,
         distribute_slack_proportional_to_headroom,
@@ -656,8 +651,8 @@ get_solution_parameters(::PowerFlowEvaluationModel) = SolutionParameters()
 
 get_check_reactive_power_limits(pf::PowerFlowEvaluationModel) =
     get_solution_parameters(pf).check_reactive_power_limits
-get_enhanced_flat_start(pf::AbstractACPowerFlow) =
-    get_solution_parameters(pf).enhanced_flat_start
+get_dc_warm_start(pf::AbstractACPowerFlow) =
+    get_solution_parameters(pf).dc_warm_start || get_ga_flat_start(pf)
 get_distribute_slack_proportional_to_headroom(::PowerFlowEvaluationModel) = false
 get_distribute_slack_proportional_to_headroom(pf::AbstractACPowerFlow) =
     pf.distribute_slack_proportional_to_headroom
@@ -673,8 +668,6 @@ get_solver_kwargs(pf::PowerFlowEvaluationModel) =
     solver_kwargs(get_solution_parameters(pf))
 
 # Polar-only fields: rectangular has no equivalent, so default to false.
-get_robust_power_flow(::AbstractACPowerFlow) = false
-get_robust_power_flow(pf::ACPolarPowerFlow) = pf.robust_power_flow
 get_ga_flat_start(::AbstractACPowerFlow) = false
 get_ga_flat_start(pf::ACPolarPowerFlow) = pf.ga_flat_start
 get_calculate_loss_factors(::AbstractACPowerFlow) = false
@@ -721,16 +714,16 @@ Generalized Admittance operate on the polar formulation only and are rejected at
 construction.
 
 Unlike [`ACPolarPowerFlow`](@ref), this model has no
-`calculate_voltage_stability_factors`, `calculate_loss_factors`, or
-`robust_power_flow` options — those post-processing/fallback paths assume the
-polar state layout and have no rectangular equivalent.
+`calculate_voltage_stability_factors`, `calculate_loss_factors`, or `ga_flat_start`
+options — those post-processing/start paths assume the polar state layout and have no
+rectangular equivalent.
 
 # Arguments
 - `check_reactive_power_limits::Bool`: Default `false`.
 - `exporter::Union{Nothing, PowerFlowEvaluationModel}`: Default `nothing`.
 - `generator_slack_participation_factors`: Same semantics as
     [`ACPolarPowerFlow`](@ref). Default `nothing`.
-- `enhanced_flat_start::Bool`: Default `true`.
+- `dc_warm_start::Bool`: Default `true`.
 - `skip_redistribution::Bool`: Default `false`.
 - `distribute_slack_proportional_to_headroom::Bool`: Default `false`.
 - `network_reductions::Vector{PNM.NetworkReduction}`: Default empty.
@@ -770,7 +763,7 @@ function ACRectangularPowerFlow{ACSolver}(;
         Dict{Tuple{DataType, String}, Float64},
         Vector{Dict{Tuple{DataType, String}, Float64}},
     } = nothing,
-    enhanced_flat_start::Union{Nothing, Bool} = nothing,
+    dc_warm_start::Union{Nothing, Bool} = nothing,
     log_solver_diagnostics::Bool = false,
     skip_redistribution::Bool = false,
     distribute_slack_proportional_to_headroom::Bool = false,
@@ -804,7 +797,7 @@ function ACRectangularPowerFlow{ACSolver}(;
     params = _apply_legacy_kwargs(
         solution_parameters;
         check_reactive_power_limits,
-        enhanced_flat_start,
+        dc_warm_start,
         control_discrete_devices,
         area_interchange_control,
         interchange_tolerance,
@@ -863,16 +856,16 @@ Generalized Admittance are rejected at construction — they operate on the pola
 formulation only.
 
 Unlike [`ACPolarPowerFlow`](@ref), this model has no
-`calculate_voltage_stability_factors`, `calculate_loss_factors`, or
-`robust_power_flow` options — those post-processing/fallback paths assume the
-polar state layout and have no mixed current-power equivalent.
+`calculate_voltage_stability_factors`, `calculate_loss_factors`, or `ga_flat_start`
+options — those post-processing/start paths assume the polar state layout and have no
+mixed current-power equivalent.
 
 # Arguments
 - `check_reactive_power_limits::Bool`: Default `false`.
 - `exporter::Union{Nothing, PowerFlowEvaluationModel}`: Default `nothing`.
 - `generator_slack_participation_factors`: Same semantics as
     [`ACPolarPowerFlow`](@ref). Default `nothing`.
-- `enhanced_flat_start::Bool`: Default `true`.
+- `dc_warm_start::Bool`: Default `true`.
 - `skip_redistribution::Bool`: Default `false`.
 - `distribute_slack_proportional_to_headroom::Bool`: Default `false`.
 - `network_reductions::Vector{PNM.NetworkReduction}`: Default empty.
@@ -912,7 +905,7 @@ function ACMixedPowerFlow{ACSolver}(;
         Dict{Tuple{DataType, String}, Float64},
         Vector{Dict{Tuple{DataType, String}, Float64}},
     } = nothing,
-    enhanced_flat_start::Union{Nothing, Bool} = nothing,
+    dc_warm_start::Union{Nothing, Bool} = nothing,
     log_solver_diagnostics::Bool = false,
     skip_redistribution::Bool = false,
     distribute_slack_proportional_to_headroom::Bool = false,
@@ -947,7 +940,7 @@ function ACMixedPowerFlow{ACSolver}(;
     params = _apply_legacy_kwargs(
         solution_parameters;
         check_reactive_power_limits,
-        enhanced_flat_start,
+        dc_warm_start,
         control_discrete_devices,
         area_interchange_control,
         interchange_tolerance,

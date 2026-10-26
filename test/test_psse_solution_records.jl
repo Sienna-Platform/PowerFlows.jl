@@ -47,7 +47,7 @@ end
         check_reactive_power_limits = true,
         control_discrete_devices = true,
         area_interchange_control = true,
-        enhanced_flat_start = true,
+        dc_warm_start = true,
     )
     pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; solution_parameters = params)
     v = PF.solution_record_values(pf, PF.get_solution_parameters(pf), 100.0)
@@ -218,7 +218,7 @@ end
     v = PF.read_solution_records(path)
     @test v.flatst == 0  # the raw record field is still parsed
     params = read_solution_parameters(path)
-    @test params.enhanced_flat_start == SolutionParameters().enhanced_flat_start
+    @test params.dc_warm_start == SolutionParameters().dc_warm_start
 end
 
 @testset "Discrete control under fast-decoupled solving is dropped, not passed through" begin

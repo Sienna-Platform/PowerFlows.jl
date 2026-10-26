@@ -85,7 +85,7 @@ end
     @test isapprox(data_nr.bus_magnitude, data_hom.bus_magnitude; atol = 1e-6)
 end
 
-@testset "flat-start stages: DC start on a flat start, GA only on a cold start" begin
+@testset "flat-start stages: DC warm start on a cold start, then GA" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys14")
     count_logs(logs, pattern) = count(l -> occursin(pattern, string(l.message)), logs)
     function solve_logged!(data, pf)
@@ -98,43 +98,45 @@ end
         data.bus_angles .= 0.0
         return data
     end
-    dc_taken = "DC power flow fallback yields smaller residual"
+    dc_taken = "DC power flow angles yields smaller residual"
     ga_ran = "Generalized-admittance flat start:"
 
     # The flat start's residual is below the LARGE_RESIDUAL gate, so only flatness triggers DC.
-    pf_robust = ACPowerFlow(; robust_power_flow = true)
-    data = flat_data(pf_robust)
+    pf_default = ACPowerFlow()
+    data = flat_data(pf_default)
     residual = PF.ACPowerFlowResidual(data, 1)
     residual(data, PF.calculate_x0(data, 1), 1)
     @test PF._is_flat_start(residual, data, 1)
     @test !PF._large_residual(residual)
-    logs, ok = solve_logged!(data, pf_robust)
+    logs, ok = solve_logged!(data, pf_default)
     @test ok
     @test count_logs(logs, dc_taken) == 1
     residual(data, PF.calculate_x0(data, 1), 1)
     @test !PF._is_flat_start(residual, data, 1)
     # Zeroed angles with the REF kept at a case-file angle are flat too.
-    data_ref = flat_data(pf_robust)
+    data_ref = flat_data(pf_default)
     ref = findfirst(==(PSY.ACBusTypes.REF), data_ref.bus_type[:, 1])
     data_ref.bus_angles[ref, 1] = 0.3
     residual_ref = PF.ACPowerFlowResidual(data_ref, 1)
     residual_ref(data_ref, PF.calculate_x0(data_ref, 1), 1)
     @test PF._is_flat_start(residual_ref, data_ref, 1)
 
-    pf_default = ACPowerFlow()
-    data_default = flat_data(pf_default)
-    logs, ok = solve_logged!(data_default, pf_default)
+    pf_off = ACPowerFlow(; dc_warm_start = false)
+    data_off = flat_data(pf_off)
+    @test isnothing(PF.get_aux_network_matrix(data_off))
+    logs, ok = solve_logged!(data_off, pf_off)
     @test ok
     @test count_logs(logs, dc_taken) == 0
-    @test isapprox(data.bus_magnitude, data_default.bus_magnitude; atol = 1e-8)
-    @test isapprox(data.bus_angles, data_default.bus_angles; atol = 1e-8)
+    @test isapprox(data.bus_magnitude, data_off.bus_magnitude; atol = 1e-8)
+    @test isapprox(data.bus_angles, data_off.bus_angles; atol = 1e-8)
 
-    # GA is the rescue for a start the DC stage did not improve.
-    pf_both = ACPowerFlow(; robust_power_flow = true, ga_flat_start = true)
-    logs, ok = solve_logged!(flat_data(pf_both), pf_both)
+    # `ga_flat_start` implies the DC warm start, and GA starts from the DC angles.
+    pf_ga_only = ACPowerFlow(; dc_warm_start = false, ga_flat_start = true)
+    @test PF.get_dc_warm_start(pf_ga_only)
+    logs, ok = solve_logged!(flat_data(pf_ga_only), pf_ga_only)
     @test ok
     @test count_logs(logs, dc_taken) == 1
-    @test count_logs(logs, ga_ran) == 0
+    @test count_logs(logs, ga_ran) == 1
 
     # `converged` is read as of entry, so a first multi-period solve starts every step flat.
     pf_ga = ACPowerFlow(; ga_flat_start = true, time_steps = 3)

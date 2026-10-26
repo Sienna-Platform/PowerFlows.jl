@@ -7,7 +7,7 @@
 #   spots.
 #
 #   AC solves run from a FLAT START (PQ |V|→1.0, all θ→0); the data is built once
-#   and re-flat-started before each solve. enhanced_flat_start (the default) is
+#   and re-flat-started before each solve. dc_warm_start (the default) is
 #   kept, so the flat guess is realistically improved and the solve converges —
 #   but starting from flat still forces many more Newton iterations than the
 #   system's near-solution warm start. The full-solve timing and the deep profile
@@ -169,7 +169,7 @@ end
 # AC phase + component timing for one (solver, backend)
 # ─────────────────────────────────────────────────────────────────────────────
 function profile_ac(label, solver, backend, extra_settings = Dict{Symbol, Any}())
-    # Keep enhanced_flat_start (the default) so the flat guess is realistically
+    # Keep dc_warm_start (the default) so the flat guess is realistically
     # improved and the solve converges; resetting to flat below still forces many
     # more Newton iterations than the system's near-solution warm start, without
     # manufacturing a divergence.
