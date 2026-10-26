@@ -762,7 +762,7 @@ function PowerFlowData(
     )
     neighbors = _calculate_neighbors(power_network_matrix)
 
-    # The ABA has a row per non-REF bus: a network of REF buses has nothing to factor.
+    # The ABA drops one REF bus per island: a network of one-bus islands has nothing to factor.
     n_ref = length(PNM.get_ref_bus_position(power_network_matrix))
     if get_dc_warm_start(pf) && n_ref < size(power_network_matrix, 1)
         aux_network_matrix =
