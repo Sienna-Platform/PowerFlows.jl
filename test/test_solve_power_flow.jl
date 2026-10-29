@@ -506,15 +506,15 @@ end
     )
 end
 
-@testset "enhanced flat start" begin
+@testset "DC warm start magnitudes" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
     pf = ACPowerFlow{TrustRegionACPowerFlow}(;
-        enhanced_flat_start = true,
+        dc_warm_start = true,
         correct_bustypes = true,
     )
     data = PowerFlowData(pf, sys)
     x0 = PF.calculate_x0(data, 1)
-    x0_enhanced = PF._enhanced_flat_start(x0, data, 1)
+    x0_enhanced = PF._enhanced_flat_start(x0, data, PF.ACPowerFlowResidual(data, 1), 1)
     solve_power_flow!(data)
 end
 
@@ -1004,7 +1004,8 @@ end
     _add_simple_load!(sys, b5, 10.0, 2.0)
     data = PowerFlowData(ACPowerFlow(), sys)
     bus_lookup = PF.get_bus_lookup(data)
-    x = PF._enhanced_flat_start(PF.calculate_x0(data, 1), data, 1)
+    x = PF._enhanced_flat_start(
+        PF.calculate_x0(data, 1), data, PF.ACPowerFlowResidual(data, 1), 1)
     @test all(isfinite, x)
     @test x[2 * bus_lookup[3] - 1] ≈ (1.02 + 1.04) / 2
     @test x[2 * bus_lookup[5] - 1] ≈ 1.06

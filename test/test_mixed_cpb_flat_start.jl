@@ -29,7 +29,7 @@ end
     sys_ref = PSB.build_system(PSB.PSITestSystems, "c_sys5")
 
     pf_h = ACMixedPowerFlow{NewtonRaphsonACPowerFlow}(;
-        enhanced_flat_start = true,
+        dc_warm_start = true,
         solution_parameters = _mixed_fs_settings(),
     )
     pf_ref = ACPowerFlow{NewtonRaphsonACPowerFlow}()
@@ -52,7 +52,7 @@ end
 @testset "Mixed CPB flat start: modified-flat-start construction" begin
     sys = _mixed_perturb!(PSB.build_system(PSB.PSITestSystems, "c_sys5"))
     pf = ACMixedPowerFlow{NewtonRaphsonACPowerFlow}(;
-        enhanced_flat_start = true, solution_parameters = _mixed_fs_settings())
+        dc_warm_start = true, solution_parameters = _mixed_fs_settings())
     data = PowerFlowData(pf, sys)
     residual = PF.ACMixedCPBResidual(data, 1)
 

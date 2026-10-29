@@ -290,7 +290,7 @@ end
     dc = PowerFlowData(DCPowerFlow(), sys)
     solve_power_flow!(dc)
     ac = PowerFlowData(
-        ACPowerFlow(; correct_bustypes = true, robust_power_flow = true), sys)
+        ACPowerFlow(; correct_bustypes = true), sys)
     PF._dc_power_flow_fallback!(ac, 1)
     dc_lookup = PF.get_bus_lookup(dc)
     ac_lookup = PF.get_bus_lookup(ac)
@@ -299,4 +299,30 @@ end
             1e-12
     end
     @test !iszero(ac.bus_angles[ac_lookup[3], 1])
+end
+
+@testset "AC DC warm start from a phase-shifter flat start: $(label)" for (label, pf) in (
+    ("polar", ACPolarPowerFlow(; correct_bustypes = true)),
+    ("rectangular", ACRectangularPowerFlow(; correct_bustypes = true)),
+    ("mixed", ACMixedPowerFlow(; correct_bustypes = true)),
+)
+    sys = _dc_pst_loop_sys()
+    data = PowerFlowData(pf, sys)
+    @test any(!iszero, data.bus_phase_shift_injections)
+    @test solve_power_flow!(data)
+    warm_angles = copy(data.bus_angles)
+    warm_magnitude = copy(data.bus_magnitude)
+    data.bus_magnitude[data.bus_type[:, 1] .== PSY.ACBusTypes.PQ, 1] .= 1.0
+    data.bus_angles[data.bus_type[:, 1] .!= PSY.ACBusTypes.REF, 1] .= 0.0
+    fill!(data.converged, false)
+    logs, ok = Test.collect_test_logs(; min_level = Logging.Info) do
+        return solve_power_flow!(data)
+    end
+    @test ok
+    @test any(
+        l -> occursin("DC power flow angles yields smaller residual", l.message),
+        logs,
+    )
+    @test isapprox(data.bus_magnitude, warm_magnitude; atol = 1e-6)
+    @test isapprox(data.bus_angles, warm_angles; atol = 1e-6)
 end

@@ -23,7 +23,7 @@ end
         flat_start!(data)
         return data
     end
-    settings = PF.SolutionParameters(; enhanced_flat_start = false, maxIterations = 20)
+    settings = PF.SolutionParameters(; dc_warm_start = false, maxIterations = 20)
     polar = flat_data(
         ACPowerFlow{NewtonRaphsonACPowerFlow}(;
             correct_bustypes = true, solution_parameters = settings),
@@ -98,7 +98,7 @@ end
 @testset "Rectangular CI Power Flow: unsupported config rejected" begin
     # Removed fields: passing them is a constructor MethodError.
     @test_throws MethodError ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
-        robust_power_flow = true)
+        ga_flat_start = true)
     @test_throws MethodError ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
         calculate_loss_factors = true)
     @test_throws MethodError ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
@@ -106,7 +106,7 @@ end
     # Sanity: these kwargs ARE valid on the polar type — the MethodErrors above
     # prove the fields were removed from the rectangular type, not mistyped.
     @test ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
-        robust_power_flow = true) isa ACPolarPowerFlow
+        ga_flat_start = true) isa ACPolarPowerFlow
     @test ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
         calculate_loss_factors = true) isa ACPolarPowerFlow
     @test ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;

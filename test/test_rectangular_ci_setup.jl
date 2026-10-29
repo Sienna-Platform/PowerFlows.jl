@@ -173,9 +173,9 @@ end
 @testset "Rectangular CI: improve_x0" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
 
-    @testset "returns a usable x0 and respects enhanced_flat_start flag" begin
+    @testset "returns a usable x0 and respects dc_warm_start flag" begin
         pf_on = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
-            enhanced_flat_start = true)
+            dc_warm_start = true)
         data = PF.PowerFlowData(pf_on, sys)
         residual = PF.ACRectangularCIResidual(data, 1)
         x0 = PF.improve_x0(pf_on, data, residual, 1)
@@ -183,7 +183,7 @@ end
         @test all(isfinite, x0)
 
         pf_off = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
-            enhanced_flat_start = false)
+            dc_warm_start = false)
         data2 = PF.PowerFlowData(pf_off, sys)
         residual2 = PF.ACRectangularCIResidual(data2, 1)
         x0_off = PF.improve_x0(pf_off, data2, residual2, 1)

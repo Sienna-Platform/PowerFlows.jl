@@ -98,7 +98,7 @@ end
 
 # 2k flat-start sanity: ACTIVSg2000 is large enough that an enhanced flat start
 # is a meaningfully different (and harder) initial condition than the System
-# setpoints. Asserts the MCPB NR solver converges from `enhanced_flat_start =
+# setpoints. Asserts the MCPB NR solver converges from `dc_warm_start =
 # true` and matches polar NR within MIXED_PARITY_ATOL_2K on Vm/θ. One solve
 # per formulation (no loop) — the suite already builds 2k elsewhere.
 @testset "Mixed CPB Power Flow: 2k flat-start parity (ACTIVSg2000)" begin
@@ -106,11 +106,11 @@ end
     sys_h = PSB.build_system(PSB.MatpowerTestSystems, "matpower_ACTIVSg2000_sys")
     pf_p = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
         correct_bustypes = true,
-        enhanced_flat_start = true,
+        dc_warm_start = true,
     )
     pf_h = ACMixedPowerFlow{NewtonRaphsonACPowerFlow}(;
         correct_bustypes = true,
-        enhanced_flat_start = true,
+        dc_warm_start = true,
         solution_parameters = _mixed_pf_settings(),
     )
     res_p = solve_power_flow(pf_p, sys_p)

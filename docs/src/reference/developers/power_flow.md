@@ -12,8 +12,9 @@ AC formulations ([`ACPolarPowerFlow`](@ref), [`ACRectangularPowerFlow`](@ref),
 [`ACMixedPowerFlow`](@ref)).
 
 AC solves use sparse Jacobians factorized with [KLU.jl](https://github.com/JuliaSparse/KLU.jl).
-The initial guess comes from the current bus setpoints in `sys`, optionally adjusted
-by enhanced flat start and related options on the evaluation model.
+The initial guess comes from the current bus setpoints in `sys`. On a cold start, the
+`dc_warm_start` option (on by default) replaces it with DC power flow angles and per-island
+PQ magnitudes when that lowers the residual.
 
 ## Two standalone usage modes
 

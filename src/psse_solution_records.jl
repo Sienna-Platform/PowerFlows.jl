@@ -172,7 +172,7 @@ function solution_record_values(
     # constructor (see `_default_max_iterations`), so no branch is needed here.
     iterations = params.maxIterations
 
-    if params.enhanced_flat_start
+    if params.dc_warm_start
         flatst = 1
     else
         flatst = 0
@@ -435,11 +435,10 @@ Map solution records back onto PowerFlows parameters. `base_power` is the system
 MVA and converts the record's MW/MVAr mismatch back to a per-unit tolerance.
 
 Record fields with no PowerFlows counterpart are dropped; PowerFlows parameters the format
-cannot express keep their defaults. This includes `enhanced_flat_start`: PSS/E's FLATST
-means "always flat start," while PowerFlows' flag is a fallback used only when the starting
-residual is large (default `true`), so the two are not the same setting — `values.flatst`
-is parsed but never applied, and `enhanced_flat_start` keeps `SolutionParameters`' own
-default.
+cannot express keep their defaults. This includes `dc_warm_start`: PSS/E's FLATST
+means "always flat start," while PowerFlows' flag improves a cold or poor start (default
+`true`), so the two are not the same setting — `values.flatst` is parsed but never applied,
+and `dc_warm_start` keeps `SolutionParameters`' own default.
 """
 function solution_parameters(values::SolutionRecordValues, base_power::Float64)
     fd = uppercase(values.solver) == SOLUTION_RECORD_SOLVER_DECOUPLED
