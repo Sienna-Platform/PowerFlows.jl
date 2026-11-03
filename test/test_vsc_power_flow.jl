@@ -872,6 +872,7 @@ function _build_parallel_ic_system(; shared_ac::Bool = true)
             loss_function = PSY.LossCurve(
                 PSY.QuadraticCurve(0.005, 0.01, 0.002),
                 PSY.NaturalUnit(),
+                u"kA",
             ), input_basis = u"CU",
         )
         PSY.add_component!(sys, ic)

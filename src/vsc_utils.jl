@@ -20,13 +20,8 @@ function _loss_coefficients(curve::PSY.QuadraticCurve)
     )
 end
 
-function _loss_coefficients(curve::PSY.LossCurve, sys_base::Float64, dev_base::Float64)
-    # `PSY.LossCurve` x-axis ratio (system base / curve's own base, see `_loss_curve_own_base`)
-    # to reach `u"SU"`. When the curve is already `SystemBaseUnit`, `convert_power_units`
-    # dispatches to its identity method and ignores this ratio entirely.
-    ratio = sys_base / _loss_curve_own_base(PSY.get_power_units(curve), sys_base, dev_base)
-    su_curve = IS.convert_power_units(curve, PSY.SystemBaseUnit(), ratio)
-    return _loss_coefficients(PSY.get_value_curve(su_curve))
+function _loss_coefficients(curve::PSY.LossCurve)
+    return _loss_coefficients(PSY.get_value_curve(curve))
 end
 
 # Map the PSY per-terminal DC-side / AC-side control enums to a `DCNetwork` control mode.
@@ -347,8 +342,6 @@ function _push_converter!(
     ac_control,
     droop::Float64,
     loss_curve::PSY.LossCurve,
-    sys_base::Float64,
-    dev_base::Float64,
     s_max::Float64,
     p_lim,
     q_lim,
@@ -368,7 +361,7 @@ function _push_converter!(
     push!(b.dc_node_ix, dc_node_ix)
     push!(b.mode, mode)
     push!(b.ac_bus_number, ac_bus_number)
-    (la, lb, lc) = _loss_coefficients(loss_curve, sys_base, dev_base)
+    (la, lb, lc) = _loss_coefficients(loss_curve)
     push!(b.loss_a, la)
     push!(b.loss_b, lb)
     push!(b.loss_c, lc)
@@ -484,12 +477,11 @@ function _lower_vsc_lines!(
         to_ix = _get_bus_ix(bus_lookup, reverse_bus_search_map, to_number)
         nf = _new_dc_node!(b, -1)
         nt = _new_dc_node!(b, -1)
-        dev_base = PSY.get_base_power(line)
         _push_converter!(
             b, "$(PSY.get_name(line)) (from)", from_ix, from_number, nf,
             PSY.get_dc_control_from(line), PSY.get_ac_control_from(line),
-            PSY.get_dc_voltage_droop_from(line), PSY.get_converter_loss_from(line),
-            sys_base, dev_base,
+            PSY.get_dc_voltage_droop_from(line),
+            IS.convert_power_units(line, PSY.get_converter_loss_from(line), u"SU"),
             PSY.get_rating_from(line, u"SU"),
             _symmetric_limits(PSY.get_rating_from(line, u"SU")),
             PSY.get_reactive_power_limits_from(line, u"SU"),
@@ -499,8 +491,8 @@ function _lower_vsc_lines!(
         _push_converter!(
             b, "$(PSY.get_name(line)) (to)", to_ix, to_number, nt,
             PSY.get_dc_control_to(line), PSY.get_ac_control_to(line),
-            PSY.get_dc_voltage_droop_to(line), PSY.get_converter_loss_to(line),
-            sys_base, dev_base,
+            PSY.get_dc_voltage_droop_to(line),
+            IS.convert_power_units(line, PSY.get_converter_loss_to(line), u"SU"),
             PSY.get_rating_to(line, u"SU"),
             _symmetric_limits(PSY.get_rating_to(line, u"SU")),
             PSY.get_reactive_power_limits_to(line, u"SU"), _vsc_dc_set_to(line),
@@ -566,8 +558,7 @@ function _lower_mtdc!(
         _push_converter!(
             b, PSY.get_name(ic), ac_ix, bus_number, node,
             PSY.get_dc_control(ic), PSY.get_ac_control(ic),
-            PSY.get_dc_voltage_droop(ic), PSY.get_loss_function(ic),
-            sys_base, PSY.get_base_power(ic),
+            PSY.get_dc_voltage_droop(ic), PSY.get_loss_function(ic, u"SU"),
             PSY.get_rating(ic, u"SU"), PSY.get_active_power_limits(ic, u"SU"),
             PSY.get_reactive_power_limits(ic, u"SU"), _converter_dc_set(ic),
             _converter_ac_set(ic), 0.0,
