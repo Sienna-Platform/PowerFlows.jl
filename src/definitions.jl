@@ -49,6 +49,7 @@ const DEFAULT_MAX_REDISTRIBUTION_ITERATIONS = 10
 const DEFAULT_INTERCHANGE_TOLERANCE = 0.05
 const MIN_INTERCHANGE_TOLERANCE = 0.02
 const AREA_SLACK_ABSORPTION_LIMIT = 0.9
+const FLAT_ANGLE_TOL = 1e-12 # angle spread of a flat rectangular/mixed start, radians
 const LARGE_RESIDUAL = 10 # threshold for "bad initial guess": default
 # norm(residual, 1)/length(residual) > 10.
 

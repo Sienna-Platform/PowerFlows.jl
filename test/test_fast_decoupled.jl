@@ -141,7 +141,8 @@ end
 
 @testset "FastDecoupled B′/B″ vs exact Jacobian (flat, lossless)" begin
     sys = _lossless_flat_system()
-    pf = ACPowerFlow()
+    # The DC warm start would move the Jacobian off the flat point.
+    pf = ACPowerFlow(; dc_warm_start = false)
     data = PowerFlowData(pf, sys)
     time_step = 1
 

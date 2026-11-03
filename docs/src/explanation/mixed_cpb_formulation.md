@@ -102,7 +102,7 @@ allocation-free.
 [`TrustRegionACPowerFlow`](@ref) and [`LevenbergMarquardtACPowerFlow`](@ref)
 solvers. Robust Homotopy and Gradient Descent operate on the polar
 formulation only and are rejected at construction. Voltage stability factors,
-loss factors, and the DC robust fallback are not provided for this
+loss factors, and the generalized-admittance flat start are not provided for this
 formulation.
 
 The formulation is validated to machine precision against both the polar and
@@ -134,8 +134,8 @@ using PowerFlows
 pf = ACMixedPowerFlow()
 results = solve_power_flow(pf, system)
 
-# Trust Region from a flat start
-pf = ACMixedPowerFlow{TrustRegionACPowerFlow}(; enhanced_flat_start = true)
+# Trust Region
+pf = ACMixedPowerFlow{TrustRegionACPowerFlow}()
 results = solve_power_flow(pf, system)
 
 # Levenberg-Marquardt
@@ -145,6 +145,6 @@ results = solve_power_flow(pf, system)
 
 `ACMixedPowerFlow` accepts the same keyword arguments as
 [`ACRectangularPowerFlow`](@ref) (`check_reactive_power_limits`,
-`generator_slack_participation_factors`, `enhanced_flat_start`,
+`generator_slack_participation_factors`, `dc_warm_start`,
 `distribute_slack_proportional_to_headroom`, `network_reductions`,
 `time_steps`, `correct_bustypes`, `solution_parameters`, …).

@@ -475,7 +475,8 @@ end
 
 @testset "Jacobian refills cis(θ) only when the angles in data changed" begin
     c14 = PSB.build_system(PSITestSystems, "c_sys14")
-    data = PF.PowerFlowData(nr(; correct_bustypes = true), c14)
+    # No DC warm start: its factored ABA cannot be deepcopied.
+    data = PF.PowerFlowData(nr(; correct_bustypes = true, dc_warm_start = false), c14)
     residual = PF.ACPowerFlowResidual(data, 1)
     J = PF.ACPowerFlowJacobian(data, residual, 1)
     x = PF.calculate_x0(data, 1)

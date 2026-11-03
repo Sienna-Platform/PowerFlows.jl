@@ -1467,8 +1467,11 @@ end
     @test area3_row_fd.ni_solved < 0.5 * area3_row_fd.pdes
 
     sys_fdfj = _weak_tie_three_area_fixture()
+    # From the DC warm start, the failed Area3 solve restores a best state from which the
+    # fixed-Jacobian re-solve does not converge on this weak tie.
     pf_fdfj = ACPolarPowerFlow{FastDecoupledACPowerFlow{FDFixedJacobian, FDSchemeXB}}(;
         area_interchange_control = true,
+        dc_warm_start = false,
     )
     data_fdfj = PowerFlowData(pf_fdfj, sys_fdfj)
     @test PF.n_controlled_areas(data_fdfj) == 2

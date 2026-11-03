@@ -153,7 +153,7 @@ end
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
     bad_x0!(sys)
     iwamoto_pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
-        enhanced_flat_start = false,
+        dc_warm_start = false,
         solution_parameters = SolutionParameters(; iwamoto = true))
     @test_logs (:debug, r".*NewtonRaphsonACPowerFlow solver converged"
     ) match_mode = :any min_level = Logging.Debug PF.solve_power_flow(iwamoto_pf, sys)
@@ -191,7 +191,7 @@ end
     end
     for linear_solver in backends
         pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
-            enhanced_flat_start = false,
+            dc_warm_start = false,
             solution_parameters = SolutionParameters(; maxIterations = 3, linear_solver),
         )
         data = PowerFlowData(pf, sys)
@@ -208,7 +208,7 @@ end
     # `_repivots` is false on the default AppleAccelerate backend, so force KLU.
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
     pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
-        enhanced_flat_start = false,
+        dc_warm_start = false,
         solution_parameters = SolutionParameters(;
             maxIterations = 3,
             linear_solver = "KLU",
@@ -231,7 +231,7 @@ end
     # triggering consecutive reverts and the early-termination break.
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
     iwamoto_pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
-        enhanced_flat_start = false,
+        dc_warm_start = false,
         solution_parameters = SolutionParameters(;
             iwamoto = true,
             maxIterations = 20,
@@ -251,7 +251,7 @@ end
 @testset "terminal non-convergence is logged once, naming every failed time step" begin
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
     pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
-        enhanced_flat_start = false, time_steps = 2,
+        dc_warm_start = false, time_steps = 2,
         solution_parameters = SolutionParameters(; maxIterations = 2))
     data = PowerFlowData(pf, sys)
     data.bus_magnitude .= 0.0
@@ -334,12 +334,10 @@ end
 
 @testset "dc fallback" begin
     dc_pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
-        robust_power_flow = true,
-        enhanced_flat_start = false,
+        dc_warm_start = true,
     )
     no_dc_pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(;
-        robust_power_flow = false,
-        enhanced_flat_start = false,
+        dc_warm_start = false,
     )
     # test that _dc_power_flow_fallback! solves correctly.
     sys = PSB.build_system(PSB.PSITestSystems, "c_sys5")
@@ -356,13 +354,13 @@ end
     # check behavior of improved_x0 via creating bogus awful starting point.
     sys3 = deepcopy(sys)
     bad_x0!(sys3)
-    data3 = PowerFlowData(no_dc_pf, sys3)
+    data3 = PowerFlowData(dc_pf, sys3)
     x0 = PF.calculate_x0(data3, 1)
     residual = PF.ACPowerFlowResidual(data3, 1)
     residual(data3, x0, 1)
     residualSize = norm(residual.Rv, 1)
     newx0 = deepcopy(x0)
-    PF.dc_power_flow_start!(newx0, data, 1, residual)
+    PF._dc_warm_start!(newx0, dc_pf, data3, residual, 1, nothing)
     residual(data3, newx0, 1)
     newResidualSize = norm(residual.Rv, 1)
     @test x0 !== newx0
@@ -373,7 +371,7 @@ end
     # _initialize_bus_data! corrects the voltages to be "reasonable," between 0.8 and 1.2
     sys4 = deepcopy(sys)
     bad_x0!(sys4)
-    improvement_regex = r".*DC power flow fallback yields smaller residual.*"
+    improvement_regex = r".*DC power flow angles yields smaller residual.*"
     @test_logs (:info, improvement_regex) match_mode = :any min_level = Logging.Debug PF.solve_power_flow(
         dc_pf,
         sys4,
@@ -383,14 +381,14 @@ end
     logs, _ = Test.collect_test_logs(; min_level = Logging.Debug) do
         PF.solve_power_flow(no_dc_pf, sys5)
     end
-    @test !any(r -> occursin("DC power flow fallback yields", r.message), logs)
+    @test !any(r -> occursin("DC power flow angles yields", r.message), logs)
 end
 
 @testset "large residual warning" begin
     # a system where bus numbers aren't 1, 2,...is there a smaller one with this property?
     sys = PSB.build_system(PSB.PSISystems, "RTS_GMLC_DA_sys")
     for i in [1, 35, 52, 57, 43, 66, 49, 68, 71, 25, 69, 58, 3, 73]
-        pf = ACPowerFlow(; enhanced_flat_start = false, correct_bustypes = true)
+        pf = ACPowerFlow(; dc_warm_start = false, correct_bustypes = true)
         data = PowerFlowData(pf, sys)
         # First, write solution to data. Then set magnitude of a random-ish bus to a huge number
         # and try to solve again: the "large residual warning" should be about that bus.

@@ -25,7 +25,7 @@ pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
 Every solver-facing field name matches the keyword the corresponding solver already
 accepts, so a parameter may also be overridden per call — `solve_power_flow!(data; tol =
 1e-8)` wins over the stored value for that solve only. The network-control fields
-(`check_reactive_power_limits`, `enhanced_flat_start`, `control_discrete_devices`,
+(`check_reactive_power_limits`, `dc_warm_start`, `control_discrete_devices`,
 `area_interchange_control`, `interchange_tolerance`, `tie_definition`,
 `model_dc_network`, `n_threads`) are read from the stored parameters, not from a per-call
 keyword, because most of them shape `PowerFlowData` at construction time — a keyword passed
@@ -44,8 +44,10 @@ take effect.
 # Network controls
 - `check_reactive_power_limits::Bool`: enforce generator reactive limits by switching PV
   buses to PQ between solves.
-- `enhanced_flat_start::Bool`: fall back to the enhanced flat start when the initial
-  residual is large.
+- `dc_warm_start::Bool`: on a cold start (a flat start with no converged earlier time step)
+  or a large initial residual, start PQ magnitudes at the mean PV/REF setpoint of each island
+  and the angles at a DC power flow solution. Each candidate is kept only when it lowers the
+  residual. `true` also factors the DC ABA matrix when `PowerFlowData` is built.
 - `control_discrete_devices::Bool`: run discrete device control (tap changers, switched
   shunts) via λ-continuation.
 - `area_interchange_control::Bool`: embed per-area net-interchange control in the solve.
@@ -103,7 +105,7 @@ Base.@kwdef struct SolutionParameters
 
     # Read through the `get_*` accessors — never splatted into a solver call.
     check_reactive_power_limits::Bool = false
-    enhanced_flat_start::Bool = true
+    dc_warm_start::Bool = true
     control_discrete_devices::Bool = false
     area_interchange_control::Bool = false
     interchange_tolerance::Float64 = DEFAULT_INTERCHANGE_TOLERANCE
@@ -157,7 +159,7 @@ end
 # when these were separate struct fields on the evaluation model.
 const _SOLUTION_PARAMETER_CONTROL_FIELDS = (
     :check_reactive_power_limits,
-    :enhanced_flat_start,
+    :dc_warm_start,
     :control_discrete_devices,
     :area_interchange_control,
     :interchange_tolerance,
@@ -214,7 +216,7 @@ a `nothing` value means "not passed", so the stored parameter is kept.
 function _apply_legacy_kwargs(
     params::SolutionParameters;
     check_reactive_power_limits::Union{Nothing, Bool} = nothing,
-    enhanced_flat_start::Union{Nothing, Bool} = nothing,
+    dc_warm_start::Union{Nothing, Bool} = nothing,
     control_discrete_devices::Union{Nothing, Bool} = nothing,
     area_interchange_control::Union{Nothing, Bool} = nothing,
     interchange_tolerance::Union{Nothing, Float64} = nothing,
@@ -222,7 +224,7 @@ function _apply_legacy_kwargs(
 )
     legacy = (;
         check_reactive_power_limits,
-        enhanced_flat_start,
+        dc_warm_start,
         control_discrete_devices,
         area_interchange_control,
         interchange_tolerance,

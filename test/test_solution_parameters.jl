@@ -11,7 +11,7 @@
     # Network controls are read through their accessors, never splatted into a solver.
     for field in (
         :check_reactive_power_limits,
-        :enhanced_flat_start,
+        :dc_warm_start,
         :control_discrete_devices,
         :area_interchange_control,
         :interchange_tolerance,
@@ -30,7 +30,7 @@ end
         maxIterations = 12,
         check_reactive_power_limits = true,
         control_discrete_devices = true,
-        enhanced_flat_start = false,
+        dc_warm_start = false,
     )
     pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; solution_parameters = params)
 
@@ -47,11 +47,11 @@ end
     pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
         check_reactive_power_limits = true,
         control_discrete_devices = true,
-        enhanced_flat_start = false,
+        dc_warm_start = false,
     )
     @test PF.get_check_reactive_power_limits(pf)
     @test PF.get_control_discrete_devices(pf)
-    @test !PF.get_enhanced_flat_start(pf)
+    @test !PF.get_dc_warm_start(pf)
 
     # An explicit keyword wins over `solution_parameters`.
     pf_mixed = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;

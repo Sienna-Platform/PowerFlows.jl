@@ -23,27 +23,57 @@ function improve_x0!(x0::Vector{Float64},
         newx0 = _previous_solution_start(x0, data, prev)
         _pick_better_x0(x0, newx0, time_step, residual, data, "previous converged solution")
     end
-    if sum(abs, residual.Rv) > LARGE_RESIDUAL * length(residual.Rv) &&
-       get_enhanced_flat_start(pf)
-        newx0 = _enhanced_flat_start(x0, data, time_step)
-        _pick_better_x0(x0, newx0, time_step, residual, data, "enhanced flat start")
-    else
-        @debug "skipping enhanced flat start"
-    end
-    # Warm starts (after a converged step, a contingency off a solved base) skip both stages;
-    # the DC stage still runs on a large residual.
+    _dc_warm_start!(x0, pf, data, residual, time_step, prev)
+    _large_residual(residual) && _warn_large_initial_residual(residual, data, time_step)
+    return x0
+end
+
+_large_residual(residual) = sum(abs, residual.Rv) > LARGE_RESIDUAL * length(residual.Rv)
+
+# Warm starts (after a converged step, a contingency off a solved base) skip the stage unless
+# the residual is large.
+function _dc_warm_start!(
+    x0::Vector{Float64},
+    pf::AbstractACPowerFlow,
+    data::ACPowerFlowData,
+    residual,
+    time_step::Int64,
+    prev::Union{Nothing, Int64},
+)
     large = _large_residual(residual)
     cold = isnothing(prev) && (large || _is_flat_start(residual, data, time_step))
-    dc_taken = false
-    if get_robust_power_flow(pf) && (large || cold)
-        dc_taken = dc_power_flow_start!(x0, data, time_step, residual)
-    else
-        @debug "skipping running DC power flow fallback"
+    if !(_has_dc_start(data) && (large || cold))
+        @debug "skipping DC warm start"
+        return
     end
-    # GA from DC angles stagnates where NR from them converges, so GA runs only on a start that
-    # the DC stage did not improve.
+    newx0 = _enhanced_flat_start(x0, data, residual, time_step)
+    _pick_better_x0(x0, newx0, time_step, residual, data, "flat-start magnitudes")
+    cold && _ga_start!(x0, pf, data, residual, time_step)
+    # The DC angles do not improve a start that is already at `handoff_tol`.
+    norm(residual.Rv, Inf) <= get_solution_parameters(pf).handoff_tol && return
+    # A flat start puts zero angle across each phase shifter, which the residual sees as a
+    # large false flow. The DC angles include the phase shift.
+    _dc_power_flow_fallback!(data, time_step)
+    newx0 = copy(x0)
+    _set_dc_angles!(newx0, data, residual, time_step)
+    # The DC solve overwrote `data`'s angles: re-establish `_pick_better_x0`'s precondition.
+    residual(data, x0, time_step)
+    _pick_better_x0(x0, newx0, time_step, residual, data, "DC power flow angles")
+    return
+end
+
+_ga_start!(x0, ::AbstractACPowerFlow, data, residual, time_step) = nothing
+
+# GA runs before the DC angles: from the DC angles it stagnates (EI: 40 iterations, no gain).
+function _ga_start!(
+    x0::Vector{Float64},
+    pf::ACPolarPowerFlow,
+    data::ACPowerFlowData,
+    residual::ACPowerFlowResidual,
+    time_step::Int64,
+)
     handoff_tol = get_solution_parameters(pf).handoff_tol
-    if get_ga_flat_start(pf) && cold && !dc_taken && norm(residual.Rv, Inf) > handoff_tol
+    if get_ga_flat_start(pf) && norm(residual.Rv, Inf) > handoff_tol
         backend = resolve_linear_solver_backend(get_solution_parameters(pf).linear_solver)
         newx0 = _ga_flat_start(x0, data, residual, time_step, handoff_tol, backend)
         # The GA stage leaves `data` and `residual` at its own iterate, not at `x0`.
@@ -51,12 +81,42 @@ function improve_x0!(x0::Vector{Float64},
         _pick_better_x0(x0, newx0, time_step, residual, data,
             "generalized-admittance flat start")
     end
-
-    _large_residual(residual) && _warn_large_initial_residual(residual, data, time_step)
-    return x0
+    return
 end
 
-_large_residual(residual) = sum(abs, residual.Rv) > LARGE_RESIDUAL * length(residual.Rv)
+# Polar state: θ sits in the second slot of each PV and PQ bus.
+function _set_dc_angles!(
+    x::Vector{Float64},
+    data::ACPowerFlowData,
+    ::ACPowerFlowResidual,
+    time_step::Int64,
+)
+    bus_types = view(data.bus_type, :, time_step)
+    for (ix, bt) in enumerate(bus_types)
+        bt == PSY.ACBusTypes.REF && continue
+        x[2 * ix] = data.bus_angles[ix, time_step]
+    end
+    return
+end
+
+# Rectangular/mixed state: rotate each PV and PQ `(e, f)` onto the DC angle, keeping |V|.
+function _set_dc_angles!(
+    x::Vector{Float64},
+    data::ACPowerFlowData,
+    residual::Union{ACRectangularCIResidual, ACMixedCPBResidual},
+    time_step::Int64,
+)
+    bus_types = view(data.bus_type, :, time_step)
+    for (ix, bt) in enumerate(bus_types)
+        bt == PSY.ACBusTypes.REF && continue
+        off = Int(residual.bus_state_offset[ix])
+        Vm = hypot(x[off], x[off + 1])
+        θ = data.bus_angles[ix, time_step]
+        x[off] = Vm * cos(θ)
+        x[off + 1] = Vm * sin(θ)
+    end
+    return
+end
 
 # Every island's non-REF buses at one angle: the start of a case with no solved point, whose REF
 # may keep a case-file angle. Reads the angles of the last iterate `residual` evaluated.
@@ -76,6 +136,30 @@ function _is_flat_start(
                 seen = true
                 θ_flat = θ[ix]
             elseif θ[ix] != θ_flat
+                return false
+            end
+        end
+    end
+    return true
+end
+
+# Rectangular/mixed: the angle of a bus is `atan(f, e)` of its voltage state.
+function _is_flat_start(
+    residual::Union{ACRectangularCIResidual, ACMixedCPBResidual},
+    data::ACPowerFlowData,
+    time_step::Int64,
+)
+    bus_types = view(data.bus_type, :, time_step)
+    for buses in values(residual.subnetworks)
+        seen = false
+        θ_flat = 0.0
+        for ix in buses
+            bus_types[ix] == PSY.ACBusTypes.REF && continue
+            θ = atan(residual.f_state[ix], residual.e_state[ix])
+            if !seen
+                seen = true
+                θ_flat = θ
+            elseif abs(θ - θ_flat) > FLAT_ANGLE_TOL
                 return false
             end
         end
@@ -103,9 +187,8 @@ function _warn_large_initial_residual(residual, data::ACPowerFlowData, time_step
 end
 
 """Rectangular analog of the polar [`improve_x0`](@ref): base flat start →
-previous-converged-timestep warm start → enhanced flat start (gated on
-`get_enhanced_flat_start(pf)`) → large-residual warning. No DC robust
-fallback: `ACRectangularPowerFlow` has no `robust_power_flow` field."""
+previous-converged-timestep warm start → DC warm start (gated on `get_dc_warm_start(pf)`) →
+large-residual warning."""
 function improve_x0(pf::ACRectangularPowerFlow,
     data::ACPowerFlowData,
     residual::ACRectangularCIResidual,
@@ -122,13 +205,7 @@ function improve_x0(pf::ACRectangularPowerFlow,
         _rect_fill_state!(newx0, data, residual.bus_state_offset, time_step, prev)
         _pick_better_x0(x0, newx0, time_step, residual, data, "previous converged solution")
     end
-    if sum(abs, residual.Rv) > LARGE_RESIDUAL * length(residual.Rv) &&
-       get_enhanced_flat_start(pf)
-        newx0 = _enhanced_flat_start(x0, data, residual, time_step)
-        _pick_better_x0(x0, newx0, time_step, residual, data, "enhanced flat start")
-    else
-        @debug "skipping enhanced flat start"
-    end
+    _dc_warm_start!(x0, pf, data, residual, time_step, prev)
     if sum(abs, residual.Rv) > LARGE_RESIDUAL * length(residual.Rv)
         lg_res, ix = findmax(abs.(residual.Rv))
         lg_res_rounded = round(lg_res; sigdigits = 3)
@@ -140,13 +217,8 @@ end
 
 """MCPB analog of the rectangular [`improve_x0`](@ref): base flat start (via
 [`mixed_initial_state!`](@ref)) → previous-converged-timestep warm start (via
-[`_mixed_fill_state!`](@ref)) → enhanced flat start (gated on
-`get_enhanced_flat_start(pf)`) → large-residual warning. Mirrors the
-rectangular path verbatim, swapping `rect_initial_state!`→`mixed_initial_state!`,
-`_rect_fill_state!`→`_mixed_fill_state!`, and the rectangular
-`_enhanced_flat_start`→the MCPB `ACMixedCPBResidual` overload. No DC robust
-fallback: `ACMixedPowerFlow` has no `robust_power_flow` field
-(`get_robust_power_flow(::AbstractACPowerFlow) == false`)."""
+[`_mixed_fill_state!`](@ref)) → DC warm start (gated on `get_dc_warm_start(pf)`) →
+large-residual warning."""
 function improve_x0(pf::ACMixedPowerFlow,
     data::ACPowerFlowData,
     residual::ACMixedCPBResidual,
@@ -163,13 +235,7 @@ function improve_x0(pf::ACMixedPowerFlow,
         _mixed_fill_state!(newx0, data, residual.bus_state_offset, time_step, prev)
         _pick_better_x0(x0, newx0, time_step, residual, data, "previous converged solution")
     end
-    if sum(abs, residual.Rv) > LARGE_RESIDUAL * length(residual.Rv) &&
-       get_enhanced_flat_start(pf)
-        newx0 = _enhanced_flat_start(x0, data, residual, time_step)
-        _pick_better_x0(x0, newx0, time_step, residual, data, "enhanced flat start")
-    else
-        @debug "skipping enhanced flat start"
-    end
+    _dc_warm_start!(x0, pf, data, residual, time_step, prev)
     if sum(abs, residual.Rv) > LARGE_RESIDUAL * length(residual.Rv)
         lg_res, ix = findmax(abs.(residual.Rv))
         lg_res_rounded = round(lg_res; sigdigits = 3)
@@ -201,21 +267,6 @@ function _pick_better_x0(x0::Vector{Float64},
     return false
 end
 
-"""Run a DC power flow and see if that gives a better starting point for angles. If so, then
-overwrite `x0` with the result of the DC power flow. If not, keep the original `x0`. Returns
-whether `x0` changed."""
-function dc_power_flow_start!(x0::Vector{Float64},
-    data::ACPowerFlowData,
-    time_step::Int64,
-    residual::ACPowerFlowResidual,
-)
-    _dc_power_flow_fallback!(data, time_step)
-    newx0 = calculate_x0(data, time_step)
-    # The fallback overwrote `data`'s angles, so re-establish `_pick_better_x0`'s precondition.
-    residual(data, x0, time_step)
-    return _pick_better_x0(x0, newx0, time_step, residual, data, "DC power flow fallback")
-end
-
 """Calculate x0 from data."""
 function calculate_x0(data::ACPowerFlowData,
     time_step::Int64)
@@ -244,6 +295,7 @@ end
 function _enhanced_flat_start(
     x0::Vector{Float64},
     data::ACPowerFlowData,
+    ::ACPowerFlowResidual,
     time_step::Int64,
 )
     newx0 = copy(x0)
@@ -327,8 +379,8 @@ flow as a fallback. This runs a DC power flow on `data::ACPowerFlowData` for the
 function _dc_power_flow_fallback!(data::ACPowerFlowData, time_step::Int)
     # dev note: for DC, we can efficiently solve for all time_steps at once, and we want branch
     # flows. For AC fallback, we're only interested in the current time_step, and no branch flows
+    # Factored when `PowerFlowData` was built (`dc_warm_start`).
     solver_cache = get_aux_network_matrix(data).K
-    # factored in constructor; no need to factor again (as long as network is same)
     valid_ix = get_valid_ix(data)
     p_inj =
         data.bus_active_power_injections[valid_ix, time_step] -
@@ -337,14 +389,21 @@ function _dc_power_flow_fallback!(data::ACPowerFlowData, time_step::Int)
         data.bus_phase_shift_injections[valid_ix]
     # PNM's KLUWrapper.KLULinSolveCache exposes solve! (in-place) instead of ldiv!.
     # Threaded time-step workers share the factored ABA, and a KLU solve writes its numeric
-    # workspace. One global lock is enough: the fallback runs only on a large residual.
+    # workspace. One global lock is enough: the fallback runs only on a cold start or a large
+    # residual.
     @lock _DC_FALLBACK_LOCK PNM.solve!(solver_cache, p_inj)
+    # The ABA keeps one REF per island, so it solves for the angle of any other REF bus. The AC
+    # solve holds every REF angle fixed: keep the stored ones.
+    ref_ix = findall(==(PSY.ACBusTypes.REF), view(data.bus_type, :, time_step))
+    θ_ref = data.bus_angles[ref_ix, time_step]
     data.bus_angles[valid_ix, time_step] .= p_inj
     # The reduced solve is referenced to 0 at each ref bus, but the AC solve holds each
     # ref bus fixed at its stored angle: shift the warm start onto the AC reference so
     # arcs incident to a ref bus with nonzero stored angle don't start with a spurious
     # angle difference. Only this column — others may hold solved AC states.
     _shift_angles_to_stored_reference!(data, time_step)
+    data.bus_angles[ref_ix, time_step] .= θ_ref
+    return
 end
 
 """

@@ -246,10 +246,9 @@ end
     r = ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}()
     @test PF.get_calculate_loss_factors(r) === false
     @test PF.get_calculate_voltage_stability_factors(r) === false
-    @test PF.get_robust_power_flow(r) === false
     @test PF.get_slack_participation_factors(r) === nothing
     @test PF.get_time_steps(r) == 1
-    @test PF.get_enhanced_flat_start(r) === true
+    @test PF.get_dc_warm_start(r) === true
     p = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
         calculate_loss_factors = true)
     @test PF.get_calculate_loss_factors(p) === true

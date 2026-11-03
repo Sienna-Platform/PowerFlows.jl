@@ -119,7 +119,7 @@ solver is just data.
   - **Choosing a model**: driven by the *physics* you want (DC approximation
     vs. full AC, polar vs. rectangular vs. mixed state) and by which
     post-processing options you need. Loss factors, voltage-stability factors,
-    and the DC robust fallback are [`ACPolarPowerFlow`](@ref)-only; the
+    and the generalized-admittance flat start are [`ACPolarPowerFlow`](@ref)-only; the
     rectangular and mixed formulations share the same rectangular-state
     limitations. PSS/E export is independent of formulation.
   - **Choosing a solver**: driven by *numerics* — how well-conditioned the

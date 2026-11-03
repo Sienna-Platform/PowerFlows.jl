@@ -6,7 +6,7 @@ profiling of the PowerFlows AC/DC solvers on the large
 **AppleAccelerate** linear-solver backends to locate performance hot spots.
 
 AC solves run from a **flat start** (PQ |V|→1.0, all θ→0); the data is built once
-and re-flat-started before each solve. `enhanced_flat_start` (the default) is kept
+and re-flat-started before each solve. `dc_warm_start` (the default) is kept
 so the solve converges realistically, but starting from flat still forces many
 more Newton iterations than the system's near-solution warm start. The full-solve
 timing and the deep profile therefore reflect the **iteration** work, not the

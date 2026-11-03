@@ -274,6 +274,10 @@ get_arc_angle_differences(pfd::PowerFlowData) = pfd.arc_angle_differences
 get_time_step_map(pfd::PowerFlowData) = pfd.time_step_map
 get_power_network_matrix(pfd::PowerFlowData) = pfd.power_network_matrix
 get_aux_network_matrix(pfd::PowerFlowData) = pfd.aux_network_matrix
+
+# Whether the data holds the factored ABA that the DC warm start solves with.
+_has_dc_start(::PowerFlowData{<:AbstractACPowerFlow, PNM.AC_Ybus_Matrix, Nothing}) = false
+_has_dc_start(::ACPowerFlowData) = true
 get_neighbor(pfd::PowerFlowData) = pfd.neighbors
 supports_multi_period(::PowerFlowData) = true
 get_converged(pfd::PowerFlowData) = pfd.converged
@@ -361,7 +365,7 @@ get_arc_axis(pfd::ACPowerFlowData) =
 subnetwork_axes(data::PTDFPowerFlowData) = data.aux_network_matrix.subnetwork_axes
 subnetwork_axes(data::vPTDFPowerFlowData) = data.aux_network_matrix.subnetwork_axes
 subnetwork_axes(data::ABAPowerFlowData) = data.power_network_matrix.subnetwork_axes
-subnetwork_axes(data::ACPowerFlowData) = get_aux_network_matrix(data).subnetwork_axes
+subnetwork_axes(data::ACPowerFlowData) = data.power_network_matrix.subnetwork_axes
 
 # so we can initialize things to the correct size inside the below constructor.
 # No `PowerFlowData` instance, so can't call get_arc_axis or similar to get the size.
@@ -758,7 +762,9 @@ function PowerFlowData(
     )
     neighbors = _calculate_neighbors(power_network_matrix)
 
-    if get_robust_power_flow(pf)
+    # The ABA drops one REF bus per island: a network of one-bus islands has nothing to factor.
+    n_ref = length(PNM.get_ref_bus_position(power_network_matrix))
+    if get_dc_warm_start(pf) && n_ref < size(power_network_matrix, 1)
         aux_network_matrix =
             PNM.ABA_Matrix(power_network_matrix; factorize = true)
     else
