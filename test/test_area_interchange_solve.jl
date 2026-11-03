@@ -2161,8 +2161,10 @@ genuinely merges them (`fix == tix`) -- the self-tie merge guard case, distinct 
 "interior DC link" test (same-tail on two DIFFERENT buses, not a merge)."""
 function _lcc_self_merge_fixture()
     sys = System(100.0)
-    area_a = PSY.Area(; name = "AreaA", input_basis = u"CU")
-    area_b = PSY.Area(; name = "AreaB", input_basis = u"CU")
+    area_a =
+        PSY.Area(; name = "AreaA", scheduled_net_interchange = 0.0, input_basis = u"CU")
+    area_b =
+        PSY.Area(; name = "AreaB", scheduled_net_interchange = 0.0, input_basis = u"CU")
     PSY.add_component!(sys, area_a)
     PSY.add_component!(sys, area_b)
 

@@ -3,8 +3,8 @@
 ## What it does
 
 **Net-interchange control**: each participating `PSY.Area` is driven so that its net
-active-power exchange with the rest of the system meets a scheduled target ``PDES_a`` (derived from
-the system's `PSY.AreaInterchange` records). Control is *embedded* in the AC solver — the
+active-power exchange with the rest of the system meets a scheduled target ``PDES_a`` (read from
+the area's `scheduled_net_interchange` field). Control is *embedded* in the AC solver — the
 schedules are met at convergence, not by an outer sweep — so it composes with reactive-power limits,
 distributed slack, and multi-period solves. Both AC boundary branches and two-terminal HVDC
 (LCC and VSC) boundary links count toward each area's net interchange.
@@ -17,7 +17,7 @@ between the two directly.
 | Symbol / term  | PSS/E name              | Meaning here                                                                                      |
 |:-------------- |:----------------------- |:------------------------------------------------------------------------------------------------- |
 | ``NI_a``       | net interchange         | Sum of metered active power over area ``a``'s boundary ties, signed positive *out* of the area.   |
-| ``PDES_a``     | desired net interchange | Area ``a``'s scheduled net-interchange target, read from its `PSY.AreaInterchange` record.        |
+| ``PDES_a``     | desired net interchange | Area ``a``'s scheduled net-interchange target, read from its `scheduled_net_interchange` field.   |
 | ``\Delta P_a`` | —                       | The solved active-power adjustment at area ``a``'s slack bus that makes ``NI_a`` meet ``PDES_a``. |
 | ISW bus        | area slack / swing bus  | The one voltage-regulating bus in an area that absorbs ``\Delta P_a``. Marked `ACBusTypes.SLACK`. |
 | PTOL           | interchange tolerance   | Allowed ``NI_a`` deviation. Here **reporting only** — see `interchange_tolerance` below.          |
@@ -116,6 +116,8 @@ An area is **enrolled** only if it can be embedded-controlled. At `PowerFlowData
 candidate is checked, and any failure emits a `@warn` and de-enrolls that area (its schedule then
 falls back to the island's REF/distributed slack). An area must:
 
+  - have a scheduled net interchange (an area whose `scheduled_net_interchange` is `nothing` is
+    not controlled and floats with the system swing; this logs `@info`, not `@warn`);
   - have exactly one in-service, voltage-regulating slack bus that survives network reduction;
   - not contain a network reference (REF/swing) bus;
   - lie within a single electrical island;

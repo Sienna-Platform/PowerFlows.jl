@@ -284,7 +284,8 @@ end
 @testset "Jacobian verification with area interchange control (2-area, 1 controlled)" begin
     sys = _make_two_area_system()
     _set_slack!(sys, "Bus 6")
-    _add_area_interchange!(sys, "Area2", "Area1", 0.3; name = "A2_A1")
+    _set_schedule!(sys, "Area1", -0.3)
+    _set_schedule!(sys, "Area2", 0.3)
     _verify_area_jacobian(sys, "polar area interchange (1 controlled area)")
 end
 
@@ -308,7 +309,8 @@ _c14_gspf(c14) = Dict(
 function _area_interchange_fixture()
     sys = _make_two_area_system()
     _set_slack!(sys, "Bus 6")
-    _add_area_interchange!(sys, "Area2", "Area1", 0.3; name = "A2_A1")
+    _set_schedule!(sys, "Area1", -0.3)
+    _set_schedule!(sys, "Area2", 0.3)
     return sys
 end
 

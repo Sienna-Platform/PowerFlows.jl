@@ -138,27 +138,65 @@ function _exponential_zip_slot(load::PSY.ExponentialLoad, exponent::Float64)
     )
 end
 
+# Active power withdrawal of one load as (constant power, constant current, constant
+# impedance) parts, system base, at V = 1 p.u.
+_load_active_power_parts(
+    ::PowerFlowEvaluationModel,
+    l::Union{PSY.StandardLoad, PSY.InterruptibleStandardLoad},
+) = (
+    PSY.get_constant_active_power(l, u"SU"),
+    PSY.get_current_active_power(l, u"SU"),
+    PSY.get_impedance_active_power(l, u"SU"),
+)
 # DC reads only the constant power withdrawals. P0 * V^e = P0 at V = 1 p.u., so every ZIP term
 # of an ExponentialLoad is a constant power term there. Any exponent is valid.
-function _add_exponential_load!(
-    ::AbstractDCPowerFlow,
-    p,
-    q,
-    l::PSY.ExponentialLoad,
-    bus_ix::Int,
-)
-    p[1][bus_ix] += PSY.get_active_power(l, u"SU")
+_load_active_power_parts(::AbstractDCPowerFlow, l::PSY.ExponentialLoad) =
+    (PSY.get_active_power(l, u"SU"), 0.0, 0.0)
+function _load_active_power_parts(::PowerFlowEvaluationModel, l::PSY.ExponentialLoad)
+    slot = _exponential_zip_slot(l, PSY.get_α(l))
+    P = PSY.get_active_power(l, u"SU")
+    return ntuple(k -> ifelse(k == slot, P, 0.0), 3)
+end
+function _load_active_power_parts(::PowerFlowEvaluationModel, l::PSY.ElectricLoad)
+    if !(
+        contributes_active_power(l) &&
+        active_power_contribution_type(l) == PowerContributionType.WITHDRAWAL
+    )
+        error(
+            "$(typeof(l)) $(PSY.get_name(l)) has no active power withdrawal model for " *
+            "power flow.",
+        )
+    end
+    return (PSY.get_active_power(l, u"SU"), 0.0, 0.0)
+end
+
+function _add_active_power_parts!(p, l::PSY.ElectricLoad, pf, bus_ix::Int)
+    parts = _load_active_power_parts(pf, l)
+    for k in 1:3
+        p[k][bus_ix] += parts[k]
+    end
     return
 end
 
 function _add_exponential_load!(
-    ::PowerFlowEvaluationModel,
+    pf::AbstractDCPowerFlow,
     p,
     q,
     l::PSY.ExponentialLoad,
     bus_ix::Int,
 )
-    p[_exponential_zip_slot(l, PSY.get_α(l))][bus_ix] += PSY.get_active_power(l, u"SU")
+    _add_active_power_parts!(p, l, pf, bus_ix)
+    return
+end
+
+function _add_exponential_load!(
+    pf::PowerFlowEvaluationModel,
+    p,
+    q,
+    l::PSY.ExponentialLoad,
+    bus_ix::Int,
+)
+    _add_active_power_parts!(p, l, pf, bus_ix)
     q[_exponential_zip_slot(l, PSY.get_β(l))][bus_ix] += PSY.get_reactive_power(l, u"SU")
     return
 end
@@ -193,6 +231,11 @@ function _get_withdrawals!(
     end
     # handle StandardLoad: they have constant current and constant impedance withdrawals,
     # and the getter for constant power is named differently (get_constant_active_power)
+    p = (
+        bus_active_power_withdrawals,
+        bus_active_power_constant_current_withdrawals,
+        bus_active_power_constant_impedance_withdrawals,
+    )
     for l in PSY.get_available_components(
         Union{PSY.StandardLoad, PSY.InterruptibleStandardLoad},
         sys,
@@ -200,22 +243,13 @@ function _get_withdrawals!(
         bus = PSY.get_bus(l)
         PSY.get_number(bus) in removed_buses && continue
         bus_ix = _get_bus_ix(bus_lookup, reverse_bus_search_map, PSY.get_number(bus))
-        bus_active_power_withdrawals[bus_ix] += PSY.get_constant_active_power(l, u"SU")
+        _add_active_power_parts!(p, l, pf, bus_ix)
         bus_reactive_power_withdrawals[bus_ix] += PSY.get_constant_reactive_power(l, u"SU")
-        bus_active_power_constant_current_withdrawals[bus_ix] +=
-            PSY.get_current_active_power(l, u"SU")
-        bus_active_power_constant_impedance_withdrawals[bus_ix] +=
-            PSY.get_impedance_active_power(l, u"SU")
         bus_reactive_power_constant_current_withdrawals[bus_ix] +=
             PSY.get_current_reactive_power(l, u"SU")
         bus_reactive_power_constant_impedance_withdrawals[bus_ix] +=
             PSY.get_impedance_reactive_power(l, u"SU")
     end
-    p = (
-        bus_active_power_withdrawals,
-        bus_active_power_constant_current_withdrawals,
-        bus_active_power_constant_impedance_withdrawals,
-    )
     q = (
         bus_reactive_power_withdrawals,
         bus_reactive_power_constant_current_withdrawals,
