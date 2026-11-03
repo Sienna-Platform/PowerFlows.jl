@@ -1196,10 +1196,38 @@ end
     # only thing differing is `metered_from`.
     area3_tail = tie.from_area_tail   # Area3, the from-side tail
     area2_tail = tie.to_area_tail     # Area2, the to-side tail
-    NI3_from = PF._area_net_interchange([tie_from], PF.DCTie[], area3_tail, data, 1)
-    NI3_to = PF._area_net_interchange([tie_to], PF.DCTie[], area3_tail, data, 1)
-    NI2_from = PF._area_net_interchange([tie_from], PF.DCTie[], area2_tail, data, 1)
-    NI2_to = PF._area_net_interchange([tie_to], PF.DCTie[], area2_tail, data, 1)
+    NI3_from = PF._area_net_interchange(
+        [tie_from],
+        PF.DCTie[],
+        PF.OffAreaLoad[],
+        area3_tail,
+        data,
+        1,
+    )
+    NI3_to = PF._area_net_interchange(
+        [tie_to],
+        PF.DCTie[],
+        PF.OffAreaLoad[],
+        area3_tail,
+        data,
+        1,
+    )
+    NI2_from = PF._area_net_interchange(
+        [tie_from],
+        PF.DCTie[],
+        PF.OffAreaLoad[],
+        area2_tail,
+        data,
+        1,
+    )
+    NI2_to = PF._area_net_interchange(
+        [tie_to],
+        PF.DCTie[],
+        PF.OffAreaLoad[],
+        area2_tail,
+        data,
+        1,
+    )
 
     @test isapprox(NI3_to - NI3_from, -loss; atol = 1e-6)
     @test isapprox(NI2_to - NI2_from, loss; atol = 1e-6)

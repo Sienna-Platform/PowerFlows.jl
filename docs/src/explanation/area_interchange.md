@@ -44,11 +44,11 @@ pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(; area_interchange_control = true)
 solve_power_flow(pf, sys)
 ```
 
-| Keyword                    | Default       | Meaning                                                                                                                                            |
-|:-------------------------- |:------------- |:-------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `area_interchange_control` | `false`       | Turn embedded control on.                                                                                                                          |
-| `interchange_tolerance`    | `0.05`        | PTOL analogue (pu), **reporting/validation only** — the embedded rows target `PDES_a` exactly. Non-positive values floor to `0.02` with a warning. |
-| `tie_definition`           | `:lines_only` | Only `:lines_only` is implemented (`:lines_and_loads` / PSS/E control code 2 is reserved).                                                         |
+| Keyword                    | Default       | Meaning                                                                                                                                                                                                                                                                                              |
+|:-------------------------- |:------------- |:---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `area_interchange_control` | `false`       | Turn embedded control on.                                                                                                                                                                                                                                                                            |
+| `interchange_tolerance`    | `0.05`        | PTOL analogue (pu), **reporting/validation only** — the embedded rows target `PDES_a` exactly. Non-positive values floor to `0.02` with a warning.                                                                                                                                                   |
+| `tie_definition`           | `:lines_only` | `:lines_only` (PSS/E control code 1) counts tie flows. `:lines_and_loads` (control code 2) also counts each area's `out_of_area_loads`: a load owned by area `o` at a bus in area `b` is a flow from `b` into `o` (+P in ``NI_b``, −P in ``NI_o``), with its ZIP parts evaluated at the bus voltage. |
 
 Area interchange control is **polar-only**. `GradientDescentACPowerFlow` and
 `RobustHomotopyPowerFlow` are rejected at construction (gradient descent has no natural home for

@@ -283,15 +283,22 @@ function _report_unenforceable_schedules(
     return
 end
 
-_area_name(::Nothing) = ""
-_area_name(area::PSY.Area) = PSY.get_name(area)
+_host_area_name(area::PSY.Area, ::String, load, bus) = PSY.get_name(area)
+function _host_area_name(::Nothing, owner::String, load, bus)
+    error(
+        "Area \"$owner\" lists load \"$(PSY.get_name(load))\" as an off-area load, but \
+        the load's bus $(PSY.get_name(bus)) has no area. An off-area load must connect \
+        to a bus in another area.",
+    )
+end
 
 """
     build_off_area_loads(pf, sys, data, tail_of) -> Vector{OffAreaLoad}
 
 Build the off-area load terms of `NI_a` from each `PSY.Area`'s `out_of_area_loads`.
 `tail_of` maps each enrolled area name to its pristine `tail_ix`. The ZIP parts come from
-the same per-load split that fills the bus withdrawal matrices.
+the same per-load split that fills the bus withdrawal matrices. The load is a flow from
+the bus area into the owning area: the bus area exports it, the owner imports it.
 """
 function build_off_area_loads(
     pf::AbstractACPowerFlow,
@@ -303,13 +310,13 @@ function build_off_area_loads(
     nrd = get_network_reduction_data(data)
     reverse_bus_search_map = PNM.get_reverse_bus_search_map(nrd)
     removed_buses = PNM.get_removed_buses(nrd)
-    n_time_steps = size(data.bus_type, 2)
+    n_time_steps = size(get_bus_type(data), 2)
     records = OffAreaLoad[]
     for area in PSY.get_components(PSY.Area, sys)
         owner = PSY.get_name(area)
         for load in PSY.get_out_of_area_loads(area)
             bus = PSY.get_bus(load)
-            bus_area = _area_name(PSY.get_area(bus))
+            bus_area = _host_area_name(PSY.get_area(bus), owner, load, bus)
             if bus_area == owner
                 error(
                     "Area \"$owner\" lists load \"$(PSY.get_name(load))\" as an \
@@ -329,7 +336,7 @@ function build_off_area_loads(
             if PSY.get_available(load)
                 parts = _load_active_power_parts(pf, load)
             end
-            for (name, sign) in ((owner, 1.0), (bus_area, -1.0))
+            for (name, sign) in ((owner, -1.0), (bus_area, 1.0))
                 tail = get(tail_of, name, 0)
                 iszero(tail) && continue
                 push!(
@@ -490,5 +497,6 @@ function build_area_interchange_data(
         zeros(length(areas), n_time_steps),
         Dict{Int, Vector{RelaxedAreaRecord}}(),
         off_area_loads,
+        copy(off_area_loads),
     )
 end

@@ -865,8 +865,8 @@ function _ac_power_flow_with_area_relax!(
             (
                 let tail_ix = pristine_tail_of[r.name],
                     ni_solved = _area_net_interchange(
-                        aid.pristine_ties, aid.pristine_dc_ties, tail_ix, data,
-                        time_step,
+                        aid.pristine_ties, aid.pristine_dc_ties,
+                        aid.pristine_off_area_loads, tail_ix, data, time_step,
                     )
 
                     "$(r.name) (ni_solved=$(ni_solved), pdes=$(r.pdes), " *

@@ -86,11 +86,32 @@ function _dc_tie_metered_active_power(
 end
 
 """
+    _off_area_load_active_power(load, Vm, time_step) -> Float64
+
+Signed `NI_a` term of one off-area load at the current voltage of its bus:
+`sign * (P_P + P_I * |V| + P_Z * |V|^2)`. The one kernel every NI evaluation uses, so the
+residual, the results table and the diagnostics always agree.
+"""
+function _off_area_load_active_power(
+    load::OffAreaLoad,
+    Vm::AbstractVector{Float64},
+    time_step::Int,
+)
+    V = Vm[load.bus_ix]
+    return load.sign * (
+        load.p_constant_power[time_step] +
+        load.p_constant_current[time_step] * V +
+        load.p_constant_impedance[time_step] * V^2
+    )
+end
+
+"""
     _set_area_tail_residuals!(F, x, data, area_off, time_step)
 
 Write the area-interchange residual rows `F[area_off + a] = NI_a - PDES_a` for every
 enrolled controlled area. Sign convention: the metered side's controlled area (if any)
-gets `+P_m`, the other side's (if controlled) gets `-P_m`. `x` is unused: the polar
+gets `+P_m`, the other side's (if controlled) gets `-P_m`; an off-area load adds its
+signed term (`_off_area_load_active_power`). `x` is unused: the polar
 formulation reads the current iterate off `data.bus_magnitude`/`data.bus_angles`,
 already updated in place earlier in `_update_residual_values!`.
 """
@@ -136,6 +157,9 @@ function _set_area_tail_residuals!(
             iszero(other_tail) || (ni[other_tail] -= P_conv)
         end
     end
+    @inbounds for load in aid.off_area_loads
+        ni[load.area_tail] += _off_area_load_active_power(load, Vm, time_step)
+    end
     @inbounds for area in aid.areas
         F[area_off + area.tail_ix] = ni[area.tail_ix] - area.pdes
     end
@@ -162,17 +186,19 @@ function _area_residual_gaps(data::ACPowerFlowData, time_step::Int)
 end
 
 """
-    _area_net_interchange(ties, dc_ties, tail_ix, data, time_step) -> Float64
+    _area_net_interchange(ties, dc_ties, off_area_loads, tail_ix, data, time_step) -> Float64
 
-Net interchange for the area at `tail_ix`, computed directly from the tie-flow kernels at
-`data`'s current bus state — independent of whether that area is still in
-`data.area_interchange.areas`. Used by the results table to report an achieved NI for a
-relaxed area (pass `aid.pristine_ties`/`pristine_dc_ties` with its PRISTINE `tail_ix`).
-`ties` and `dc_ties` must come from the SAME snapshot (both pristine or both working).
+Net interchange for the area at `tail_ix`, computed directly from the tie-flow and
+off-area load kernels at `data`'s current bus state — independent of whether that area is
+still in `data.area_interchange.areas`. Used by the results table to report an achieved NI
+for a relaxed area (pass `aid.pristine_ties`/`pristine_dc_ties`/`pristine_off_area_loads`
+with its PRISTINE `tail_ix`). The three lists must come from the SAME snapshot (all
+pristine or all working).
 """
 function _area_net_interchange(
     ties::Vector{AreaTie},
     dc_ties::Vector{DCTie},
+    off_area_loads::Vector{OffAreaLoad},
     tail_ix::Int,
     data::ACPowerFlowData,
     time_step::Int,
@@ -210,6 +236,10 @@ function _area_net_interchange(
             other_tail == tail_ix && (ni -= P_conv)
         end
     end
+    @inbounds for load in off_area_loads
+        load.area_tail == tail_ix || continue
+        ni += _off_area_load_active_power(load, Vm, time_step)
+    end
     return ni
 end
 
@@ -238,6 +268,8 @@ function _restore_pristine_area_set!(
     append!(aid.ties, aid.pristine_ties)
     empty!(aid.dc_ties)
     append!(aid.dc_ties, aid.pristine_dc_ties)
+    empty!(aid.off_area_loads)
+    append!(aid.off_area_loads, aid.pristine_off_area_loads)
     resize!(aid.ni_scratch, length(aid.areas))
     aid.delta_p = copy(aid.pristine_delta_p)
     data.ac_jacobian_structure_cache[] = memo
@@ -272,7 +304,8 @@ end
 Remove the WORKING area at `drop_tail_ix` from `data.area_interchange` (greedy relax):
 the surviving areas' `tail_ix` are renumbered contiguously
 (the state vector has no room for gaps), `ties`/`dc_ties` referencing the dropped tail are
-translated to `0` (uncontrolled — the kernel already skips a zero tail), and `delta_p` is
+translated to `0` (uncontrolled — the kernel already skips a zero tail), the dropped
+area's `off_area_loads` records leave the working set, and `delta_p` is
 rebuilt at the new (smaller) size with each survivor's row carried over from its OLD
 `tail_ix`, for every time step column (so OTHER time steps' already-converged mirrors are
 not corrupted by a de-enrollment that only THIS time step's relax loop decided on).
@@ -310,6 +343,12 @@ function _deenroll_area!(data::ACPowerFlowData, drop_tail_ix::Int)
             _translate(tie.from_area_tail), _translate(tie.to_area_tail),
         ) for tie in aid.dc_ties
     ]
+    new_off_area_loads = [
+        OffAreaLoad(
+            _translate(load.area_tail), load.sign, load.bus_ix,
+            load.p_constant_power, load.p_constant_current, load.p_constant_impedance,
+        ) for load in aid.off_area_loads if load.area_tail != drop_tail_ix
+    ]
     n_ts = size(aid.delta_p, 2)
     new_delta_p = zeros(length(new_areas), n_ts)
     for area in aid.areas
@@ -322,6 +361,8 @@ function _deenroll_area!(data::ACPowerFlowData, drop_tail_ix::Int)
     append!(aid.ties, new_ties)
     empty!(aid.dc_ties)
     append!(aid.dc_ties, new_dc_ties)
+    empty!(aid.off_area_loads)
+    append!(aid.off_area_loads, new_off_area_loads)
     resize!(aid.ni_scratch, length(new_areas))
     aid.delta_p = new_delta_p
     data.ac_jacobian_structure_cache[] = nothing

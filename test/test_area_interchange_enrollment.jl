@@ -674,8 +674,8 @@ end
     @test length(records) == 2
     owner = only(filter(r -> r.area_tail == 1, records))
     host = only(filter(r -> r.area_tail == 2, records))
-    @test owner.sign == 1.0
-    @test host.sign == -1.0
+    @test owner.sign == -1.0
+    @test host.sign == 1.0
     for r in records
         @test r.bus_ix == bus_ix
         @test r.p_constant_power ≈ [0.2]
@@ -685,7 +685,7 @@ end
 
     host_only = only(PF.build_off_area_loads(pf, sys, data, Dict("Area2" => 1)))
     @test host_only.area_tail == 1
-    @test host_only.sign == -1.0
+    @test host_only.sign == 1.0
 
     PSY.set_available!(load, false)
     unavailable = PF.build_off_area_loads(pf, sys, data, Dict("Area1" => 1))

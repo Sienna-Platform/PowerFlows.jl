@@ -51,8 +51,8 @@ take effect.
 - `area_interchange_control::Bool`: embed per-area net-interchange control in the solve.
 - `interchange_tolerance::Float64`: interchange tolerance (pu), used for validation and
   reporting. Non-positive values are floored to `MIN_INTERCHANGE_TOLERANCE`.
-- `tie_definition::Symbol`: how area ties are identified. Only `:lines_only` is
-  implemented.
+- `tie_definition::Symbol`: how area ties are identified. `:lines_only` counts tie flows;
+  `:lines_and_loads` also counts each area's `out_of_area_loads` (PSS/E control code 2).
 - `model_dc_network::Bool`: lower VSC/DC network equations into the joint AC–DC solve.
 
 # Voltage validation

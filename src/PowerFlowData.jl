@@ -481,6 +481,7 @@ function PowerFlowData(
             zeros(Float64, 0, n_time_steps),
             Dict{Int, Vector{RelaxedAreaRecord}}(),
             OffAreaLoad[],
+            OffAreaLoad[],
         ), # area_interchange (populated in initialize_power_flow_data!)
         Base.RefValue{DCNetwork}(DCNetwork()), # dc_network (built in initialize_DCNetwork!)
         arc_lossy_admittance_from_to,

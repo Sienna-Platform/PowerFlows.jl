@@ -54,11 +54,22 @@ function _push_area_row_endpoint_cols!(push3, row::Int, tie::AreaTie)
     return
 end
 
+# `∂/∂|V|` of `_off_area_load_active_power`: the load term depends on its bus |V| only.
+_off_area_load_dV(load::OffAreaLoad, Vm::AbstractVector{Float64}, time_step::Int) =
+    load.sign * (
+        load.p_constant_current[time_step] +
+        2 * load.p_constant_impedance[time_step] * Vm[load.bus_ix]
+    )
+
+_off_area_load_vm_col(load::OffAreaLoad) = 2 * load.bus_ix - 1
+
 """
 Create the Jacobian matrix structure for the area-interchange tail (polar) — the bordered
 block. Column ΔP_a (`area_off + area.tail_ix`): one structural entry at the
 area's slack-bus P-mismatch row (`2*slack_bus_ix - 1`). Row r_a
-(`area_off + area.tail_ix`): both state columns at every tie endpoint bus of every tie incident to area a, via `_push_area_row_endpoint_cols!`. A tie with
+(`area_off + area.tail_ix`): both state columns at every tie endpoint bus of every tie incident to area a, via `_push_area_row_endpoint_cols!`, and the Vm column of every
+off-area load bus of area a (same stamp rule: every bus type; the fill writes zero unless
+PQ). A tie with
 BOTH endpoints controlled (different areas) contributes to TWO area rows. `∂r_a/∂ΔP_a` is
 structurally ABSENT (zero diagonal border — KLU's full pivoting handles it; do not stamp).
 """
@@ -96,6 +107,9 @@ function _create_jacobian_matrix_structure_area(
         iszero(tie.to_area_tail) ||
             _push_area_row_dc_cols!(
                 push3, area_off + tie.to_area_tail, tie, num_buses, num_lcc)
+    end
+    for load in data.area_interchange.off_area_loads
+        push3(area_off + load.area_tail, _off_area_load_vm_col(load))
     end
     return
 end
@@ -361,6 +375,9 @@ function _set_entries_for_area(
             _zero_area_row_dc_tie!(Jv, tie, area_off, num_buses, num_lcc)
         end
     end
+    @inbounds for load in aid.off_area_loads
+        Jv[area_off + load.area_tail, _off_area_load_vm_col(load)] = 0.0
+    end
 
     @inbounds for tie in aid.ties
         f = tie.from_bus_ix
@@ -400,6 +417,12 @@ function _set_entries_for_area(
                 num_buses, num_lcc, time_step, -1.0,
             )
         end
+    end
+
+    @inbounds for load in aid.off_area_loads
+        bus_type[load.bus_ix] == PSY.ACBusTypes.PQ || continue
+        Jv[area_off + load.area_tail, _off_area_load_vm_col(load)] +=
+            _off_area_load_dV(load, Vm, time_step)
     end
     return
 end
