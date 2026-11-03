@@ -2482,3 +2482,38 @@ end
     @test_throws r"RobustHomotopyPowerFlow" ACPolarPowerFlow{RobustHomotopyPowerFlow}(;
         area_interchange_control = true)
 end
+
+@testset "area Jacobian structure does not depend on the bus types of one time step" begin
+    function build(types_by_step)
+        pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
+            time_steps = length(types_by_step), area_interchange_control = true)
+        built = PowerFlowData(pf, _three_area_transfer_fixture())
+        ix4 = findfirst(==(4), built.power_network_matrix.axes[1])
+        base = copy(built.bus_type[:, 1])
+        for (t, ref4) in enumerate(types_by_step)
+            built.bus_type[:, t] .= base
+            if ref4
+                built.bus_type[ix4, t] = PSY.ACBusTypes.REF
+            end
+        end
+        return built
+    end
+    data = build([true, false])
+    @test data.bus_type[:, 1] != data.bus_type[:, 2]
+    @test solve_power_flow!(data; time_steps = [1])
+    memo = data.ac_jacobian_structure_cache[]
+    @test solve_power_flow!(data; time_steps = [2])
+    @test data.ac_jacobian_structure_cache[] === memo
+
+    for (t, ref4) in ((1, true), (2, false))
+        single = build([ref4])
+        @test solve_power_flow!(single)
+        @test isapprox(data.bus_magnitude[:, t], single.bus_magnitude[:, 1]; atol = 1e-9)
+        @test isapprox(data.bus_angles[:, t], single.bus_angles[:, 1]; atol = 1e-9)
+        @test isapprox(
+            data.area_interchange.delta_p[:, t],
+            single.area_interchange.delta_p[:, 1];
+            atol = 1e-9,
+        )
+    end
+end
