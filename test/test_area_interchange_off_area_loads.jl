@@ -34,11 +34,13 @@ function _off_area_fixture(; host::Bool = true, zip::Bool = true)
     return sys
 end
 
-_pf_loads(solver = NewtonRaphsonACPowerFlow; kwargs...) = ACPolarPowerFlow{solver}(;
-    area_interchange_control = true,
-    tie_definition = :lines_and_loads,
-    kwargs...,
-)
+function _pf_loads(solver = NewtonRaphsonACPowerFlow; kwargs...)
+    return ACPolarPowerFlow{solver}(;
+        area_interchange_control = true,
+        tie_definition = :lines_and_loads,
+        kwargs...,
+    )
+end
 
 _pf_lines(solver = NewtonRaphsonACPowerFlow) =
     ACPolarPowerFlow{solver}(; area_interchange_control = true)
@@ -97,8 +99,8 @@ end
     @test isapprox(data.bus_magnitude[:, 1], data_lines.bus_magnitude[:, 1]; atol = 1e-8)
     @test isapprox(data.bus_angles[:, 1], data_lines.bus_angles[:, 1]; atol = 1e-8)
     @test isapprox(
-        data.area_interchange.delta_p[1, 1],
-        data_lines.area_interchange.delta_p[1, 1];
+        PF.get_area_interchange_data(data).delta_p[1, 1],
+        PF.get_area_interchange_data(data_lines).delta_p[1, 1];
         atol = 1e-8,
     )
     @test isapprox(_solved_tie_export_area2(data), _OFF_AREA_PDES2 - sign * P; atol = 1e-8)
@@ -177,8 +179,8 @@ end
         @test isapprox(data.bus_magnitude[:, 1], data_nr.bus_magnitude[:, 1]; atol = atol)
         @test isapprox(data.bus_angles[:, 1], data_nr.bus_angles[:, 1]; atol = atol)
         @test isapprox(
-            data.area_interchange.delta_p[1, 1],
-            data_nr.area_interchange.delta_p[1, 1];
+            PF.get_area_interchange_data(data).delta_p[1, 1],
+            PF.get_area_interchange_data(data_nr).delta_p[1, 1];
             atol = atol,
         )
     end

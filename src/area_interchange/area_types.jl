@@ -92,7 +92,7 @@ end
 
 """
 One off-area load term of `NI_a` (PSS/E AREAIN=2). A load that area `o` owns at a bus in area
-`b` is a flow from `b` into `o`: `b` exports it (`sign = +1.0`) and `o` imports it
+`b` counts as an export of `b` to `o`: `b` exports it (`sign = +1.0`) and `o` imports it
 (`sign = -1.0`); only enrolled areas get an entry. The term adds
 `sign * (P_P + P_I * |V| + P_Z * |V|^2)` to `NI_a`.
 

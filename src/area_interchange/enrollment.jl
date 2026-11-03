@@ -297,8 +297,8 @@ end
 
 Build the off-area load terms of `NI_a` from each `PSY.Area`'s `out_of_area_loads`.
 `tail_of` maps each enrolled area name to its pristine `tail_ix`. The ZIP parts come from
-the same per-load split that fills the bus withdrawal matrices. The load is a flow from
-the bus area into the owning area: the bus area exports it, the owner imports it.
+the same per-load split that fills the bus withdrawal matrices. The load counts
+as an export of the bus area to the owning area: the bus area exports it, the owner imports it.
 """
 function build_off_area_loads(
     pf::AbstractACPowerFlow,

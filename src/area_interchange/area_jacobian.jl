@@ -55,11 +55,12 @@ function _push_area_row_endpoint_cols!(push3, row::Int, tie::AreaTie)
 end
 
 # `∂/∂|V|` of `_off_area_load_active_power`: the load term depends on its bus |V| only.
-_off_area_load_dV(load::OffAreaLoad, Vm::AbstractVector{Float64}, time_step::Int) =
-    load.sign * (
+function _off_area_load_dV(load::OffAreaLoad, Vm::AbstractVector{Float64}, time_step::Int)
+    return load.sign * (
         load.p_constant_current[time_step] +
         2 * load.p_constant_impedance[time_step] * Vm[load.bus_ix]
     )
+end
 
 _off_area_load_vm_col(load::OffAreaLoad) = 2 * load.bus_ix - 1
 

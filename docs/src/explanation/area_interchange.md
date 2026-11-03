@@ -44,11 +44,11 @@ pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(; area_interchange_control = true)
 solve_power_flow(pf, sys)
 ```
 
-| Keyword                    | Default       | Meaning                                                                                                                                                                                                                                                                                              |
-|:-------------------------- |:------------- |:---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `area_interchange_control` | `false`       | Turn embedded control on.                                                                                                                                                                                                                                                                            |
-| `interchange_tolerance`    | `0.05`        | PTOL analogue (pu), **reporting/validation only** — the embedded rows target `PDES_a` exactly. Non-positive values floor to `0.02` with a warning.                                                                                                                                                   |
-| `tie_definition`           | `:lines_only` | `:lines_only` (PSS/E control code 1) counts tie flows. `:lines_and_loads` (control code 2) also counts each area's `out_of_area_loads`: a load owned by area `o` at a bus in area `b` is a flow from `b` into `o` (+P in ``NI_b``, −P in ``NI_o``), with its ZIP parts evaluated at the bus voltage. |
+| Keyword                    | Default       | Meaning                                                                                                                                                                                                                                                                                                    |
+|:-------------------------- |:------------- |:---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `area_interchange_control` | `false`       | Turn embedded control on.                                                                                                                                                                                                                                                                                  |
+| `interchange_tolerance`    | `0.05`        | PTOL analogue (pu), **reporting/validation only** — the embedded rows target `PDES_a` exactly. Non-positive values floor to `0.02` with a warning.                                                                                                                                                         |
+| `tie_definition`           | `:lines_only` | `:lines_only` (PSS/E control code 1) counts tie flows. `:lines_and_loads` (control code 2) also counts each area's `out_of_area_loads`: a load owned by area `o` at a bus in area `b` counts as an export of `b` to `o` (+P in ``NI_b``, −P in ``NI_o``), with its ZIP parts evaluated at the bus voltage. |
 
 Area interchange control is **polar-only**. `GradientDescentACPowerFlow` and
 `RobustHomotopyPowerFlow` are rejected at construction (gradient descent has no natural home for
@@ -76,6 +76,24 @@ put across the flip. ``\Delta P_a`` is also applied directly to the residual vec
 folded into the bus's accumulated net injection, precisely so it is counted exactly once after
 the bus becomes PQ. What *is* checked at enrollment (not mid-solve) is that the ISW bus is
 voltage-regulating to begin with: an area whose slack bus normalizes to PQ is de-enrolled.
+
+### Control code 2 (`:lines_and_loads`, PSS/E AREAIN=2)
+
+With `tie_definition = :lines_and_loads`, the net interchange also counts off-area loads:
+
+``NI_a = \sum(\text{tie flows out of } a) - \sum P(\text{loads owned by } a \text{ at buses in other areas}) + \sum P(\text{loads owned by other areas at buses in } a)``
+
+The owner serves its off-area load through the ties, so that tie flow is not an export. With zero
+schedules and the tie flow out of the owner equal to ``P_{load}``, ``NI_{owner} = 0``. Only active
+power counts, and the ZIP parts of the load are evaluated at the bus voltage.
+
+  - **PDES source**: `Area.scheduled_net_interchange` (positive = export). `nothing` means the area is
+    not enrolled. PSS/E's PTOL has no field in `PSY.Area`; PowerFlows keeps `interchange_tolerance`.
+  - **Off-area loads**: declare them in `Area.out_of_area_loads` of the owning area. A listed load at a
+    bus in the same area is a data error.
+  - **PSS/E files**: the reader maps AREAIN=2 to `:lines_and_loads`. The exporter writes one AREA
+    INTERCHANGE record per area with a schedule (ISW = the area's `SLACK` bus, PTOL = 10.0 MW) and
+    writes the owning area in the AREA field of each LOAD record.
 
 ### Ties
 
