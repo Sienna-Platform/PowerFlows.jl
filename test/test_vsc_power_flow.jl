@@ -50,6 +50,22 @@ end
     @test dcn.branch_g ≈ [250.0]
 end
 
+@testset "VSC: a kA converter loss curve converts to MW at the rated DC voltage" begin
+    sys = _build_vsc_system(; rated_dc_voltage = 250.0)
+    vsc = PSY.get_component(PSY.TwoTerminalVSCLine, sys, "vsc_test")
+    ka_curve =
+        PSY.LossCurve(PSY.QuadraticCurve(0.01, 0.02, 0.005), PSY.NaturalUnit(), u"kA")
+    mw_curve = PF._vsc_power_axis_loss(vsc, ka_curve)
+    @test PSY.get_value_curve(mw_curve)(100.0) ≈
+          PSY.get_value_curve(ka_curve)(100.0 / 250.0)
+
+    mw_in = PSY.LossCurve(PSY.QuadraticCurve(0.01, 0.02, 0.005), PSY.NaturalUnit())
+    @test PF._vsc_power_axis_loss(vsc, mw_in) === mw_in
+
+    PSY.set_rated_dc_voltage!(vsc, 0.0)
+    @test_throws ArgumentError PF._vsc_power_axis_loss(vsc, ka_curve)
+end
+
 @testset "VSC: a conducting DC line without a rated DC voltage is rejected" begin
     sys = _build_vsc_system(; g = 1 / 32.0)
     vsc = PSY.get_component(PSY.TwoTerminalVSCLine, sys, "vsc_test")
@@ -872,6 +888,7 @@ function _build_parallel_ic_system(; shared_ac::Bool = true)
             loss_function = PSY.LossCurve(
                 PSY.QuadraticCurve(0.005, 0.01, 0.002),
                 PSY.NaturalUnit(),
+                u"kA",
             ), input_basis = u"CU",
         )
         PSY.add_component!(sys, ic)
