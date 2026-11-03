@@ -499,7 +499,7 @@ counter (`ClaimedPositions`).
 
 All workers must use the same pivot order. Two things give them that order: the polar lean
 plan, and the first worker's cache, which seeds the caches of the other workers. A rect/mixed
-cache holds its own plan. When either is missing ([`_head_needed`](@ref)), a serial head step
+cache holds its own plan. When either is missing (`_head_needed`), a serial head step
 builds it before the tasks start. The head step solves one step on the first worker with
 `build_plan = true`. When that step does not converge, the slot stays untried, the tasks use
 plain KLU, and the next call runs the head step again.
