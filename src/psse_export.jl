@@ -1252,7 +1252,7 @@ function write_to_buffers!(
         if haskey(load_owner, (sienna_bus_number, PSY.get_name(load)))
             AREA = md["area_mapping"][load_owner[(sienna_bus_number, PSY.get_name(load))]]
         elseif !isnothing(PSY.get_area(PSY.get_bus(load)))
-            AREA = _permissive_parse_int(PSY.get_name(PSY.get_area(PSY.get_bus(load))))
+            AREA = md["area_mapping"][PSY.get_name(PSY.get_area(PSY.get_bus(load)))]
         else
             AREA = PSSE_DEFAULT
         end
@@ -1804,12 +1804,13 @@ _psse_branch_name(branch::PSY.ACBranch) =
 # has no charging; a bypassed one is a zero-impedance tie.
 _psse_series_impedance(branch::PSY.ACBranch) =
     (PSY.get_r(branch, u"SU"), PSY.get_x(branch, u"SU"))
-_psse_series_impedance(branch::PSY.SeriesCompensator) =
+function _psse_series_impedance(branch::PSY.SeriesCompensator)
     if PSY.get_control_mode(branch) == PSY.SeriesCompensatorControlMode.BYPASSED
-        (0.0, 0.0)
+        return (0.0, 0.0)
     else
-        (PSY.get_r(branch, u"SU"), PSY.get_x(branch, u"SU"))
+        return (PSY.get_r(branch, u"SU"), PSY.get_x(branch, u"SU"))
     end
+end
 _psse_line_charging(branch::PSY.ACBranch) =
     (PSY.get_b(branch, u"SU"), PSY.get_g(branch, u"SU"))
 _psse_line_charging(::PSY.SeriesCompensator) =
@@ -2870,7 +2871,12 @@ function _area_isw(md::AbstractDict, buses::Vector{PSY.ACBus})
 end
 
 # An area with no schedule gets no record, so the re-read area has no schedule either.
-# PTOL is the PSS/E default: the exporter has no access to the power flow settings.
+# PTOL is the power flow `interchange_tolerance` (pu) in MW when a power flow drives the export.
+# Otherwise it is the PSS/E default.
+_psse_ptol(::Nothing, ::Float64) = PSSE_DEFAULT_PTOL
+_psse_ptol(params::SolutionParameters, base_power::Float64) =
+    params.interchange_tolerance * base_power
+
 function write_to_buffers!(
     exporter::PSSEExporter,
     ::Val{Symbol("Area Interchange Data")},
@@ -2896,7 +2902,7 @@ function write_to_buffers!(
         I = area_mapping[name]
         ISW = _area_isw(md, area_buses)
         PDES = pdes[name] * base_power
-        PTOL = PSSE_DEFAULT_PTOL
+        PTOL = _psse_ptol(exporter.source_parameters, base_power)
         @assert _is_valid_psse_name(name) name
         ARNAME = _psse_quote_string(name)
         @fastprintdelim_unroll(io, true, I, ISW, PDES, PTOL, ARNAME)

@@ -92,7 +92,7 @@ power counts, and the ZIP parts of the load are evaluated at the bus voltage.
   - **Off-area loads**: declare them in `Area.out_of_area_loads` of the owning area. A listed load at a
     bus in the same area is a data error.
   - **PSS/E files**: the reader maps AREAIN=2 to `:lines_and_loads`. The exporter writes one AREA
-    INTERCHANGE record per area with a schedule (ISW = the area's `SLACK` bus, PTOL = 10.0 MW) and
+    INTERCHANGE record per area with a schedule (ISW = the area's `SLACK` bus, PTOL = `interchange_tolerance` in MW when a power flow drives the export, else 10.0 MW) and
     writes the owning area in the AREA field of each LOAD record.
 
 ### Ties

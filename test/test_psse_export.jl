@@ -1327,4 +1327,17 @@ end
     @test isnothing(PSY.get_scheduled_net_interchange(area2_2, u"SU"))
     @test PSY.get_name.(PSY.get_out_of_area_loads(area1_2)) == ["load2011"]
     @test isempty(PSY.get_out_of_area_loads(area2_2))
+
+    # A power flow drives PTOL from `interchange_tolerance` (pu on the system base).
+    pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; interchange_tolerance = 0.07)
+    update_exporter!(exporter, pf)
+    write_export(exporter, "area_round_trip_ptol"; overwrite = true)
+    raw_path, _ = get_psse_export_paths(joinpath(export_location, "area_round_trip_ptol"))
+    record = only(
+        filter(
+            l -> endswith(l, "'1'") && length(split(l, ",")) == 5,
+            readlines(raw_path),
+        ),
+    )
+    @test parse(Float64, split(record, ",")[4]) ≈ 0.07 * PSY.get_base_power(sys, u"NU")
 end
