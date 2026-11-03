@@ -534,16 +534,17 @@ end
 # A zero-resistance line is a hard short; it gets a large per-unit conductance instead.
 function _tmodel_branch_g_pu(dcline::PSY.TModelHVDCLine, sys_base::Float64)
     r_ohm = PSY.get_r(dcline)
-    iszero(r_ohm) && return 1.0e6
+    # Checked before the r = 0 shortcut: the kA current result divides by this base too.
     v_dc_kv = PSY.get_base_voltage(PSY.get_from(PSY.get_arc(dcline)))
     if isnothing(v_dc_kv) || !(v_dc_kv > 0.0)
         throw(
             ArgumentError(
-                "TModelHVDCLine $(PSY.get_name(dcline)) has a series resistance of " *
-                "$(r_ohm) Ω but its from DCBus has no base_voltage to convert it to per unit.",
+                "TModelHVDCLine $(PSY.get_name(dcline))'s from DCBus has no base_voltage " *
+                "to convert its series resistance and current to per unit.",
             ),
         )
     end
+    iszero(r_ohm) && return 1.0e6
     return v_dc_kv^2 / (r_ohm * sys_base)
 end
 

@@ -628,6 +628,12 @@ end
     # the re-parse must succeed (previously threw on the empty REMOT field) and keep both VSCs
     sys2 = read_system_with_metadata(raw_path, metadata_path)
     @test length(collect(PSY.get_components(PSY.TwoTerminalVSCLine, sys2))) == n0 + 1
+    # The default no-limit current exports as PSS/E's IMAX = 0, not as a 1000× A value.
+    vsc = PSY.get_component(PSY.TwoTerminalVSCLine, sys, "vsc_no_ext")
+    for side in (:from, :to)
+        fields = PowerFlows._compute_vsc_converter_fields(exporter, vsc, 3, 1, side)
+        @test fields.IMAX == 0.0
+    end
 end
 
 @testset "PSSE Exporter FACTS: RMPCT blank, FCREG/REMOT from regulated_bus_number (v33/v35)" begin
