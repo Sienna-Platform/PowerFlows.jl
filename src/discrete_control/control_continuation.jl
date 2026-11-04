@@ -688,8 +688,10 @@ function _control_continuation!(
     end
     # Classify each FACTS endpoint against its final voltage-dependent bound and setpoint
     # (`saturated` reported by `get_controlled_device_results` and written back to PSY). Uses
-    # the final converged voltages.
+    # the final converged voltages. The bound was last refreshed before the final solves, which
+    # can move voltage materially after a retry; after a failed solve, keep the last good bound.
     for d in set.facts
+        ok && _refresh_facts_limit!(d, data, ts, false)
         classify_facts_saturation!(d, measured_value(d, data, ts))
     end
     # Reported branch flows are computed from the arc-admittance matrices right after

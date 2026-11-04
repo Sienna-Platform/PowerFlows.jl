@@ -1619,4 +1619,15 @@ end
     q_min, q_max = data.bus_reactive_power_bounds[gen_ix, 1]
     @test q_min - 1e-6 <= data.bus_reactive_power_injections[gen_ix, 1] <= q_max + 1e-6
     @test only(data.controlled_devices.shunts).current > 0
+
+    # The final Q-limited solve moves voltage after regulation last refreshed the FACTS bound,
+    # so the reported bound must come from the final voltage.
+    sys = _q_limited_shunt_system()
+    _add_facts_shunt!(sys, 3; max_shunt_current = 20.0)
+    data = PowerFlowData(pf, sys)
+    @test_logs (:warn, r"regulating devices without the limits") match_mode = :any solve_power_flow!(
+        data)
+    @test all(data.converged)
+    f = only(data.controlled_devices.facts)
+    @test f.b_lim == PowerFlows._facts_b_limit(f, PowerFlows.measured_value(f, data, 1))
 end
