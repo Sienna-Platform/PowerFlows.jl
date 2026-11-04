@@ -53,23 +53,22 @@ function _bus_island_map(data::ACPowerFlowData)
     return island
 end
 
-# Net-interchange target and incidence count per PSY area name, aggregated over ALL
-# `PSY.AreaInterchange` records (regardless of enrollment): PDES_a = Σ_{from=a} flow −
-# Σ_{to=a} flow. Read explicitly in system base (`u"SU"`), the unit convention of the
-# whole power-flow layer — no division by base power.
+_record_schedule!(::Dict{String, Float64}, ::String, ::Nothing) = nothing
+_record_schedule!(pdes::Dict{String, Float64}, name::String, value::Float64) =
+    pdes[name] = value
+
+# Net-interchange target per PSY area name, in system base. An area with a `nothing`
+# schedule has no entry: it is valid data and means "no interchange control".
 function _area_pdes(sys::PSY.System)
     pdes = Dict{String, Float64}()
-    incident = Dict{String, Int}()
-    for ai in PSY.get_available_components(PSY.AreaInterchange, sys)
-        flow = PSY.get_active_power_flow(ai, u"SU")
-        from_name = PSY.get_name(PSY.get_from_area(ai))
-        to_name = PSY.get_name(PSY.get_to_area(ai))
-        pdes[from_name] = get(pdes, from_name, 0.0) + flow
-        pdes[to_name] = get(pdes, to_name, 0.0) - flow
-        incident[from_name] = get(incident, from_name, 0) + 1
-        incident[to_name] = get(incident, to_name, 0) + 1
+    for area in PSY.get_components(PSY.Area, sys)
+        _record_schedule!(
+            pdes,
+            PSY.get_name(area),
+            PSY.get_scheduled_net_interchange(area, u"SU"),
+        )
     end
-    return pdes, incident
+    return pdes
 end
 
 # Guards 1, 1b, 2, 3, 4, 6: resolve area `name`'s SLACK bus and validate it in isolation
@@ -142,6 +141,15 @@ function _area_slack_candidate(
         return 0
     end
     return slack_ix
+end
+
+# An area with a SLACK bus but no schedule would otherwise be a candidate, so say why it
+# does not enroll. An area without a SLACK bus stays silent, as in rule 1.
+function _report_unscheduled_area(name::String, buses::Vector{PSY.ACBus})
+    isempty(_area_slack_buses(buses)) && return
+    @info "Area \"$name\": no scheduled net interchange; the area is not \
+        net-interchange-controlled and floats with the system swing."
+    return
 end
 
 # Guard 5: `tied[i]` is whether candidate `candidate_names[i]` was referenced by >=1
@@ -233,8 +241,8 @@ function _warn_diag_pollution_hazards(
 end
 
 # Rule 9 (runs last): per island, uncontrolled areas (no SLACK, or de-enrolled by any
-# guard) whose derived PDES is nonzero. Exactly one names it via `@info` — met implicitly
-# by tie-cancellation once the island's other areas enroll; two or more names all via
+# guard) whose scheduled PDES is nonzero. Exactly one names it via `@info` — met implicitly
+# by tie-cancellation when the island's schedules sum to zero; two or more names all via
 # `@warn` — only the combined net is pinned, individual schedules are unenforceable.
 function _report_unenforceable_schedules(
     area_names::Vector{String},
@@ -261,18 +269,91 @@ function _report_unenforceable_schedules(
         names = sort!(unique(island_groups[isle]))
         if length(names) == 1
             @info "Area \"$(only(names))\" is not embedded net-interchange-controlled \
-                but has a nonzero derived interchange target; its schedule is met \
-                implicitly via the tie-cancellation identity (Σ NI_a = 0) once the \
-                island's other areas enroll."
+                but has a nonzero scheduled interchange; the tie-cancellation identity \
+                (Σ NI_a = 0) meets its schedule implicitly only when the island's \
+                schedules sum to zero."
         else
             @warn "Areas $(join(names, ", ")) are not embedded net-interchange-controlled \
-                but have nonzero derived interchange targets; only their combined net is \
+                but have nonzero scheduled interchange; only their combined net is \
                 pinned by the tie-cancellation identity — the individual schedules are \
                 unenforceable and deviations land on the island's REF/distributed slack. \
                 Possibly a missing SLACK designation."
         end
     end
     return
+end
+
+_host_area_name(area::PSY.Area, ::String, load, bus) = PSY.get_name(area)
+function _host_area_name(::Nothing, owner::String, load, bus)
+    error(
+        "Area \"$owner\" lists load \"$(PSY.get_name(load))\" as an off-area load, but \
+        the load's bus $(PSY.get_name(bus)) has no area. An off-area load must connect \
+        to a bus in another area.",
+    )
+end
+
+"""
+    build_off_area_loads(pf, sys, data, tail_of) -> Vector{OffAreaLoad}
+
+Build the off-area load terms of `NI_a` from each `PSY.Area`'s `out_of_area_loads`.
+`tail_of` maps each enrolled area name to its pristine `tail_ix`. The ZIP parts come from
+the same per-load split that fills the bus withdrawal matrices. The load counts
+as an export of the bus area to the owning area: the bus area exports it, the owner imports it.
+"""
+function build_off_area_loads(
+    pf::AbstractACPowerFlow,
+    sys::PSY.System,
+    data::ACPowerFlowData,
+    tail_of::Dict{String, Int},
+)
+    bus_lookup = get_bus_lookup(data)
+    nrd = get_network_reduction_data(data)
+    reverse_bus_search_map = PNM.get_reverse_bus_search_map(nrd)
+    removed_buses = PNM.get_removed_buses(nrd)
+    n_time_steps = size(get_bus_type(data), 2)
+    records = OffAreaLoad[]
+    for area in PSY.get_components(PSY.Area, sys)
+        owner = PSY.get_name(area)
+        for load in PSY.get_out_of_area_loads(area)
+            bus = PSY.get_bus(load)
+            bus_area = _host_area_name(PSY.get_area(bus), owner, load, bus)
+            if bus_area == owner
+                error(
+                    "Area \"$owner\" lists load \"$(PSY.get_name(load))\" as an \
+                    off-area load, but the load's bus $(PSY.get_name(bus)) is in that \
+                    same area. An off-area load must connect to a bus in another area.",
+                )
+            end
+            bus_ix =
+                _resolve_bus_ix(bus_lookup, reverse_bus_search_map, PSY.get_number(bus))
+            if isnothing(bus_ix) || PSY.get_number(bus) in removed_buses
+                error(
+                    "Area \"$owner\": off-area load \"$(PSY.get_name(load))\" is at bus \
+                    $(PSY.get_name(bus)), which is not in the reduced network.",
+                )
+            end
+            parts = (0.0, 0.0, 0.0)
+            if PSY.get_available(load)
+                parts = _load_active_power_parts(pf, load)
+            end
+            for (name, sign) in ((owner, -1.0), (bus_area, 1.0))
+                tail = get(tail_of, name, 0)
+                iszero(tail) && continue
+                push!(
+                    records,
+                    OffAreaLoad(
+                        tail,
+                        sign,
+                        bus_ix,
+                        fill(parts[1], n_time_steps),
+                        fill(parts[2], n_time_steps),
+                        fill(parts[3], n_time_steps),
+                    ),
+                )
+            end
+        end
+    end
+    return records
 end
 
 """
@@ -294,11 +375,15 @@ function build_area_interchange_data(
     reverse_bus_search_map = PNM.get_reverse_bus_search_map(nrd)
     buses_by_area = _buses_by_area(sys)
     island_of = _bus_island_map(data)
-    pdes, incident = _area_pdes(sys)
+    pdes = _area_pdes(sys)
 
     area_names = sort!(collect(keys(buses_by_area)))
     slack_ix_of = Dict{String, Int}()
     for name in area_names
+        if !haskey(pdes, name)
+            _report_unscheduled_area(name, buses_by_area[name])
+            continue
+        end
         slack_ix = _area_slack_candidate(
             name,
             buses_by_area[name],
@@ -376,22 +461,10 @@ function build_area_interchange_data(
     ]
     _warn_diag_pollution_hazards(sys, ties, bus_lookup, reverse_bus_search_map)
 
-    areas = ControlledArea[]
-    for (tail_ix, name) in enumerate(enrolled_names)
-        area_pdes = get(pdes, name, 0.0)
-        if iszero(get(incident, name, 0))
-            @info "Area \"$name\": no incident PSY.AreaInterchange records; \
-                net-interchange target defaults to 0.0 pu."
-            area_pdes = 0.0
-        end
-        push!(areas, ControlledArea(name, slack_ix_of[name], area_pdes, tail_ix))
-    end
-
-    # Guard 8: sanity assertion, not a user-facing warning — every AreaInterchange record
-    # contributes +flow to one area and -flow to another, so the raw pairwise-derived sum
-    # over ALL areas is zero by construction regardless of which areas end up enrolled.
-    @assert isapprox(sum(values(pdes); init = 0.0), 0.0; atol = 1e-9) "Raw pairwise-\
-        derived per-area PDES must sum to ~0 across ALL areas by construction."
+    areas = [
+        ControlledArea(name, slack_ix_of[name], pdes[name], tail_ix) for
+        (tail_ix, name) in enumerate(enrolled_names)
+    ]
 
     enrolled_set = Set(enrolled_names)
     _report_unenforceable_schedules(
@@ -403,6 +476,12 @@ function build_area_interchange_data(
         reverse_bus_search_map,
         island_of,
     )
+
+    off_area_loads = OffAreaLoad[]
+    if get_tie_definition(pf) === :lines_and_loads
+        tail_of = Dict(name => i for (i, name) in enumerate(enrolled_names))
+        off_area_loads = build_off_area_loads(pf, sys, data, tail_of)
+    end
 
     n_time_steps = size(data.bus_type, 2)
     return AreaInterchangeData(
@@ -417,5 +496,7 @@ function build_area_interchange_data(
         copy(dc_ties),
         zeros(length(areas), n_time_steps),
         Dict{Int, Vector{RelaxedAreaRecord}}(),
+        off_area_loads,
+        copy(off_area_loads),
     )
 end

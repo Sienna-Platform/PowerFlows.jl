@@ -1196,10 +1196,38 @@ end
     # only thing differing is `metered_from`.
     area3_tail = tie.from_area_tail   # Area3, the from-side tail
     area2_tail = tie.to_area_tail     # Area2, the to-side tail
-    NI3_from = PF._area_net_interchange([tie_from], PF.DCTie[], area3_tail, data, 1)
-    NI3_to = PF._area_net_interchange([tie_to], PF.DCTie[], area3_tail, data, 1)
-    NI2_from = PF._area_net_interchange([tie_from], PF.DCTie[], area2_tail, data, 1)
-    NI2_to = PF._area_net_interchange([tie_to], PF.DCTie[], area2_tail, data, 1)
+    NI3_from = PF._area_net_interchange(
+        [tie_from],
+        PF.DCTie[],
+        PF.OffAreaLoad[],
+        area3_tail,
+        data,
+        1,
+    )
+    NI3_to = PF._area_net_interchange(
+        [tie_to],
+        PF.DCTie[],
+        PF.OffAreaLoad[],
+        area3_tail,
+        data,
+        1,
+    )
+    NI2_from = PF._area_net_interchange(
+        [tie_from],
+        PF.DCTie[],
+        PF.OffAreaLoad[],
+        area2_tail,
+        data,
+        1,
+    )
+    NI2_to = PF._area_net_interchange(
+        [tie_to],
+        PF.DCTie[],
+        PF.OffAreaLoad[],
+        area2_tail,
+        data,
+        1,
+    )
 
     @test isapprox(NI3_to - NI3_from, -loss; atol = 1e-6)
     @test isapprox(NI2_to - NI2_from, loss; atol = 1e-6)
@@ -2161,8 +2189,10 @@ genuinely merges them (`fix == tix`) -- the self-tie merge guard case, distinct 
 "interior DC link" test (same-tail on two DIFFERENT buses, not a merge)."""
 function _lcc_self_merge_fixture()
     sys = System(100.0)
-    area_a = PSY.Area(; name = "AreaA", input_basis = u"CU")
-    area_b = PSY.Area(; name = "AreaB", input_basis = u"CU")
+    area_a =
+        PSY.Area(; name = "AreaA", scheduled_net_interchange = 0.0, input_basis = u"CU")
+    area_b =
+        PSY.Area(; name = "AreaB", scheduled_net_interchange = 0.0, input_basis = u"CU")
     PSY.add_component!(sys, area_a)
     PSY.add_component!(sys, area_b)
 
@@ -2481,4 +2511,39 @@ end
 @testset "area interchange DC homotopy rejected" begin
     @test_throws r"RobustHomotopyPowerFlow" ACPolarPowerFlow{RobustHomotopyPowerFlow}(;
         area_interchange_control = true)
+end
+
+@testset "area Jacobian structure does not depend on the bus types of one time step" begin
+    function build(types_by_step)
+        pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
+            time_steps = length(types_by_step), area_interchange_control = true)
+        built = PowerFlowData(pf, _three_area_transfer_fixture())
+        ix4 = findfirst(==(4), built.power_network_matrix.axes[1])
+        base = copy(built.bus_type[:, 1])
+        for (t, ref4) in enumerate(types_by_step)
+            built.bus_type[:, t] .= base
+            if ref4
+                built.bus_type[ix4, t] = PSY.ACBusTypes.REF
+            end
+        end
+        return built
+    end
+    data = build([true, false])
+    @test data.bus_type[:, 1] != data.bus_type[:, 2]
+    @test solve_power_flow!(data; time_steps = [1])
+    memo = data.ac_jacobian_structure_cache[]
+    @test solve_power_flow!(data; time_steps = [2])
+    @test data.ac_jacobian_structure_cache[] === memo
+
+    for (t, ref4) in ((1, true), (2, false))
+        single = build([ref4])
+        @test solve_power_flow!(single)
+        @test isapprox(data.bus_magnitude[:, t], single.bus_magnitude[:, 1]; atol = 1e-9)
+        @test isapprox(data.bus_angles[:, t], single.bus_angles[:, 1]; atol = 1e-9)
+        @test isapprox(
+            data.area_interchange.delta_p[:, t],
+            single.area_interchange.delta_p[:, 1];
+            atol = 1e-9,
+        )
+    end
 end

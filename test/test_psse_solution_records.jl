@@ -254,3 +254,13 @@ end
     end
     @test_throws ErrorException read_solution_parameters(path)
 end
+
+@testset "AREAIN=2 reads as tie lines and loads" begin
+    values = PF.SolutionRecordValues(; areain = 2)
+    @test PF.solution_parameters(values, 100.0).tie_definition === :lines_and_loads
+    @test PF.solution_parameters(
+        PF.SolutionRecordValues(; areain = 1),
+        100.0,
+    ).tie_definition ===
+          :lines_only
+end

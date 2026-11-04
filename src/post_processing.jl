@@ -1375,8 +1375,8 @@ Per-controlled-area results row: net interchange achieved vs. targeted, the conv
 `ΔP_a`, whether the schedule was `:enforced` or `:relaxed` by the greedy relax loop, and
 whether the slack bus's TOTAL solved output (distributed-slack share + `ΔP_a`) fits its
 machines' limits. One row per area enrolled at construction (`pristine_areas`); relaxed
-rows report `delta_p = 0.0`. `ni_solved` is recomputed from the tie-flow kernels against
-the pristine AC and DC tie lists (`_area_net_interchange`), not trusted off a stale
+rows report `delta_p = 0.0`. `ni_solved` is recomputed from the tie-flow and off-area load
+kernels against the pristine lists (`_area_net_interchange`), not trusted off a stale
 residual row, so it is correct for a relaxed area too; `ni_solved - pdes` is that area's
 infeasibility certificate. An enforced row's `delta_p` reads `pristine_delta_p` (never the
 WORKING `aid.delta_p`, which a relaxed step resets from `pristine_delta_p` at its end).
@@ -1401,7 +1401,8 @@ function area_interchange_results_dataframe(
     df = empty_area_interchange_results()
     for area in aid.pristine_areas
         ni_solved = _area_net_interchange(
-            aid.pristine_ties, aid.pristine_dc_ties, area.tail_ix, data, time_step,
+            aid.pristine_ties, aid.pristine_dc_ties, aid.pristine_off_area_loads,
+            area.tail_ix, data, time_step,
         )
         schedule_status = :enforced
         delta_p_pu = 0.0

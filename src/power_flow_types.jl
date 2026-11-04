@@ -180,12 +180,11 @@ function _validate_area_interchange_settings(
             ),
         )
     end
-    if tie_definition !== :lines_only
+    if !(tie_definition in (:lines_only, :lines_and_loads))
         throw(
             ArgumentError(
-                "tie_definition=$(tie_definition) is not supported; only :lines_only is " *
-                "implemented. :lines_and_loads (PSS/E control code 2) is reserved for a " *
-                "future phase.",
+                "tie_definition=$(tie_definition) is not supported; use :lines_only " *
+                "(PSS/E control code 1) or :lines_and_loads (control code 2).",
             ),
         )
     end
@@ -497,8 +496,9 @@ with the specified solver type.
 - `interchange_tolerance::Float64`: PTOL analogue (pu); used for validation and reporting only —
     the embedded formulation targets each area's PDES exactly. Non-positive values are floored to
     `MIN_INTERCHANGE_TOLERANCE` with a warning. Default is `DEFAULT_INTERCHANGE_TOLERANCE`.
-- `tie_definition::Symbol`: How area ties are identified. Only `:lines_only` is implemented;
-    `:lines_and_loads` (PSS/E control code 2) is reserved. Default is `:lines_only`.
+- `tie_definition::Symbol`: How area ties are identified. `:lines_only` (PSS/E control
+    code 1) counts tie flows; `:lines_and_loads` (control code 2) also counts each area's
+    `out_of_area_loads`. Default is `:lines_only`.
 - `solution_parameters::SolutionParameters`: The solve parameters — convergence targets,
     step-control limits, network controls and the linear-solver backend. Also the home of
     `check_reactive_power_limits`, `enhanced_flat_start`, `control_discrete_devices`,

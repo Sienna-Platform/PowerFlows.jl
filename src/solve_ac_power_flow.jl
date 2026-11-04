@@ -712,7 +712,7 @@ function _worker_area_data(aid::AreaInterchangeData)
 end
 
 """Copy what post-processing reads for the steps the worker claimed back into `data`: the
-`pristine_delta_p` columns and the `relaxed` records. `positions` are the claimed
+`pristine_delta_p` and `delta_p` columns and the `relaxed` records. `positions` are the claimed
 positions."""
 function _merge_worker_area!(
     data::ACPowerFlowData,
@@ -726,8 +726,11 @@ function _merge_worker_area!(
     for pos in positions
         t = steps[pos]
         @views aid.pristine_delta_p[:, t] .= worker_aid.pristine_delta_p[:, t]
+        @views aid.delta_p[:, t] .= worker_aid.delta_p[:, t]
         if haskey(worker_aid.relaxed, t)
             aid.relaxed[t] = worker_aid.relaxed[t]
+        else
+            delete!(aid.relaxed, t)
         end
     end
     return
@@ -841,6 +844,7 @@ function _ac_power_flow_with_area_relax!(
     isempty(data.area_interchange.pristine_areas) &&
         return _ac_power_flow(data, pf, time_step; kwargs...)
     full_memo = nothing
+    delete!(data.area_interchange.relaxed, time_step)
     try
         aid = data.area_interchange
         relaxed_this_step = RelaxedAreaRecord[]
@@ -875,8 +879,8 @@ function _ac_power_flow_with_area_relax!(
             (
                 let tail_ix = pristine_tail_of[r.name],
                     ni_solved = _area_net_interchange(
-                        aid.pristine_ties, aid.pristine_dc_ties, tail_ix, data,
-                        time_step,
+                        aid.pristine_ties, aid.pristine_dc_ties,
+                        aid.pristine_off_area_loads, tail_ix, data, time_step,
                     )
 
                     "$(r.name) (ni_solved=$(ni_solved), pdes=$(r.pdes), " *
