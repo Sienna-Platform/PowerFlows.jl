@@ -181,6 +181,9 @@ struct _SensitivityContext{C, R, JT, P}
     # checks this snapshot and forces a rebuild instead of reusing stale structure.
     bus_type::Vector{PSY.ACBusTypes.Value}
     probe::P                # StateVectorCache scratch for `_singular_base_solve!`
+    # n × k scratch for `_linear_plant_signs!` (k ≤ SENSITIVITY_BLOCK_SIZE): the blocked
+    # right-hand sides, solved in place. Allocated once per context build.
+    block::Matrix{Float64}
 end
 
 # Values-only refresh at a new converged base state: sparsity is topology-invariant, so a
@@ -415,19 +418,33 @@ function _step_device!(
     return abs(Δp)
 end
 
-# One device's plant sign: the linear sensitivity when a `ctx` is live (available on every AC
-# formulation for tap/shunt/FACTS), else the FD probe (singular base).
-_probe_one_sign(
-    d, data, ts::Int, pf, scratch_snap::ControlStateSnapshot, ::FiniteDifferenceProbes;
+# Every device's plant sign: the linear sensitivity when a `ctx` is live (available on every AC
+# formulation for tap/shunt/FACTS; solved in blocks), else the FD probe (singular base). A device
+# whose linear probe has no analytic form falls back to the FD probe individually.
+function _probe_signs(
+    devices, data, ts::Int, pf, scratch_snap::ControlStateSnapshot,
+    ::FiniteDifferenceProbes;
     kwargs...,
-) = _plant_sign(d, data, ts, pf, scratch_snap; kwargs...)
-function _probe_one_sign(
-    d, data, ts::Int, pf, scratch_snap::ControlStateSnapshot,
+)
+    s = zeros(length(devices))
+    ok = fill(false, length(devices))
+    for (i, d) in enumerate(devices)
+        s[i], ok[i] = _plant_sign(d, data, ts, pf, scratch_snap; kwargs...)
+    end
+    return s, ok
+end
+function _probe_signs(
+    devices, data, ts::Int, pf, scratch_snap::ControlStateSnapshot,
     ctx::_SensitivityContext; kwargs...,
 )
-    dydp, ok = _linear_plant_sign(d, data, ts, ctx)
-    ok && return dydp, true
-    return _plant_sign(d, data, ts, pf, scratch_snap; kwargs...)
+    s = zeros(length(devices))
+    ok = fill(false, length(devices))
+    _linear_plant_signs!(s, ok, devices, eachindex(devices), data, ts, ctx)
+    for (i, d) in enumerate(devices)
+        ok[i] && continue
+        s[i], ok[i] = _plant_sign(d, data, ts, pf, scratch_snap; kwargs...)
+    end
+    return s, ok
 end
 
 # Probe every device in a concrete vector (function barrier — no dynamic dispatch over the
@@ -438,11 +455,11 @@ function _probe_device_signs!(
     ctx::Union{_SensitivityContext, FiniteDifferenceProbes}, data, ts::Int, pf,
     scratch_snap::ControlStateSnapshot; kwargs...,
 )
+    signs, reliable = _probe_signs(devices, data, ts, pf, scratch_snap, ctx; kwargs...)
     for (i, d) in enumerate(devices)
-        s, reliable = _probe_one_sign(d, data, ts, pf, scratch_snap, ctx; kwargs...)
         lo, hi = parameter_limits(d)
-        if reliable && abs(s) * (hi - lo) >= CONTROL_GAIN_FLOOR
-            dVdp[offset + i] = s
+        if reliable[i] && abs(signs[i]) * (hi - lo) >= CONTROL_GAIN_FLOOR
+            dVdp[offset + i] = signs[i]
         else
             frozen[offset + i] = true
         end
@@ -512,18 +529,31 @@ function _rollback_targets_group!(
     return
 end
 
-# Analytic (coupling-free) gain refresh for the moved devices of one group, using a `ctx` built at
+# `p_ref` is the parameter at this device's last gain refresh; `Inf` means none yet, or discarded
+# by a context rebuild, which makes the comparison trivially true.
+@inline function _gain_is_stale(d, p_ref::Float64)
+    lo, hi = parameter_limits(d)
+    return abs(current_parameter(d) - p_ref) > CONTROL_GAIN_REFRESH_MOVE * (hi - lo)
+end
+
+# Analytic (coupling-free) gain refresh for the stale moved devices of one group, using a `ctx` built at
 # the post-solve state. Same sign-reversal / gain-floor freeze policy as the secant refresh.
 function _refresh_gains_group!(
     devices, offset::Int, data, ts::Int, frozen::Vector{Bool}, dVdp::Vector{Float64},
-    did_move::Vector{Bool}, ctx::_SensitivityContext,
+    did_move::Vector{Bool}, gain_p::Vector{Float64}, ctx::_SensitivityContext,
 )
-    for (i, d) in enumerate(devices)
+    moved = [
+        i for i in eachindex(devices) if
+        did_move[offset + i] && _gain_is_stale(devices[i], gain_p[offset + i])
+    ]
+    g = zeros(length(devices))
+    ok = fill(false, length(devices))
+    _linear_plant_signs!(g, ok, devices, moved, data, ts, ctx)
+    for i in moved
         idx = offset + i
-        did_move[idx] || continue
-        g, ok = _linear_plant_sign(d, data, ts, ctx)
-        ok || continue
-        _apply_gain_refresh!(d, idx, data, ts, frozen, dVdp, dVdp[idx], g)
+        gain_p[idx] = current_parameter(devices[i])
+        ok[i] || continue
+        _apply_gain_refresh!(devices[i], idx, data, ts, frozen, dVdp, dVdp[idx], g[i])
     end
     return
 end
@@ -533,14 +563,16 @@ end
 function _accept_refreshed_context!(
     ctx::_SensitivityContext, set::ControlledDeviceSet, n_taps::Int, off_facts::Int,
     data, ts::Int, frozen::Vector{Bool}, dVdp::Vector{Float64}, did_move::Vector{Bool},
+    gain_p::Vector{Float64},
 )
-    _refresh_gains_group!(set.taps, 0, data, ts, frozen, dVdp, did_move, ctx)
-    _refresh_gains_group!(set.shunts, n_taps, data, ts, frozen, dVdp, did_move, ctx)
-    _refresh_gains_group!(set.facts, off_facts, data, ts, frozen, dVdp, did_move, ctx)
+    _refresh_gains_group!(set.taps, 0, data, ts, frozen, dVdp, did_move, gain_p, ctx)
+    _refresh_gains_group!(set.shunts, n_taps, data, ts, frozen, dVdp, did_move, gain_p, ctx)
+    _refresh_gains_group!(
+        set.facts, off_facts, data, ts, frozen, dVdp, did_move, gain_p, ctx)
     return true
 end
 _accept_refreshed_context!(::FiniteDifferenceProbes, set, n_taps, off_facts, data, ts,
-    frozen, dVdp, did_move) = false
+    frozen, dVdp, did_move, gain_p) = false
 
 # One batched pass over the voltage-device groups (taps, shunts, FACTS). Returns
 # `(settled, converged, ctx)`: `converged=false` means the pass fully rolled back and the caller
@@ -550,7 +582,7 @@ function _batched_pass!(
     set::ControlledDeviceSet, n_taps::Int, n_shunts::Int, data, ts::Int, S::Float64, pf,
     snap::ControlStateSnapshot, frozen::Vector{Bool}, dVdp::Vector{Float64},
     osc::Vector{Int}, prev_sign::Vector{Int}, n_shared::Vector{Int},
-    p_prev::Vector{Float64}, did_move::Vector{Bool},
+    p_prev::Vector{Float64}, did_move::Vector{Bool}, gain_p::Vector{Float64},
     ctx::_SensitivityContext; kwargs...,
 )::Tuple{Bool, Bool, Union{_SensitivityContext, FiniteDifferenceProbes}}
     fill!(did_move, false)
@@ -572,8 +604,11 @@ function _batched_pass!(
     moved || return true, true, ctx       # nothing wanted to move ⇒ settled, no solve needed
     if _ctrl_solve!(pf, data, ts; kwargs...)
         refreshed = _refresh_or_rebuild_context(ctx, pf, data, ts; kwargs...)
+        # A rebuild means a PV/PQ flip or a singular refactor: gains can jump with no device
+        # moving far, so every gain is stale.
+        refreshed === ctx || fill!(gain_p, Inf)
         if _accept_refreshed_context!(
-            refreshed, set, n_taps, off_facts, data, ts, frozen, dVdp, did_move)
+            refreshed, set, n_taps, off_facts, data, ts, frozen, dVdp, did_move, gain_p)
             return false, true, refreshed # moved + converged ⇒ not settled
         end
     end
@@ -632,13 +667,13 @@ function _control_pass!(
     data, ts::Int, S::Float64, pf, scratch_snap::ControlStateSnapshot,
     frozen::Vector{Bool}, dVdp::Vector{Float64},
     osc::Vector{Int}, prev_sign::Vector{Int}, n_shared::Vector{Int},
-    p_prev::Vector{Float64}, did_move::Vector{Bool},
+    p_prev::Vector{Float64}, did_move::Vector{Bool}, gain_p::Vector{Float64},
     ctx::_SensitivityContext; kwargs...,
 )::Tuple{Bool, Union{_SensitivityContext, FiniteDifferenceProbes}}
     if use_batched
         s, converged, ctx =
             _batched_pass!(set, n_taps, n_shunts, data, ts, S, pf, scratch_snap, frozen,
-                dVdp, osc, prev_sign, n_shared, p_prev, did_move, ctx; kwargs...)
+                dVdp, osc, prev_sign, n_shared, p_prev, did_move, gain_p, ctx; kwargs...)
         converged && return s, ctx
     end
     settled = _step_voltage_groups!(set, n_taps, n_shunts, data, ts, S, pf, scratch_snap,
@@ -650,7 +685,7 @@ function _control_pass!(
     data, ts::Int, S::Float64, pf, scratch_snap::ControlStateSnapshot,
     frozen::Vector{Bool}, dVdp::Vector{Float64},
     osc::Vector{Int}, prev_sign::Vector{Int}, n_shared::Vector{Int},
-    p_prev::Vector{Float64}, did_move::Vector{Bool},
+    p_prev::Vector{Float64}, did_move::Vector{Bool}, gain_p::Vector{Float64},
     ctx::FiniteDifferenceProbes; kwargs...,
 )::Tuple{Bool, Union{_SensitivityContext, FiniteDifferenceProbes}}
     settled = _step_voltage_groups!(set, n_taps, n_shunts, data, ts, S, pf, scratch_snap,
@@ -778,6 +813,7 @@ function _regulate_devices!(
     user_tol = Float64(get(kwargs, :tol, DEFAULT_NR_TOL))
     p_prev = zeros(n_dev)
     did_move = fill(false, n_dev)
+    gain_p = fill(Inf, n_dev)
     S = INITIAL_CONTROL_STEEPNESS
     regulation_complete = false
     while true
@@ -797,7 +833,7 @@ function _regulate_devices!(
             settled, ctx = _control_pass!(
                 set, n_taps, n_shunts, use_batched, data, ts, S, pf,
                 scratch_snap,
-                frozen, dVdp, osc, prev_sign, n_shared, p_prev, did_move, ctx;
+                frozen, dVdp, osc, prev_sign, n_shared, p_prev, did_move, gain_p, ctx;
                 kwargs..., tol = stage_tol)
             settled && break
         end

@@ -21,6 +21,10 @@ const CONTROL_STAGE_TOL = 1e-6
 # CONTROL_STAGE_TOL=1e-6): skip the secant gain refresh — a noise-signed sample must not
 # trip the reverse-action freeze.
 const CONTROL_MEASUREMENT_FLOOR = 1e-5
+# A moved device re-solves its plant gain only once its parameter has travelled this fraction of
+# its range since the last refresh (or on its first move, or after a context rebuild). The solve
+# is the continuation's dominant cost at scale, and the gain only sets the damping and the sign.
+const CONTROL_GAIN_REFRESH_MOVE = 0.05
 const MIN_LAMBDA_STEP = 1e-3
 const MAX_LAMBDA_STEP = 1.0
 const CONTROL_STEP_GROWTH = 1.5

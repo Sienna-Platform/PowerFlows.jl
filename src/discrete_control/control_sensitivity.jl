@@ -35,8 +35,12 @@ function _sensitivity_context(
     # One registration per continuation — `_refresh_sensitivity_context!` reuses this
     # topology-invariant factorization on every batched pass without counting again.
     _count_symbolic_factor!(data)
+    cd = data.controlled_devices
+    n_dev = isnothing(cd) ? 0 : length(cd.taps) + length(cd.shunts) + length(cd.facts)
+    block = Matrix{Float64}(undef, n, clamp(n_dev, 1, SENSITIVITY_BLOCK_SIZE))
     return _SensitivityContext(
         lin_cache, residual, J, zeros(n), zeros(n), copy(view(data.bus_type, :, ts)), probe,
+        block,
     )
 end
 
@@ -114,7 +118,7 @@ end
 # Row convention: F[2b−1] active, F[2b] reactive balance at bus b (see `_update_residual_values!`).
 # Returns `false` when no analytic form exists here; caller then falls back to the FD probe.
 function _dF_dp!(
-    rhs::Vector{Float64},
+    rhs::AbstractVector{Float64},
     d::ControlledTap,
     ::ACPowerFlowResidual,
     data,
@@ -138,7 +142,7 @@ function _dF_dp!(
 end
 
 function _dF_dp!(
-    rhs::Vector{Float64},
+    rhs::AbstractVector{Float64},
     d::Union{ControlledSwitchedShunt, ControlledFACTS},
     ::ACPowerFlowResidual,
     data,
@@ -154,7 +158,13 @@ function _dF_dp!(
 end
 
 # Polar: x[2b−1] is Vm directly, so dVm/dp = −sol[2b−1] (dx/dp = −J⁻¹·∂F/∂p).
-_dVm_from_sol(::ACPowerFlowResidual, sol::Vector{Float64}, cbus::Int, data, ts::Int) =
+_dVm_from_sol(
+    ::ACPowerFlowResidual,
+    sol::AbstractVector{Float64},
+    cbus::Int,
+    data,
+    ts::Int,
+) =
     -sol[2 * cbus - 1]
 
 function _linear_plant_sign(d, data, ts::Int, ctx::_SensitivityContext)
@@ -168,6 +178,52 @@ function _linear_plant_sign(d, data, ts::Int, ctx::_SensitivityContext)
     copyto!(ctx.sol, ctx.rhs)
     solve!(ctx.lin_cache, ctx.sol)        # sol = J⁻¹·(∂F/∂p)
     return _dVm_from_sol(ctx.residual, ctx.sol, cbus, data, ts), true
+end
+
+# Right-hand sides per blocked sensitivity solve. One multi-RHS backend call per block replaces
+# one triangular solve per device, which on a ~100k-bus case was ~98% of the continuation.
+const SENSITIVITY_BLOCK_SIZE = 128
+
+# Blocked `_linear_plant_sign` over `devices[i]` for `i in which`, writing `g[i]` and `ok[i]`
+# with the same results and the same `ok` semantics. Valid because nothing in between mutates
+# `ctx.lin_cache` or the state `_dF_dp!` reads: every device solves against the same J.
+function _linear_plant_signs!(
+    g::AbstractVector{Float64}, ok::AbstractVector{Bool}, devices, which,
+    data, ts::Int, ctx::_SensitivityContext,
+)
+    B = ctx.block
+    k = size(B, 2)
+    cols = Vector{Int}(undef, k)   # device index held by each filled column
+    m = 0
+    for i in which
+        d = devices[i]
+        col = view(B, :, m + 1)
+        if !_dF_dp!(col, d, ctx.residual, data, ts)
+            g[i], ok[i] = 0.0, false
+        elseif data.bus_type[controlled_bus_ix(d), ts] != PSY.ACBusTypes.PQ
+            g[i], ok[i] = 0.0, true   # PV/REF pin |V|: dVm/dp = 0 by construction
+        else
+            m += 1
+            cols[m] = i
+            if m == k
+                _flush_sensitivity_block!(g, ok, devices, cols, B, m, data, ts, ctx)
+                m = 0
+            end
+        end
+    end
+    m > 0 && _flush_sensitivity_block!(g, ok, devices, cols, B, m, data, ts, ctx)
+    return
+end
+
+function _flush_sensitivity_block!(g, ok, devices, cols, B, m::Int, data, ts::Int, ctx)
+    solve!(ctx.lin_cache, view(B, :, 1:m))   # columns ← J⁻¹·∂F/∂p
+    for j in 1:m
+        i = cols[j]
+        cbus = controlled_bus_ix(devices[i])
+        g[i] = _dVm_from_sol(ctx.residual, view(B, :, j), cbus, data, ts)
+        ok[i] = true
+    end
+    return
 end
 
 # ── Rectangular CI and MCPB ───────────────────────────────────────────────────────────────
@@ -249,7 +305,7 @@ end
 # F = V·conj(I) − S_spec: ΔP in slot 0, ΔQ in slot 1. A PV bus's second row is the `|V|²`
 # constraint, which carries no p dependence.
 function _stamp_dI!(
-    rhs::Vector{Float64},
+    rhs::AbstractVector{Float64},
     r::ACRectangularCIResidual,
     i::Int,
     dI::ComplexF64,
@@ -271,7 +327,7 @@ end
 #   PV  — real-power balance + `|V|²` row (p-independent; reactive injection cannot move either).
 #   REF — current balance, real-first.
 function _stamp_dI!(
-    rhs::Vector{Float64},
+    rhs::AbstractVector{Float64},
     r::ACMixedCPBResidual,
     i::Int,
     dI::ComplexF64,
@@ -293,7 +349,7 @@ end
 
 # One body for both formulations: the device supplies ΔI, the formulation supplies the stamp.
 function _dF_dp!(
-    rhs::Vector{Float64},
+    rhs::AbstractVector{Float64},
     d,
     r::_RectOrMixedResidual,
     data,
@@ -311,7 +367,7 @@ end
 # residuals' own guard — never binds at a converged base.
 function _dVm_from_sol(
     r::_RectOrMixedResidual,
-    sol::Vector{Float64},
+    sol::AbstractVector{Float64},
     cbus::Int,
     data,
     ts::Int,
