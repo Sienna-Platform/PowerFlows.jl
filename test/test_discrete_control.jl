@@ -1631,3 +1631,67 @@ end
     f = only(data.controlled_devices.facts)
     @test f.b_lim == PowerFlows._facts_b_limit(f, PowerFlows.measured_value(f, data, 1))
 end
+
+@testset "blocked linear plant signs match the per-device solve" begin
+    # `_linear_plant_signs!` packs right-hand sides into the context's reused n×k block. Repeat
+    # the fixture's devices past two block boundaries (full, full, partial) and require the
+    # per-device `_linear_plant_sign` result, on every formulation.
+    for pf in (
+        ACPolarPowerFlow(; control_discrete_devices = true),
+        ACRectangularPowerFlow(; control_discrete_devices = true),
+        ACMixedPowerFlow(; control_discrete_devices = true),
+    )
+        data = PowerFlowData(pf, _make_solvable_tap_shunt_system())
+        @test PowerFlows._solve_with_q_limits!(pf, data, 1)
+        set = data.controlled_devices
+        ctx = PowerFlows._sensitivity_context(pf, data, 1)
+        k = size(ctx.block, 2)
+        @test 1 <= k <= PowerFlows.SENSITIVITY_BLOCK_SIZE
+        nrep = 2 * k + 1
+        block_before = ctx.block
+        for group in (set.taps, set.shunts)
+            @test !isempty(group)
+            devices = repeat(group, cld(nrep, length(group)))[1:nrep]
+            g = fill(NaN, nrep)
+            ok = fill(false, nrep)
+            PowerFlows._linear_plant_signs!(g, ok, devices, 1:nrep, data, 1, ctx)
+            for (i, d) in enumerate(devices)
+                ref, ok_ref = PowerFlows._linear_plant_sign(d, data, 1, ctx)
+                @test ok[i] == ok_ref
+                @test g[i] ≈ ref rtol = 1e-12 atol = 1e-14
+            end
+            # A subset (`which`) leaves the other slots untouched.
+            g2 = fill(NaN, nrep)
+            PowerFlows._linear_plant_signs!(g2, fill(false, nrep), devices, 2:2:nrep, data,
+                1,
+                ctx)
+            @test all(isnan, g2[1:2:nrep])
+            @test g2[2:2:nrep] ≈ g[2:2:nrep]
+        end
+        @test ctx.block === block_before   # reused, never reallocated
+    end
+end
+
+@testset "gain refresh runs only for stale moved devices" begin
+    pf = ACPolarPowerFlow(; control_discrete_devices = true)
+    data = PowerFlowData(pf, _make_solvable_tap_shunt_system())
+    @test PowerFlows._solve_with_q_limits!(pf, data, 1)
+    ctx = PowerFlows._sensitivity_context(pf, data, 1)
+    d = first(data.controlled_devices.shunts)
+    lo, hi = PowerFlows.parameter_limits(d)
+    p = PowerFlows.current_parameter(d)
+    step = PowerFlows.CONTROL_GAIN_REFRESH_MOVE * (hi - lo)
+    sentinel = 1234.5   # marks an unwritten gain; signed to match so no reverse-action freeze
+    function refresh(p_ref; moved = true)
+        true_gain, _ = PowerFlows._linear_plant_sign(d, data, 1, ctx)
+        dVdp = [sign(true_gain) * sentinel]
+        gain_p = [p_ref]
+        PowerFlows._refresh_gains_group!(
+            [d], 0, data, 1, [false], dVdp, [moved], gain_p, ctx)
+        return abs(dVdp[1]) != sentinel, gain_p[1]
+    end
+    @test refresh(Inf) == (true, p)                # first move, or after a context rebuild
+    @test refresh(p - 1.5 * step) == (true, p)     # travelled past the threshold
+    @test refresh(p - 0.5 * step) == (false, p - 0.5 * step)   # keeps the old reference
+    @test refresh(Inf; moved = false) == (false, Inf)          # did not move this pass
+end
