@@ -43,7 +43,7 @@ end
 _lean_counts(h::HandoffLinearCache) = _lean_counts(h.cache)
 
 # The handoff runs on the stage's own `J` with the polar NR solve's linear-solver setup: a KLU cache
-# seeded with the structure memo's lean-LU plan (planned at flat on first use), so it pivots like
+# seeded with the structure memo's lean-LU plan once that plan exists, so it pivots like
 # the plain NR solve and skips the symbolic analysis.
 function _new_handoff_cache(
     pf::AbstractACPowerFlow,

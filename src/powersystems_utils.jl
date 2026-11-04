@@ -167,28 +167,47 @@ function error_if_reversed(hvdc::PSY.TwoTerminalLCCLine, P_dc::Float64)
     )
 end
 
-_eval_loss_function(curve::PSY.InputOutputCurve, x::Float64) = curve(x)
+_eval_loss_function(::PSY.Component, curve::PSY.InputOutputCurve, x::Float64) = curve(x)
 
-_eval_loss_function(pwl::PSY.PiecewiseIncrementalCurve, x::Float64) =
+_eval_loss_function(::PSY.Component, pwl::PSY.PiecewiseIncrementalCurve, x::Float64) =
     IS.InputOutputCurve(pwl)(x)
 
-# A `PSY.LossCurve`'s own base, in MW: 1 for `NaturalUnit` (already MW), the system base for
-# `SystemBaseUnit`, the device's own `base_power` for `ComponentBaseUnit`. Shared by every
-# rebasing ratio computed off a `LossCurve`'s power units — a caller wanting the ratio toward
-# some target base `T` (in MW) divides `T / _loss_curve_own_base(...)`.
-_loss_curve_own_base(::PSY.NaturalUnit, ::Float64, ::Float64) = 1.0
-_loss_curve_own_base(::PSY.SystemBaseUnit, sys_base::Float64, ::Float64) = sys_base
-_loss_curve_own_base(::PSY.ComponentBaseUnit, ::Float64, dev_base::Float64) = dev_base
+# The component-aware rebasing reads the system and component bases from `component`.
+function _eval_loss_function(component::PSY.Component, curve::PSY.LossCurve, x::Float64)
+    nu_curve = IS.convert_power_units(component, curve, u"NU")
+    return _eval_loss_function(component, PSY.get_value_curve(nu_curve), x)
+end
 
-function _eval_loss_function(
-    curve::PSY.LossCurve,
-    x::Float64,
-    sys_base::Float64,
-    dev_base::Float64,
-)
-    ratio = 1.0 / _loss_curve_own_base(PSY.get_power_units(curve), sys_base, dev_base)
-    nu_curve = IS.convert_power_units(curve, PSY.NaturalUnit(), ratio)
-    return _eval_loss_function(PSY.get_value_curve(nu_curve), x)
+# Converter losses are functions of current. A kA curve becomes the MW curve at nominal DC
+# voltage (|V| = 1 pu), P = V_dc * I.
+_kA_to_mw_value_curve(::PSY.NaturalUnit, value_curve, v_dc) =
+    IS.scale_x(value_curve, inv(v_dc))
+_kA_to_mw_value_curve(
+    ::Union{PSY.SystemBaseUnit, PSY.ComponentBaseUnit},
+    value_curve,
+    v_dc,
+) =
+    value_curve
+
+_vsc_power_axis_loss(
+    ::PSY.TwoTerminalVSCLine,
+    curve::IS.LossCurve{T, U, typeof(u"MW")},
+) where {T, U} =
+    curve
+
+function _vsc_power_axis_loss(
+    line::PSY.TwoTerminalVSCLine,
+    curve::IS.LossCurve{T, U, typeof(u"kA")},
+) where {T, U}
+    v_dc = PSY.get_rated_dc_voltage(line)
+    v_dc > 0.0 || throw(
+        ArgumentError(
+            "TwoTerminalVSCLine $(PSY.get_name(line)) has a kA converter loss curve " *
+            "but no rated_dc_voltage to convert its current axis.",
+        ),
+    )
+    value_curve = _kA_to_mw_value_curve(U(), PSY.get_value_curve(curve), v_dc)
+    return IS.LossCurve(value_curve, U(), u"MW")
 end
 
 # returns the tuple (P_dc, P_loss, flow_reversed), first two in natural units
@@ -198,7 +217,7 @@ function hvdc_power_loss_natural_units(hvdc::PSY.TwoTerminalHVDC, sys_base::Floa
     flow_reversed = P_dc < 0
     P_dc = abs(P_dc)
     loss_curve = PSY.get_loss(hvdc)
-    P_loss = _eval_loss_function(loss_curve, P_dc, sys_base, PSY.get_base_power(hvdc))
+    P_loss = _eval_loss_function(hvdc, loss_curve, P_dc)
     P_loss > P_dc && @warn "The loss curve of $(PSY.summary(hvdc)) " *
           "indicates the losses are greater than the transmitted power $P_dc. " *
           "Setting the loss equal to the transmitted power instead."
@@ -213,11 +232,17 @@ function hvdc_power_loss_natural_units(hvdc::PSY.TwoTerminalVSCLine, sys_base::F
     P_dc = PSY.get_active_power_flow(hvdc, u"NU")
     flow_reversed = P_dc < 0
     P_dc = abs(P_dc)
-    dev_base = PSY.get_base_power(hvdc)
     # Sum losses from both converters
-    loss_from =
-        _eval_loss_function(PSY.get_converter_loss_from(hvdc), P_dc, sys_base, dev_base)
-    loss_to = _eval_loss_function(PSY.get_converter_loss_to(hvdc), P_dc, sys_base, dev_base)
+    loss_from = _eval_loss_function(
+        hvdc,
+        _vsc_power_axis_loss(hvdc, PSY.get_converter_loss_from(hvdc)),
+        P_dc,
+    )
+    loss_to = _eval_loss_function(
+        hvdc,
+        _vsc_power_axis_loss(hvdc, PSY.get_converter_loss_to(hvdc)),
+        P_dc,
+    )
     P_loss = loss_from + loss_to
     P_loss > P_dc && @warn "The converter losses of $(PSY.summary(hvdc)) " *
           "indicate losses greater than the transmitted power $P_dc. " *

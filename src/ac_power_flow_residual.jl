@@ -177,7 +177,8 @@ function (Residual::ACPowerFlowResidual)(
     return
 end
 
-function _setpq(
+# Inlined: `data` is a large struct, so each non-inlined call per bus sets up a GC frame for it.
+@inline function _setpq(
     ix::Int,
     P_net::Vector{Float64},
     Q_net::Vector{Float64},
@@ -202,6 +203,20 @@ end
 # `data` may have been edited since the last evaluation unless it is waiting on a write-back.
 function _sync_from_data!(s::PolarBusState, data::ACPowerFlowData, time_step::Int64)
     s.data_stale || _load_bus_state!(s, data, time_step)
+    return
+end
+
+# Like `_sync_from_data!` followed by `_fill_bus_phasor!`, but keeps cis(θ) from the last
+# evaluation when θ is unchanged.
+function _sync_phasors_from_data!(s::PolarBusState, data::ACPowerFlowData, time_step::Int64)
+    if s.data_stale
+        s.phasor_valid || _fill_bus_phasor!(s)
+    elseif s.phasor_valid && isequal(s.θ, view(data.bus_angles, :, time_step))
+        copyto!(s.Vm, view(data.bus_magnitude, :, time_step))
+    else
+        _load_bus_state!(s, data, time_step)
+        _fill_bus_phasor!(s)
+    end
     return
 end
 

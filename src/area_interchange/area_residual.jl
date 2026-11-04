@@ -214,21 +214,22 @@ function _area_net_interchange(
 end
 
 """
-    _ensure_pristine_area_set!(data, time_step)
+    _restore_pristine_area_set!(data, memo)
 
 Reset the WORKING `areas`/`ties`/`dc_ties`/`ni_scratch`/`delta_p` to the full PRISTINE
-enrollment before a time step's greedy relax loop runs — relax decisions are per time
-step, never permanent.
+enrollment at the end of a time step. Relax decisions are per time step, never permanent.
+Return at once when the set is already full.
 
-Explicitly invalidates the Jacobian-structure and NR symbolic-factorization caches
-(`data.ac_jacobian_structure_cache`/`data.polar_nr_cache`): neither cache key sees a
-tail-size change made by mutating the SAME `AreaInterchangeData` object in place (the
-structure cache holds `area_data` by IDENTITY; the NR cache keys only on the network
-matrix, slack pattern, and backend type), so without this reset a wrong-sized cached
-structure/factorization would be silently reused. In-place mutation is the only option:
-`PowerFlowData` is immutable, so `data.area_interchange` itself can't be reassigned.
+Put `memo` back as the Jacobian-structure memo. The caller saves `memo` before the first
+de-enrollment, so it fits the full set. Clear the NR cache. Neither cache key sees a
+tail-size change made in place on the same `AreaInterchangeData` object. In-place mutation
+is the only option: `PowerFlowData` is immutable, so `data.area_interchange` cannot be
+reassigned.
 """
-function _ensure_pristine_area_set!(data::ACPowerFlowData, time_step::Int)
+function _restore_pristine_area_set!(
+    data::ACPowerFlowData,
+    memo::Union{Nothing, ACJacobianStructureCache},
+)
     aid = data.area_interchange
     length(aid.areas) == length(aid.pristine_areas) && return
     empty!(aid.areas)
@@ -239,7 +240,7 @@ function _ensure_pristine_area_set!(data::ACPowerFlowData, time_step::Int)
     append!(aid.dc_ties, aid.pristine_dc_ties)
     resize!(aid.ni_scratch, length(aid.areas))
     aid.delta_p = copy(aid.pristine_delta_p)
-    data.ac_jacobian_structure_cache[] = nothing
+    data.ac_jacobian_structure_cache[] = memo
     data.polar_nr_cache[] = nothing
     return
 end
@@ -250,7 +251,7 @@ end
 Write the WORKING `delta_p[:, time_step]` (one row per CURRENTLY enrolled area, keyed by its
 renumbered working `tail_ix`) back into `pristine_delta_p[:, time_step]` (keyed by the area's
 never-changing PRISTINE `tail_ix`, looked up by name), once a time step's solve converges.
-The persistent mirror is what the NEXT time step's `_ensure_pristine_area_set!` reseeds from,
+The persistent mirror is what the NEXT time step's warm start reseeds from,
 so a later time step's warm start recovers THIS time step's converged `ΔP_a` for every area
 that survived. A relaxed area's row is left untouched — it has no converged `ΔP_a` to record;
 the results table reports `delta_p = 0.0` for it directly, not from this mirror.
@@ -277,7 +278,7 @@ rebuilt at the new (smaller) size with each survivor's row carried over from its
 not corrupted by a de-enrollment that only THIS time step's relax loop decided on).
 
 Invalidates the Jacobian-structure/NR-factorization caches for the reason documented on
-`_ensure_pristine_area_set!`. The dropped `ControlledArea`'s ORIGINAL `pdes` survives on
+`_restore_pristine_area_set!`. The dropped `ControlledArea`'s ORIGINAL `pdes` survives on
 it, unaffected by the renumbering.
 """
 function _deenroll_area!(data::ACPowerFlowData, drop_tail_ix::Int)

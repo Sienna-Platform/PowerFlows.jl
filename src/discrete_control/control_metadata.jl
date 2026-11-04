@@ -373,9 +373,12 @@ function build_controlled_device_set(
     facts = ControlledFACTS[]
     _enroll_facts!(facts, sys, bus_lookup, reverse_bus_search_map)
 
-    return ControlledDeviceSet(
-        groups.taps, groups.flow_taps, groups.phase_shifters, shunts, facts, n_time_steps,
+    set = ControlledDeviceSet(
+        groups.taps, groups.flow_taps, groups.phase_shifters, shunts, facts,
+        n_time_steps,
     )
+    capture_tap_baseline!(set, ybus)
+    return set
 end
 
 # Enroll one regulating circuit into its device group. Any data problem de-enrolls the circuit
@@ -448,7 +451,6 @@ function _enroll_circuit!(
             collect(range(md.pmin, md.pmax; length = md.ntp)),
             _ybus_block_offsets(ybus, fix, tix),
             start.value,   # initial (reporting)
-            start.value,   # synced (arc-admittance rows reflect this value)
             start.value,   # current
             device_name,
             circuit_index,

@@ -1743,7 +1743,7 @@ end
 # Helpers for branch writing will be added before the transformer section
 
 """
-Collects all AC branches (Line, DiscreteControlledACBranch) from the system,
+Collects all AC branches (Line, SeriesCompensator, DiscreteControlledACBranch) from the system,
 sorts them by their bus numbers, and returns a vector of tuples (branch, bus_numbers).
 
 # Arguments
@@ -1754,11 +1754,12 @@ sorts them by their bus numbers, and returns a vector of tuples (branch, bus_num
 """
 function get_branches_with_numbers(exporter::PSSEExporter)
     lines = collect(PSY.get_components(PSY.Line, exporter.system))
+    compensators = collect(PSY.get_components(PSY.SeriesCompensator, exporter.system))
     discrete_ac_branches =
         collect(PSY.get_components(PSY.DiscreteControlledACBranch, exporter.system))
 
     # Merge all branch variables into a single vector
-    branches = vcat(lines, discrete_ac_branches)
+    branches = vcat(lines, compensators, discrete_ac_branches)
     # Sort branches by their bus numbers to order them at exporting
     sort!(branches; by = branch_to_bus_numbers)
     # Pair each branch with its bus numbers.
@@ -1789,7 +1790,18 @@ end
 _psse_branch_name(branch::PSY.ACBranch) =
     _psse_quote_string(first(PSY.get_name(branch), 40))
 
-"""Write a regular (Line) branch record to the buffer."""
+# A non-transformer branch record's series impedance and line charging. A series compensator
+# has no charging; a bypassed one is a zero-impedance tie.
+_psse_series_impedance(branch::PSY.ACBranch) =
+    (PSY.get_r(branch, u"SU"), PSY.get_x(branch, u"SU"))
+_psse_series_impedance(branch::PSY.SeriesCompensator) =
+    PSY.get_control_mode(branch) == PSY.SeriesCompensatorControlMode.BYPASSED ? (0.0, 0.0) :
+    (PSY.get_r(branch, u"SU"), PSY.get_x(branch, u"SU"))
+_psse_line_charging(branch::PSY.ACBranch) =
+    (PSY.get_b(branch, u"SU"), PSY.get_g(branch, u"SU"))
+_psse_line_charging(::PSY.SeriesCompensator) = ((from = 0.0, to = 0.0), (from = 0.0, to = 0.0))
+
+"""Write a regular (Line or SeriesCompensator) branch record to the buffer."""
 function _write_regular_branch_record!(
     io::IO,
     exporter::PSSEExporter,
@@ -1801,11 +1813,9 @@ function _write_regular_branch_record!(
     ST = PSY.get_available(branch) ? 1 : 0
     MET = PSSE_DEFAULT
     LEN = PSSE_DEFAULT
-    R = PSY.get_r(branch, u"SU")
-    X = PSY.get_x(branch, u"SU")
-    b = PSY.get_b(branch, u"SU")
+    R, X = _psse_series_impedance(branch)
+    b, g = _psse_line_charging(branch)
     B = b.from + b.to
-    g = PSY.get_g(branch, u"SU")
     GI = g.from
     GJ = g.to
     # The line-end susceptances are folded into the branch's `b`, which B already carries in
@@ -2302,13 +2312,14 @@ function write_to_buffers!(
     end
 end
 
-"""SETVL of an LCC line: MW in the POWER mode, A in the CURRENT mode, 0 when BLOCKED."""
+"""SETVL of an LCC line: MW in the POWER mode, A in the CURRENT mode (PSY stores kA), 0 when
+BLOCKED."""
 function _psse_lcc_setvl(dcline::PSY.TwoTerminalLCCLine)
     mode = PSY.get_control_mode(dcline)
     if mode == PSY.LCCControlMode.POWER
         return PSY.get_power_transfer_setpoint(dcline, u"NU")
     elseif mode == PSY.LCCControlMode.CURRENT
-        return PSY.get_current_transfer_setpoint(dcline)
+        return 1000.0 * PSY.get_current_transfer_setpoint(dcline)
     end
     return 0.0
 end
@@ -2613,8 +2624,11 @@ function _compute_vsc_converter_fields(
     else
         SMAX * base_power
     end
-    IMAX = get_imax(vscline)
-    IMAX = IMAX == PSSE_INFINITY ? 0.0 : IMAX
+    # PSY stores currents in kA; PSS/E records A.
+    # Revert parser transformation: IMAX == 0.0 ? no-limit current : IMAX. Compared in kA,
+    # before the A conversion; `>=` also catches `Inf`.
+    imax = get_imax(vscline)
+    IMAX = imax >= PSY.INFINITE_CURRENT ? 0.0 : 1000.0 * imax
 
     MAXQ = q_limits.max * base_power
     MINQ = q_limits.min * base_power

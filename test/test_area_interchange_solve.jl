@@ -5,6 +5,19 @@ function _find_nz_offset(A::SparseMatrixCSC, i::Int, j::Int)
     error("no stored entry at ($i, $j)")
 end
 
+function _surviving_area_names(data, time_step::Int)
+    aid = data.area_interchange
+    relaxed = Set(r.name for r in aid.relaxed[time_step])
+    return [a.name for a in aid.pristine_areas if !(a.name in relaxed)]
+end
+
+function _assert_tails_within(aid)
+    n = length(aid.areas)
+    @test all(t -> t.from_area_tail <= n && t.to_area_tail <= n, aid.ties)
+    @test all(t -> t.from_area_tail <= n && t.to_area_tail <= n, aid.dc_ties)
+    return
+end
+
 @testset "area interchange tie kernel matches hand-computed P_m" begin
     g11, b11 = 5.0, -12.0
     g12, b12 = -5.0, 12.0
@@ -822,9 +835,7 @@ end
     )
     @test converged
     # Greedy keeps the enforceable Area2 schedule; only Area3 (the infeasible one) relaxes.
-    @test length(data.area_interchange.areas) == 1
-    @test only(data.area_interchange.areas).name == "Area2"
-    @test haskey(data.area_interchange.relaxed, 1)
+    @test _surviving_area_names(data, 1) == ["Area2"]
     @test only(data.area_interchange.relaxed[1]).name == "Area3"
 
     df_results = @test_logs(
@@ -878,7 +889,7 @@ end
         solve_power_flow!(data; maxIterations = 1)
     )
     @test !converged
-    @test PF.n_controlled_areas(data) == 0
+    @test PF.n_controlled_areas(data) == length(data.area_interchange.pristine_areas)
 end
 
 @testset "area interchange multi-period relax-to-zero does not permanently disable area control" begin
@@ -902,7 +913,7 @@ end
         solve_power_flow!(data; time_steps = [1], maxIterations = 1)
     )
     @test !converged1
-    @test PF.n_controlled_areas(data) == 0
+    @test PF.n_controlled_areas(data) == length(data.area_interchange.pristine_areas)
     @test length(data.area_interchange.pristine_areas) == 2
 
     # ts=2: an isolated, non-leading `time_steps` subset through the top-level
@@ -1313,9 +1324,7 @@ end
         solve_power_flow!(data)
     )
     @test converged
-    @test length(data.area_interchange.areas) == 1
-    @test only(data.area_interchange.areas).name == "Area2"
-    @test haskey(data.area_interchange.relaxed, 1)
+    @test _surviving_area_names(data, 1) == ["Area2"]
     @test only(data.area_interchange.relaxed[1]).name == "Area3"
 
     df_results = @test_logs(
@@ -1433,9 +1442,7 @@ end
         solve_power_flow!(data_fd)
     )
     @test converged_fd
-    @test length(data_fd.area_interchange.areas) == 1
-    @test only(data_fd.area_interchange.areas).name == "Area2"
-    @test haskey(data_fd.area_interchange.relaxed, 1)
+    @test _surviving_area_names(data_fd, 1) == ["Area2"]
     @test only(data_fd.area_interchange.relaxed[1]).name == "Area3"
 
     df_results_fd = @test_logs(
@@ -1481,9 +1488,7 @@ end
         solve_power_flow!(data_fdfj)
     )
     @test converged_fdfj
-    @test length(data_fdfj.area_interchange.areas) == 1
-    @test only(data_fdfj.area_interchange.areas).name == "Area2"
-    @test haskey(data_fdfj.area_interchange.relaxed, 1)
+    @test _surviving_area_names(data_fdfj, 1) == ["Area2"]
     @test only(data_fdfj.area_interchange.relaxed[1]).name == "Area3"
 
     df_results_fdfj = @test_logs(
@@ -1535,7 +1540,9 @@ end
         solve_power_flow!(data)
     )
     @test converged
-    n_areas_post_relax = PF.n_controlled_areas(data)
+    n_areas_post_relax =
+        length(data.area_interchange.pristine_areas) -
+        length(data.area_interchange.relaxed[1])
     @test n_areas_post_relax == 1
 
     cache = data.solver_cache[]
@@ -2219,10 +2226,9 @@ end
     @test !isempty(data.area_interchange.dc_ties)
 
     _assert_schedule_relaxed(data, "Area3")
-    @test !any(a -> a.name == "Area3", data.area_interchange.areas)
-    @test PF.n_controlled_areas(data) == 1
-    survivor = only(data.area_interchange.areas)
-    @test survivor.name == "Area2"
+    @test [r.name for r in data.area_interchange.relaxed[1]] == ["Area3"]
+    @test _surviving_area_names(data, 1) == ["Area2"]
+    survivor = only(filter(a -> a.name == "Area2", data.area_interchange.pristine_areas))
 
     dcn = PF.get_dc_network(data)
     n = PF.n_controlled_areas(data)
@@ -2254,16 +2260,20 @@ end
     # Defect-specific bite: `_deenroll_area!` must translate `dc_ties` tails exactly like it
     # translates `ties` tails -- a stale tail pointing past the (now smaller) WORKING area
     # set is the bug (`_set_area_tail_residuals!`/`ni_scratch` indexing would be broken).
-    @test all(
-        t ->
-            t.from_area_tail <= length(data.area_interchange.areas) &&
-                t.to_area_tail <= length(data.area_interchange.areas),
-        data.area_interchange.dc_ties,
-    )
+    aid = data.area_interchange
+    full_memo = data.ac_jacobian_structure_cache[]
+    area3_ix = findfirst(a -> a.name == "Area3", aid.areas)
+    PF._deenroll_area!(data, area3_ix)
+    n_working = length(aid.areas)
+    @test n_working == 1
+    _assert_tails_within(aid)
     # The VSC tie borders the survivor (Area2) directly: its tail must read the survivor's
     # NEW (post-renumbering) tail index, not a value keyed to the old (2-area) numbering.
-    vsc_tie = only(filter(t -> t.kind == PF.DC_TIE_VSC, data.area_interchange.dc_ties))
-    @test vsc_tie.from_area_tail == survivor.tail_ix
+    working_survivor = only(filter(a -> a.name == "Area2", aid.areas))
+    vsc_tie = only(filter(t -> t.kind == PF.DC_TIE_VSC, aid.dc_ties))
+    @test vsc_tie.from_area_tail == working_survivor.tail_ix
+    PF._restore_pristine_area_set!(data, full_memo)
+    @test length(aid.areas) == length(aid.pristine_areas)
 end
 
 @testset "area interchange DC results dataframe" begin
@@ -2411,21 +2421,20 @@ end
         @test !isempty(data.area_interchange.dc_ties)
 
         _assert_schedule_relaxed(data, "Area3")
-        @test !any(a -> a.name == "Area3", data.area_interchange.areas)
-        # The re-grow below is the point; the working set must have actually shrunk first.
-        @test PF.n_controlled_areas(data) < 2
+        # The re-grow below is the point; the step must have actually relaxed Area3 first.
+        @test [r.name for r in data.area_interchange.relaxed[1]] == ["Area3"]
 
-        @test all(
-            t ->
-                t.from_area_tail <= length(data.area_interchange.areas) &&
-                    t.to_area_tail <= length(data.area_interchange.areas),
-            data.area_interchange.dc_ties,
-        )
+        aid = data.area_interchange
+        full_memo = data.ac_jacobian_structure_cache[]
+        PF._deenroll_area!(data, findfirst(a -> a.name == "Area3", aid.areas))
+        _assert_tails_within(aid)
+        PF._restore_pristine_area_set!(data, full_memo)
 
         for (i, a) in enumerate(data.area_interchange.pristine_areas)
             a.name == "Area3" || continue
             data.area_interchange.pristine_areas[i] =
                 PF.ControlledArea(a.name, a.slack_bus_ix, feasible_a3, a.tail_ix)
+            data.area_interchange.areas[i] = data.area_interchange.pristine_areas[i]
         end
         @test solve_power_flow!(data)
         @test PF.n_controlled_areas(data) == 2

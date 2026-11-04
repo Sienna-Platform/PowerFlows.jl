@@ -226,8 +226,7 @@ end
 """
     _fd_vm_abort(vm, vm_abort) -> Bool
 
-V≈0 abort: returns `true` if any bus voltage magnitude has been driven below
-`vm_abort`."""
+Low-|V| test: returns `true` if any bus voltage magnitude is below `vm_abort` or not finite."""
 function _fd_vm_abort(vm::AbstractVector{Float64}, vm_abort::Float64)
     @inbounds for v in vm
         (isfinite(v) && v >= vm_abort) || return true
@@ -448,7 +447,8 @@ function _fd_fixed_jacobian_power_flow(
             residual(data, sv.x, time_step)
             ss = dot(residual.Rv, residual.Rv)
 
-            # A stale J refreezes at the cycle start when its step fails or drives |V|≈0.
+            # A stale J refreezes at the cycle start when its step fails or drives |V| below the floor.
+            # With fd_non_divergent, a low-|V| cycle backtracks below; without it, the stage stops.
             stale = fd_non_divergent && refreeze_on_stall && !fresh
             vm_abort = _fd_vm_abort(vm_view, fd_vm_abort)
             failed = vm_abort || !(ss < fd_ndvfct * sg.prev_ss)
@@ -466,7 +466,7 @@ function _fd_fixed_jacobian_power_flow(
                 continue
             end
 
-            if vm_abort
+            if vm_abort && !fd_non_divergent
                 @warn(
                     "$solver_name: a bus voltage magnitude was driven below " *
                     "$(fd_vm_abort); aborting FD stage."
@@ -553,6 +553,15 @@ function _fd_fixed_jacobian_power_flow(
         J(data, time_step)
     end
     _finalize_formulation!(pf, data, x_final, residual, time_step)
+    # From a stalled stage the handoff can reach a low-voltage root the stage itself rejects.
+    if converged && handoff_iters > 0 &&
+       _fd_vm_abort(view(data.bus_magnitude, :, time_step), fd_vm_abort)
+        @warn(
+            "$solver_name: the handoff converged to a state with a bus voltage magnitude " *
+            "below $(fd_vm_abort); reporting non-convergence."
+        )
+        converged = false
+    end
     result = _finalize_power_flow(
         converged, i, solver_name, residual, data, J.Jv, time_step,
     )
@@ -1290,8 +1299,8 @@ function _fd_decoupled_power_flow(
     rinf_prev = Inf
     i = 0
 
-    # One FD half-step + explicit sync + residual refresh, returning whether it diverged on a
-    # BLOWUP/V≈0 guard (only consulted when fd_non_divergent is off).
+    # One FD half-step + explicit sync + residual refresh, returning whether it diverged on the
+    # BLOWUP guard (only consulted when fd_non_divergent is off).
     while i < maxIterations && !converged
         _fd_begin_cycle!(sg, sv.x, ss)
         diverged = false
@@ -1367,8 +1376,9 @@ function _fd_decoupled_power_flow(
 
         ss = dot(residual.Rv, residual.Rv)
 
-        # V≈0 abort.
-        if _fd_vm_abort(Vm, fd_vm_abort)
+        # With fd_non_divergent, a low-|V| cycle backtracks. Without it, the stage stops.
+        vm_low = _fd_vm_abort(Vm, fd_vm_abort)
+        if vm_low && !fd_non_divergent
             @warn(
                 "$solver_name: a bus voltage magnitude was driven below $(fd_vm_abort); " *
                 "aborting FD stage."
@@ -1388,7 +1398,7 @@ function _fd_decoupled_power_flow(
 
         # --- non-divergent backtracking: if the full cycle failed to improve Σ(Rv²) enough,
         # re-apply a halved cycle step from the cycle-start state (a NaN `ss` fails it too). ---
-        if fd_non_divergent && !(ss < fd_ndvfct * sg.prev_ss)
+        if fd_non_divergent && (vm_low || !(ss < fd_ndvfct * sg.prev_ss))
             accepted = false
             factor = 1.0
             # Snapshot the full-cycle step ONCE. Backtracking re-applies a scaled copy from the

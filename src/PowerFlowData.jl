@@ -497,7 +497,11 @@ withdrawal plus the constant-current and constant-impedance withdrawals evaluate
 bus's current voltage magnitude. This is the `P_load_total` that `ACPowerFlowResidual`
 forms `P_net` from, so state and data must both be built from it rather than from
 `bus_active_power_withdrawals` alone."""
-function get_bus_active_power_total_withdrawals(pfd::PowerFlowData, ix::Int, time_step::Int)
+@inline function get_bus_active_power_total_withdrawals(
+    pfd::PowerFlowData,
+    ix::Int,
+    time_step::Int,
+)
     return pfd.bus_active_power_withdrawals[ix, time_step] +
            pfd.bus_active_power_constant_current_withdrawals[ix, time_step] *
            pfd.bus_magnitude[ix, time_step] +
@@ -507,7 +511,7 @@ end
 
 """Total reactive power withdrawn at a bus, including the ZIP terms. The reactive
 counterpart of [`get_bus_active_power_total_withdrawals`](@ref)."""
-function get_bus_reactive_power_total_withdrawals(
+@inline function get_bus_reactive_power_total_withdrawals(
     pfd::PowerFlowData,
     ix::Int,
     time_step::Int,

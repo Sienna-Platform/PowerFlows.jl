@@ -127,11 +127,11 @@ end
 end
 
 @testset "DC power flow with a current-mode LCC" begin
-    # PSS/E MDC=2: 62.5 A at VSCHD = 800 kV holds the inverter at 50 MW and the rectifier at
+    # PSS/E MDC=2: 62.5 A (0.0625 kA) at VSCHD = 800 kV holds the inverter at 50 MW and the rectifier at
     # 50 MW + R·I² (I = 0.5 pu, R = 0.05 pu on the system base).
     sys, lcc = simple_lcc_system()
     set_control_mode!(lcc, PSY.LCCControlMode.CURRENT)
-    set_current_transfer_setpoint!(lcc, 62.5)
+    set_current_transfer_setpoint!(lcc, 0.0625)
     ac = PowerFlowData(ACPowerFlow(; correct_bustypes = true), sys)
     @test solve_power_flow!(ac)
     @test ac.lcc.i_dc[1, 1] ≈ 0.5

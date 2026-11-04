@@ -71,10 +71,11 @@ per-time-step store (one column per step, sized at construction); around each
 step's continuation the solver loads that step's device state into the scalar
 scratch the engine mutates and saves it back afterwards. Shunt/FACTS state is a
 plain scalar swap — their control deltas land in the per-column withdrawal
-matrices. Taps mutate the *shared* Y-bus, so each step instead resets the tap to
-its enrollment baseline via a Y-bus delta-update before regulating
-(reset-to-baseline design), and branch flows are computed inside the time-step
-loop so every step's flows reflect that step's tap position.
+matrices. Branch devices mutate the *shared* Y-bus. Each step starts by
+returning every branch device to its enrollment value and rewriting the device
+entries of the Y-bus and the arc rows, so no round-off accumulates across steps
+or solves. Branch flows are computed inside the time-step loop, so every step's
+flows reflect that step's actuator positions.
 
 Two multiperiod-specific behaviors:
 
@@ -131,11 +132,13 @@ entries of the sparse Y-bus in place (Y11, Y12, Y21) using cached linear offsets
 is independent of the actuator and is skipped. The complex tap is built in one
 place, `_complex_tap`, and matches PowerNetworkMatrices' stamping
 `t = p·e^{iα}`. The field `fixed` holds the part of the tap that the actuator does
-not move: α for `TapRatio`, the ratio for `PhaseAngle`. The delta update
-`nzval[k] += Y_new − Y_old` preserves any
-parallel-branch contributions already in the shared slot; the device's stored
-`current` value (not the lossy `nzval`) is the authoritative source for the old
-parameter. For
+not move: α for `TapRatio`, the ratio for `PhaseAngle`. Each write is absolute:
+`capture_tap_baseline!` splits every entry a branch device writes into the terms
+of the controlled branch devices and a `rest` (all other branches and shunts), and
+a write sets `nzval[k] = rest + Σ` of the device terms at the current actuator
+values. Parallel branches and devices that share an entry are kept, and an apply
+followed by a revert restores the entry bitwise. The arc-admittance rows use the
+same entries, rewritten at the end of each step. For
 `ControlledSwitchedShunt`, `apply_parameter!` applies the analogous reactive
 delta to `data.bus_reactive_power_constant_impedance_withdrawals[bus_ix, ts]`,
 so co-located constant-impedance contributions on the same bus are preserved.
@@ -300,7 +303,7 @@ The outer loop maintains a checkpoint at the beginning of each continuation
 attempt: V/θ, `bus_type`, the two bus injection columns, and, for systems
 carrying HVDC, the VSC DC-network columns and the LCC converter columns
 (per-time-step taps, thyristor angles, and DC current). It does not cover
-Ybus tap deltas, shunt/FACTS withdrawal vectors, or device parameters — those
+Ybus tap entries, shunt/FACTS withdrawal vectors, or device parameters — those
 are restored separately, at the call sites, by `apply_parameter!` resetting
 each device to its pre-attempt value. The orientation-probe phase
 (`_plant_sign`) captures and restores this checkpoint unconditionally on
