@@ -28,6 +28,9 @@ struct LCCParameters
     # bus number pairs
     arcs::Vector{Tuple{Int, Int}}
     # all the following fields are ordered to match arcs:
+    # Component names. An arc does not identify an LCC: parallel LCCs share one, and a
+    # network reduction can map several LCCs onto one.
+    names::Vector{String}
     # bus index pairs. Slightly redundant: matches zip(rectifier.bus, inverter.bus)
     bus_indices::Vector{Tuple{Int, Int}}
     # (y_ff, y_tt) admittance pairs
@@ -46,6 +49,7 @@ end
 
 LCCParameters(n_time_steps::Int, n_lccs::Int) = LCCParameters(
     fill((-1, -1), n_lccs),
+    fill("", n_lccs),
     fill((-1, -1), n_lccs),
     fill((0, 0), n_lccs),
     zeros(Float64, n_lccs, n_time_steps),

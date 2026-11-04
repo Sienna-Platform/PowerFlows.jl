@@ -726,7 +726,9 @@ function _set_entries_for_lcc(data::ACPowerFlowData,
         idx_angle_from = offset_lcc + 3
         idx_angle_to = offset_lcc + 4
 
-        # Zeroed for every bus type so a PQ→PV flip does not keep a stale value.
+        # Zeroed for every bus type so a PQ→PV flip does not keep a stale value. The
+        # writes below accumulate: if a reduction merges the terminals (fb == tb), the
+        # from and to terms land in the same slot.
         Jv[idx_tap_from, idx_p_fb] = 0.0
         Jv[idx_tap_to, idx_p_fb] = 0.0
         Jv[idx_tap_from, idx_p_tb] = 0.0
@@ -807,8 +809,8 @@ function _set_entries_for_lcc(data::ACPowerFlowData,
                 _calculate_dQ_dV_lcc(s.tap_r, s.i_dc, xtr_r, Vm_fb, phi_r) # ∂Q_fb/∂V_fb
             # ∂F_t_fb/∂V_fb is nonzero only with a rectifier-side set point;
             # the scalar is pre-zeroed otherwise.
-            Jv[idx_tap_from, idx_p_fb] = s.d_Ft_fb_d_V_fb # ∂F_t_fb/∂V_fb
-            Jv[idx_tap_to, idx_p_fb] = dP_dV_fb # ∂F_t_tb/∂V_fb
+            Jv[idx_tap_from, idx_p_fb] += s.d_Ft_fb_d_V_fb # ∂F_t_fb/∂V_fb
+            Jv[idx_tap_to, idx_p_fb] += dP_dV_fb # ∂F_t_tb/∂V_fb
         end
 
         if bus_type_tb == PSY.ACBusTypes.PQ
@@ -816,8 +818,8 @@ function _set_entries_for_lcc(data::ACPowerFlowData,
             Jv[idx_q_tb, idx_p_tb] +=
                 _calculate_dQ_dV_lcc(s.tap_i, s.i_dc, -xtr_i, Vm_tb, phi_i) # ∂Q_tb/∂V_tb (−xtr_i: inverter commutation sign)
             # ∂F_t_fb/∂V_tb is nonzero only with an inverter-side set point.
-            Jv[idx_tap_from, idx_p_tb] = s.d_Ft_fb_d_V_tb # ∂F_t_fb/∂V_tb
-            Jv[idx_tap_to, idx_p_tb] = dP_dV_tb # ∂F_t_tb/∂V_tb
+            Jv[idx_tap_from, idx_p_tb] += s.d_Ft_fb_d_V_tb # ∂F_t_fb/∂V_tb
+            Jv[idx_tap_to, idx_p_tb] += dP_dV_tb # ∂F_t_tb/∂V_tb
         end
 
         # P-setpoint row F_t_fb: rectifier-side (tap_r, α_r) and inverter-side
