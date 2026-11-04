@@ -51,7 +51,7 @@ mutable struct ControlledBranch{A <: BranchActuator, Q <: ControlledQuantity} <:
 end
 
 """Voltage-controlling tap transformer."""
-const ControlledTap = ControlledBranch{TapRatio, BusVoltage}
+const ControlledVoltageTap = ControlledBranch{TapRatio, BusVoltage}
 
 """Voltage-controlling switched shunt, snapped onto the PSS/E cumulative
 block-activation chain (blocks switch on in listed order, off in reverse)."""
@@ -111,7 +111,7 @@ end
 TapEntries() = TapEntries(Int[], ComplexF64[], Vector{Tuple{Int, Int}}[])
 
 struct ControlledDeviceSet
-    taps::Vector{ControlledTap}
+    voltage_taps::Vector{ControlledVoltageTap}
     flow_taps::Vector{ControlledBranch{TapRatio, ReactivePowerFlow}}
     phase_shifters::Vector{ControlledBranch{PhaseAngle, ActivePowerFlow}}
     shunts::Vector{ControlledSwitchedShunt}
@@ -124,7 +124,7 @@ struct ControlledDeviceSet
     facts_current::Matrix{Float64}
     facts_b_lim::Matrix{Float64}
     facts_saturated::Matrix{Bool}
-    tap_current::Matrix{Float64}
+    voltage_tap_current::Matrix{Float64}
     flow_tap_current::Matrix{Float64}
     phase_shifter_current::Matrix{Float64}
     # The Y-bus, `Yft` and `Ytf` entries the branch devices write. Filled by
@@ -139,7 +139,7 @@ struct ControlledDeviceSet
     numeric_refactors::Base.RefValue{Int}
 end
 function ControlledDeviceSet(
-    taps::Vector{ControlledTap},
+    voltage_taps::Vector{ControlledVoltageTap},
     flow_taps::Vector{ControlledBranch{TapRatio, ReactivePowerFlow}},
     phase_shifters::Vector{ControlledBranch{PhaseAngle, ActivePowerFlow}},
     shunts::Vector{ControlledSwitchedShunt},
@@ -151,11 +151,11 @@ function ControlledDeviceSet(
     facts_current = [d.current for d in facts, _ in 1:n_time_steps]
     facts_b_lim = [d.b_lim for d in facts, _ in 1:n_time_steps]
     facts_saturated = [d.saturated for d in facts, _ in 1:n_time_steps]
-    tap_current = [d.current for d in taps, _ in 1:n_time_steps]
+    voltage_tap_current = [d.current for d in voltage_taps, _ in 1:n_time_steps]
     flow_tap_current = [d.current for d in flow_taps, _ in 1:n_time_steps]
     phase_shifter_current = [d.current for d in phase_shifters, _ in 1:n_time_steps]
     return ControlledDeviceSet(
-        taps,
+        voltage_taps,
         flow_taps,
         phase_shifters,
         shunts,
@@ -165,7 +165,7 @@ function ControlledDeviceSet(
         facts_current,
         facts_b_lim,
         facts_saturated,
-        tap_current,
+        voltage_tap_current,
         flow_tap_current,
         phase_shifter_current,
         TapEntries(),
@@ -177,7 +177,7 @@ function ControlledDeviceSet(
     )
 end
 function Base.isempty(s::ControlledDeviceSet)
-    return isempty(s.taps) &&
+    return isempty(s.voltage_taps) &&
            isempty(s.flow_taps) &&
            isempty(s.phase_shifters) &&
            isempty(s.shunts) &&
@@ -186,11 +186,11 @@ end
 
 """`true` when the set holds a device that edits the Y-bus."""
 function _has_branch_devices(s::ControlledDeviceSet)
-    return !(isempty(s.taps) && isempty(s.flow_taps) && isempty(s.phase_shifters))
+    return !(isempty(s.voltage_taps) && isempty(s.flow_taps) && isempty(s.phase_shifters))
 end
 
 """Index offsets of each device group in the per-device bookkeeping vectors. The group
-order is `taps, flow_taps, phase_shifters, shunts, facts`, so the taps offset is 0."""
+order is `voltage_taps, flow_taps, phase_shifters, shunts, facts`, so the voltage_taps offset is 0."""
 struct GroupOffsets
     flow_taps::Int
     phase_shifters::Int
@@ -199,7 +199,7 @@ struct GroupOffsets
     total::Int
 end
 function GroupOffsets(set::ControlledDeviceSet)
-    flow_taps = length(set.taps)
+    flow_taps = length(set.voltage_taps)
     phase_shifters = flow_taps + length(set.flow_taps)
     shunts = phase_shifters + length(set.phase_shifters)
     facts = shunts + length(set.shunts)
@@ -222,7 +222,7 @@ function load_device_state!(set::ControlledDeviceSet, data, ts::Int)
         d.saturated = set.facts_saturated[i, ts]
     end
     _has_branch_devices(set) || return
-    _reset_to_initial!(set.taps)
+    _reset_to_initial!(set.voltage_taps)
     _reset_to_initial!(set.flow_taps)
     _reset_to_initial!(set.phase_shifters)
     pnm = data.power_network_matrix
@@ -252,8 +252,8 @@ function save_device_state!(set::ControlledDeviceSet, data, ts::Int)
         set.facts_b_lim[i, ts] = d.b_lim
         set.facts_saturated[i, ts] = d.saturated
     end
-    for (i, d) in enumerate(set.taps)
-        set.tap_current[i, ts] = d.current
+    for (i, d) in enumerate(set.voltage_taps)
+        set.voltage_tap_current[i, ts] = d.current
     end
     for (i, d) in enumerate(set.flow_taps)
         set.flow_tap_current[i, ts] = d.current
@@ -324,8 +324,8 @@ controlled_bus_ix(d::AbstractControlledDevice) = d.controlled_ix
 # Results reporting reads the PERSISTED per-ts store, not the live device scalar (which
 # reflects only the solve loop's last-processed time step once time_steps>1). Dispatch, not
 # an `isa` branch, over the mixed device loop.
-stored_current(set::ControlledDeviceSet, ::ControlledTap, i::Int, ts::Int) =
-    set.tap_current[i, ts]
+stored_current(set::ControlledDeviceSet, ::ControlledVoltageTap, i::Int, ts::Int) =
+    set.voltage_tap_current[i, ts]
 stored_current(
     set::ControlledDeviceSet,
     ::ControlledBranch{TapRatio, ReactivePowerFlow},
@@ -461,18 +461,18 @@ function apply_parameter!(d::ControlledBranch, data, p::Float64, ::Int)
 end
 
 # The device group of `d` in `set` and the branch-index offset of that group. Branch indices
-# follow the group order `taps, flow_taps, phase_shifters` of `GroupOffsets`.
-_branch_group(set::ControlledDeviceSet, ::ControlledTap) = (set.taps, 0)
+# follow the group order `voltage_taps, flow_taps, phase_shifters` of `GroupOffsets`.
+_branch_group(set::ControlledDeviceSet, ::ControlledVoltageTap) = (set.voltage_taps, 0)
 _branch_group(set::ControlledDeviceSet, ::ControlledBranch{TapRatio, ReactivePowerFlow}) =
-    (set.flow_taps, length(set.taps))
+    (set.flow_taps, length(set.voltage_taps))
 _branch_group(set::ControlledDeviceSet, ::ControlledBranch{PhaseAngle, ActivePowerFlow}) =
-    (set.phase_shifters, length(set.taps) + length(set.flow_taps))
+    (set.phase_shifters, length(set.voltage_taps) + length(set.flow_taps))
 
 # Term `k` of `_branch_terms` of branch device `i` of `set`, at its current actuator value.
 function _branch_term(set::ControlledDeviceSet, i::Int, k::Int)::ComplexF64
-    n_taps = length(set.taps)
+    n_taps = length(set.voltage_taps)
     if i <= n_taps
-        d = set.taps[i]
+        d = set.voltage_taps[i]
         return _branch_terms(d, d.current)[k]
     end
     n_flow = n_taps + length(set.flow_taps)
@@ -672,10 +672,11 @@ function capture_tap_baseline!(set::ControlledDeviceSet, ybus::PNM.Ybus)::Nothin
         ft = Dict{Int, Vector{Tuple{Int, Int}}}(),
         tf = Dict{Int, Vector{Tuple{Int, Int}}}(),
     )
-    _collect_branch_terms!(terms, set.taps, 0, Yft, Ytf)
-    _collect_branch_terms!(terms, set.flow_taps, length(set.taps), Yft, Ytf)
+    _collect_branch_terms!(terms, set.voltage_taps, 0, Yft, Ytf)
+    _collect_branch_terms!(terms, set.flow_taps, length(set.voltage_taps), Yft, Ytf)
     _collect_branch_terms!(
-        terms, set.phase_shifters, length(set.taps) + length(set.flow_taps), Yft, Ytf,
+        terms, set.phase_shifters, length(set.voltage_taps) + length(set.flow_taps), Yft,
+        Ytf,
     )
     _capture_entries!(set.ybus_entries, ybus.data.nzval, terms.ybus, set)
     _capture_entries!(set.ft_entries, Yft, terms.ft, set)

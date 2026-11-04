@@ -138,7 +138,7 @@ function write_device_settings!(system::PSY.System, data)
             for per-time-step device settings." maxlog = 1
         return
     end
-    _write_branch_devices!(system, set.taps)
+    _write_branch_devices!(system, set.voltage_taps)
     _write_branch_devices!(system, set.flow_taps)
     _write_branch_devices!(system, set.phase_shifters)
     for d in set.shunts
@@ -674,7 +674,7 @@ _worker_devices(::Nothing) = nothing
 # writes only its own column, and the entries are read-only after `capture_tap_baseline!`.
 function _worker_devices(cd::ControlledDeviceSet)
     return _override(cd;
-        taps = deepcopy(cd.taps),
+        voltage_taps = deepcopy(cd.voltage_taps),
         flow_taps = deepcopy(cd.flow_taps),
         phase_shifters = deepcopy(cd.phase_shifters),
         shunts = deepcopy(cd.shunts),

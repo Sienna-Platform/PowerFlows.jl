@@ -108,9 +108,9 @@ end
     ybus = data.power_network_matrix
     set = PowerFlows.build_controlled_device_set(sys, bus_lookup, ybus)
     @test set isa PowerFlows.ControlledDeviceSet
-    @test length(set.taps) == 1
+    @test length(set.voltage_taps) == 1
     @test length(set.shunts) == 1
-    t = set.taps[1]
+    t = set.voltage_taps[1]
     @test 0.9 <= t.p_min < t.p_max <= 1.1
     @test t.controlled_ix == t.to_ix
     @test t.setpoint > 0.0
@@ -153,7 +153,7 @@ end
     # FIXED (locked): shunt not enrolled; tap unaffected.
     set0 = _build(PSY.SwitchedAdmittanceControlMode.FIXED)
     @test length(set0.shunts) == 0
-    @test length(set0.taps) == 1
+    @test length(set0.voltage_taps) == 1
 
     # DISCRETE_VOLTAGE: enrolled, continuous == false.
     set1 = _build(PSY.SwitchedAdmittanceControlMode.DISCRETE_VOLTAGE)
@@ -175,7 +175,7 @@ end
     for mode in unsupported
         setm = @test_logs (:warn, r"not supported") match_mode = :any _build(mode)
         @test length(setm.shunts) == 0
-        @test length(setm.taps) == 1   # the tap is unaffected by the bad shunt record
+        @test length(setm.voltage_taps) == 1   # the tap is unaffected by the bad shunt record
     end
 end
 
@@ -190,7 +190,7 @@ end
         PowerFlows.build_controlled_device_set(
         sys, PF.get_bus_lookup(data), data.power_network_matrix)
     )
-    @test length(set.taps) == 0
+    @test length(set.voltage_taps) == 0
     @test length(set.shunts) == 1   # the shunt still enrolls
 end
 
@@ -208,8 +208,8 @@ end
     bl = PF.get_bus_lookup(data)
     set = PowerFlows.build_controlled_device_set(
         sys, bl, data.power_network_matrix)
-    @test length(set.taps) == 1
-    t = set.taps[1]
+    @test length(set.voltage_taps) == 1
+    t = set.voltage_taps[1]
     @test t.controlled_ix == bl[3]
     @test t.p_min ≈ 0.88
     @test t.p_max ≈ 1.12
@@ -230,8 +230,8 @@ end
     bl = PF.get_bus_lookup(data)
     set = PowerFlows.build_controlled_device_set(
         sys, bl, data.power_network_matrix)
-    @test length(set.taps) == 1
-    @test set.taps[1].controlled_ix == bl[3]
+    @test length(set.voltage_taps) == 1
+    @test set.voltage_taps[1].controlled_ix == bl[3]
 end
 
 @testset "discrete control: implausible vset locks the device" begin
@@ -343,7 +343,7 @@ end
     circuit = PSY.get_circuit(tx)
     PSY.set_tap_ratio_limits!(circuit, (min = 0.9, max = 1.1))
     md = PowerFlows._circuit_metadata(
-        PowerFlows.ControlledTap, circuit, "ControlledTap", 1, 2)
+        PowerFlows.ControlledVoltageTap, circuit, "ControlledVoltageTap", 1, 2)
     @test md.pmin ≈ 0.9
     @test md.pmax ≈ 1.1
 end
@@ -359,7 +359,7 @@ end
             sys,
         )
     set = PowerFlows.get_controlled_devices(data)
-    @test isnothing(set) || isempty(set.taps)
+    @test isnothing(set) || isempty(set.voltage_taps)
 end
 
 @testset "discrete control: sigmoid law" begin
@@ -380,10 +380,10 @@ end
     # from the measured plant sensitivity, for both signs of dV/dp.
     S = 100.0
     δ = 0.02
-    tap = PowerFlows.ControlledTap("tp", 1, 2, 2, 1.0, 1.0, 1.0,
+    tap = PowerFlows.ControlledVoltageTap("tp", 1, 2, 2, 1.0, 1.0, 1.0,
         1.0 / (0.01 + 0.1im), 0.0im, 0.0, 0.9, 1.1,
         collect(range(0.9, 1.1; length = 33)), (1, 2, 3, 4), 1.0, 1.0, "tp", 1)
-    remote = PowerFlows.ControlledTap("ts", 1, 2, 1, 1.0, 1.0, 1.0,
+    remote = PowerFlows.ControlledVoltageTap("ts", 1, 2, 1, 1.0, 1.0, 1.0,
         1.0 / (0.01 + 0.1im), 0.0im, 0.0, 0.9, 1.1,
         collect(range(0.9, 1.1; length = 33)), (1, 2, 3, 4), 1.0, 1.0, "ts", 1)
     shunt = PowerFlows.ControlledSwitchedShunt("sh", 3, 3, 1.0, 0.95, 1.05,
@@ -405,7 +405,7 @@ end
     # m = 1 + ω·(g'−1) with g' ≤ 0 and |g'| ≤ gbound = 0.25|hi-lo|·S·|dVdp|, so
     # m ≥ 0 iff ω·(1+gbound) ≤ 1. (A negative slope is what previously made the
     # iterate alternate every step and tripped the oscillation-freeze detector.)
-    d = PowerFlows.ControlledTap("t", 1, 2, 2, 1.0, 1.0, 1.0, 1.0 / (0.01 + 0.1im),
+    d = PowerFlows.ControlledVoltageTap("t", 1, 2, 2, 1.0, 1.0, 1.0, 1.0 / (0.01 + 0.1im),
         0.0im, 0.0, 0.9, 1.1, collect(range(0.9, 1.1; length = 33)),
         (1, 2, 3, 4), 1.0, 1.0, "t", 1)
     lo, hi = PowerFlows.parameter_limits(d)
@@ -428,7 +428,7 @@ end
     data = PowerFlowData(pf, sys)
     solve_power_flow!(data)
     @test all(data.converged)
-    t = data.controlled_devices.taps[1]
+    t = data.controlled_devices.voltage_taps[1]
     @test t.current in t.levels
     spacing = (t.p_max - t.p_min) / (length(t.levels) - 1)
     @test abs(data.bus_magnitude[t.controlled_ix, 1] - t.setpoint) < spacing
@@ -449,7 +449,7 @@ end
 end
 
 @testset "discrete control: snap" begin
-    d = PowerFlows.ControlledTap("t", 1, 2, 2, 1.0, 1.0, 1.0, 1.0 + 0im,
+    d = PowerFlows.ControlledVoltageTap("t", 1, 2, 2, 1.0, 1.0, 1.0, 1.0 + 0im,
         0.0im, 0.0, 0.9, 1.1, collect(range(0.9, 1.1; length = 5)),
         (1, 2, 3, 4), 1.0, 1.0, "t", 1)  # levels: 0.9,0.95,1.0,1.05,1.1
     @test PowerFlows.snap_to_discrete(d, 1.03) == 1.05
@@ -520,7 +520,7 @@ end
     y0, ft0, tf0 = copy(A.nzval), copy(Yft.nzval), copy(Ytf.nzval)
 
     # An apply followed by a revert restores the entries bitwise.
-    d = set.taps[1]
+    d = set.voltage_taps[1]
     PF.apply_parameter!(d, data, d.initial + 0.0123, 1)
     @test A.nzval != y0
     PF.apply_parameter!(d, data, d.initial, 1)
@@ -528,10 +528,10 @@ end
 
     # A step start returns every tap to `initial` and rewrites all three matrices.
     @test solve_power_flow!(data)
-    @test any(set.tap_current .!= [d.initial for d in set.taps])
+    @test any(set.voltage_tap_current .!= [d.initial for d in set.voltage_taps])
     PF.apply_parameter!(d, data, d.initial + 0.01, 1)
     PF.load_device_state!(set, data, 1)
-    @test all(d -> d.current == d.initial, set.taps)
+    @test all(d -> d.current == d.initial, set.voltage_taps)
     @test A.nzval == y0
     @test Yft.nzval == ft0
     @test Ytf.nzval == tf0
@@ -567,8 +567,8 @@ end
     data = PowerFlowData(ACPolarPowerFlow(; control_discrete_devices = true), sys)
     ybus = data.power_network_matrix
     set = PF.get_controlled_devices(data)
-    @test length(set.taps) == 1
-    d = set.taps[1]
+    @test length(set.voltage_taps) == 1
+    d = set.voltage_taps[1]
 
     # Verify nz_offsets are now real (not all-ones stub).
     A = ybus.data
@@ -606,8 +606,8 @@ end
         data2 = PowerFlowData(ACPolarPowerFlow(; control_discrete_devices = true), sys2)
         ybus2 = data2.power_network_matrix
         set2 = PF.get_controlled_devices(data2)
-        @test length(set2.taps) == 1
-        d2 = set2.taps[1]
+        @test length(set2.voltage_taps) == 1
+        d2 = set2.voltage_taps[1]
         newtap2 = 1.05
         PowerFlows.apply_parameter!(d2, data2, newtap2, 1)
         after2 = copy(ybus2.data)
@@ -634,7 +634,7 @@ end
     # Enabled: controlled_devices is a ControlledDeviceSet with expected contents.
     data_on = PowerFlowData(ACPolarPowerFlow(; control_discrete_devices = true), sys)
     @test data_on.controlled_devices isa PowerFlows.ControlledDeviceSet
-    @test length(data_on.controlled_devices.taps) == 1
+    @test length(data_on.controlled_devices.voltage_taps) == 1
     @test length(data_on.controlled_devices.shunts) == 1
 end
 
@@ -656,7 +656,7 @@ end
     data = PowerFlowData(pf, sys)
     solve_power_flow!(data)
     @test all(data.converged)
-    t = data.controlled_devices.taps[1]
+    t = data.controlled_devices.voltage_taps[1]
     @test t.current in t.levels
     @test abs(data.bus_magnitude[t.controlled_ix, 1] - t.setpoint) <=
           (t.p_max - t.p_min) / length(t.levels) + 1e-2
@@ -672,7 +672,7 @@ end
     data = PowerFlowData(pf, sys)
     solve_power_flow!(data)
     @test all(data.converged)
-    t = data.controlled_devices.taps[1]
+    t = data.controlled_devices.voltage_taps[1]
     # The controlled bus is the tap's FROM bus (set via regulated_bus_number = 2).
     @test t.controlled_ix == t.from_ix
     @test t.current in t.levels
@@ -685,7 +685,7 @@ end
     pf = ACPolarPowerFlow(; control_discrete_devices = true)
     data = PowerFlowData(pf, sys)
     solve_power_flow!(data)
-    t = data.controlled_devices.taps[1]
+    t = data.controlled_devices.voltage_taps[1]
     @test t.current in t.levels
     @test all(data.converged)
 end
@@ -714,7 +714,7 @@ end
     data_nr = PowerFlowData(pf_nr, sys_nr)
     solve_power_flow!(data_nr)
     @test all(data_nr.converged)
-    t_nr = data_nr.controlled_devices.taps[1]
+    t_nr = data_nr.controlled_devices.voltage_taps[1]
     @test t_nr.current in t_nr.levels
     @test abs(data_nr.bus_magnitude[t_nr.controlled_ix, 1] - t_nr.setpoint) <=
           (t_nr.p_max - t_nr.p_min) / length(t_nr.levels) + 1e-2
@@ -724,7 +724,7 @@ end
     data_tr = PowerFlowData(pf_tr, sys_tr)
     solve_power_flow!(data_tr)
     @test all(data_tr.converged)
-    t_tr = data_tr.controlled_devices.taps[1]
+    t_tr = data_tr.controlled_devices.voltage_taps[1]
     @test t_tr.current in t_tr.levels
     @test abs(data_tr.bus_magnitude[t_tr.controlled_ix, 1] - t_tr.setpoint) <=
           (t_tr.p_max - t_tr.p_min) / length(t_tr.levels) + 1e-2
@@ -756,7 +756,7 @@ end
         data = PowerFlowData(pf, sys)
         solve_power_flow!(data)
         @test all(data.converged)
-        t = data.controlled_devices.taps[1]
+        t = data.controlled_devices.voltage_taps[1]
         @test t.current in t.levels
         @test abs(data.bus_magnitude[t.controlled_ix, 1] - t.setpoint) <=
               (t.p_max - t.p_min) / length(t.levels) + 1e-2
@@ -810,6 +810,7 @@ end
     res = PowerFlows.get_controlled_device_results(data)
     frow = only(eachrow(res[res.family .== "FACTSControlDevice", :]))
     @test frow.saturated == false
+    @test frow.actuator == "Susceptance"
     v_local = data.bus_magnitude[f.bus_ix, 1]
     @test frow.delivered_q_mvar ≈ f.current * v_local^2 * f.base_mva
     # Neutral columns for non-FACTS devices stay rectangular (no FACTS-only leakage).
@@ -847,7 +848,7 @@ end
     sys = _make_field_controlled_tap_system()
     pf = ACPolarPowerFlow(; control_discrete_devices = true)
     data = PowerFlowData(pf, sys)
-    t = data.controlled_devices.taps[1]
+    t = data.controlled_devices.voltage_taps[1]
     @test t.p_min ≈ 0.85
     @test t.p_max ≈ 1.15
     @test length(t.levels) == 17
@@ -909,7 +910,7 @@ end
     sys = _make_tap_shunt_system()
     data = PowerFlowData(ACPolarPowerFlow(; control_discrete_devices = true), sys)
     set = PF.get_controlled_devices(data)
-    d = set.taps[1]
+    d = set.voltage_taps[1]
     newtap = 1.05
     PowerFlows.apply_parameter!(d, data, newtap, 1)
     PowerFlows._sync_arc_admittances!(data, set)
@@ -936,7 +937,7 @@ end
     data = PowerFlowData(pf, sys)
     solve_power_flow!(data)
     @test all(data.converged)
-    t = data.controlled_devices.taps[1]
+    t = data.controlled_devices.voltage_taps[1]
     sh = data.controlled_devices.shunts[1]
     # Rebuild: same system with the tap fixed at the solved position and the shunt's
     # solved susceptance as a fixed admittance baseline.
@@ -979,8 +980,10 @@ end
     # winding is: `PSY.get_circuits(device_name)[circuit_index]`.
     @test tap_row.device_name == ["tap_1_2"]
     @test tap_row.circuit_index == [1]
+    @test tap_row.actuator == ["TapRatio"]
+    @test df[df.family .== "SwitchedAdmittance", :actuator] == ["Susceptance"]
     @test tap_row.initial == [1.0]
-    t = data.controlled_devices.taps[1]
+    t = data.controlled_devices.voltage_taps[1]
     @test tap_row.final == [t.current]
     @test tap_row.lower_limit == [t.p_min]
     @test tap_row.upper_limit == [t.p_max]
@@ -989,8 +992,8 @@ end
     df_off = PowerFlows.get_controlled_device_results(data_off)
     @test size(df_off, 1) == 0
     @test names(df_off) ==
-          ["family", "name", "device_name", "circuit_index", "time_step", "lower_limit",
-        "upper_limit", "initial", "final", "delivered_q_mvar", "saturated"]
+          ["family", "name", "device_name", "circuit_index", "actuator", "time_step",
+        "lower_limit", "upper_limit", "initial", "final", "delivered_q_mvar", "saturated"]
 end
 
 @testset "discrete control: shunt deadband semantics" begin
@@ -1002,7 +1005,7 @@ end
     @test !PowerFlows._in_deadband(sh, 0.94)
     @test !PowerFlows._in_deadband(sh, 1.06)
     # Taps carry a VMI/VMA band and are held anywhere inside it.
-    tap = PowerFlows.ControlledTap("t", 1, 2, 2, 1.0, 0.98, 1.02, 1.0 + 0im,
+    tap = PowerFlows.ControlledVoltageTap("t", 1, 2, 2, 1.0, 0.98, 1.02, 1.0 + 0im,
         0.0im, 0.0, 0.9, 1.1, collect(range(0.9, 1.1; length = 5)),
         (1, 2, 3, 4), 1.0, 1.0, "t", 1)
     @test PowerFlows._in_deadband(tap, 1.0)
@@ -1048,7 +1051,7 @@ end
     levels =
         PowerFlowData(
             ACPolarPowerFlow(; control_discrete_devices = true), sys,
-        ).controlled_devices.taps[1].levels
+        ).controlled_devices.voltage_taps[1].levels
     pf = ACPolarPowerFlow(; control_discrete_devices = true)
     @test solve_and_store_power_flow!(pf, sys)
     @test PSY.get_tap(PSY.get_circuit(tx0)) != tap_before   # the fixture regulates away from tap = 1.0
@@ -1129,7 +1132,7 @@ end
     ts = 1
     @test PowerFlows._solve_with_q_limits!(pf, data, ts)
     set = PowerFlows.get_controlled_devices(data)
-    d = first(set.taps)
+    d = first(set.voltage_taps)
     frozen = [false]
     dVdp = [0.05]
     # A sign-flipped but sub-floor sample must be ignored: gain unchanged, not frozen.
@@ -1185,7 +1188,7 @@ end
             @test PowerFlows._supports_batched_refresh(ctx)
             snap = PowerFlows._snapshot_state(data, 1)
             gains = Dict{String, Float64}()
-            for devices in (set.taps, set.shunts, set.facts)
+            for devices in (set.voltage_taps, set.shunts, set.facts)
                 for d in devices
                     lin, ok_lin = PowerFlows._linear_plant_sign(d, data, 1, ctx)
                     fd, ok_fd = PowerFlows._plant_sign(d, data, 1, pf, snap)
@@ -1224,7 +1227,7 @@ end
     ctx = PowerFlows._sensitivity_context(pf, data, 1)
     @test PowerFlows._supports_batched_refresh(ctx)
     scratch_snap = PowerFlows._snapshot_state(data, 1)
-    for d in (set.taps[1], set.shunts[1])
+    for d in (set.voltage_taps[1], set.shunts[1])
         lin, ok_lin = PowerFlows._linear_plant_sign(d, data, 1, ctx)
         fd, ok_fd = PowerFlows._plant_sign(d, data, 1, pf, scratch_snap)
         @test ok_lin && ok_fd
@@ -1404,7 +1407,7 @@ end
     ts = 1
     @test PowerFlows._solve_with_q_limits!(pf, data, ts)
     set = PowerFlows.get_controlled_devices(data)
-    d = first(set.taps)
+    d = first(set.voltage_taps)
     pre_v = copy(data.bus_magnitude[:, ts])
     pre_q = copy(data.bus_reactive_power_injections[:, ts])
     # maxIterations=1 runs exactly one real NR step (mutating bus_magnitude away from the
@@ -1480,8 +1483,8 @@ end
     pre_q = copy(dcn.q_c[:, ts])
     pre_v = copy(dcn.node_vdc[:, ts])
     set = PowerFlows.get_controlled_devices(data)
-    @test !isempty(set.taps)
-    d = first(set.taps)
+    @test !isempty(set.voltage_taps)
+    d = first(set.voltage_taps)
     scratch_snap = PowerFlows._snapshot_state(data, ts)
     PowerFlows._plant_sign(d, data, ts, pf, scratch_snap)   # probe solves, then must restore
     @test dcn.p_c[:, ts] == pre_p
@@ -1609,7 +1612,7 @@ end
     data = PowerFlowData(ACPolarPowerFlow(), sys)
     set = PowerFlows.build_controlled_device_set(
         sys, PF.get_bus_lookup(data), data.power_network_matrix)
-    @test isempty(set.taps) && isempty(set.phase_shifters)
+    @test isempty(set.voltage_taps) && isempty(set.phase_shifters)
     d = only(set.flow_taps)
     # The band is 0.18..0.20 p.u. on the 50 MVA circuit base: 0.09..0.10 p.u. on the 100 MVA
     # system base.
@@ -1621,8 +1624,8 @@ end
     @test length(d.levels) == 33
     @test d.controlled_ix == d.from_ix
     @test d.fixed ≈ 0.0
-    @test d.current ≈ 1.0
-    @test d.initial ≈ 1.0
+    @test d.current ≈ 1.02
+    @test d.initial ≈ 1.02
     @test PowerFlows.control_family(d) == "TransformerCircuit"
     @test PowerFlows.regulated_quantity(d) === PowerFlows.ReactivePowerFlow()
 
@@ -1631,7 +1634,7 @@ end
     data = PowerFlowData(ACPolarPowerFlow(), sys)
     set = PowerFlows.build_controlled_device_set(
         sys, PF.get_bus_lookup(data), data.power_network_matrix)
-    @test isempty(set.taps) && isempty(set.flow_taps)
+    @test isempty(set.voltage_taps) && isempty(set.flow_taps)
     d = only(set.phase_shifters)
     @test d.band_lo ≈ 0.475
     @test d.band_hi ≈ 0.525
@@ -1642,7 +1645,7 @@ end
     @test d.levels[1] ≈ d.p_min
     @test d.levels[end] ≈ d.p_max
     @test d.controlled_ix == d.from_ix
-    @test d.fixed ≈ 1.0
+    @test d.fixed ≈ 1.05
     @test d.current ≈ 0.1
     @test d.initial ≈ 0.1
     @test PowerFlows.regulated_quantity(d) === PowerFlows.ActivePowerFlow()
@@ -1720,7 +1723,7 @@ end
     data = PowerFlowData(ACPolarPowerFlow(), sys)
     set = PowerFlows.build_controlled_device_set(
         sys, PF.get_bus_lookup(data), data.power_network_matrix)
-    d = only(set.taps)
+    d = only(set.voltage_taps)
     d.current = 1.03
     h = 1e-6
     plus = PowerFlows._branch_terms(d, 1.03 + h)
@@ -1795,10 +1798,11 @@ end
 end
 
 @testset "flow control: a flow already inside the band holds the device" begin
-    # Fixture flows at the initial setting: 0.132 p.u. reactive, 0.351 p.u. active.
+    # Fixture flows at the initial setting: 0.014 p.u. reactive (tap 1.02), 0.309 p.u. active
+    # (ratio 1.05).
     for (build, band_kw, band) in (
-        (_make_flow_tap_system, :q_band, (min = 0.10, max = 0.16)),
-        (_make_phase_shifter_system, :p_band, (min = 0.30, max = 0.40)),
+        (_make_flow_tap_system, :q_band, (min = -0.02, max = 0.04)),
+        (_make_phase_shifter_system, :p_band, (min = 0.25, max = 0.35)),
     )
         _, _, data, d = _solve_flow_fixture(
             ACPolarPowerFlow{NewtonRaphsonACPowerFlow}, build; (band_kw => band,)...)
@@ -1828,7 +1832,7 @@ end
 end
 
 @testset "flow control: large initial error settles within the solve budget" begin
-    # The default bands start 0.16 p.u. (reactive) and 0.6 p.u. (active) from the target.
+    # The default bands start 0.29 p.u. (reactive) and 0.69 p.u. (active) from the target.
     # The error is a fraction of the actuator authority, so S works as it does for a voltage.
     for (name, build) in FLOW_FIXTURES
         pf, sys, data, d = _solve_flow_fixture(
@@ -1851,7 +1855,7 @@ end
     data = PowerFlowData(pf, sys)
     @test solve_power_flow!(data)
     d = only(data.controlled_devices.flow_taps)
-    @test d.current != 1.0
+    @test d.current != d.initial
     @test solve_and_store_power_flow!(pf, sys)
     @test PSY.get_tap(circuit) == d.current
     @test iszero(PSY.get_α(circuit))
@@ -1864,7 +1868,7 @@ end
     @test !iszero(d.current)
     @test solve_and_store_power_flow!(pf, sys)
     @test PSY.get_α(circuit) == d.current
-    @test isone(PSY.get_tap(circuit))
+    @test PSY.get_tap(circuit) ≈ 1.05
     # Re-enrolling from the written-back system starts at the solved angle.
     data2 = PowerFlowData(pf, sys)
     @test only(data2.controlled_devices.phase_shifters).initial == d.current
@@ -1880,6 +1884,11 @@ end
         @test rows.name == [d.name]
         @test rows.device_name == [d.device_name]
         @test rows.circuit_index == [1]
+        expected = Dict(
+            "reactive-flow tap" => "TapRatio",
+            "active-flow phase shifter" => "PhaseAngle",
+        )
+        @test rows.actuator == [expected[name]]
         @test rows.initial == [d.initial]
         @test rows.final == [d.current]
         @test rows.lower_limit == [d.p_min]

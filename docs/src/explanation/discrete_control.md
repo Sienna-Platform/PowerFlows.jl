@@ -118,12 +118,12 @@ quantity `Q` is what the device regulates: `BusVoltage`, `ReactivePowerFlow` or
 
 | Circuit objective     | Actuator `A` | Quantity `Q`        | Vector           |
 |:--------------------- |:------------ |:------------------- |:---------------- |
-| `VOLTAGE`             | `TapRatio`   | `BusVoltage`        | `taps`           |
+| `VOLTAGE`             | `TapRatio`   | `BusVoltage`        | `voltage_taps`   |
 | `REACTIVE_POWER_FLOW` | `TapRatio`   | `ReactivePowerFlow` | `flow_taps`      |
 | `ACTIVE_POWER_FLOW`   | `PhaseAngle` | `ActivePowerFlow`   | `phase_shifters` |
 
-The alias `ControlledTap` names the voltage-regulating combination. The group
-order in every per-device bookkeeping vector is `taps`, `flow_taps`,
+The alias `ControlledVoltageTap` names the voltage-regulating combination. The group
+order in every per-device bookkeeping vector is `voltage_taps`, `flow_taps`,
 `phase_shifters`, `shunts`, `facts`.
 
 For `ControlledBranch`, `apply_parameter!` rewrites three of the four cached `nzval`
@@ -321,11 +321,11 @@ that owns it. The data lives on the objects, so a control parameter that a
 component does not model is not sourced from anywhere else — it takes a
 documented default, or the device is de-enrolled.
 
-### `PSY.TransformerCircuit` → `ControlledTap`
+### `PSY.TransformerCircuit` → `ControlledVoltageTap`
 
 The control objective lives on the circuit, not the transformer, so candidates
 are collected per circuit and only those with
-`get_control_objective(circuit) == VOLTAGE` enroll as a `ControlledTap`. This is uniform across
+`get_control_objective(circuit) == VOLTAGE` enroll as a `ControlledVoltageTap`. This is uniform across
 arities: a two-winding transformer contributes its single circuit, and a
 three-winding transformer contributes each available circuit independently — it
 may regulate on one winding while the other two are fixed. The other two
@@ -351,6 +351,16 @@ Results follow the same circuit-level shape for both arities — see
 [`get_controlled_device_results`](@ref), whose `device_name` and `circuit_index`
 columns address the owning circuit as
 `PSY.get_circuits(device_name)[circuit_index]`.
+
+Every `TransformerCircuit` row shares one `family`, so the `actuator` column names
+the quantity the device moves. It sets the unit of `lower_limit`, `upper_limit`,
+`initial` and `final`:
+
+| `actuator`    | Device                                     | Unit              |
+|:------------- |:------------------------------------------ |:----------------- |
+| `TapRatio`    | voltage tap, reactive-flow tap             | ratio             |
+| `PhaseAngle`  | phase shifter                              | radians           |
+| `Susceptance` | `SwitchedAdmittance`, `FACTSControlDevice` | p.u., system base |
 
 ### [`PSY.TransformerCircuit` flow objectives](@id discrete-control-flow-circuits)
 

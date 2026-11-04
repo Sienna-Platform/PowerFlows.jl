@@ -110,7 +110,7 @@ _enrolls(::Type{<:ControlledBranch}) = true
 _enrolls(circuit::PSY.TransformerCircuit) =
     _enrolls(_circuit_control(PSY.get_control_objective(circuit)))
 
-_control_label(::Type{ControlledBranch{TapRatio, BusVoltage}}) = "ControlledTap"
+_control_label(::Type{ControlledBranch{TapRatio, BusVoltage}}) = "ControlledVoltageTap"
 _control_label(::Type{ControlledBranch{TapRatio, ReactivePowerFlow}}) = "ControlledFlowTap"
 _control_label(::Type{ControlledBranch{PhaseAngle, ActivePowerFlow}}) =
     "ControlledPhaseShifter"
@@ -118,7 +118,15 @@ _control_label(::Type{ControlledBranch{PhaseAngle, ActivePowerFlow}}) =
 _actuator_kind(::TapRatio) = "tap-ratio"
 _actuator_kind(::PhaseAngle) = "phase-angle"
 
-_device_group(::Type{ControlledBranch{TapRatio, BusVoltage}}, groups) = groups.taps
+# The ratio scales the from-side diagonal yt/|t|²; the phase angle leaves both diagonals fixed.
+_moves_diagonal(::TapRatio) = true
+_moves_diagonal(::PhaseAngle) = false
+_moves_diagonal(::Type{ControlledBranch{A, Q}}) where {A, Q} = _moves_diagonal(A())
+
+_is_phase_shifter(::Type{<:ControlledBranch}) = false
+_is_phase_shifter(::Type{ControlledBranch{PhaseAngle, ActivePowerFlow}}) = true
+
+_device_group(::Type{ControlledBranch{TapRatio, BusVoltage}}, groups) = groups.voltage_taps
 _device_group(::Type{ControlledBranch{TapRatio, ReactivePowerFlow}}, groups) =
     groups.flow_taps
 _device_group(::Type{ControlledBranch{PhaseAngle, ActivePowerFlow}}, groups) =
@@ -286,7 +294,7 @@ function build_controlled_device_set(
 )
     nrd = PNM.get_network_reduction_data(ybus)
     groups = (
-        taps = ControlledTap[],
+        voltage_taps = ControlledVoltageTap[],
         flow_taps = ControlledBranch{TapRatio, ReactivePowerFlow}[],
         phase_shifters = ControlledBranch{PhaseAngle, ActivePowerFlow}[],
     )
@@ -374,7 +382,7 @@ function build_controlled_device_set(
     _enroll_facts!(facts, sys, bus_lookup, reverse_bus_search_map)
 
     set = ControlledDeviceSet(
-        groups.taps, groups.flow_taps, groups.phase_shifters, shunts, facts,
+        groups.voltage_taps, groups.flow_taps, groups.phase_shifters, shunts, facts,
         n_time_steps,
     )
     capture_tap_baseline!(set, ybus)

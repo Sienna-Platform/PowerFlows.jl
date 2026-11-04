@@ -144,7 +144,14 @@ falls back to the island's REF/distributed slack). An area must:
 
 A tie-endpoint tap or switched shunt that is not a corridor member is a `diag_pollution` staleness
 hazard; it is flagged with a `@warn` (net-interchange tracking then assumes it holds its
-enrollment-time value) rather than de-enrolled.
+enrollment-time value) rather than de-enrolled. A phase shifter moves only the angle, which leaves
+the Y-bus diagonal unchanged, so it is not a hazard.
+
+A phase shifter (`ACTIVE_POWER_FLOW` circuit) in a tie corridor regulates a flow that the area
+schedule also constrains. PSS/E permits the combination, so PowerFlows warns but keeps both
+controls. It also warns when every tie of an area is a phase shifter and the area schedule lies
+outside the sum of their flow bands: the schedule cannot be met and the phase shifters saturate.
+The band sum ignores tie losses.
 
 ## Infeasibility: greedy relax
 

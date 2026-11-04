@@ -550,7 +550,7 @@ function _accept_refreshed_context!(
     ctx::_SensitivityContext, set::ControlledDeviceSet, offs::GroupOffsets,
     data, ts::Int, frozen::Vector{Bool}, dVdp::Vector{Float64}, did_move::Vector{Bool},
 )
-    _refresh_gains_group!(set.taps, 0, data, ts, frozen, dVdp, did_move, ctx)
+    _refresh_gains_group!(set.voltage_taps, 0, data, ts, frozen, dVdp, did_move, ctx)
     _refresh_gains_group!(
         set.flow_taps, offs.flow_taps, data, ts, frozen, dVdp, did_move, ctx)
     _refresh_gains_group!(
@@ -579,7 +579,8 @@ function _batched_pass!(
     # authoritative pass: snapshot the per-device bookkeeping `_damped_target!` mutates
     # (oscillation counter, direction, freezes) and restore it on rollback.
     osc0, prev0, frozen0 = copy(osc), copy(prev_sign), copy(frozen)
-    moved = _apply_targets_group!(set.taps, 0, data, ts, S, frozen, dVdp, osc, prev_sign,
+    moved = _apply_targets_group!(set.voltage_taps, 0, data, ts, S, frozen, dVdp, osc,
+        prev_sign,
         n_shared, p_prev, did_move)
     moved |=
         _apply_targets_group!(set.flow_taps, offs.flow_taps, data, ts, S, frozen, dVdp,
@@ -601,7 +602,7 @@ function _batched_pass!(
             return false, true, refreshed # moved + converged ⇒ not settled
         end
     end
-    _rollback_targets_group!(set.taps, 0, data, ts, p_prev, did_move)
+    _rollback_targets_group!(set.voltage_taps, 0, data, ts, p_prev, did_move)
     _rollback_targets_group!(set.flow_taps, offs.flow_taps, data, ts, p_prev, did_move)
     _rollback_targets_group!(
         set.phase_shifters, offs.phase_shifters, data, ts, p_prev, did_move)
@@ -644,8 +645,10 @@ function _step_device_groups!(
     scratch_snap::ControlStateSnapshot, frozen::Vector{Bool}, dVdp::Vector{Float64},
     osc::Vector{Int}, prev_sign::Vector{Int}, n_shared::Vector{Int}; kwargs...,
 )
-    settled = _step_device_group!(set.taps, 0, data, ts, S, pf, scratch_snap, frozen, dVdp,
-        osc, prev_sign, n_shared; kwargs...)
+    settled =
+        _step_device_group!(set.voltage_taps, 0, data, ts, S, pf, scratch_snap, frozen,
+            dVdp,
+            osc, prev_sign, n_shared; kwargs...)
     settled &= _step_device_group!(set.flow_taps, offs.flow_taps, data, ts, S, pf,
         scratch_snap, frozen, dVdp, osc, prev_sign, n_shared; kwargs...)
     settled &=
@@ -711,7 +714,7 @@ function _control_continuation!(
 
     offs = GroupOffsets(set)
     n_dev = offs.total
-    # Per-device state, indexed in parallel with [taps; flow_taps; phase_shifters; shunts;
+    # Per-device state, indexed in parallel with [voltage_taps; flow_taps; phase_shifters; shunts;
     # facts]. dVdp: sign sets the negative-feedback orientation, magnitude drives ω; frozen
     # devices are held, not stepped.
     dVdp = zeros(n_dev)
@@ -721,12 +724,12 @@ function _control_continuation!(
     # Voltage devices sharing a controlled bus split the correction (ω / n_shared).
     n_shared = ones(Int, n_dev)
     counts = Dict{Int, Int}()
-    _count_controlled_buses!(counts, set.taps)
+    _count_controlled_buses!(counts, set.voltage_taps)
     _count_controlled_buses!(counts, set.flow_taps)
     _count_controlled_buses!(counts, set.phase_shifters)
     _count_controlled_buses!(counts, set.shunts)
     _count_controlled_buses!(counts, set.facts)
-    _fill_shared!(n_shared, 0, counts, set.taps)
+    _fill_shared!(n_shared, 0, counts, set.voltage_taps)
     _fill_shared!(n_shared, offs.flow_taps, counts, set.flow_taps)
     _fill_shared!(n_shared, offs.phase_shifters, counts, set.phase_shifters)
     _fill_shared!(n_shared, offs.shunts, counts, set.shunts)
@@ -740,7 +743,7 @@ function _control_continuation!(
     # Built once; every device probe below is a triangular solve against it.
     ctx = _sensitivity_context(pf, data, ts; kwargs...)
     _probe_device_signs!(
-        set.taps, 0, dVdp, frozen, ctx, data, ts, pf, scratch_snap; kwargs...)
+        set.voltage_taps, 0, dVdp, frozen, ctx, data, ts, pf, scratch_snap; kwargs...)
     _probe_device_signs!(
         set.flow_taps, offs.flow_taps, dVdp, frozen, ctx, data, ts, pf, scratch_snap;
         kwargs...)
@@ -754,7 +757,7 @@ function _control_continuation!(
     if any(frozen)
         frozen_names = join(
             vcat(
-                _frozen_names(set.taps, 0, frozen),
+                _frozen_names(set.voltage_taps, 0, frozen),
                 _frozen_names(set.flow_taps, offs.flow_taps, frozen),
                 _frozen_names(set.phase_shifters, offs.phase_shifters, frozen),
                 _frozen_names(set.shunts, offs.shunts, frozen),
@@ -897,14 +900,22 @@ function snap_and_restore!(
     # buffer because it stays live across the `_restore_one!` calls below, which reuse
     # `scratch_snap`.
     pre = _snapshot_state(data, ts)
-    cont_taps = _snap_device_group!(set.taps, data, ts)
+    cont_taps = _snap_device_group!(set.voltage_taps, data, ts)
     cont_flow_taps = _snap_device_group!(set.flow_taps, data, ts)
     cont_phase_shifters = _snap_device_group!(set.phase_shifters, data, ts)
     cont_shunts = _snap_device_group!(set.shunts, data, ts)
     cont_facts = _snap_device_group!(set.facts, data, ts)
     _ctrl_solve!(pf, data, ts; kwargs...) && return true
     _restore_state!(data, ts, pre)
-    ok = _restore_device_group!(set.taps, data, ts, cont_taps, pf, scratch_snap; kwargs...)
+    ok = _restore_device_group!(
+        set.voltage_taps,
+        data,
+        ts,
+        cont_taps,
+        pf,
+        scratch_snap;
+        kwargs...,
+    )
     ok &= _restore_device_group!(
         set.flow_taps, data, ts, cont_flow_taps, pf, scratch_snap; kwargs...)
     ok &= _restore_device_group!(
@@ -916,7 +927,7 @@ function snap_and_restore!(
     if !ok
         names = join(
             vcat(
-                [d.name for d in set.taps],
+                [d.name for d in set.voltage_taps],
                 [d.name for d in set.flow_taps],
                 [d.name for d in set.phase_shifters],
                 [d.name for d in set.shunts],
@@ -939,6 +950,13 @@ control_family(::ControlledBranch) = "TransformerCircuit"
 control_family(::ControlledSwitchedShunt) = "SwitchedAdmittance"
 control_family(::ControlledFACTS) = "FACTSControlDevice"
 
+"""Quantity that a controlled device moves: the unit of its limits, `initial` and `final`
+results. `"TapRatio"` is a ratio, `"PhaseAngle"` is in radians, `"Susceptance"` is in p.u. on
+the system base."""
+control_actuator(::ControlledBranch{TapRatio}) = "TapRatio"
+control_actuator(::ControlledBranch{PhaseAngle}) = "PhaseAngle"
+control_actuator(::AbstractShuntControl) = "Susceptance"
+
 # Owning-component address, reported so a tap row resolves to its circuit for either arity
 # (`PSY.get_circuits(device_name)[circuit_index]`). Families with no sub-component address
 # report `missing` rather than a fabricated index.
@@ -954,8 +972,13 @@ _report_circuit_index(::ControlledFACTS) = missing
     get_controlled_device_results(data) -> DataFrames.DataFrame
 
 Solved discrete-control device settings: one row per enrolled device per time step, with
-its family, name, time step, control band, enrollment-time (`initial`) and solved
+its family, actuator, name, time step, control band, enrollment-time (`initial`) and solved
 (`final`) parameter for that step. Every family reports its own per-time-step state.
+
+The `actuator` column names the quantity that the device moves, which sets the unit of
+`lower_limit`, `upper_limit`, `initial` and `final`: `"TapRatio"` (ratio), `"PhaseAngle"`
+(radians) or `"Susceptance"` (p.u., system base). Shunt and FACTS rows report
+`"Susceptance"`.
 
 Tap rows are reported at the `PSY.TransformerCircuit` level and are identical in shape for
 both transformer arities: `family` is `"TransformerCircuit"`, and `device_name` +
@@ -976,6 +999,7 @@ function get_controlled_device_results(data)
     name = String[]
     device_name = Union{String, Missing}[]
     circuit_index = Union{Int, Missing}[]
+    actuator = String[]
     time_step = Int[]
     lower = Float64[]
     upper = Float64[]
@@ -987,7 +1011,7 @@ function get_controlled_device_results(data)
     if !isnothing(set)
         for ts in 1:get_time_steps(data)
             for devices in (
-                set.taps, set.flow_taps, set.phase_shifters, set.shunts, set.facts,
+                set.voltage_taps, set.flow_taps, set.phase_shifters, set.shunts, set.facts,
             )
                 for (i, d) in enumerate(devices)
                     lo, hi = stored_parameter_limits(set, d, i, ts)
@@ -995,6 +1019,7 @@ function get_controlled_device_results(data)
                     push!(name, d.name)
                     push!(device_name, _report_device_name(d))
                     push!(circuit_index, _report_circuit_index(d))
+                    push!(actuator, control_actuator(d))
                     push!(time_step, ts)
                     push!(lower, lo)
                     push!(upper, hi)
@@ -1011,6 +1036,7 @@ function get_controlled_device_results(data)
         "name" => name,
         "device_name" => device_name,
         "circuit_index" => circuit_index,
+        "actuator" => actuator,
         "time_step" => time_step,
         "lower_limit" => lower,
         "upper_limit" => upper,
