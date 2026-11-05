@@ -2498,22 +2498,28 @@ end
         end
         return built
     end
-    data = build([true, false])
-    @test data.bus_type[:, 1] != data.bus_type[:, 2]
-    @test solve_power_flow!(data; time_steps = [1])
-    memo = data.ac_jacobian_structure_cache[]
-    @test solve_power_flow!(data; time_steps = [2])
-    @test data.ac_jacobian_structure_cache[] === memo
+    for order in ([true, false], [false, true])
+        data = build(order)
+        @test data.bus_type[:, 1] != data.bus_type[:, 2]
+        @test solve_power_flow!(data; time_steps = [1])
+        memo = data.ac_jacobian_structure_cache[]
+        @test solve_power_flow!(data; time_steps = [2])
+        @test data.ac_jacobian_structure_cache[] === memo
 
-    for (t, ref4) in ((1, true), (2, false))
-        single = build([ref4])
-        @test solve_power_flow!(single)
-        @test isapprox(data.bus_magnitude[:, t], single.bus_magnitude[:, 1]; atol = 1e-9)
-        @test isapprox(data.bus_angles[:, t], single.bus_angles[:, 1]; atol = 1e-9)
-        @test isapprox(
-            data.area_interchange.delta_p[:, t],
-            single.area_interchange.delta_p[:, 1];
-            atol = 1e-9,
-        )
+        for (t, ref4) in enumerate(order)
+            single = build([ref4])
+            @test solve_power_flow!(single)
+            @test isapprox(
+                data.bus_magnitude[:, t],
+                single.bus_magnitude[:, 1];
+                atol = 1e-9,
+            )
+            @test isapprox(data.bus_angles[:, t], single.bus_angles[:, 1]; atol = 1e-9)
+            @test isapprox(
+                data.area_interchange.delta_p[:, t],
+                single.area_interchange.delta_p[:, 1];
+                atol = 1e-9,
+            )
+        end
     end
 end
