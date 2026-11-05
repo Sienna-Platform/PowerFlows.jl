@@ -480,8 +480,9 @@ function build_area_interchange_data(
     ]
     _warn_diag_pollution_hazards(sys, ties, bus_lookup, reverse_bus_search_map)
 
+    n_time_steps = size(data.bus_type, 2)
     areas = [
-        ControlledArea(name, slack_ix_of[name], pdes[name], tail_ix) for
+        ControlledArea(name, slack_ix_of[name], fill(pdes[name], n_time_steps), tail_ix) for
         (tail_ix, name) in enumerate(enrolled_names)
     ]
 
@@ -499,7 +500,6 @@ function build_area_interchange_data(
     tail_of = Dict(name => i for (i, name) in enumerate(enrolled_names))
     off_area_loads = _tie_off_area_loads(get_tie_definition(pf), pf, sys, data, tail_of)
 
-    n_time_steps = size(data.bus_type, 2)
     return AreaInterchangeData(
         areas,
         ties,
@@ -560,6 +560,56 @@ function set_off_area_load_power!(
     found || error(
         "Off-area load \"$load_name\" has no record in the area interchange data. " *
         "Check `has_off_area_load` first.",
+    )
+    return
+end
+
+function _clear_off_area_loads!(data::ACPowerFlowData)
+    # Working records share their vectors with the pristine ones, so this covers both.
+    for load in data.area_interchange.pristine_off_area_loads
+        load.p_constant_power .= 0.0
+        load.p_constant_current .= 0.0
+        load.p_constant_impedance .= 0.0
+    end
+    return
+end
+
+"""
+    has_controlled_area(data::ACPowerFlowData, area_name::String) -> Bool
+
+Whether the PSY area `area_name` is enrolled for net-interchange control in `data` (see
+[`ControlledArea`](@ref)). An area that has no schedule, or no tie, is not enrolled.
+"""
+function has_controlled_area(data::ACPowerFlowData, area_name::String)
+    return any(area.name == area_name for area in data.area_interchange.pristine_areas)
+end
+
+"""
+    set_scheduled_net_interchange!(data::ACPowerFlowData, area_name::String,
+        time_step::Int, pdes::Float64)
+
+Set the net-interchange target of the enrolled area `area_name` at `time_step`. `pdes` is pu
+system base, positive for export. The value replaces the one read from the PSY `Area` at
+construction. Call it before the solve of `time_step`. Errors when `area_name` is not
+enrolled; gate on [`has_controlled_area`](@ref). This function is not exported. It is a
+different function from `PowerSystems.set_scheduled_net_interchange!`.
+"""
+function set_scheduled_net_interchange!(
+    data::ACPowerFlowData,
+    area_name::String,
+    time_step::Int,
+    pdes::Float64,
+)
+    found = false
+    # Working records share their vector with the pristine one, so this covers both.
+    for area in data.area_interchange.pristine_areas
+        area.name == area_name || continue
+        area.pdes[time_step] = pdes
+        found = true
+    end
+    found || error(
+        "Area \"$area_name\" is not enrolled in the area interchange data. " *
+        "Check `has_controlled_area` first.",
     )
     return
 end

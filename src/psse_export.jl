@@ -307,6 +307,22 @@ function update_exporter!(exporter::PSSEExporter, data::PowerFlowData)
     _attach_source_model!(exporter, get_pf(data))
     # NOTE this relies on exporter.system being a deepcopy of the original system so we're not changing that one here
     update_system!(exporter.system, data)
+    _sync_scheduled_net_interchange!(exporter.system, data)
+    return
+end
+
+# The export is one snapshot, and `update_system!` writes time step 1. The AREA INTERCHANGE
+# record takes its PDES from the system, so write the time step 1 target into it.
+_sync_scheduled_net_interchange!(::PSY.System, ::PowerFlowData) = nothing
+
+function _sync_scheduled_net_interchange!(sys::PSY.System, data::ACPowerFlowData)
+    for area in data.area_interchange.pristine_areas
+        PSY.set_scheduled_net_interchange!(
+            PSY.get_component(PSY.Area, sys, area.name),
+            area.pdes[1] * PSY.SU,
+        )
+    end
+    return
 end
 
 """

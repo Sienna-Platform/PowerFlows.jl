@@ -278,7 +278,7 @@ end
     @test data.bus_type[load_bus_ix, 1] == PSY.ACBusTypes.PQ
     aid = PF.get_area_interchange_data(data)
     @test isapprox(
-        _enrolled_net_interchange(data), [area.pdes for area in aid.pristine_areas];
+        _enrolled_net_interchange(data), [area.pdes[1] for area in aid.pristine_areas];
         atol = 1e-6,
     )
 end
@@ -292,7 +292,7 @@ end
     @test all(load.name == "Bus6" for load in aid.off_area_loads)
     @test solve_power_flow!(data)
     @test isapprox(
-        _enrolled_net_interchange(data), [area.pdes for area in aid.pristine_areas];
+        _enrolled_net_interchange(data), [area.pdes[1] for area in aid.pristine_areas];
         atol = 1e-6,
     )
 end
@@ -328,7 +328,7 @@ end
     end
     (data, aid) = solve_second_step(true)
     @test isapprox(
-        _enrolled_net_interchange(data, 2), [area.pdes for area in aid.pristine_areas];
+        _enrolled_net_interchange(data, 2), [area.pdes[2] for area in aid.pristine_areas];
         atol = 1e-6,
     )
     (data_stale, _) = solve_second_step(false)
@@ -359,4 +359,22 @@ end
     @test [load.name for load in aid.off_area_loads] == ["OffAreaLoad"]
     @test !PF.has_off_area_load(data, "load_999")
     @test solve_power_flow!(data)
+end
+
+@testset "area interchange off-area load clear_injection_data! zeroes the records" begin
+    sys = _off_area_fixture()
+    data = PowerFlowData(_pf_loads(; time_steps = 2), sys)
+    records = PF.get_area_interchange_data(data).pristine_off_area_loads
+    @test any(!iszero, only(records).p_constant_power)
+    PF.clear_injection_data!(data)
+    for r in records
+        @test all(iszero, r.p_constant_power)
+        @test all(iszero, r.p_constant_current)
+        @test all(iszero, r.p_constant_impedance)
+    end
+    PF.set_off_area_load_power!(data, "OffAreaLoad", 2, 0.2, 0.1, 0.08)
+    r = only(records)
+    @test r.p_constant_power == [0.0, 0.2]
+    @test r.p_constant_current == [0.0, 0.1]
+    @test r.p_constant_impedance == [0.0, 0.08]
 end

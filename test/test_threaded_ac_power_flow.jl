@@ -441,7 +441,8 @@ end
         aid = data.area_interchange
         @test all(t -> haskey(aid.relaxed, t), 1:T)
         for (ix, area) in enumerate(aid.pristine_areas)
-            feasible = PF.ControlledArea(area.name, area.slack_bus_ix, 0.0, area.tail_ix)
+            feasible =
+                PF.ControlledArea(area.name, area.slack_bus_ix, fill(0.0, T), area.tail_ix)
             aid.pristine_areas[ix] = feasible
             aid.areas[ix] = feasible
         end

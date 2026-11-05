@@ -176,8 +176,8 @@ end
 
 @testset "area interchange AreaInterchangeData tail length" begin
     areas = [
-        PF.ControlledArea("Area1", 1, 0.1, 1),
-        PF.ControlledArea("Area2", 5, -0.1, 2),
+        PF.ControlledArea("Area1", 1, [0.1], 1),
+        PF.ControlledArea("Area2", 5, [-0.1], 2),
     ]
     aid = PF.AreaInterchangeData(
         areas, PF.AreaTie[], PF.DCTie[], 0.05, zeros(2), zeros(2, 1),

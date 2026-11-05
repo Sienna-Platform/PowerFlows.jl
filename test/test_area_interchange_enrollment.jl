@@ -607,8 +607,8 @@ end
     area3 = only(filter(a -> a.name == "Area3", aid.areas))
     @test area2.tail_ix == 1
     @test area3.tail_ix == 2
-    @test area2.pdes ≈ 0.3
-    @test area3.pdes ≈ 0.2
+    @test area2.pdes[1] ≈ 0.3
+    @test area3.pdes[1] ≈ 0.2
     @test !isempty(aid.ties)
     for tie in aid.ties
         @test tie.from_area_tail in (0, 1, 2)
@@ -647,7 +647,7 @@ end
     data = PowerFlowData(pf, sys)
     area = only(PF.get_area_interchange_data(data).areas)
     @test area.name == "Area2"
-    @test area.pdes ≈ 0.25
+    @test area.pdes[1] ≈ 0.25
 end
 
 @testset "area interchange enrollment skips an area with no schedule" begin

@@ -8,13 +8,15 @@ A PSY `Area` enrolled for embedded net-interchange control.
 # Fields
 - `name::String`: PSY area name.
 - `slack_bus_ix::Int`: reduced-network bus index of the area slack (PSS/E ISW).
-- `pdes::Float64`: net interchange target, pu system base.
+- `pdes::Vector{Float64}`: net interchange target per time step, pu system base, positive for
+  export. The working and pristine records of one area share this vector. Use
+  [`set_scheduled_net_interchange!`](@ref) to update it.
 - `tail_ix::Int`: 1-based slot in the area tail.
 """
 struct ControlledArea
     name::String
     slack_bus_ix::Int
-    pdes::Float64
+    pdes::Vector{Float64}
     tail_ix::Int
 end
 
@@ -105,10 +107,10 @@ One off-area load term of `NI_a` (PSS/E AREAIN=2). A load that area `o` owns at 
 - `bus_ix::Int`: reduced-network index of the load's bus.
 - `p_constant_power::Vector{Float64}`, `p_constant_current::Vector{Float64}`,
   `p_constant_impedance::Vector{Float64}`: active power ZIP parts per time step, pu system
-  base at 1 pu voltage. All zero for an unavailable load. A caller that rewrites
-  `bus_active_power_withdrawals[:, t]` must also call [`set_off_area_load_power!`](@ref) for
-  that load, or `NI_a` and the bus balance disagree. Each record owns its vectors; the
-  working and pristine records of one load share them.
+  base at 1 pu voltage. All zero for an unavailable load. `clear_injection_data!` sets
+  these to zero. A caller that rewrites `bus_active_power_withdrawals[:, t]` must also call
+  [`set_off_area_load_power!`](@ref) for that load, or `NI_a` and the bus balance disagree.
+  Each record owns its vectors; the working and pristine records of one load share them.
 """
 struct OffAreaLoad
     name::String
@@ -130,7 +132,7 @@ has been de-enrolled).
 
 # Fields
 - `name::String`: PSY area name — matches a `pristine_areas` entry by name.
-- `pdes::Float64`: the area's original net-interchange target, pu system base — unaffected
+- `pdes::Float64`: the area's net-interchange target at that time step, pu system base — unaffected
   by relaxation or by any tail renumbering a de-enrollment does to OTHER areas.
 """
 struct RelaxedAreaRecord

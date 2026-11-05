@@ -97,6 +97,7 @@ power counts, and the ZIP parts of the load are evaluated at the bus voltage.
     call `PowerFlows.set_off_area_load_power!(data, load_name, time_step, P, I, Z)` for each
     off-area load, or ``NI_a`` keeps the load power read at construction. A load at an `ISOLATED`
     bus is skipped with a warning.
+  - **Per-time-step PDES**: `PowerFlows.set_scheduled_net_interchange!(data, area_name, time_step, pdes)` sets the target of an enrolled area for one time step (pu system base, positive = export). Every time step starts with the `Area` value. It errors for an area that is not enrolled; gate it on `PowerFlows.has_controlled_area(data, area_name)`.
   - **PSS/E files**: the reader maps AREAIN=2 to `LinesAndLoads()`. The exporter writes one AREA
     INTERCHANGE record per area with a schedule (ISW = the area's `SLACK` bus, PTOL = `interchange_tolerance` in MW when a power flow drives the export, else 10.0 MW) and
     writes the owning area in the AREA field of each LOAD record.

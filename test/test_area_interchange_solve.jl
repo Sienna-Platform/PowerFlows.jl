@@ -219,7 +219,7 @@ end
         iszero(other_tail) || (ni[other_tail] -= P_m)
     end
     for area in data.area_interchange.areas
-        @test F[area_off + area.tail_ix] ≈ ni[area.tail_ix] - area.pdes atol = 1e-6
+        @test F[area_off + area.tail_ix] ≈ ni[area.tail_ix] - area.pdes[1] atol = 1e-6
     end
 end
 
@@ -244,7 +244,7 @@ end
     F = residual.Rv
     area_off = PF.area_tail_offset(data, PF.get_dc_network(data))
 
-    total = sum(F[area_off + a.tail_ix] + a.pdes for a in data.area_interchange.areas)
+    total = sum(F[area_off + a.tail_ix] + a.pdes[1] for a in data.area_interchange.areas)
     @test isapprox(total, 0.0; atol = 1e-10)
 end
 
@@ -381,7 +381,7 @@ end
 
     ni = _oracle_ni_by_tail(sys, data, data.area_interchange.ties, 1)
     for area in data.area_interchange.areas
-        @test isapprox(ni[area.tail_ix], area.pdes; atol = 1e-6)
+        @test isapprox(ni[area.tail_ix], area.pdes[1]; atol = 1e-6)
     end
 
     pf_off = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}()
@@ -433,14 +433,14 @@ end
     for area in data_nr.area_interchange.areas
         @test isapprox(
             ni_nr[area.tail_ix],
-            area.pdes;
+            area.pdes[1];
             atol = data_nr.area_interchange.tolerance,
         )
     end
     for area in data_lm.area_interchange.areas
         @test isapprox(
             ni_lm[area.tail_ix],
-            area.pdes;
+            area.pdes[1];
             atol = data_lm.area_interchange.tolerance,
         )
     end
@@ -480,14 +480,14 @@ end
     for area in data_nr.area_interchange.areas
         @test isapprox(
             ni_nr[area.tail_ix],
-            area.pdes;
+            area.pdes[1];
             atol = data_nr.area_interchange.tolerance,
         )
     end
     for area in data_fdfj.area_interchange.areas
         @test isapprox(
             ni_fdfj[area.tail_ix],
-            area.pdes;
+            area.pdes[1];
             atol = data_fdfj.area_interchange.tolerance,
         )
     end
@@ -527,14 +527,14 @@ end
     for area in data_nr.area_interchange.areas
         @test isapprox(
             ni_nr[area.tail_ix],
-            area.pdes;
+            area.pdes[1];
             atol = data_nr.area_interchange.tolerance,
         )
     end
     for area in data_fd.area_interchange.areas
         @test isapprox(
             ni_fd[area.tail_ix],
-            area.pdes;
+            area.pdes[1];
             atol = data_fd.area_interchange.tolerance,
         )
     end
@@ -594,7 +594,7 @@ end
 
     ni = _oracle_ni_by_tail(sys, data, data.area_interchange.ties, 1)
     for area in data.area_interchange.areas
-        @test isapprox(ni[area.tail_ix], area.pdes; atol = 1e-6)
+        @test isapprox(ni[area.tail_ix], area.pdes[1]; atol = 1e-6)
     end
 
     # Assert each enrolled area's raw `w_a` stays under guard 6's slack-absorption cap
@@ -636,7 +636,7 @@ end
 
     ni = _oracle_ni_by_tail(sys, data, data.area_interchange.ties, 1)
     for area in data.area_interchange.areas
-        @test isapprox(ni[area.tail_ix], area.pdes; atol = 1e-6)
+        @test isapprox(ni[area.tail_ix], area.pdes[1]; atol = 1e-6)
     end
 end
 
@@ -661,7 +661,7 @@ end
 
     ni = _oracle_ni_by_tail(sys, data, data.area_interchange.ties, 1)
     for area in data.area_interchange.areas
-        @test isapprox(ni[area.tail_ix], area.pdes; atol = 1e-6)
+        @test isapprox(ni[area.tail_ix], area.pdes[1]; atol = 1e-6)
     end
 end
 
@@ -697,7 +697,7 @@ end
 
     ni = _oracle_ni_by_tail(sys, data, data.area_interchange.ties, 1)
     for area in data.area_interchange.areas
-        @test isapprox(ni[area.tail_ix], area.pdes; atol = 1e-6)
+        @test isapprox(ni[area.tail_ix], area.pdes[1]; atol = 1e-6)
     end
 
     # Area1 (de-enrolled, guard 3): recompute its NI via a FRESH all-three-area tie set
@@ -926,7 +926,7 @@ end
     # floor lands at ~1.1e-6 for the weak tie, just above it.
     ni = _oracle_ni_by_tail(sys, data, data.area_interchange.ties, 2)
     for area in data.area_interchange.areas
-        @test isapprox(ni[area.tail_ix], area.pdes; atol = 1e-5)
+        @test isapprox(ni[area.tail_ix], area.pdes[1]; atol = 1e-5)
     end
 
     # The area dataframe must build without error and show BOTH areas :enforced for ts=2.
@@ -965,7 +965,7 @@ end
     # area currently sits at tail_ix == 1) via the exact mutating primitives
     # `_ac_power_flow_with_area_relax!` itself calls on a real relax.
     dropped = PF._deenroll_area!(data, 1)
-    aid.relaxed[2] = [PF.RelaxedAreaRecord(dropped.name, dropped.pdes)]
+    aid.relaxed[2] = [PF.RelaxedAreaRecord(dropped.name, dropped.pdes[1])]
     survivor_name = only(a.name for a in aid.pristine_areas if a.name != dropped.name)
     @test PF.n_controlled_areas(data) == 1
     @test only(aid.areas).name == survivor_name
@@ -1240,7 +1240,7 @@ end
     @test tie2.metered_from == false
     ni2 = _oracle_ni_by_tail(sys, data2, data2.area_interchange.ties, 1)
     for area in data2.area_interchange.areas
-        @test isapprox(ni2[area.tail_ix], area.pdes; atol = 1e-6)
+        @test isapprox(ni2[area.tail_ix], area.pdes[1]; atol = 1e-6)
     end
 end
 
@@ -1275,7 +1275,7 @@ end
     @test solve_power_flow!(data)
     ni = _oracle_ni_by_tail(sys, data, data.area_interchange.ties, 1)
     for area in data.area_interchange.areas
-        @test isapprox(ni[area.tail_ix], area.pdes; atol = 1e-6)
+        @test isapprox(ni[area.tail_ix], area.pdes[1]; atol = 1e-6)
     end
 end
 
@@ -1304,7 +1304,7 @@ end
     for t in 1:3
         ni = _oracle_ni_by_tail(sys, data, data.area_interchange.ties, t)
         for area in data.area_interchange.areas
-            @test isapprox(ni[area.tail_ix], area.pdes; atol = 1e-6)
+            @test isapprox(ni[area.tail_ix], area.pdes[1]; atol = 1e-6)
         end
     end
 
@@ -1392,7 +1392,7 @@ end
         @test solve_power_flow!(data; time_steps = [t])
         ni = _oracle_ni_by_tail(sys, data, data.area_interchange.ties, t)
         for area in data.area_interchange.areas
-            @test isapprox(ni[area.tail_ix], area.pdes; atol = 1e-6)
+            @test isapprox(ni[area.tail_ix], area.pdes[1]; atol = 1e-6)
         end
     end
 
@@ -1598,7 +1598,7 @@ end
         ni = _oracle_ni_by_tail(sys_fd, data_fd, data_fd.area_interchange.ties, t)
         for area in data_fd.area_interchange.areas
             @test isapprox(
-                ni[area.tail_ix], area.pdes; atol = data_fd.area_interchange.tolerance)
+                ni[area.tail_ix], area.pdes[1]; atol = data_fd.area_interchange.tolerance)
         end
     end
 
@@ -1639,7 +1639,8 @@ end
         ni = _oracle_ni_by_tail(sys_fdfj, data_fdfj, data_fdfj.area_interchange.ties, t)
         for area in data_fdfj.area_interchange.areas
             @test isapprox(
-                ni[area.tail_ix], area.pdes; atol = data_fdfj.area_interchange.tolerance)
+                ni[area.tail_ix], area.pdes[1]; atol = data_fdfj.area_interchange.tolerance,
+            )
         end
     end
 
@@ -1894,7 +1895,7 @@ end
         @test maximum(abs, dc_only) > 1e-6
 
         for area in data.area_interchange.areas
-            @test F[area_off + area.tail_ix] ≈ ni[area.tail_ix] - area.pdes atol = 1e-6
+            @test F[area_off + area.tail_ix] ≈ ni[area.tail_ix] - area.pdes[1] atol = 1e-6
         end
     end
 end
@@ -2011,7 +2012,7 @@ end
         end
 
         for area in data_lm.area_interchange.areas
-            @test isapprox(ni[area.tail_ix], area.pdes; atol = 1e-5)
+            @test isapprox(ni[area.tail_ix], area.pdes[1]; atol = 1e-5)
         end
     end
 end
@@ -2094,7 +2095,7 @@ end
     end
 
     for area in data_fdfj.area_interchange.areas
-        @test isapprox(ni[area.tail_ix], area.pdes; atol = 1e-5)
+        @test isapprox(ni[area.tail_ix], area.pdes[1]; atol = 1e-5)
     end
 end
 
@@ -2180,7 +2181,7 @@ end
     end
 
     for area in data_fd.area_interchange.areas
-        @test isapprox(ni[area.tail_ix], area.pdes; atol = 1e-5)
+        @test isapprox(ni[area.tail_ix], area.pdes[1]; atol = 1e-5)
     end
 end
 
@@ -2266,7 +2267,7 @@ end
         iszero(metered_tail) || (ni[metered_tail] += P_conv)
         iszero(other_tail) || (ni[other_tail] -= P_conv)
     end
-    @test isapprox(ni[survivor.tail_ix], survivor.pdes; atol = 1e-5)
+    @test isapprox(ni[survivor.tail_ix], survivor.pdes[1]; atol = 1e-5)
 
     # Defect-specific bite: `_deenroll_area!` must translate `dc_ties` tails exactly like it
     # translates `ties` tails -- a stale tail pointing past the (now smaller) WORKING area
@@ -2380,7 +2381,7 @@ end
             iszero(other_tail) || (ni[other_tail] -= P_conv)
         end
         for area in data.area_interchange.areas
-            @test isapprox(ni[area.tail_ix], area.pdes; atol = 1e-5)
+            @test isapprox(ni[area.tail_ix], area.pdes[1]; atol = 1e-5)
         end
     end
 
@@ -2484,7 +2485,7 @@ end
             iszero(other_tail) || (ni[other_tail] -= P_conv)
         end
         for area in data.area_interchange.areas
-            @test isapprox(ni[area.tail_ix], area.pdes; atol = 1e-5)
+            @test isapprox(ni[area.tail_ix], area.pdes[1]; atol = 1e-5)
         end
     end
 end
@@ -2533,4 +2534,53 @@ end
             )
         end
     end
+end
+
+@testset "set_scheduled_net_interchange! gives each time step its own PDES" begin
+    sys = _normal_two_area_fixture()
+    pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
+        net_interchange_control = true, time_steps = 2)
+    data = PowerFlowData(pf, sys)
+    aid = data.area_interchange
+    @test PF.has_controlled_area(data, "Area2")
+    @test !PF.has_controlled_area(data, "no_such_area")
+    for area in aid.pristine_areas
+        @test area.pdes == fill(area.pdes[1], 2)
+    end
+    PF.set_scheduled_net_interchange!(data, "Area2", 2, 0.07)
+    for (work, pristine) in zip(aid.areas, aid.pristine_areas)
+        @test work.pdes === pristine.pdes
+    end
+    area2 = only(a for a in aid.pristine_areas if a.name == "Area2")
+    @test area2.pdes == [0.05, 0.07]
+    @test solve_power_flow!(data; time_steps = [1, 2])
+    for time_step in 1:2
+        ni = _oracle_ni_by_tail(sys, data, aid.ties, time_step)
+        for area in aid.pristine_areas
+            @test isapprox(ni[area.tail_ix], area.pdes[time_step]; atol = 1e-5)
+        end
+    end
+    df = PF.area_interchange_results_dataframe(sys, data, 2)
+    row = only(eachrow(df[df.area .== "Area2", :]))
+    @test isapprox(row.pdes, 0.07 * PSY.get_base_power(sys, u"NU"); atol = 1e-6)
+    @test_throws r"no_such_area" PF.set_scheduled_net_interchange!(
+        data, "no_such_area", 1, 0.0)
+end
+
+@testset "a de-enrolled area keeps its per-step PDES in the pristine record" begin
+    sys = _normal_two_area_fixture()
+    pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
+        net_interchange_control = true, time_steps = 2)
+    data = PowerFlowData(pf, sys)
+    aid = data.area_interchange
+    PF.set_scheduled_net_interchange!(data, "Area2", 2, 0.07)
+    tail = only(a.tail_ix for a in aid.areas if a.name == "Area2")
+    dropped = PF._deenroll_area!(data, tail)
+    @test dropped.pdes == [0.05, 0.07]
+    @test only(a for a in aid.pristine_areas if a.name == "Area2").pdes == [0.05, 0.07]
+    @test PF.has_controlled_area(data, "Area2")
+    PF.set_scheduled_net_interchange!(data, "Area2", 1, 0.06)
+    @test only(a for a in aid.pristine_areas if a.name == "Area2").pdes == [0.06, 0.07]
+    PF._restore_pristine_area_set!(data, nothing)
+    @test only(a for a in aid.areas if a.name == "Area2").pdes == [0.06, 0.07]
 end
