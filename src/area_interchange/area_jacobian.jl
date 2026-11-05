@@ -39,33 +39,26 @@ function _tie_metered_active_power_partials(
     return (dPm_dVf, -dPm_dθt, dPm_dVt, dPm_dθt)
 end
 
-# Structural slot for one non-REF tie endpoint bus at area row `row`: BOTH state columns
-# (`2b-1`, `2b`), stamped unconditionally so the pattern is Q-limit-flip-invariant (mirrors
-# `_create_jacobian_matrix_structure`'s bus-block convention) — numeric fill only writes the
-# column(s) valid for the endpoint's CURRENT bus type. A REF endpoint's `(2b-1, 2b)` slots hold
-# (P_gen, Q_gen), not (Vm, θ); `P_m` doesn't depend on those (Vm/θ at REF are fixed parameters,
-# not state), so no structural entry is stamped there at all — this is bus-type-invariant since
-# a bus enrolled as REF never becomes PV/PQ mid-solve.
-function _push_area_row_bus_cols!(push3, row::Int, bus_ix::Int, bus_type)
-    bus_type[bus_ix] == PSY.ACBusTypes.REF && return
+# Stamp rule: a structural slot for every tie endpoint, for ALL bus types. The structure never
+# reads `bus_type`, so it holds for every time step. The numeric fill writes zero where the slot
+# is not a state (a REF bus's `(2b-1, 2b)` hold (P_gen, Q_gen), a PV bus's Vm is fixed).
+function _push_area_row_bus_cols!(push3, row::Int, bus_ix::Int)
     push3(row, 2 * bus_ix - 1)
     push3(row, 2 * bus_ix)
     return
 end
 
-function _push_area_row_endpoint_cols!(push3, row::Int, tie::AreaTie, bus_type)
-    _push_area_row_bus_cols!(push3, row, tie.from_bus_ix, bus_type)
-    _push_area_row_bus_cols!(push3, row, tie.to_bus_ix, bus_type)
+function _push_area_row_endpoint_cols!(push3, row::Int, tie::AreaTie)
+    _push_area_row_bus_cols!(push3, row, tie.from_bus_ix)
+    _push_area_row_bus_cols!(push3, row, tie.to_bus_ix)
     return
 end
 
 """
 Create the Jacobian matrix structure for the area-interchange tail (polar) — the bordered
 block. Column ΔP_a (`area_off + area.tail_ix`): one structural entry at the
-area's slack-bus P-mismatch row (`2*slack_bus_ix - 1`), bus-type-invariant (survives a
-PV<->PQ Q-limit flip of that bus — the row position never depends on bus type). Row r_a
-(`area_off + area.tail_ix`): the union pattern of both state columns at every non-REF tie
-endpoint bus of every tie incident to area a, via `_push_area_row_endpoint_cols!`. A tie with
+area's slack-bus P-mismatch row (`2*slack_bus_ix - 1`). Row r_a
+(`area_off + area.tail_ix`): both state columns at every tie endpoint bus of every tie incident to area a, via `_push_area_row_endpoint_cols!`. A tie with
 BOTH endpoints controlled (different areas) contributes to TWO area rows. `∂r_a/∂ΔP_a` is
 structurally ABSENT (zero diagonal border — KLU's full pivoting handles it; do not stamp).
 """
@@ -78,7 +71,6 @@ function _create_jacobian_matrix_structure_area(
     iszero(n_controlled_areas(data)) && return
     dcn = get_dc_network(data)
     area_off = area_tail_offset(data, dcn)
-    bus_type = view(data.bus_type, :, 1)
     function push3(r, c)
         push!(rows, J_INDEX_TYPE(r))
         push!(columns, J_INDEX_TYPE(c))
@@ -91,19 +83,19 @@ function _create_jacobian_matrix_structure_area(
     for tie in data.area_interchange.ties
         iszero(tie.from_area_tail) ||
             _push_area_row_endpoint_cols!(
-                push3, area_off + tie.from_area_tail, tie, bus_type)
+                push3, area_off + tie.from_area_tail, tie)
         iszero(tie.to_area_tail) ||
-            _push_area_row_endpoint_cols!(push3, area_off + tie.to_area_tail, tie, bus_type)
+            _push_area_row_endpoint_cols!(push3, area_off + tie.to_area_tail, tie)
     end
     num_buses = first(size(data.bus_type))
     num_lcc = size(data.lcc.p_set, 1)
     for tie in data.area_interchange.dc_ties
         iszero(tie.from_area_tail) ||
             _push_area_row_dc_cols!(
-                push3, area_off + tie.from_area_tail, tie, bus_type, num_buses, num_lcc)
+                push3, area_off + tie.from_area_tail, tie, num_buses, num_lcc)
         iszero(tie.to_area_tail) ||
             _push_area_row_dc_cols!(
-                push3, area_off + tie.to_area_tail, tie, bus_type, num_buses, num_lcc)
+                push3, area_off + tie.to_area_tail, tie, num_buses, num_lcc)
     end
     return
 end
@@ -111,8 +103,8 @@ end
 # Fill one tie endpoint's contribution into area row `row`: PQ writes both columns; PV writes
 # only the θ column (its Vm column was pre-zeroed by `_zero_area_row_bus_cols!` and stays at
 # that structural zero — a PV bus's own |V| is fixed, so `P_m` has no dependence on it through
-# the STATE vector even though it varies physically); REF contributes nothing (see
-# `_push_area_row_bus_cols!`). `+=` (not `=`) because a bus can be the shared endpoint of
+# the STATE vector even though it varies physically); REF contributes nothing (its slots stay
+# at the zero the pre-pass wrote). `+=` (not `=`) because a bus can be the shared endpoint of
 # multiple ties feeding the same area row (e.g. a degree>1 boundary bus).
 function _accumulate_area_endpoint!(
     Jv::SparseArrays.SparseMatrixCSC{Float64, J_INDEX_TYPE},
@@ -131,16 +123,13 @@ function _accumulate_area_endpoint!(
 end
 
 # Zero the structural slots one tie touches at area row `row` before the accumulation pass —
-# both columns of both endpoints, unconditionally (mirrors the union pattern the structure
-# stamped; REF endpoints have no slots to zero). Without this reset, `_accumulate_area_endpoint!`'s
+# both columns of both endpoints, unconditionally (mirrors the structure stamp). Without this reset, `_accumulate_area_endpoint!`'s
 # `+=` would pile onto a stale value from a previous Jacobian evaluation instead of the fresh one.
 function _zero_area_row_bus_cols!(
     Jv::SparseArrays.SparseMatrixCSC{Float64, J_INDEX_TYPE},
     row::Int,
     bus_ix::Int,
-    bus_type,
 )
-    bus_type[bus_ix] == PSY.ACBusTypes.REF && return
     Jv[row, 2 * bus_ix - 1] = 0.0
     Jv[row, 2 * bus_ix] = 0.0
     return
@@ -150,21 +139,15 @@ function _zero_area_row_endpoint_cols!(
     Jv::SparseArrays.SparseMatrixCSC{Float64, J_INDEX_TYPE},
     tie::AreaTie,
     area_off::Int,
-    bus_type,
 )
     iszero(tie.from_area_tail) ||
-        _zero_area_row_bus_cols!(
-            Jv,
-            area_off + tie.from_area_tail,
-            tie.from_bus_ix,
-            bus_type,
-        )
+        _zero_area_row_bus_cols!(Jv, area_off + tie.from_area_tail, tie.from_bus_ix)
     iszero(tie.from_area_tail) ||
-        _zero_area_row_bus_cols!(Jv, area_off + tie.from_area_tail, tie.to_bus_ix, bus_type)
+        _zero_area_row_bus_cols!(Jv, area_off + tie.from_area_tail, tie.to_bus_ix)
     iszero(tie.to_area_tail) ||
-        _zero_area_row_bus_cols!(Jv, area_off + tie.to_area_tail, tie.from_bus_ix, bus_type)
+        _zero_area_row_bus_cols!(Jv, area_off + tie.to_area_tail, tie.from_bus_ix)
     iszero(tie.to_area_tail) ||
-        _zero_area_row_bus_cols!(Jv, area_off + tie.to_area_tail, tie.to_bus_ix, bus_type)
+        _zero_area_row_bus_cols!(Jv, area_off + tie.to_area_tail, tie.to_bus_ix)
     return
 end
 
@@ -253,14 +236,13 @@ function _lcc_dc_tie_partials(
     return (dP_dVm, dP_dtap, dP_dα)
 end
 
-# Stamp the structural slots one DC tie touches at area row `row`: LCC → metered {tap, α, Vm
-# [non-REF]} cols; VSC → metered P_c col. Bus-type-invariant like the AC path (the Vm slot is
-# stamped for any non-REF metered bus; the numeric fill writes it only at PQ).
+# Stamp the structural slots one DC tie touches at area row `row`: LCC → metered {tap, α, Vm}
+# cols; VSC → metered P_c col. Same stamp rule as the AC path: the Vm slot is stamped for every
+# bus type; the numeric fill writes it only at PQ.
 function _push_area_row_dc_cols!(
     push3,
     row::Int,
     tie::DCTie,
-    bus_type,
     num_buses::Int,
     num_lcc::Int,
 )
@@ -268,8 +250,7 @@ function _push_area_row_dc_cols!(
         (vm_col, tap_col, alpha_col) = _lcc_dc_tie_cols(tie, num_buses)
         push3(row, tap_col)
         push3(row, alpha_col)
-        bus_type[_dc_tie_metered_bus_ix(tie)] == PSY.ACBusTypes.REF ||
-            push3(row, vm_col)
+        push3(row, vm_col)
         return
     end
     push3(row, _vsc_dc_tie_col(tie, num_buses, num_lcc))
@@ -277,12 +258,11 @@ function _push_area_row_dc_cols!(
 end
 
 # Zero the structural DC-tie slots one tie touches at area row `row` before the accumulation
-# pass (same `+=`-reset reason as `_zero_area_row_bus_cols!`). Only the non-REF Vm slot exists.
+# pass (same `+=`-reset reason as `_zero_area_row_bus_cols!`).
 function _zero_area_row_dc_cols!(
     Jv::SparseArrays.SparseMatrixCSC{Float64, J_INDEX_TYPE},
     row::Int,
     tie::DCTie,
-    bus_type,
     num_buses::Int,
     num_lcc::Int,
 )
@@ -290,8 +270,7 @@ function _zero_area_row_dc_cols!(
         (vm_col, tap_col, alpha_col) = _lcc_dc_tie_cols(tie, num_buses)
         Jv[row, tap_col] = 0.0
         Jv[row, alpha_col] = 0.0
-        bus_type[_dc_tie_metered_bus_ix(tie)] == PSY.ACBusTypes.REF ||
-            (Jv[row, vm_col] = 0.0)
+        Jv[row, vm_col] = 0.0
         return
     end
     Jv[row, _vsc_dc_tie_col(tie, num_buses, num_lcc)] = 0.0
@@ -302,16 +281,15 @@ function _zero_area_row_dc_tie!(
     Jv::SparseArrays.SparseMatrixCSC{Float64, J_INDEX_TYPE},
     tie::DCTie,
     area_off::Int,
-    bus_type,
     num_buses::Int,
     num_lcc::Int,
 )
     iszero(tie.from_area_tail) ||
         _zero_area_row_dc_cols!(
-            Jv, area_off + tie.from_area_tail, tie, bus_type, num_buses, num_lcc)
+            Jv, area_off + tie.from_area_tail, tie, num_buses, num_lcc)
     iszero(tie.to_area_tail) ||
         _zero_area_row_dc_cols!(
-            Jv, area_off + tie.to_area_tail, tie, bus_type, num_buses, num_lcc)
+            Jv, area_off + tie.to_area_tail, tie, num_buses, num_lcc)
     return
 end
 
@@ -376,11 +354,11 @@ function _set_entries_for_area(
     # shared between an AC tie and an LCC metered terminal at the SAME area row, so all zeroing
     # must precede all `+=` accumulation or one side's contribution would be clobbered.
     @inbounds for tie in aid.ties
-        _zero_area_row_endpoint_cols!(Jv, tie, area_off, bus_type)
+        _zero_area_row_endpoint_cols!(Jv, tie, area_off)
     end
     if dc_present
         @inbounds for tie in aid.dc_ties
-            _zero_area_row_dc_tie!(Jv, tie, area_off, bus_type, num_buses, num_lcc)
+            _zero_area_row_dc_tie!(Jv, tie, area_off, num_buses, num_lcc)
         end
     end
 
