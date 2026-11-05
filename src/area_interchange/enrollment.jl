@@ -1,7 +1,7 @@
 # Enrollment: derive the surviving `ControlledArea`/`AreaTie` set for embedded PSS/E-style
 # net-interchange control from a `PSY.System` + `PowerFlowData`, applying the enrollment
 # guards below. Runs once at `PowerFlowData` construction, gated on
-# `get_area_interchange_control(pf)` (see `initialize_power_flow_data!`).
+# `get_net_interchange_control(pf)` (see `initialize_power_flow_data!`).
 
 # Group system buses by PSY area name; a bus with `area === nothing` is excluded (never
 # SLACK-eligible or REF/island-membership relevant to any area).
@@ -283,8 +283,14 @@ function _report_unenforceable_schedules(
     return
 end
 
-_host_area_name(area::PSY.Area, ::String, load, bus) = PSY.get_name(area)
-function _host_area_name(::Nothing, owner::String, load, bus)
+_host_area_name(area::PSY.Area, ::String, load::PSY.ElectricLoad, bus::PSY.ACBus) =
+    PSY.get_name(area)
+function _host_area_name(
+    ::Nothing,
+    owner::String,
+    load::PSY.ElectricLoad,
+    bus::PSY.ACBus,
+)
     error(
         "Area \"$owner\" lists load \"$(PSY.get_name(load))\" as an off-area load, but \
         the load's bus $(PSY.get_name(bus)) has no area. An off-area load must connect \
@@ -324,6 +330,11 @@ function build_off_area_loads(
                     same area. An off-area load must connect to a bus in another area.",
                 )
             end
+            if PSY.get_bustype(bus) == PSY.ACBusTypes.ISOLATED
+                @warn "Area \"$owner\": off-area load \"$(PSY.get_name(load))\" is at \
+                    ISOLATED bus $(PSY.get_name(bus)); the load is skipped."
+                continue
+            end
             bus_ix =
                 _resolve_bus_ix(bus_lookup, reverse_bus_search_map, PSY.get_number(bus))
             if isnothing(bus_ix) || PSY.get_number(bus) in removed_buses
@@ -336,18 +347,22 @@ function build_off_area_loads(
             if PSY.get_available(load)
                 parts = _load_active_power_parts(pf, load)
             end
-            for (name, sign) in ((owner, -1.0), (bus_area, 1.0))
-                tail = get(tail_of, name, 0)
+            p_constant_power = fill(parts[1], n_time_steps)
+            p_constant_current = fill(parts[2], n_time_steps)
+            p_constant_impedance = fill(parts[3], n_time_steps)
+            for (area_name, sign) in ((owner, -1.0), (bus_area, 1.0))
+                tail = get(tail_of, area_name, 0)
                 iszero(tail) && continue
                 push!(
                     records,
                     OffAreaLoad(
+                        PSY.get_name(load),
                         tail,
                         sign,
                         bus_ix,
-                        fill(parts[1], n_time_steps),
-                        fill(parts[2], n_time_steps),
-                        fill(parts[3], n_time_steps),
+                        copy(p_constant_power),
+                        copy(p_constant_current),
+                        copy(p_constant_impedance),
                     ),
                 )
             end
@@ -356,13 +371,17 @@ function build_off_area_loads(
     return records
 end
 
+_tie_off_area_loads(::LinesOnly, pf, sys, data, tail_of) = OffAreaLoad[]
+_tie_off_area_loads(::LinesAndLoads, pf, sys, data, tail_of) =
+    build_off_area_loads(pf, sys, data, tail_of)
+
 """
     build_area_interchange_data(pf, sys, data) -> AreaInterchangeData
 
 Derive the enrolled `ControlledArea`/`AreaTie` set for embedded PSS/E-style
 net-interchange control from `sys`, applying the enrollment guards in
 order. Called once, at `PowerFlowData` construction, gated on
-`get_area_interchange_control(pf)`; see `initialize_power_flow_data!` for how the result
+`get_net_interchange_control(pf)`; see `initialize_power_flow_data!` for how the result
 populates `data.area_interchange`.
 """
 function build_area_interchange_data(
@@ -477,11 +496,8 @@ function build_area_interchange_data(
         island_of,
     )
 
-    off_area_loads = OffAreaLoad[]
-    if get_tie_definition(pf) === :lines_and_loads
-        tail_of = Dict(name => i for (i, name) in enumerate(enrolled_names))
-        off_area_loads = build_off_area_loads(pf, sys, data, tail_of)
-    end
+    tail_of = Dict(name => i for (i, name) in enumerate(enrolled_names))
+    off_area_loads = _tie_off_area_loads(get_tie_definition(pf), pf, sys, data, tail_of)
 
     n_time_steps = size(data.bus_type, 2)
     return AreaInterchangeData(
@@ -499,4 +515,51 @@ function build_area_interchange_data(
         off_area_loads,
         copy(off_area_loads),
     )
+end
+
+"""
+    has_off_area_load(data::ACPowerFlowData, load_name::String) -> Bool
+
+Whether `load_name` has at least one off-area load record in `data` (see
+[`OffAreaLoad`](@ref)). A load has no record when neither of its areas is enrolled, or
+when `tie_definition` is [`LinesOnly`](@ref).
+"""
+function has_off_area_load(data::ACPowerFlowData, load_name::String)
+    return any(
+        load.name == load_name for load in data.area_interchange.pristine_off_area_loads
+    )
+end
+
+"""
+    set_off_area_load_power!(data, load_name, time_step, p_constant_power,
+        p_constant_current, p_constant_impedance)
+
+Set the active power parts of off-area load `load_name` for `time_step` on every record of
+that load. Values are pu system base at 1 pu voltage, positive for a withdrawal, like
+`bus_active_power_withdrawals`. Call it each time step, together with the write to the bus
+withdrawal arrays, so the net interchange and the bus balance use the same load. Errors
+when `load_name` has no record; gate on [`has_off_area_load`](@ref).
+"""
+function set_off_area_load_power!(
+    data::ACPowerFlowData,
+    load_name::String,
+    time_step::Int,
+    p_constant_power::Float64,
+    p_constant_current::Float64,
+    p_constant_impedance::Float64,
+)
+    found = false
+    # Working records share their vectors with the pristine ones, so this covers both.
+    for load in data.area_interchange.pristine_off_area_loads
+        load.name == load_name || continue
+        load.p_constant_power[time_step] = p_constant_power
+        load.p_constant_current[time_step] = p_constant_current
+        load.p_constant_impedance[time_step] = p_constant_impedance
+        found = true
+    end
+    found || error(
+        "Off-area load \"$load_name\" has no record in the area interchange data. " *
+        "Check `has_off_area_load` first.",
+    )
+    return
 end

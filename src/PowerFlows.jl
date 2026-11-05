@@ -28,6 +28,9 @@ export PowerFlowEvaluationModel
 export PTDFDCPowerFlow
 export vPTDFDCPowerFlow
 export SolutionParameters
+export TieDefinition
+export LinesOnly
+export LinesAndLoads
 export read_solution_parameters
 export PSSEExportPowerFlow
 export PSSEExporter

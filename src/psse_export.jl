@@ -2877,6 +2877,18 @@ _psse_ptol(::Nothing, ::Float64) = PSSE_DEFAULT_PTOL
 _psse_ptol(params::SolutionParameters, base_power::Float64) =
     params.interchange_tolerance * base_power
 
+# Same rule as the bus names: strip a leading `-`, truncate to 12 characters.
+function _psse_area_name(name::String)
+    new_name = String(first(lstrip(==('-'), name), 12))
+    if isempty(new_name)
+        error(
+            "Area \"$name\" has no valid PSS/E name: ARNAME needs at least one character \
+            besides a leading `-`.",
+        )
+    end
+    return new_name
+end
+
 function write_to_buffers!(
     exporter::PSSEExporter,
     ::Val{Symbol("Area Interchange Data")},
@@ -2890,7 +2902,7 @@ function write_to_buffers!(
     area_mapping = md["area_mapping"]
     base_power = PSY.get_base_power(exporter.system, u"NU")
     pdes = _area_pdes(exporter.system)
-    buses = PSY.get_components(PSY.ACBus, exporter.system)
+    buses_by_area = _buses_by_area(exporter.system)
     wrote = false
     for area in sort!(
         collect(PSY.get_components(PSY.Area, exporter.system));
@@ -2898,13 +2910,12 @@ function write_to_buffers!(
     )
         name = PSY.get_name(area)
         haskey(pdes, name) || continue
-        area_buses = PSY.ACBus[b for b in buses if PSY.get_area(b) === area]
+        area_buses = get(buses_by_area, name, PSY.ACBus[])
         I = area_mapping[name]
         ISW = _area_isw(md, area_buses)
         PDES = pdes[name] * base_power
         PTOL = _psse_ptol(exporter.source_parameters, base_power)
-        @assert _is_valid_psse_name(name) name
-        ARNAME = _psse_quote_string(name)
+        ARNAME = _psse_quote_string(_psse_area_name(name))
         @fastprintdelim_unroll(io, true, I, ISW, PDES, PTOL, ARNAME)
         wrote = true
     end

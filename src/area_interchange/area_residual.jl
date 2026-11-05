@@ -345,7 +345,7 @@ function _deenroll_area!(data::ACPowerFlowData, drop_tail_ix::Int)
     ]
     new_off_area_loads = [
         OffAreaLoad(
-            _translate(load.area_tail), load.sign, load.bus_ix,
+            load.name, _translate(load.area_tail), load.sign, load.bus_ix,
             load.p_constant_power, load.p_constant_current, load.p_constant_impedance,
         ) for load in aid.off_area_loads if load.area_tail != drop_tail_ix
     ]

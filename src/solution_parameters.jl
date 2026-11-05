@@ -1,3 +1,16 @@
+"""
+Selects which flows count toward an area's net interchange under `net_interchange_control`.
+Subtypes: [`LinesOnly`](@ref), [`LinesAndLoads`](@ref).
+"""
+abstract type TieDefinition end
+
+"""Net interchange counts tie flows only (PSS/E control code `AREAIN = 1`)."""
+struct LinesOnly <: TieDefinition end
+
+"""Net interchange counts tie flows and each area's `out_of_area_loads` (PSS/E control code
+`AREAIN = 2`)."""
+struct LinesAndLoads <: TieDefinition end
+
 """Default [`SolutionParameters`](@ref) `handoff_solver`: the staged solver (fast decoupled or
 generalized admittance) runs without a handoff. A singleton type, not `nothing`, keeps the
 field concrete."""
@@ -26,7 +39,7 @@ Every solver-facing field name matches the keyword the corresponding solver alre
 accepts, so a parameter may also be overridden per call — `solve_power_flow!(data; tol =
 1e-8)` wins over the stored value for that solve only. The network-control fields
 (`check_reactive_power_limits`, `enhanced_flat_start`, `control_discrete_devices`,
-`area_interchange_control`, `interchange_tolerance`, `tie_definition`,
+`net_interchange_control`, `interchange_tolerance`, `tie_definition`,
 `model_dc_network`, `n_threads`) are read from the stored parameters, not from a per-call
 keyword, because most of them shape `PowerFlowData` at construction time — a keyword passed
 to `solve_power_flow!` after that has nothing left to change. `check_reactive_power_limits`
@@ -48,11 +61,12 @@ take effect.
   residual is large.
 - `control_discrete_devices::Bool`: run discrete device control (tap changers, switched
   shunts) via λ-continuation.
-- `area_interchange_control::Bool`: embed per-area net-interchange control in the solve.
+- `net_interchange_control::Bool`: embed per-area net-interchange control in the solve.
 - `interchange_tolerance::Float64`: interchange tolerance (pu), used for validation and
   reporting. Non-positive values are floored to `MIN_INTERCHANGE_TOLERANCE`.
-- `tie_definition::Symbol`: how area ties are identified. `:lines_only` counts tie flows;
-  `:lines_and_loads` also counts each area's `out_of_area_loads` (PSS/E control code 2).
+- `tie_definition::TieDefinition`: how area ties are identified. [`LinesOnly`](@ref) counts
+  tie flows; [`LinesAndLoads`](@ref) also counts each area's `out_of_area_loads`
+  (PSS/E control code 2).
 - `model_dc_network::Bool`: lower VSC/DC network equations into the joint AC–DC solve.
 
 # Voltage validation
@@ -105,9 +119,9 @@ Base.@kwdef struct SolutionParameters
     check_reactive_power_limits::Bool = false
     enhanced_flat_start::Bool = true
     control_discrete_devices::Bool = false
-    area_interchange_control::Bool = false
+    net_interchange_control::Bool = false
     interchange_tolerance::Float64 = DEFAULT_INTERCHANGE_TOLERANCE
-    tie_definition::Symbol = :lines_only
+    tie_definition::TieDefinition = LinesOnly()
     model_dc_network::Bool = true
 
     validate_voltage_magnitudes::Bool = DEFAULT_VALIDATE_VOLTAGES
@@ -159,7 +173,7 @@ const _SOLUTION_PARAMETER_CONTROL_FIELDS = (
     :check_reactive_power_limits,
     :enhanced_flat_start,
     :control_discrete_devices,
-    :area_interchange_control,
+    :net_interchange_control,
     :interchange_tolerance,
     :tie_definition,
     :model_dc_network,
@@ -216,15 +230,15 @@ function _apply_legacy_kwargs(
     check_reactive_power_limits::Union{Nothing, Bool} = nothing,
     enhanced_flat_start::Union{Nothing, Bool} = nothing,
     control_discrete_devices::Union{Nothing, Bool} = nothing,
-    area_interchange_control::Union{Nothing, Bool} = nothing,
+    net_interchange_control::Union{Nothing, Bool} = nothing,
     interchange_tolerance::Union{Nothing, Float64} = nothing,
-    tie_definition::Union{Nothing, Symbol} = nothing,
+    tie_definition::Union{Nothing, TieDefinition} = nothing,
 )
     legacy = (;
         check_reactive_power_limits,
         enhanced_flat_start,
         control_discrete_devices,
-        area_interchange_control,
+        net_interchange_control,
         interchange_tolerance,
         tie_definition,
     )

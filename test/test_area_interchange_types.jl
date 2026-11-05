@@ -1,49 +1,49 @@
 @testset "area interchange constructor validation" begin
-    pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; area_interchange_control = true)
-    @test PowerFlows.get_area_interchange_control(pf) == true
+    pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; net_interchange_control = true)
+    @test PowerFlows.get_net_interchange_control(pf) == true
     @test PowerFlows.get_interchange_tolerance(pf) == 0.05
-    @test PowerFlows.get_tie_definition(pf) == :lines_only
+    @test PowerFlows.get_tie_definition(pf) === PF.LinesOnly()
 
     default_pf = ACPolarPowerFlow()
-    @test PowerFlows.get_area_interchange_control(default_pf) == false
+    @test PowerFlows.get_net_interchange_control(default_pf) == false
 
     @test_throws ArgumentError ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
-        area_interchange_control = true,
+        net_interchange_control = true,
     )
     @test_throws ArgumentError ACMixedPowerFlow{NewtonRaphsonACPowerFlow}(;
-        area_interchange_control = true,
+        net_interchange_control = true,
     )
 
     for S in (GradientDescentACPowerFlow, RobustHomotopyPowerFlow)
-        @test_throws ArgumentError ACPolarPowerFlow{S}(; area_interchange_control = true)
+        @test_throws ArgumentError ACPolarPowerFlow{S}(; net_interchange_control = true)
     end
 
     @test PF.get_tie_definition(
         ACPolarPowerFlow(;
-            area_interchange_control = true,
-            tie_definition = :lines_and_loads,
+            net_interchange_control = true,
+            tie_definition = PF.LinesAndLoads(),
         ),
-    ) === :lines_and_loads
-    @test_throws ArgumentError ACPolarPowerFlow(;
-        area_interchange_control = true,
+    ) === PF.LinesAndLoads()
+    @test_throws TypeError ACPolarPowerFlow(;
+        net_interchange_control = true,
         tie_definition = :loads_only,
     )
 
     floored_pf =
         @test_logs (:warn, r"interchange_tolerance") match_mode = :any ACPolarPowerFlow(;
-            area_interchange_control = true,
+            net_interchange_control = true,
             interchange_tolerance = 0.0,
         )
     @test PowerFlows.get_interchange_tolerance(floored_pf) == 0.02
 
-    @test PowerFlows.get_area_interchange_control(
-        ACPolarPowerFlow(; area_interchange_control = false),
+    @test PowerFlows.get_net_interchange_control(
+        ACPolarPowerFlow(; net_interchange_control = false),
     ) == false
-    @test PowerFlows.get_area_interchange_control(
-        ACRectangularPowerFlow(; area_interchange_control = false),
+    @test PowerFlows.get_net_interchange_control(
+        ACRectangularPowerFlow(; net_interchange_control = false),
     ) == false
-    @test PowerFlows.get_area_interchange_control(
-        ACMixedPowerFlow(; area_interchange_control = false),
+    @test PowerFlows.get_net_interchange_control(
+        ACMixedPowerFlow(; net_interchange_control = false),
     ) == false
     for S in (
         LevenbergMarquardtACPowerFlow,
@@ -51,51 +51,51 @@
         GradientDescentACPowerFlow,
         FastDecoupledACPowerFlow,
     )
-        @test PowerFlows.get_area_interchange_control(
-            ACPolarPowerFlow{S}(; area_interchange_control = false),
+        @test PowerFlows.get_net_interchange_control(
+            ACPolarPowerFlow{S}(; net_interchange_control = false),
         ) == false
     end
 end
 
 @testset "area interchange LM constructor validation" begin
-    pf = ACPowerFlow{LevenbergMarquardtACPowerFlow}(; area_interchange_control = true)
-    @test PowerFlows.get_area_interchange_control(pf) == true
+    pf = ACPowerFlow{LevenbergMarquardtACPowerFlow}(; net_interchange_control = true)
+    @test PowerFlows.get_net_interchange_control(pf) == true
 
     @test_throws ArgumentError ACRectangularPowerFlow{LevenbergMarquardtACPowerFlow}(;
-        area_interchange_control = true,
+        net_interchange_control = true,
     )
 
     @test_throws r"GradientDescentACPowerFlow" ACPolarPowerFlow{
         GradientDescentACPowerFlow,
     }(;
-        area_interchange_control = true,
+        net_interchange_control = true,
     )
 end
 
 @testset "area interchange homotopy constructor validation" begin
     @test_throws r"RobustHomotopyPowerFlow" ACPowerFlow{RobustHomotopyPowerFlow}(;
-        area_interchange_control = true,
+        net_interchange_control = true,
     )
 
     @test_throws ArgumentError ACRectangularPowerFlow{RobustHomotopyPowerFlow}(;
-        area_interchange_control = true,
+        net_interchange_control = true,
     )
 end
 
 @testset "area interchange FD constructor validation" begin
     pf = ACPowerFlow{FastDecoupledACPowerFlow{FDFixedJacobian, FDSchemeXB}}(;
-        area_interchange_control = true,
+        net_interchange_control = true,
     )
-    @test PowerFlows.get_area_interchange_control(pf) == true
+    @test PowerFlows.get_net_interchange_control(pf) == true
 
     bare_pf =
-        ACPowerFlow{FastDecoupledACPowerFlow}(; area_interchange_control = true)
-    @test PowerFlows.get_area_interchange_control(bare_pf) == true
+        ACPowerFlow{FastDecoupledACPowerFlow}(; net_interchange_control = true)
+    @test PowerFlows.get_net_interchange_control(bare_pf) == true
 
     @test_throws ArgumentError ACRectangularPowerFlow{
         FastDecoupledACPowerFlow{FDFixedJacobian, FDSchemeXB},
     }(;
-        area_interchange_control = true,
+        net_interchange_control = true,
     )
 end
 

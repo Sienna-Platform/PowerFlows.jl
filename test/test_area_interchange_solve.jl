@@ -96,7 +96,7 @@ end
 
 function _two_controlled_area_data()
     sys = _three_area_transfer_fixture(; slack_area3 = true)
-    pf = ACPolarPowerFlow(; area_interchange_control = true)
+    pf = ACPolarPowerFlow(; net_interchange_control = true)
     return PowerFlowData(pf, sys)
 end
 
@@ -196,7 +196,7 @@ end
 
 @testset "area interchange residual matches independent branch-primitive oracle NI" begin
     sys = _three_area_transfer_fixture(; slack_area3 = true)
-    data = PowerFlowData(ACPolarPowerFlow(; area_interchange_control = true), sys)
+    data = PowerFlowData(ACPolarPowerFlow(; net_interchange_control = true), sys)
     @test PF.n_controlled_areas(data) == 2
 
     residual = PF.ACPowerFlowResidual(data, 1)
@@ -306,7 +306,7 @@ end
 @testset "area interchange diag pollution guard warns for endpoint SwitchedAdmittance" begin
     sys = _three_area_transfer_fixture(; slack_area3 = true)
     _add_switched_shunt!(sys, 6)
-    pf = ACPolarPowerFlow(; area_interchange_control = true)
+    pf = ACPolarPowerFlow(; net_interchange_control = true)
     data = @test_logs(
         (:warn, r"SwitchedAdmittance \"shunt_6\": sits at a tie endpoint"),
         min_level = Logging.Warn,
@@ -344,7 +344,7 @@ end
     sys = _make_3w_boundary_fixture()
     pf = PF.ACPowerFlow{NewtonRaphsonACPowerFlow}(;
         correct_bustypes = true,
-        area_interchange_control = true,
+        net_interchange_control = true,
     )
     data = PF.PowerFlowData(pf, sys)
     @test PF.n_controlled_areas(data) == 1
@@ -374,7 +374,7 @@ end
 
 @testset "area interchange NR converges and meets interchange targets; control off unaffected" begin
     sys = _three_area_transfer_fixture(; slack_area3 = true)
-    pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; area_interchange_control = true)
+    pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; net_interchange_control = true)
     data = PowerFlowData(pf, sys)
     @test PF.n_controlled_areas(data) == 2
     @test solve_power_flow!(data)
@@ -392,12 +392,12 @@ end
 
 @testset "area interchange TR solution matches NR" begin
     sys_nr = _three_area_transfer_fixture(; slack_area3 = true)
-    pf_nr = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; area_interchange_control = true)
+    pf_nr = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; net_interchange_control = true)
     data_nr = PowerFlowData(pf_nr, sys_nr)
     @test solve_power_flow!(data_nr)
 
     sys_tr = _three_area_transfer_fixture(; slack_area3 = true)
-    pf_tr = ACPolarPowerFlow{TrustRegionACPowerFlow}(; area_interchange_control = true)
+    pf_tr = ACPolarPowerFlow{TrustRegionACPowerFlow}(; net_interchange_control = true)
     data_tr = PowerFlowData(pf_tr, sys_tr)
     @test solve_power_flow!(data_tr)
 
@@ -415,13 +415,13 @@ end
 
 @testset "area interchange LM parity" begin
     sys_nr = _three_area_transfer_fixture(; slack_area3 = true)
-    pf_nr = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; area_interchange_control = true)
+    pf_nr = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; net_interchange_control = true)
     data_nr = PowerFlowData(pf_nr, sys_nr)
     @test solve_power_flow!(data_nr)
 
     sys_lm = _three_area_transfer_fixture(; slack_area3 = true)
     pf_lm =
-        ACPolarPowerFlow{LevenbergMarquardtACPowerFlow}(; area_interchange_control = true)
+        ACPolarPowerFlow{LevenbergMarquardtACPowerFlow}(; net_interchange_control = true)
     data_lm = PowerFlowData(pf_lm, sys_lm)
     @test solve_power_flow!(data_lm)
 
@@ -457,13 +457,13 @@ end
 
 @testset "area interchange FD fixed-jacobian parity" begin
     sys_nr = _three_area_transfer_fixture(; slack_area3 = true)
-    pf_nr = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; area_interchange_control = true)
+    pf_nr = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; net_interchange_control = true)
     data_nr = PowerFlowData(pf_nr, sys_nr)
     @test solve_power_flow!(data_nr)
 
     sys_fdfj = _three_area_transfer_fixture(; slack_area3 = true)
     pf_fdfj = ACPolarPowerFlow{FastDecoupledACPowerFlow{FDFixedJacobian, FDSchemeXB}}(;
-        area_interchange_control = true,
+        net_interchange_control = true,
     )
     data_fdfj = PowerFlowData(pf_fdfj, sys_fdfj)
     @test solve_power_flow!(data_fdfj)
@@ -504,13 +504,13 @@ end
 
 @testset "area interchange FD decoupled parity" begin
     sys_nr = _three_area_transfer_fixture(; slack_area3 = true)
-    pf_nr = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; area_interchange_control = true)
+    pf_nr = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; net_interchange_control = true)
     data_nr = PowerFlowData(pf_nr, sys_nr)
     @test solve_power_flow!(data_nr)
 
     sys_fd = _three_area_transfer_fixture(; slack_area3 = true)
     pf_fd = ACPolarPowerFlow{FastDecoupledACPowerFlow{PF.FDDecoupled, PF.FDSchemeXB}}(;
-        area_interchange_control = true,
+        net_interchange_control = true,
         solution_parameters = FD_PARITY_PARAMETERS,
     )
     data_fd = PowerFlowData(pf_fd, sys_fd)
@@ -543,7 +543,7 @@ end
 @testset "area interchange FD no refactor" begin
     sys_fd = _three_area_transfer_fixture(; slack_area3 = true)
     pf_fd = ACPolarPowerFlow{FastDecoupledACPowerFlow{PF.FDDecoupled, PF.FDSchemeXB}}(;
-        area_interchange_control = true,
+        net_interchange_control = true,
         solution_parameters = FD_PARITY_PARAMETERS,
     )
     data_fd = PowerFlowData(pf_fd, sys_fd)
@@ -585,7 +585,7 @@ end
         (PSY.ThermalStandard, "Bus9Gen") => 0.1,
     )
     pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
-        area_interchange_control = true,
+        net_interchange_control = true,
         generator_slack_participation_factors = gspf,
     )
     data = PowerFlowData(pf, sys)
@@ -625,7 +625,7 @@ end
     # barely excludes it so `_check_q_limit_bounds!` flips the bus PV -> PQ mid-solve.
     PSY.set_reactive_power_limits!(gen6, (min = -0.012 * u"SU", max = 0.24 * u"SU"))
     pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
-        area_interchange_control = true,
+        net_interchange_control = true,
         check_reactive_power_limits = true,
     )
     data = PowerFlowData(pf, sys)
@@ -642,7 +642,7 @@ end
 
 @testset "area interchange warm re-solve converges in 0-1 iterations with targets retained" begin
     sys = _three_area_transfer_fixture(; slack_area3 = true)
-    pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; area_interchange_control = true)
+    pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; net_interchange_control = true)
     data = PowerFlowData(pf, sys)
     @test solve_power_flow!(data)
     delta_p_first = copy(data.area_interchange.delta_p)
@@ -668,7 +668,7 @@ end
 @testset "area interchange multi-period warm start does not contaminate delta_p across time steps" begin
     sys = _three_area_transfer_fixture(; slack_area3 = true)
     pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
-        area_interchange_control = true, time_steps = 2)
+        net_interchange_control = true, time_steps = 2)
     data = PowerFlowData(pf, sys)
     @test PF.n_controlled_areas(data) == 2
 
@@ -690,7 +690,7 @@ end
 
 @testset "area interchange 3-area: enrolled targets met, de-enrolled area is the implicit complement" begin
     sys = _three_area_transfer_fixture(; slack_area3 = true)
-    pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; area_interchange_control = true)
+    pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; net_interchange_control = true)
     data = PowerFlowData(pf, sys)
     @test PF.n_controlled_areas(data) == 2
     @test solve_power_flow!(data)
@@ -719,7 +719,7 @@ end
 
 @testset "area interchange results happy path" begin
     sys = _three_area_transfer_fixture(; slack_area3 = true)
-    pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; area_interchange_control = true)
+    pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; net_interchange_control = true)
     df_results = solve_power_flow(pf, sys)
     @test haskey(df_results, "area_interchange_results")
     df = df_results["area_interchange_results"]
@@ -749,7 +749,7 @@ end
     sys = _three_area_transfer_fixture(; slack_area3 = true)
     gen6 = PSY.get_component(PSY.ThermalStandard, sys, "Bus6")
     PSY.set_active_power_limits!(gen6, (min = 0.0 * u"SU", max = 0.001 * u"SU"))
-    pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; area_interchange_control = true)
+    pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; net_interchange_control = true)
     df_results = solve_power_flow(pf, sys)
     df = df_results["area_interchange_results"]
     area2_row = only(filter(:area => ==("Area2"), df))
@@ -794,11 +794,11 @@ end
     end
 
     plain = area2_effective(
-        ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; area_interchange_control = true),
+        ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; net_interchange_control = true),
     )
     distributed = area2_effective(
         ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
-            area_interchange_control = true,
+            net_interchange_control = true,
             generator_slack_participation_factors = gspf,
         ),
     )
@@ -815,7 +815,7 @@ end
 
 @testset "area interchange infeasible schedule greedy relax" begin
     sys = _weak_tie_three_area_fixture()
-    pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; area_interchange_control = true)
+    pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; net_interchange_control = true)
     data = PowerFlowData(pf, sys)
     @test PF.n_controlled_areas(data) == 2
 
@@ -870,12 +870,12 @@ end
 @testset "area interchange network non-convergence after relax exhausts" begin
     sys_baseline = _normal_two_area_fixture()
     pf_baseline =
-        ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; area_interchange_control = true)
+        ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; net_interchange_control = true)
     data_baseline = PowerFlowData(pf_baseline, sys_baseline)
     @test solve_power_flow!(data_baseline)   # sanity: fully solvable given enough iterations
 
     sys = _normal_two_area_fixture()
-    pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; area_interchange_control = true)
+    pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; net_interchange_control = true)
     data = PowerFlowData(pf, sys)
     converged = @test_logs(
         (:error, r"did not converge in"),
@@ -895,7 +895,7 @@ end
 @testset "area interchange multi-period relax-to-zero does not permanently disable area control" begin
     sys = _normal_two_area_fixture()
     pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
-        area_interchange_control = true, time_steps = 2)
+        net_interchange_control = true, time_steps = 2)
     data = PowerFlowData(pf, sys)
     @test PF.n_controlled_areas(data) == 2
 
@@ -948,7 +948,7 @@ end
 @testset "area interchange multi-period results read-back is immune to a later time step's relax" begin
     sys = _three_area_transfer_fixture(; slack_area3 = true)
     pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
-        area_interchange_control = true, time_steps = 2)
+        net_interchange_control = true, time_steps = 2)
     data = PowerFlowData(pf, sys)
     aid = data.area_interchange
     @test PF.n_controlled_areas(data) == 2
@@ -1073,7 +1073,7 @@ end
 # boundary tie's non-metered side understates its true KCL flow by that tie's own loss.
 @testset "area interchange tie identity: per-area power balance against independent bus physics" begin
     sys = _three_area_transfer_fixture(; slack_area3 = true)
-    pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; area_interchange_control = true)
+    pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; net_interchange_control = true)
     data = PowerFlowData(pf, sys)
     @test PF.n_controlled_areas(data) == 2
     @test solve_power_flow!(data)
@@ -1167,7 +1167,7 @@ end
 # different ΔP_a.
 @testset "area interchange tie identity: metered-end flip shifts NI by the tie's own loss" begin
     sys = _three_area_transfer_fixture(; slack_area3 = true)
-    pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; area_interchange_control = true)
+    pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; net_interchange_control = true)
     data = PowerFlowData(pf, sys)
     @test solve_power_flow!(data)
 
@@ -1258,7 +1258,7 @@ end
         (PSY.ThermalStandard, "Bus9Gen") => 0.02, # Area3: raw share 0.02, well under limit
     )
     pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
-        area_interchange_control = true,
+        net_interchange_control = true,
         generator_slack_participation_factors = gspf,
     )
     data = @test_logs(
@@ -1284,7 +1284,7 @@ end
 @testset "area interchange multi-period: per-step convergence, delta_p, results, cache built once" begin
     sys = _three_area_transfer_fixture(; slack_area3 = true)
     pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
-        area_interchange_control = true, time_steps = 3)
+        net_interchange_control = true, time_steps = 3)
     data = PowerFlowData(pf, sys)
     @test PF.n_controlled_areas(data) == 2
 
@@ -1333,7 +1333,7 @@ end
 @testset "area interchange LM greedy relax" begin
     sys = _weak_tie_three_area_fixture()
     pf_lm =
-        ACPolarPowerFlow{LevenbergMarquardtACPowerFlow}(; area_interchange_control = true)
+        ACPolarPowerFlow{LevenbergMarquardtACPowerFlow}(; net_interchange_control = true)
     data = PowerFlowData(pf_lm, sys)
     @test PF.n_controlled_areas(data) == 2
 
@@ -1380,7 +1380,7 @@ end
 @testset "area interchange LM multi period" begin
     sys = _three_area_transfer_fixture(; slack_area3 = true)
     pf_lm = ACPolarPowerFlow{LevenbergMarquardtACPowerFlow}(;
-        area_interchange_control = true, time_steps = 3)
+        net_interchange_control = true, time_steps = 3)
     data = PowerFlowData(pf_lm, sys)
     @test PF.n_controlled_areas(data) == 2
 
@@ -1422,7 +1422,7 @@ end
     # activates the same Schur-complement λ_min diagnostic under LM as under NR/TR.
     sys = _normal_two_area_fixture()
     pf_lm = ACPolarPowerFlow{LevenbergMarquardtACPowerFlow}(;
-        area_interchange_control = true,
+        net_interchange_control = true,
         log_solver_diagnostics = true,
     )
     data = PowerFlowData(pf_lm, sys)
@@ -1450,7 +1450,7 @@ end
 @testset "area interchange FD greedy relax" begin
     sys_fd = _weak_tie_three_area_fixture()
     pf_fd = ACPolarPowerFlow{FastDecoupledACPowerFlow{FDDecoupled, FDSchemeXB}}(;
-        area_interchange_control = true,
+        net_interchange_control = true,
     )
     data_fd = PowerFlowData(pf_fd, sys_fd)
     @test PF.n_controlled_areas(data_fd) == 2
@@ -1496,7 +1496,7 @@ end
 
     sys_fdfj = _weak_tie_three_area_fixture()
     pf_fdfj = ACPolarPowerFlow{FastDecoupledACPowerFlow{FDFixedJacobian, FDSchemeXB}}(;
-        area_interchange_control = true,
+        net_interchange_control = true,
     )
     data_fdfj = PowerFlowData(pf_fdfj, sys_fdfj)
     @test PF.n_controlled_areas(data_fdfj) == 2
@@ -1548,7 +1548,7 @@ end
 @testset "area interchange FD cache invariant after relax" begin
     sys = _weak_tie_three_area_fixture()
     pf_fd = ACPolarPowerFlow{FastDecoupledACPowerFlow{FDDecoupled, FDSchemeXB}}(;
-        area_interchange_control = true,
+        net_interchange_control = true,
     )
     data = PowerFlowData(pf_fd, sys)
     @test PF.n_controlled_areas(data) == 2
@@ -1586,7 +1586,7 @@ end
 @testset "area interchange FD multi period" begin
     sys_fd = _three_area_transfer_fixture(; slack_area3 = true)
     pf_fd = ACPolarPowerFlow{FastDecoupledACPowerFlow{FDDecoupled, FDSchemeXB}}(;
-        area_interchange_control = true, time_steps = 3)
+        net_interchange_control = true, time_steps = 3)
     data_fd = PowerFlowData(pf_fd, sys_fd)
     @test PF.n_controlled_areas(data_fd) == 2
 
@@ -1627,7 +1627,7 @@ end
 
     sys_fdfj = _three_area_transfer_fixture(; slack_area3 = true)
     pf_fdfj = ACPolarPowerFlow{FastDecoupledACPowerFlow{FDFixedJacobian, FDSchemeXB}}(;
-        area_interchange_control = true, time_steps = 3)
+        net_interchange_control = true, time_steps = 3)
     data_fdfj = PowerFlowData(pf_fdfj, sys_fdfj)
     @test PF.n_controlled_areas(data_fdfj) == 2
 
@@ -1678,7 +1678,7 @@ end
     vsc = only(PSY.get_components(PSY.TwoTerminalVSCLine, sys))
 
     pf_on =
-        ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; area_interchange_control = true)
+        ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; net_interchange_control = true)
     data_on = PowerFlowData(pf_on, sys)
     @test PF.n_controlled_areas(data_on) == 2
 
@@ -1733,7 +1733,7 @@ end
     lcc = only(PSY.get_components(PSY.TwoTerminalLCCLine, sys))
     vsc = only(PSY.get_components(PSY.TwoTerminalVSCLine, sys))
 
-    pf_on = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; area_interchange_control = true)
+    pf_on = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; net_interchange_control = true)
     data_on = PowerFlowData(pf_on, sys)
     @test PF.n_controlled_areas(data_on) == 2
     area_tail = Dict(a.name => a.tail_ix for a in data_on.area_interchange.areas)
@@ -1801,7 +1801,7 @@ end
     )
 
     sys_ac = _three_area_transfer_fixture(; slack_area3 = true)
-    pf_ac = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; area_interchange_control = true)
+    pf_ac = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; net_interchange_control = true)
     data_ac = PowerFlowData(pf_ac, sys_ac)
     @test PF.n_controlled_areas(data_ac) == 2
     @test isempty(data_ac.area_interchange.dc_ties)
@@ -1841,7 +1841,7 @@ end
     for lcc_metered_end in ("from", "to")
         sys = _comprehensive_area_dc_fixture(; lcc_metered_end = lcc_metered_end)
         data = PowerFlowData(
-            ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; area_interchange_control = true),
+            ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; net_interchange_control = true),
             sys)
         @test PF.n_controlled_areas(data) == 2
 
@@ -1906,7 +1906,7 @@ end
     for lcc_metered_end in ("from", "to")
         sys = _comprehensive_area_dc_fixture(; lcc_metered_end = lcc_metered_end)
         data = PowerFlowData(
-            ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; area_interchange_control = true),
+            ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; net_interchange_control = true),
             sys)
         residual = PF.ACPowerFlowResidual(data, 1)
         jac = PF.ACPowerFlowJacobian(data, residual, 1)
@@ -1928,14 +1928,14 @@ end
     for lcc_metered_end in ("from", "to")
         sys_nr = _comprehensive_area_dc_fixture(; lcc_metered_end = lcc_metered_end)
         pf_nr =
-            ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; area_interchange_control = true)
+            ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; net_interchange_control = true)
         data_nr = PowerFlowData(pf_nr, sys_nr)
         @test solve_power_flow!(data_nr)
 
         sys_lm = _comprehensive_area_dc_fixture(; lcc_metered_end = lcc_metered_end)
         pf_lm =
             ACPolarPowerFlow{LevenbergMarquardtACPowerFlow}(;
-                area_interchange_control = true)
+                net_interchange_control = true)
         data_lm = PowerFlowData(pf_lm, sys_lm)
         @test solve_power_flow!(data_lm)
 
@@ -2018,13 +2018,13 @@ end
 
 @testset "area interchange DC FD fixed-jacobian parity" begin
     sys_nr = _comprehensive_area_dc_fixture()
-    pf_nr = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; area_interchange_control = true)
+    pf_nr = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; net_interchange_control = true)
     data_nr = PowerFlowData(pf_nr, sys_nr)
     @test solve_power_flow!(data_nr)
 
     sys_fdfj = _comprehensive_area_dc_fixture()
     pf_fdfj = ACPolarPowerFlow{FastDecoupledACPowerFlow{FDFixedJacobian, FDSchemeXB}}(;
-        area_interchange_control = true,
+        net_interchange_control = true,
     )
     data_fdfj = PowerFlowData(pf_fdfj, sys_fdfj)
     @test solve_power_flow!(data_fdfj)
@@ -2100,13 +2100,13 @@ end
 
 @testset "area interchange DC FD decoupled parity" begin
     sys_nr = _comprehensive_area_dc_fixture()
-    pf_nr = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; area_interchange_control = true)
+    pf_nr = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; net_interchange_control = true)
     data_nr = PowerFlowData(pf_nr, sys_nr)
     @test solve_power_flow!(data_nr)
 
     sys_fd = _comprehensive_area_dc_fixture()
     pf_fd = ACPolarPowerFlow{FastDecoupledACPowerFlow{PF.FDDecoupled, PF.FDSchemeXB}}(;
-        area_interchange_control = true,
+        net_interchange_control = true,
         solution_parameters = FD_PARITY_PARAMETERS,
     )
     data_fd = PowerFlowData(pf_fd, sys_fd)
@@ -2216,7 +2216,7 @@ end
 
 @testset "area interchange DC tie self-merge guard: zero-impedance reduction merges an LCC's own terminals" begin
     sys = _lcc_self_merge_fixture()
-    pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; area_interchange_control = true)
+    pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; net_interchange_control = true)
     data = PowerFlowData(pf, sys)
 
     # Confirm this is a REAL merge (genuinely produced by PNM's zero-impedance reduction),
@@ -2250,7 +2250,7 @@ end
     # of NR's path, not the schedule. LM and Fast Decoupled de-enroll Area3 alone,
     # reproducibly. NR keeps its DC-tie coverage in the feasible-target testsets above.
     pf_lm =
-        ACPolarPowerFlow{LevenbergMarquardtACPowerFlow}(; area_interchange_control = true)
+        ACPolarPowerFlow{LevenbergMarquardtACPowerFlow}(; net_interchange_control = true)
     data = PowerFlowData(pf_lm, sys)
     @test PF.n_controlled_areas(data) == 2
     @test !isempty(data.area_interchange.dc_ties)
@@ -2308,7 +2308,7 @@ end
 
 @testset "area interchange DC results dataframe" begin
     sys = _comprehensive_area_dc_fixture()
-    pf_nr = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; area_interchange_control = true)
+    pf_nr = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; net_interchange_control = true)
     data = PowerFlowData(pf_nr, sys)
     @test solve_power_flow!(data)
 
@@ -2363,7 +2363,7 @@ end
 @testset "area interchange DC multi period" begin
     sys = _comprehensive_area_dc_fixture()
     pf_nr = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
-        area_interchange_control = true, time_steps = 3)
+        net_interchange_control = true, time_steps = 3)
     data = PowerFlowData(pf_nr, sys)
     @test PF.n_controlled_areas(data) == 2
     @test !isempty(data.area_interchange.dc_ties)
@@ -2435,7 +2435,7 @@ end
         FastDecoupledACPowerFlow{FDFixedJacobian, FDSchemeXB},
     )
         sys = _comprehensive_area_dc_fixture()
-        pf = ACPolarPowerFlow{ACSolver}(; area_interchange_control = true)
+        pf = ACPolarPowerFlow{ACSolver}(; net_interchange_control = true)
         # Area3's feasible derived NI target, read BEFORE its schedule is made infeasible -- the
         # value restored below so the warm re-solve must re-grow to BOTH areas.
         feasible_a3 =
@@ -2510,13 +2510,13 @@ end
 
 @testset "area interchange DC homotopy rejected" begin
     @test_throws r"RobustHomotopyPowerFlow" ACPolarPowerFlow{RobustHomotopyPowerFlow}(;
-        area_interchange_control = true)
+        net_interchange_control = true)
 end
 
 @testset "area Jacobian structure does not depend on the bus types of one time step" begin
     function build(types_by_step)
         pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
-            time_steps = length(types_by_step), area_interchange_control = true)
+            time_steps = length(types_by_step), net_interchange_control = true)
         built = PowerFlowData(pf, _three_area_transfer_fixture())
         ix4 = findfirst(==(4), built.power_network_matrix.axes[1])
         base = copy(built.bus_type[:, 1])

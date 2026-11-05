@@ -97,6 +97,8 @@ One off-area load term of `NI_a` (PSS/E AREAIN=2). A load that area `o` owns at 
 `sign * (P_P + P_I * |V| + P_Z * |V|^2)` to `NI_a`.
 
 # Fields
+- `name::String`: PSY load name. A load owned by one area at a bus of another has one record
+  per enrolled area, all with this name. Use [`set_off_area_load_power!`](@ref) to update them.
 - `area_tail::Int`: `tail_ix` of the enrolled area. Pristine in `pristine_off_area_loads`,
   working in `off_area_loads` (see `AreaInterchangeData`).
 - `sign::Float64`: `+1.0` for the area of the load's bus, `-1.0` for the owning area.
@@ -104,10 +106,12 @@ One off-area load term of `NI_a` (PSS/E AREAIN=2). A load that area `o` owns at 
 - `p_constant_power::Vector{Float64}`, `p_constant_current::Vector{Float64}`,
   `p_constant_impedance::Vector{Float64}`: active power ZIP parts per time step, pu system
   base at 1 pu voltage. All zero for an unavailable load. A caller that rewrites
-  `bus_active_power_withdrawals[:, t]` must also write `p_constant_power[t]` (and the other
-  parts), or `NI_a` and the bus balance disagree.
+  `bus_active_power_withdrawals[:, t]` must also call [`set_off_area_load_power!`](@ref) for
+  that load, or `NI_a` and the bus balance disagree. Each record owns its vectors; the
+  working and pristine records of one load share them.
 """
 struct OffAreaLoad
+    name::String
     area_tail::Int
     sign::Float64
     bus_ix::Int
@@ -176,7 +180,7 @@ Always present on [`PowerFlowData`](@ref) — empty vectors when control is off,
 - `off_area_loads::Vector{OffAreaLoad}`, `pristine_off_area_loads::Vector{OffAreaLoad}`:
   off-area load terms from `build_off_area_loads`, WORKING and PRISTINE sets, keyed by the
   matching `tail_ix` exactly like `ties`/`pristine_ties`. A de-enrolled area's records leave
-  the working set. Empty unless `tie_definition === :lines_and_loads`.
+  the working set. Empty unless `tie_definition` is [`LinesAndLoads`](@ref).
 """
 mutable struct AreaInterchangeData
     areas::Vector{ControlledArea}

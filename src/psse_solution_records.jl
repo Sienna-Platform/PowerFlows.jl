@@ -108,6 +108,16 @@ _solver_code(::Type{<:ACPowerFlowSolverType}) = SOLUTION_RECORD_SOLVER_FULL_NEWT
 
 _solver_type(::AbstractACPowerFlow{S}) where {S} = S
 
+_areain_code(::LinesOnly) = 1
+_areain_code(::LinesAndLoads) = 2
+
+function _tie_definition_from_areain(areain::Int)
+    if areain == 2
+        return LinesAndLoads()
+    end
+    return LinesOnly()
+end
+
 # The fast-decoupled step-control fields; every other solver reports the format defaults.
 _solution_record_step_control(
     ::Type{<:FastDecoupledACPowerFlow},
@@ -152,12 +162,10 @@ function solution_record_values(
         tap_and_shunt = 0
     end
 
-    area = if !params.area_interchange_control
-        0
-    elseif params.tie_definition === :lines_and_loads
-        2
+    area = if params.net_interchange_control
+        _areain_code(params.tie_definition)
     else
-        1
+        0
     end
 
     # 0 applies the limits, -1 ignores them. PowerFlows enforces them between solves, so
@@ -458,12 +466,6 @@ function solution_parameters(values::SolutionRecordValues, base_power::Float64)
         maxIterations = UNSET_MAX_ITERATIONS
     end
 
-    if values.areain == 2
-        tie_definition = :lines_and_loads
-    else
-        tie_definition = :lines_only
-    end
-
     if fd
         fd_step_control = (;
             fd_blowup = values.blowup,
@@ -500,8 +502,8 @@ function solution_parameters(values::SolutionRecordValues, base_power::Float64)
         maxIterations = maxIterations,
         check_reactive_power_limits = values.varlim >= 0,
         control_discrete_devices = control_discrete_devices,
-        area_interchange_control = values.areain != 0,
-        tie_definition = tie_definition,
+        net_interchange_control = values.areain != 0,
+        tie_definition = _tie_definition_from_areain(values.areain),
         fd_step_control...,
     )
 end
