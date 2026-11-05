@@ -1743,7 +1743,7 @@ end
 # Helpers for branch writing will be added before the transformer section
 
 """
-Collects all AC branches (Line, SeriesCompensator, DiscreteControlledACBranch) from the system,
+Collects all AC branches (Line, SeriesAdmittance, DiscreteControlledACBranch) from the system,
 sorts them by their bus numbers, and returns a vector of tuples (branch, bus_numbers).
 
 # Arguments
@@ -1754,12 +1754,12 @@ sorts them by their bus numbers, and returns a vector of tuples (branch, bus_num
 """
 function get_branches_with_numbers(exporter::PSSEExporter)
     lines = collect(PSY.get_components(PSY.Line, exporter.system))
-    compensators = collect(PSY.get_components(PSY.SeriesCompensator, exporter.system))
+    series_admittances = collect(PSY.get_components(PSY.SeriesAdmittance, exporter.system))
     discrete_ac_branches =
         collect(PSY.get_components(PSY.DiscreteControlledACBranch, exporter.system))
 
     # Merge all branch variables into a single vector
-    branches = vcat(lines, compensators, discrete_ac_branches)
+    branches = vcat(lines, series_admittances, discrete_ac_branches)
     # Sort branches by their bus numbers to order them at exporting
     sort!(branches; by = branch_to_bus_numbers)
     # Pair each branch with its bus numbers.
@@ -1790,18 +1790,22 @@ end
 _psse_branch_name(branch::PSY.ACBranch) =
     _psse_quote_string(first(PSY.get_name(branch), 40))
 
-# A non-transformer branch record's series impedance and line charging. A series compensator
+# A non-transformer branch record's series impedance and line charging. A series admittance
 # has no charging; a bypassed one is a zero-impedance tie.
 _psse_series_impedance(branch::PSY.ACBranch) =
     (PSY.get_r(branch, u"SU"), PSY.get_x(branch, u"SU"))
-_psse_series_impedance(branch::PSY.SeriesCompensator) =
-    PSY.get_control_mode(branch) == PSY.SeriesCompensatorControlMode.BYPASSED ? (0.0, 0.0) :
-    (PSY.get_r(branch, u"SU"), PSY.get_x(branch, u"SU"))
+function _psse_series_impedance(branch::PSY.SeriesAdmittance)
+    if PSY.get_bypassed(branch)
+        return (0.0, 0.0)
+    end
+    return (PSY.get_r(branch, u"SU"), PSY.get_x(branch, u"SU"))
+end
 _psse_line_charging(branch::PSY.ACBranch) =
     (PSY.get_b(branch, u"SU"), PSY.get_g(branch, u"SU"))
-_psse_line_charging(::PSY.SeriesCompensator) = ((from = 0.0, to = 0.0), (from = 0.0, to = 0.0))
+_psse_line_charging(::PSY.SeriesAdmittance) =
+    ((from = 0.0, to = 0.0), (from = 0.0, to = 0.0))
 
-"""Write a regular (Line or SeriesCompensator) branch record to the buffer."""
+"""Write a regular (Line or SeriesAdmittance) branch record to the buffer."""
 function _write_regular_branch_record!(
     io::IO,
     exporter::PSSEExporter,
