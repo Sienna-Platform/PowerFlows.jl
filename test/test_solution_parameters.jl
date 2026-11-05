@@ -88,11 +88,11 @@ end
     @test_throws ArgumentError ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
         solution_parameters = SolutionParameters(; area_interchange_control = true),
     )
-    # Only the tie-line definition is implemented.
+    # Only the two PSS/E tie definitions are valid.
     @test_throws ArgumentError ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
         solution_parameters = SolutionParameters(;
             area_interchange_control = true,
-            tie_definition = :lines_and_loads,
+            tie_definition = :loads_only,
         ),
     )
     # A non-positive interchange tolerance is floored, and the model stores the floored

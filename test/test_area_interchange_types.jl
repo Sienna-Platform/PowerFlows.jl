@@ -18,9 +18,15 @@
         @test_throws ArgumentError ACPolarPowerFlow{S}(; area_interchange_control = true)
     end
 
+    @test PF.get_tie_definition(
+        ACPolarPowerFlow(;
+            area_interchange_control = true,
+            tie_definition = :lines_and_loads,
+        ),
+    ) === :lines_and_loads
     @test_throws ArgumentError ACPolarPowerFlow(;
         area_interchange_control = true,
-        tie_definition = :lines_and_loads,
+        tie_definition = :loads_only,
     )
 
     floored_pf =
@@ -176,7 +182,7 @@ end
     aid = PF.AreaInterchangeData(
         areas, PF.AreaTie[], PF.DCTie[], 0.05, zeros(2), zeros(2, 1),
         areas, PF.AreaTie[], PF.DCTie[], zeros(2, 1),
-        Dict{Int, Vector{PF.RelaxedAreaRecord}}(),
+        Dict{Int, Vector{PF.RelaxedAreaRecord}}(), PF.OffAreaLoad[], PF.OffAreaLoad[],
     )
     @test PF.area_tail_length(aid) == 2
     @test PF.n_controlled_areas(aid) == 2
@@ -194,6 +200,8 @@ end
             PF.DCTie[],
             zeros(Float64, 0, 1),
             Dict{Int, Vector{PF.RelaxedAreaRecord}}(),
+            PF.OffAreaLoad[],
+            PF.OffAreaLoad[],
         )
     @test PF.area_tail_length(empty_aid) == 0
     @test PF.n_controlled_areas(empty_aid) == 0

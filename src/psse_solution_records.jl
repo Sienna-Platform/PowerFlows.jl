@@ -458,15 +458,10 @@ function solution_parameters(values::SolutionRecordValues, base_power::Float64)
         maxIterations = UNSET_MAX_ITERATIONS
     end
 
-    # Tie-line-and-load interchange is not implemented and the model constructor rejects
-    # it, so a case using it is read as the tie-line form rather than failing to load.
-    tie_definition = :lines_only
     if values.areain == 2
-        @warn(
-            "Area interchange over tie lines and loads is not implemented; reading the " *
-            "case as tie lines only.",
-            maxlog = 1,
-        )
+        tie_definition = :lines_and_loads
+    else
+        tie_definition = :lines_only
     end
 
     if fd

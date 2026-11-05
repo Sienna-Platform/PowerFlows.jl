@@ -206,6 +206,8 @@ function initialize_power_flow_data!(
         append!(data.area_interchange.pristine_ties, aid.pristine_ties)
         append!(data.area_interchange.pristine_dc_ties, aid.pristine_dc_ties)
         data.area_interchange.pristine_delta_p = aid.pristine_delta_p
+        append!(data.area_interchange.off_area_loads, aid.off_area_loads)
+        append!(data.area_interchange.pristine_off_area_loads, aid.pristine_off_area_loads)
     end
     return data
 end

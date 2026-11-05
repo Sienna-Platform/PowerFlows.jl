@@ -1009,7 +1009,7 @@ end
     pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; control_discrete_devices = true)
     data = PowerFlowData(pf, sys)
     @test PowerFlows.solve_power_flow!(data)
-    t = data.controlled_devices.taps[1]
+    t = data.controlled_devices.voltage_taps[1]
     @test t.current != tap_before
 
     export_location = joinpath(test_psse_export_dir, "v33", "controlled_tap_update")
@@ -1301,4 +1301,43 @@ end
     sys2 = read_system_with_metadata(joinpath(export_location, "breaker_rate1"))
     sw2 = only(PSY.get_components(PSY.DiscreteControlledACBranch, sys2))
     @test PSY.get_rating(sw2, u"NU") ≈ PSY.get_rating(sw, u"NU")
+end
+
+@testset "PSSE Exporter: area schedules and off-area loads round-trip" begin
+    # The re-import matches AREA INTERCHANGE records by area number, so the areas need
+    # numeric names.
+    sys = load_test_system("pti_case16_complete_sys")
+    area1 = PSY.get_component(PSY.Area, sys, "1")
+    area2 = PSY.Area(; name = "2", scheduled_net_interchange = nothing, input_basis = u"CU")
+    PSY.add_component!(sys, area2)
+    load = PSY.get_component(PSY.StaticLoad, sys, "load2011")
+    PSY.set_area!(PSY.get_bus(load), area2)
+    PSY.set_out_of_area_loads!(area1, PSY.ElectricLoad[load])
+    PSY.set_scheduled_net_interchange!(area1, 0.25 * u"SU")
+    PSY.set_scheduled_net_interchange!(area2, nothing)
+
+    export_location = joinpath(test_psse_export_dir, "v33", "area_round_trip")
+    exporter = PSSEExporter(sys, :v33, export_location; overwrite = true)
+    write_export(exporter, "area_round_trip"; overwrite = true)
+    sys2 = read_system_with_metadata(joinpath(export_location, "area_round_trip"))
+
+    area1_2 = PSY.get_component(PSY.Area, sys2, "1")
+    area2_2 = PSY.get_component(PSY.Area, sys2, "2")
+    @test PSY.get_scheduled_net_interchange(area1_2, u"SU") ≈ 0.25
+    @test isnothing(PSY.get_scheduled_net_interchange(area2_2, u"SU"))
+    @test PSY.get_name.(PSY.get_out_of_area_loads(area1_2)) == ["load2011"]
+    @test isempty(PSY.get_out_of_area_loads(area2_2))
+
+    # A power flow drives PTOL from `interchange_tolerance` (pu on the system base).
+    pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; interchange_tolerance = 0.07)
+    update_exporter!(exporter, pf)
+    write_export(exporter, "area_round_trip_ptol"; overwrite = true)
+    raw_path, _ = get_psse_export_paths(joinpath(export_location, "area_round_trip_ptol"))
+    record = only(
+        filter(
+            l -> endswith(l, "'1'") && length(split(l, ",")) == 5,
+            readlines(raw_path),
+        ),
+    )
+    @test parse(Float64, split(record, ",")[4]) ≈ 0.07 * PSY.get_base_power(sys, u"NU")
 end

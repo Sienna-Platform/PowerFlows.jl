@@ -91,6 +91,32 @@ struct DCTie
 end
 
 """
+One off-area load term of `NI_a` (PSS/E AREAIN=2). A load that area `o` owns at a bus in area
+`b` counts as an export of `b` to `o`: `b` exports it (`sign = +1.0`) and `o` imports it
+(`sign = -1.0`); only enrolled areas get an entry. The term adds
+`sign * (P_P + P_I * |V| + P_Z * |V|^2)` to `NI_a`.
+
+# Fields
+- `area_tail::Int`: `tail_ix` of the enrolled area. Pristine in `pristine_off_area_loads`,
+  working in `off_area_loads` (see `AreaInterchangeData`).
+- `sign::Float64`: `+1.0` for the area of the load's bus, `-1.0` for the owning area.
+- `bus_ix::Int`: reduced-network index of the load's bus.
+- `p_constant_power::Vector{Float64}`, `p_constant_current::Vector{Float64}`,
+  `p_constant_impedance::Vector{Float64}`: active power ZIP parts per time step, pu system
+  base at 1 pu voltage. All zero for an unavailable load. A caller that rewrites
+  `bus_active_power_withdrawals[:, t]` must also write `p_constant_power[t]` (and the other
+  parts), or `NI_a` and the bus balance disagree.
+"""
+struct OffAreaLoad
+    area_tail::Int
+    sign::Float64
+    bus_ix::Int
+    p_constant_power::Vector{Float64}
+    p_constant_current::Vector{Float64}
+    p_constant_impedance::Vector{Float64}
+end
+
+"""
 A controlled area that the greedy relax loop de-enrolled
 mid-solve because its interchange schedule proved unenforceable given the network/tie
 capacity at a failed Newton iterate. Recorded per time step on
@@ -147,6 +173,10 @@ Always present on [`PowerFlowData`](@ref) — empty vectors when control is off,
 - `relaxed::Dict{Int, Vector{RelaxedAreaRecord}}`: per-time-step record of areas relaxed
   away that time step (absent/empty = none), keyed by `time_step` so a multi-period
   `data`'s relax decisions stay independent.
+- `off_area_loads::Vector{OffAreaLoad}`, `pristine_off_area_loads::Vector{OffAreaLoad}`:
+  off-area load terms from `build_off_area_loads`, WORKING and PRISTINE sets, keyed by the
+  matching `tail_ix` exactly like `ties`/`pristine_ties`. A de-enrolled area's records leave
+  the working set. Empty unless `tie_definition === :lines_and_loads`.
 """
 mutable struct AreaInterchangeData
     areas::Vector{ControlledArea}
@@ -160,6 +190,8 @@ mutable struct AreaInterchangeData
     pristine_dc_ties::Vector{DCTie}
     pristine_delta_p::Matrix{Float64}
     relaxed::Dict{Int, Vector{RelaxedAreaRecord}}
+    off_area_loads::Vector{OffAreaLoad}
+    pristine_off_area_loads::Vector{OffAreaLoad}
 end
 
 n_controlled_areas(aid::AreaInterchangeData) = length(aid.areas)
