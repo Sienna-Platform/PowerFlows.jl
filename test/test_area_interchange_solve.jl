@@ -2156,9 +2156,9 @@ end
     end
 end
 
-"""Zero-impedance branch between an LCC's rectifier/inverter buses so PNM's reduction
-genuinely merges them (`fix == tix`) -- the self-tie merge guard case, distinct from the
-"interior DC link" test (same-tail on two DIFFERENT buses, not a merge)."""
+"""Zero-impedance branch between an LCC's rectifier/inverter buses. PNM rejects this data with
+`IS.DataFormatError`, distinct from the "interior DC link" test (same-tail on two DIFFERENT
+buses, not a merge)."""
 function _lcc_self_merge_fixture()
     sys = System(100.0)
     area_a = PSY.Area(; name = "AreaA", input_basis = u"CU")
@@ -2184,29 +2184,10 @@ function _lcc_self_merge_fixture()
     return sys
 end
 
-@testset "area interchange DC tie self-merge guard: zero-impedance reduction merges an LCC's own terminals" begin
+@testset "area interchange DC tie: zero-impedance branch parallel to an LCC throws" begin
     sys = _lcc_self_merge_fixture()
     pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; area_interchange_control = true)
-    data = PowerFlowData(pf, sys)
-
-    # Confirm this is a REAL merge (genuinely produced by PNM's zero-impedance reduction),
-    # not a hand-poked `bus_indices` -- `initialize_LCCParameters!` already resolved the
-    # rectifier/inverter pair onto the SAME reduced bus.
-    (fix, tix) = only(data.lcc.bus_indices)
-    @test fix == tix
-
-    nrd = PF.get_network_reduction_data(data)
-    removed_buses = PNM.get_removed_buses(nrd)
-    dc_ties = @test_logs(
-        (:warn, r"a zero-impedance reduction merged its rectifier and inverter buses"),
-        min_level = Logging.Warn,
-        PF._lcc_dc_ties(sys, data.lcc, removed_buses, Dict{Int, Int}())
-    )
-    @test isempty(dc_ties)   # no bogus self-tie
-
-    # VSC has no analogous test: it's structurally unreachable. VSC AC terminals are always
-    # protected as `irreducible_buses`, so PNM's reduction can never merge one; faking
-    # `fix == tix` would test a state PNM can never produce.
+    @test_throws IS.DataFormatError PowerFlowData(pf, sys)
 end
 
 @testset "area interchange DC greedy relax" begin
