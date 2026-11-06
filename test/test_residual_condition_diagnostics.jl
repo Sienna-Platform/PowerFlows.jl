@@ -405,7 +405,7 @@ end
 
 @testset "residual entry resolver is total over the polar area-interchange tail" begin
     sys = _three_area_transfer_fixture(; slack_area3 = true)
-    data = PowerFlowData(ACPolarPowerFlow(; area_interchange_control = true), sys)
+    data = PowerFlowData(ACPolarPowerFlow(; net_interchange_control = true), sys)
     residual = PF.ACPowerFlowResidual(data, 1)
     n_bus_eqs = 2 * size(data.bus_type, 1)
 
@@ -461,10 +461,10 @@ end
     sys = _three_area_transfer_fixture(; slack_area3 = true)
     # An absurd schedule makes each area's NI−PDES row dwarf every bus mismatch, so the mean
     # test trips and the largest entry lands in the tail.
-    for ai in PSY.get_components(PSY.AreaInterchange, sys)
-        PSY.set_active_power_flow!(ai, 5.0e4 * u"SU")
-    end
-    pf = ACPolarPowerFlow(; area_interchange_control = true)
+    _set_schedule!(sys, "Area1", -1.0e5)
+    _set_schedule!(sys, "Area2", 5.0e4)
+    _set_schedule!(sys, "Area3", 5.0e4)
+    pf = ACPolarPowerFlow(; net_interchange_control = true)
     data = PowerFlowData(pf, sys)
     residual = PF.ACPowerFlowResidual(data, 1)
     n_bus_eqs = 2 * size(data.bus_type, 1)

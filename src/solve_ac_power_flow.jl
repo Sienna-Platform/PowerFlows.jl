@@ -75,7 +75,7 @@ function solve_and_store_power_flow!(
     return converged
 end
 
-# Re-resolve a tap's owning transformer in `system` by name, rather than holding a reference,
+# Re-resolve a branch device's owning transformer in `system` by name, rather than holding a reference,
 # so the write lands in the caller's system even when it is not the one enrollment read.
 # Looked up under the concrete arity types, never abstract `PSY.ACTransmission`: a `Line`
 # sharing the transformer's name would otherwise make the lookup ambiguous.
@@ -85,25 +85,43 @@ function _lookup_tap_transformer(system::PSY.System, name::String)
     return PSY.get_component(PSY.ThreeWindingTransformer, system, name)
 end
 
-# The tap may sit on either arity, and `PSY.get_circuits` covers both (a 2W returns a
+# The circuit may sit on either arity, and `PSY.get_circuits` covers both (a 2W returns a
 # 1-tuple). Bool predicate + accessor, not a `nothing`-returning resolver.
-function _has_tap_circuit(system::PSY.System, d::ControlledTap)
+function _has_tap_circuit(system::PSY.System, d::ControlledBranch)
     tx = _lookup_tap_transformer(system, d.device_name)
     isnothing(tx) && return false
     return d.circuit_index <= length(PSY.get_circuits(tx))
 end
 
-function _tap_circuit(system::PSY.System, d::ControlledTap)
+function _tap_circuit(system::PSY.System, d::ControlledBranch)
     tx = _lookup_tap_transformer(system, d.device_name)
     return PSY.get_circuits(tx)[d.circuit_index]
 end
+
+function _write_branch_devices!(system::PSY.System, devices)
+    for d in devices
+        if !_has_tap_circuit(system, d)
+            @warn "write_device_settings!: transformer \"$(d.device_name)\" not found in \
+                the system; the solved setting $(d.current) for \"$(d.name)\" was NOT \
+                written back."
+            continue
+        end
+        _write_actuator!(_tap_circuit(system, d), d)
+    end
+    return
+end
+
+_write_actuator!(circuit::PSY.TransformerCircuit, d::ControlledBranch{TapRatio}) =
+    PSY.set_tap!(circuit, d.current)
+_write_actuator!(circuit::PSY.TransformerCircuit, d::ControlledBranch{PhaseAngle}) =
+    PSY.set_α!(circuit, d.current)
 
 """
     write_device_settings!(system::PSY.System, data)
 
 Write solved discrete-control device settings back onto the components of `system`: tap
-ratios onto the owning `PSY.TransformerCircuit` (of either transformer arity), and switched
-shunt and FACTS settings onto their devices. A no-op when `data` carries no controlled
+ratios and phase-shift angles onto the owning `PSY.TransformerCircuit` (of either transformer
+arity), and switched shunt and FACTS settings onto their devices. A no-op when `data` carries no controlled
 devices.
 
 Skips with a warning when `get_time_steps(data) > 1`: a PSY component holds a single scalar
@@ -120,15 +138,9 @@ function write_device_settings!(system::PSY.System, data)
             for per-time-step device settings." maxlog = 1
         return
     end
-    for d in set.taps
-        if !_has_tap_circuit(system, d)
-            @warn "write_device_settings!: transformer \"$(d.device_name)\" not found in \
-                the system; the solved tap ratio $(d.current) for \"$(d.name)\" was NOT \
-                written back."
-            continue
-        end
-        PSY.set_tap!(_tap_circuit(system, d), d.current)
-    end
+    _write_branch_devices!(system, set.voltage_taps)
+    _write_branch_devices!(system, set.flow_taps)
+    _write_branch_devices!(system, set.phase_shifters)
     for d in set.shunts
         sa = PSY.get_component(PSY.SwitchedAdmittance, system, d.name)
         if isnothing(sa)
@@ -662,7 +674,9 @@ _worker_devices(::Nothing) = nothing
 # writes only its own column, and the entries are read-only after `capture_tap_baseline!`.
 function _worker_devices(cd::ControlledDeviceSet)
     return _override(cd;
-        taps = deepcopy(cd.taps),
+        voltage_taps = deepcopy(cd.voltage_taps),
+        flow_taps = deepcopy(cd.flow_taps),
+        phase_shifters = deepcopy(cd.phase_shifters),
         shunts = deepcopy(cd.shunts),
         facts = deepcopy(cd.facts),
         inner_solves = Ref(0),
@@ -671,11 +685,11 @@ function _worker_devices(cd::ControlledDeviceSet)
     )
 end
 
-# Controlled taps write only the Y-bus, `Yft` and `Ytf` values. Axes, lookups and the branch
+# Controlled branch devices write only the Y-bus, `Yft` and `Ytf` values. Axes, lookups and the branch
 # catalog stay shared: the catalog reaches the System's components, so a deepcopy would copy it.
 _worker_network_matrix(::Nothing, matrix) = matrix
 function _worker_network_matrix(cd::ControlledDeviceSet, matrix)
-    if isempty(cd.taps)
+    if !_has_branch_devices(cd)
         return matrix
     end
     return _override(matrix;
@@ -698,7 +712,7 @@ function _worker_area_data(aid::AreaInterchangeData)
 end
 
 """Copy what post-processing reads for the steps the worker claimed back into `data`: the
-`pristine_delta_p` columns and the `relaxed` records. `positions` are the claimed
+`pristine_delta_p` and `delta_p` columns and the `relaxed` records. `positions` are the claimed
 positions."""
 function _merge_worker_area!(
     data::ACPowerFlowData,
@@ -712,8 +726,11 @@ function _merge_worker_area!(
     for pos in positions
         t = steps[pos]
         @views aid.pristine_delta_p[:, t] .= worker_aid.pristine_delta_p[:, t]
+        @views aid.delta_p[:, t] .= worker_aid.delta_p[:, t]
         if haskey(worker_aid.relaxed, t)
             aid.relaxed[t] = worker_aid.relaxed[t]
+        else
+            delete!(aid.relaxed, t)
         end
     end
     return
@@ -827,6 +844,7 @@ function _ac_power_flow_with_area_relax!(
     isempty(data.area_interchange.pristine_areas) &&
         return _ac_power_flow(data, pf, time_step; kwargs...)
     full_memo = nothing
+    delete!(data.area_interchange.relaxed, time_step)
     try
         aid = data.area_interchange
         relaxed_this_step = RelaxedAreaRecord[]
@@ -839,13 +857,13 @@ function _ac_power_flow_with_area_relax!(
             gap, worst_ix = findmax(abs, gaps)
             area = data.area_interchange.areas[worst_ix]
             @error "Area interchange: Newton did not converge with area \"$(area.name)\" " *
-                   "controlled (target PDES = $(area.pdes), NI gap at the failed " *
+                   "controlled (target PDES = $(area.pdes[time_step]), NI gap at the failed " *
                    "iterate = $gap); de-enrolling it and re-solving with the remaining " *
                    "$(n_controlled_areas(data) - 1) controlled area(s)."
             if isempty(relaxed_this_step)
                 full_memo = data.ac_jacobian_structure_cache[]
             end
-            push!(relaxed_this_step, RelaxedAreaRecord(area.name, area.pdes))
+            push!(relaxed_this_step, RelaxedAreaRecord(area.name, area.pdes[time_step]))
             _deenroll_area!(data, worst_ix)
         end
         if !converged
@@ -861,8 +879,8 @@ function _ac_power_flow_with_area_relax!(
             (
                 let tail_ix = pristine_tail_of[r.name],
                     ni_solved = _area_net_interchange(
-                        aid.pristine_ties, aid.pristine_dc_ties, tail_ix, data,
-                        time_step,
+                        aid.pristine_ties, aid.pristine_dc_ties,
+                        aid.pristine_off_area_loads, tail_ix, data, time_step,
                     )
 
                     "$(r.name) (ni_solved=$(ni_solved), pdes=$(r.pdes), " *

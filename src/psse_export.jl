@@ -21,11 +21,11 @@ const PSSE_BUS_TYPE_MAP = Dict(
     PSY.ACBusTypes.PV => 2,
     PSY.ACBusTypes.REF => 3,
     # SLACK is an area-interchange (ISW) designation on a PV bus, so IDE=2. Mapping it to 3
-    # would emit a second swing bus, and the exporter writes no AREA INTERCHANGE record to
-    # carry the ISW back.
+    # would emit a second swing bus. The AREA INTERCHANGE record carries the ISW.
     PSY.ACBusTypes.SLACK => 2,
     PSY.ACBusTypes.ISOLATED => 4,
 )
+const PSSE_DEFAULT_PTOL = 10.0
 const PSSE_BRANCH_SPECIAL_CHARACTERS = ["&", "@", "*"]
 const DISCRETE_BRANCH_MAP = Dict(
     PSY.DiscreteControlledBranchType.SWITCH => "*",
@@ -109,6 +109,7 @@ const PSSE_V35_HEADERS = Dict{String, String}(
 @!I,  T1,   Re(F1), Im(F1),   T2,   Re(F2), Im(F2),   T3,   Re(F3), Im(F3),   T4,   Re(F4), Im(F4),   T5,   Re(F5), Im(F5),   T6,   Re(F6), Im(F6)
 @!    T7,   Re(F7), Im(F7),   T8,   Re(F8), Im(F8),   T9,   Re(F9), Im(F9),   T10, Re(F10),Im(F10),   T11, Re(F11),Im(F11),   T12, Re(F12),Im(F12)
 @!      ...""",
+    "Area Interchange Data" => "@! I,  ISW,   PDES,    PTOL,  'ARNAME'",
     "Zone Data" => "@! I,   'ZONAME'",
     "FACTS Device Data" => "@!  'NAME',         I,     J,MODE,PDES,   QDES,  VSET,   SHMX,   TRMX,   VTMN,   VTMX,   VSMX,    IMX,   LINX,   RMPCT,OWNER,  SET1,    SET2,VSREF, FCREG,NREG,   'MNAME'",
     "Switched Shunt Data" => "@!   I,'ID',MODSW,ADJM,ST, VSWHI,  VSWLO, SWREG,NREG, RMPCT,   'RMIDNT',     BINIT,S1,N1,    B1, S2,N2,    B2, S3,N3,    B3, S4,N4,    B4, S5,N5,    B5, S6,N6,    B6, S7,N7,    B7, S8,N8,    B8",
@@ -306,6 +307,22 @@ function update_exporter!(exporter::PSSEExporter, data::PowerFlowData)
     _attach_source_model!(exporter, get_pf(data))
     # NOTE this relies on exporter.system being a deepcopy of the original system so we're not changing that one here
     update_system!(exporter.system, data)
+    _sync_scheduled_net_interchange!(exporter.system, data)
+    return
+end
+
+# The export is one snapshot, and `update_system!` writes time step 1. The AREA INTERCHANGE
+# record takes its PDES from the system, so write the time step 1 target into it.
+_sync_scheduled_net_interchange!(::PSY.System, ::PowerFlowData) = nothing
+
+function _sync_scheduled_net_interchange!(sys::PSY.System, data::ACPowerFlowData)
+    for area in data.area_interchange.pristine_areas
+        PSY.set_scheduled_net_interchange!(
+            PSY.get_component(PSY.Area, sys, area.name),
+            area.pdes[1] * PSY.SU,
+        )
+    end
+    return
 end
 
 """
@@ -1236,13 +1253,22 @@ function write_to_buffers!(
             singles_to_1 = true,
         )
     end
+    load_owner = Dict{Tuple{Int, String}, String}()
+    for area in PSY.get_components(PSY.Area, exporter.system)
+        for load in PSY.get_out_of_area_loads(area)
+            load_owner[(PSY.get_number(PSY.get_bus(load)), PSY.get_name(load))] =
+                PSY.get_name(area)
+        end
+    end
     for load in loads
         sienna_bus_number = PSY.get_number(PSY.get_bus(load))
         I = md["bus_number_mapping"][sienna_bus_number]
         ID = _psse_quote_string(load_name_mapping[(sienna_bus_number, PSY.get_name(load))])
         STATUS = PSY.get_available(load) ? 1 : 0
-        if !isnothing(PSY.get_area(PSY.get_bus(load)))
-            AREA = _permissive_parse_int(PSY.get_name(PSY.get_area(PSY.get_bus(load))))
+        if haskey(load_owner, (sienna_bus_number, PSY.get_name(load)))
+            AREA = md["area_mapping"][load_owner[(sienna_bus_number, PSY.get_name(load))]]
+        elseif !isnothing(PSY.get_area(PSY.get_bus(load)))
+            AREA = md["area_mapping"][PSY.get_name(PSY.get_area(PSY.get_bus(load)))]
         else
             AREA = PSSE_DEFAULT
         end
@@ -1794,12 +1820,17 @@ _psse_branch_name(branch::PSY.ACBranch) =
 # has no charging; a bypassed one is a zero-impedance tie.
 _psse_series_impedance(branch::PSY.ACBranch) =
     (PSY.get_r(branch, u"SU"), PSY.get_x(branch, u"SU"))
-_psse_series_impedance(branch::PSY.SeriesCompensator) =
-    PSY.get_control_mode(branch) == PSY.SeriesCompensatorControlMode.BYPASSED ? (0.0, 0.0) :
-    (PSY.get_r(branch, u"SU"), PSY.get_x(branch, u"SU"))
+function _psse_series_impedance(branch::PSY.SeriesCompensator)
+    if PSY.get_control_mode(branch) == PSY.SeriesCompensatorControlMode.BYPASSED
+        return (0.0, 0.0)
+    else
+        return (PSY.get_r(branch, u"SU"), PSY.get_x(branch, u"SU"))
+    end
+end
 _psse_line_charging(branch::PSY.ACBranch) =
     (PSY.get_b(branch, u"SU"), PSY.get_g(branch, u"SU"))
-_psse_line_charging(::PSY.SeriesCompensator) = ((from = 0.0, to = 0.0), (from = 0.0, to = 0.0))
+_psse_line_charging(::PSY.SeriesCompensator) =
+    ((from = 0.0, to = 0.0), (from = 0.0, to = 0.0))
 
 """Write a regular (Line or SeriesCompensator) branch record to the buffer."""
 function _write_regular_branch_record!(
@@ -2844,6 +2875,67 @@ function write_to_buffers!(
     end
 
     end_group(io, md, exporter, "Transformer Impedance Correction Tables", true)
+end
+
+# ISW is the bus that balances the area interchange. An empty field means no such bus.
+function _area_isw(md::AbstractDict, buses::Vector{PSY.ACBus})
+    slacks = _area_slack_buses(buses)
+    if isempty(slacks)
+        return PSSE_DEFAULT
+    end
+    return md["bus_number_mapping"][PSY.get_number(first(slacks))]
+end
+
+# An area with no schedule gets no record, so the re-read area has no schedule either.
+# PTOL is the power flow `interchange_tolerance` (pu) in MW when a power flow drives the export.
+# Otherwise it is the PSS/E default.
+_psse_ptol(::Nothing, ::Float64) = PSSE_DEFAULT_PTOL
+_psse_ptol(params::SolutionParameters, base_power::Float64) =
+    params.interchange_tolerance * base_power
+
+# Same rule as the bus names: strip a leading `-`, truncate to 12 characters.
+function _psse_area_name(name::String)
+    new_name = String(first(lstrip(==('-'), name), 12))
+    if isempty(new_name)
+        error(
+            "Area \"$name\" has no valid PSS/E name: ARNAME needs at least one character \
+            besides a leading `-`.",
+        )
+    end
+    return new_name
+end
+
+function write_to_buffers!(
+    exporter::PSSEExporter,
+    ::Val{Symbol("Area Interchange Data")},
+)
+    io = exporter.raw_buffer
+    md = exporter.md_dict
+
+    check_supported_version(exporter)
+    write_v35_header(io, exporter, "Area Interchange Data")
+
+    area_mapping = md["area_mapping"]
+    base_power = PSY.get_base_power(exporter.system, u"NU")
+    pdes = _area_pdes(exporter.system)
+    buses_by_area = _buses_by_area(exporter.system)
+    wrote = false
+    for area in sort!(
+        collect(PSY.get_components(PSY.Area, exporter.system));
+        by = a -> area_mapping[PSY.get_name(a)],
+    )
+        name = PSY.get_name(area)
+        haskey(pdes, name) || continue
+        area_buses = get(buses_by_area, name, PSY.ACBus[])
+        I = area_mapping[name]
+        ISW = _area_isw(md, area_buses)
+        PDES = pdes[name] * base_power
+        PTOL = _psse_ptol(exporter.source_parameters, base_power)
+        ARNAME = _psse_quote_string(_psse_area_name(name))
+        @fastprintdelim_unroll(io, true, I, ISW, PDES, PTOL, ARNAME)
+        wrote = true
+    end
+    end_group(io, md, exporter, "Area Interchange Data", wrote)
 end
 
 # WRITTEN TO SPEC: PSS/E 33.3/35.4 POM 5.2.1 Zone Data

@@ -512,8 +512,9 @@ function _report_area_interchange_failure(data::ACPowerFlowData, time_step::Int)
     isempty(aid.pristine_areas) && return
     gaps = [
         _area_net_interchange(
-            aid.pristine_ties, aid.pristine_dc_ties, area.tail_ix, data, time_step,
-        ) - area.pdes
+            aid.pristine_ties, aid.pristine_dc_ties, aid.pristine_off_area_loads,
+            area.tail_ix, data, time_step,
+        ) - area.pdes[time_step]
         for area in aid.pristine_areas
     ]
     abs_max, ix = findmax(abs, gaps)
@@ -522,6 +523,6 @@ function _report_area_interchange_failure(data::ACPowerFlowData, time_step::Int)
           "de-enrolled every controlled area (network non-convergence, not a relaxed " *
           "schedule); the largest interchange-row residual at the last attempted " *
           "iterate is area \"$(area.name)\" with |r| = $(_sf4(abs_max)) " *
-          "(target PDES = $(area.pdes))."
+          "(target PDES = $(area.pdes[time_step]))."
     return
 end

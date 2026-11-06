@@ -29,7 +29,7 @@ end
 @testset "SLACK bustype survives a solve write-back" begin
     sys = _two_area_system_with_slack()
     bus = PSY.get_component(PSY.ACBus, sys, _SLACK_COMPAT_BUS)
-    pf = PF.ACPowerFlow{NewtonRaphsonACPowerFlow}(; area_interchange_control = true)
+    pf = PF.ACPowerFlow{NewtonRaphsonACPowerFlow}(; net_interchange_control = true)
     @test solve_and_store_power_flow!(pf, sys)
     # Without the carve-out this is PV, and `_area_slack_buses` would find no area slack on
     # the next PowerFlowData build -- silently de-enrolling the area from interchange control.

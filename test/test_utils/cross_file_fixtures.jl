@@ -19,31 +19,18 @@ end
 _set_slack!(sys, bus_name) =
     PSY.set_bustype!(PSY.get_component(PSY.ACBus, sys, bus_name), PSY.ACBusTypes.SLACK)
 
-function _add_area_interchange!(
-    sys,
-    from_name::String,
-    to_name::String,
-    flow::Float64;
-    name::String = "$(from_name)_$(to_name)",
-)
-    PSY.add_component!(
-        sys,
-        PSY.AreaInterchange(;
-            name = name,
-            available = true,
-            active_power_flow = flow,
-            from_area = PSY.get_component(PSY.Area, sys, from_name),
-            to_area = PSY.get_component(PSY.Area, sys, to_name),
-            flow_limits = (from_to = 0.0, to_from = 0.0), input_basis = u"CU",
-        ),
+function _set_schedule!(sys, area_name::String, value::Float64)
+    PSY.set_scheduled_net_interchange!(
+        PSY.get_component(PSY.Area, sys, area_name),
+        value * u"SU",
     )
     return
 end
 
 # Shared by the rule-9 (unenforceable-schedule) and happy-path tests. Area1 owns REF,
 # never SLACK; Area2/Area3 can each
-# optionally hold SLACK (Area3's Bus 9 has a small gen so it's PV-eligible). AreaInterchange:
-# Area2->Area1 0.3, Area3->Area1 0.2 => pdes(Area1)=-0.5, pdes(Area2)=0.3, pdes(Area3)=0.2.
+# optionally hold SLACK (Area3's Bus 9 has a small gen so it's PV-eligible). Schedules:
+# pdes(Area1)=-0.5, pdes(Area2)=0.3, pdes(Area3)=0.2.
 function _three_area_transfer_fixture(; slack_area3::Bool = true)
     sys = _make_three_area_system()
     bus9 = PSY.get_component(PSY.ACBus, sys, "Bus 9")
@@ -64,8 +51,9 @@ function _three_area_transfer_fixture(; slack_area3::Bool = true)
     PSY.add_component!(sys, gen9)
     _set_slack!(sys, "Bus 6")
     slack_area3 && _set_slack!(sys, "Bus 9")
-    _add_area_interchange!(sys, "Area2", "Area1", 0.3; name = "A2_A1")
-    _add_area_interchange!(sys, "Area3", "Area1", 0.2; name = "A3_A1")
+    _set_schedule!(sys, "Area1", -0.5)
+    _set_schedule!(sys, "Area2", 0.3)
+    _set_schedule!(sys, "Area3", 0.2)
     return sys
 end
 
@@ -75,8 +63,10 @@ end
 # needed here.
 function _make_3w_boundary_fixture()
     sys = System(100.0)
-    area_a = PSY.Area(; name = "AreaA", input_basis = u"CU")
-    area_b = PSY.Area(; name = "AreaB", input_basis = u"CU")
+    area_a =
+        PSY.Area(; name = "AreaA", scheduled_net_interchange = 0.0, input_basis = u"CU")
+    area_b =
+        PSY.Area(; name = "AreaB", scheduled_net_interchange = 0.0, input_basis = u"CU")
     PSY.add_component!(sys, area_a)
     PSY.add_component!(sys, area_b)
 
@@ -506,9 +496,9 @@ end
 function _weak_tie_three_area_fixture(; x_weak::Float64 = 2.0, pdes2::Float64 = 0.1,
     pdes3::Float64 = 2.0)
     sys = System(100.0)
-    area1 = PSY.Area(; name = "Area1", input_basis = u"CU")
-    area2 = PSY.Area(; name = "Area2", input_basis = u"CU")
-    area3 = PSY.Area(; name = "Area3", input_basis = u"CU")
+    area1 = PSY.Area(; name = "Area1", scheduled_net_interchange = 0.0, input_basis = u"CU")
+    area2 = PSY.Area(; name = "Area2", scheduled_net_interchange = 0.0, input_basis = u"CU")
+    area3 = PSY.Area(; name = "Area3", scheduled_net_interchange = 0.0, input_basis = u"CU")
     PSY.add_component!(sys, area1)
     PSY.add_component!(sys, area2)
     PSY.add_component!(sys, area3)
@@ -531,8 +521,9 @@ function _weak_tie_three_area_fixture(; x_weak::Float64 = 2.0, pdes2::Float64 = 
     PSY.set_bustype!(bus2, ACBusTypes.SLACK)
     PSY.set_bustype!(bus3, ACBusTypes.SLACK)
 
-    _add_area_interchange!(sys, "Area2", "Area1", pdes2; name = "A2_A1")
-    _add_area_interchange!(sys, "Area3", "Area1", pdes3; name = "A3_A1")
+    _set_schedule!(sys, "Area1", -(pdes2 + pdes3))
+    _set_schedule!(sys, "Area2", pdes2)
+    _set_schedule!(sys, "Area3", pdes3)
     return sys
 end
 
