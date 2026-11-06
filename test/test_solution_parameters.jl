@@ -13,7 +13,7 @@
         :check_reactive_power_limits,
         :enhanced_flat_start,
         :control_discrete_devices,
-        :area_interchange_control,
+        :net_interchange_control,
         :interchange_tolerance,
         :tie_definition,
         :model_dc_network,
@@ -86,20 +86,20 @@ end
     )
     # Area interchange is polar only.
     @test_throws ArgumentError ACRectangularPowerFlow{NewtonRaphsonACPowerFlow}(;
-        solution_parameters = SolutionParameters(; area_interchange_control = true),
+        solution_parameters = SolutionParameters(; net_interchange_control = true),
     )
-    # Only the tie-line definition is implemented.
-    @test_throws ArgumentError ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
+    # Only the two PSS/E tie definitions are valid.
+    @test_throws MethodError ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
         solution_parameters = SolutionParameters(;
-            area_interchange_control = true,
-            tie_definition = :lines_and_loads,
+            net_interchange_control = true,
+            tie_definition = :loads_only,
         ),
     )
     # A non-positive interchange tolerance is floored, and the model stores the floored
     # value rather than the one the caller asked for.
     pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
         solution_parameters = SolutionParameters(;
-            area_interchange_control = true,
+            net_interchange_control = true,
             interchange_tolerance = -1.0,
         ),
     )

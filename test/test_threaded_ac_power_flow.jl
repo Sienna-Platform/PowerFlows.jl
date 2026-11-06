@@ -289,7 +289,7 @@ end
     seq, thr = _solve_sequential_and_threaded(
         _three_area_transfer_fixture,
         _replicate_col1_to_all_steps!;
-        time_steps = 6, area_interchange_control = true,
+        time_steps = 6, net_interchange_control = true,
     )
     @test all(seq.converged)
     _test_threaded_parity(seq, thr)
@@ -299,14 +299,14 @@ end
     seq, thr = _solve_sequential_and_threaded(
         _three_area_transfer_fixture,
         _replicate_col1_to_all_steps!;
-        time_steps = 6, area_interchange_control = true,
+        time_steps = 6, net_interchange_control = true,
     )
     @test all(seq.converged)
     for _ in 1:3
         _, again = _solve_sequential_and_threaded(
             _three_area_transfer_fixture,
             _replicate_col1_to_all_steps!;
-            time_steps = 6, area_interchange_control = true,
+            time_steps = 6, net_interchange_control = true,
         )
         @test again.bus_magnitude == seq.bus_magnitude
         @test again.bus_angles == seq.bus_angles
@@ -396,7 +396,7 @@ end
         pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
             time_steps = T,
             solution_parameters = _threaded_params(n),
-            area_interchange_control = true,
+            net_interchange_control = true,
         )
         data = PowerFlowData(pf, _weak_tie_three_area_fixture())
         _replicate_col1_to_all_steps!(data, T)
@@ -428,7 +428,7 @@ end
         pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
             time_steps = T,
             solution_parameters = _threaded_params(n),
-            area_interchange_control = true,
+            net_interchange_control = true,
         )
         data = PowerFlowData(pf, _weak_tie_three_area_fixture())
         _replicate_col1_to_all_steps!(data, T)
@@ -441,7 +441,8 @@ end
         aid = data.area_interchange
         @test all(t -> haskey(aid.relaxed, t), 1:T)
         for (ix, area) in enumerate(aid.pristine_areas)
-            feasible = PF.ControlledArea(area.name, area.slack_bus_ix, 0.0, area.tail_ix)
+            feasible =
+                PF.ControlledArea(area.name, area.slack_bus_ix, fill(0.0, T), area.tail_ix)
             aid.pristine_areas[ix] = feasible
             aid.areas[ix] = feasible
         end
@@ -534,7 +535,7 @@ end
         (
             "area interchange",
             _three_area_transfer_fixture,
-            (; area_interchange_control = true),
+            (; net_interchange_control = true),
             _replicate_col1_to_all_steps!,
         ),
         (

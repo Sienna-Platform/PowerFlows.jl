@@ -1451,8 +1451,8 @@ end
 exactly three branches (Trans1 4-9, Trans2 5-6, Trans3 4-7) -- small and hand-checkable."""
 function _make_two_area_system()
     sys = deepcopy(PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false))
-    area1 = PSY.Area(; name = "Area1", input_basis = u"CU")
-    area2 = PSY.Area(; name = "Area2", input_basis = u"CU")
+    area1 = PSY.Area(; name = "Area1", scheduled_net_interchange = 0.0, input_basis = u"CU")
+    area2 = PSY.Area(; name = "Area2", scheduled_net_interchange = 0.0, input_basis = u"CU")
     PSY.add_component!(sys, area1)
     PSY.add_component!(sys, area2)
     area1_buses = Set(1:5)
@@ -1471,7 +1471,7 @@ Area3 (bus 9 has boundary degree 4: Trans1, Line11, Line12, Line16). Full bounda
 Trans1, Trans2, Trans3, Line11, Line12, Line16."""
 function _make_three_area_system()
     sys = _make_two_area_system()
-    area3 = PSY.Area(; name = "Area3", input_basis = u"CU")
+    area3 = PSY.Area(; name = "Area3", scheduled_net_interchange = 0.0, input_basis = u"CU")
     PSY.add_component!(sys, area3)
     bus9 = PSY.get_component(PSY.ACBus, sys, "Bus 9")
     PSY.set_area!(bus9, area3)
@@ -1484,9 +1484,9 @@ it genuinely spans both -- exercises enrollment guard 4 via the real production 
 a fabricated dict."""
 function _make_two_island_spanning_area_system()
     sys = System(100.0)
-    home1 = PSY.Area(; name = "Home1", input_basis = u"CU")
-    home2 = PSY.Area(; name = "Home2", input_basis = u"CU")
-    span = PSY.Area(; name = "Span", input_basis = u"CU")
+    home1 = PSY.Area(; name = "Home1", scheduled_net_interchange = 0.0, input_basis = u"CU")
+    home2 = PSY.Area(; name = "Home2", scheduled_net_interchange = 0.0, input_basis = u"CU")
+    span = PSY.Area(; name = "Span", scheduled_net_interchange = 0.0, input_basis = u"CU")
     PSY.add_component!(sys, home1)
     PSY.add_component!(sys, home2)
     PSY.add_component!(sys, span)
@@ -1522,9 +1522,9 @@ lcc_metered_end picks rectifier- vs inverter-metered DC tie.
 """
 function _comprehensive_area_dc_fixture(; lcc_metered_end::String = "from")
     sys = System(100.0)
-    area1 = PSY.Area(; name = "Area1", input_basis = u"CU")
-    area2 = PSY.Area(; name = "Area2", input_basis = u"CU")
-    area3 = PSY.Area(; name = "Area3", input_basis = u"CU")
+    area1 = PSY.Area(; name = "Area1", scheduled_net_interchange = 0.0, input_basis = u"CU")
+    area2 = PSY.Area(; name = "Area2", scheduled_net_interchange = 0.0, input_basis = u"CU")
+    area3 = PSY.Area(; name = "Area3", scheduled_net_interchange = 0.0, input_basis = u"CU")
     PSY.add_component!(sys, area1)
     PSY.add_component!(sys, area2)
     PSY.add_component!(sys, area3)
@@ -1643,8 +1643,9 @@ function _comprehensive_area_dc_fixture(; lcc_metered_end::String = "from")
     )
     PSY.add_component!(sys, vsc)
 
-    _add_area_interchange!(sys, "Area2", "Area1", 0.3; name = "A2_A1")
-    _add_area_interchange!(sys, "Area3", "Area1", 0.2; name = "A3_A1")
+    _set_schedule!(sys, "Area1", -0.5)
+    _set_schedule!(sys, "Area2", 0.3)
+    _set_schedule!(sys, "Area3", 0.2)
 
     return sys
 end
@@ -1659,10 +1660,8 @@ Area2's 0.3 pu. Do NOT raise the target much further — beyond roughly 100 pu t
 collapses entirely."""
 function _make_area3_schedule_infeasible!(sys::System)
     target = 30.0
-    PSY.set_active_power_flow!(
-        PSY.get_component(PSY.AreaInterchange, sys, "A3_A1"),
-        target * u"SU",
-    )
+    _set_schedule!(sys, "Area1", -(0.3 + target))
+    _set_schedule!(sys, "Area3", target)
     return target
 end
 

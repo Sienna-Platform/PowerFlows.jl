@@ -161,8 +161,8 @@ end
     secondary_bus = PSY.get_from(PSY.get_arc(PSY.get_secondary_circuit(trf)))
     tertiary_bus = PSY.get_from(PSY.get_arc(PSY.get_tertiary_circuit(trf)))
 
-    areaA = PSY.Area(; name = "AreaA", input_basis = u"CU")
-    areaB = PSY.Area(; name = "AreaB", input_basis = u"CU")
+    areaA = PSY.Area(; name = "AreaA", scheduled_net_interchange = 0.0, input_basis = u"CU")
+    areaB = PSY.Area(; name = "AreaB", scheduled_net_interchange = 0.0, input_basis = u"CU")
     PSY.add_component!(sys, areaA)
     PSY.add_component!(sys, areaB)
     PSY.set_area!(primary_bus, areaA)
@@ -323,7 +323,7 @@ end
     sys = _make_two_area_system()
     _set_slack!(sys, "Bus 2")
     _set_slack!(sys, "Bus 3")
-    pf = ACPolarPowerFlow(; area_interchange_control = true)
+    pf = ACPolarPowerFlow(; net_interchange_control = true)
     data = PowerFlowData(pf, sys)
     aid = @test_logs(
         (:warn, r"Area \"Area1\": 2 SLACK buses"),
@@ -336,7 +336,7 @@ end
 @testset "area interchange enrollment rule 1b SLACK demoted to PQ" begin
     sys = _make_two_area_system()
     _set_slack!(sys, "Bus 2")
-    pf = ACPolarPowerFlow(; area_interchange_control = true)
+    pf = ACPolarPowerFlow(; net_interchange_control = true)
     data = PowerFlowData(pf, sys)
     ix = PF.get_bus_lookup(data)[2]
     @test data.bus_type[ix, 1] == PSY.ACBusTypes.PV
@@ -355,7 +355,7 @@ end
 @testset "area interchange enrollment rule 2 SLACK bus unresolvable" begin
     sys = _make_two_area_system()
     _set_slack!(sys, "Bus 8")  # leaf bus: only branch is Trans4 (7-8)
-    pf = ACPolarPowerFlow(; area_interchange_control = true)
+    pf = ACPolarPowerFlow(; net_interchange_control = true)
     data = PowerFlowData(pf, sys)
     # No reduction in this fixture actually drops Bus 8; simulate "unresolvable" directly
     # by removing its bus_lookup entry (mirrors rule 1b's direct-state-poke technique).
@@ -372,7 +372,7 @@ end
 @testset "area interchange enrollment rule 3 area contains REF" begin
     sys = _make_two_area_system()
     _set_slack!(sys, "Bus 2")  # Area1, which also owns REF (Bus 1)
-    pf = ACPolarPowerFlow(; area_interchange_control = true)
+    pf = ACPolarPowerFlow(; net_interchange_control = true)
     data = PowerFlowData(pf, sys)
     aid = @test_logs(
         (:warn, r"Area \"Area1\": contains the network reference bus Bus 1"),
@@ -389,7 +389,7 @@ end
     # reason.
     sys = _make_two_area_system()
     _set_slack!(sys, "Bus 6")  # Area2, no REF
-    pf = ACPolarPowerFlow(; area_interchange_control = true)
+    pf = ACPolarPowerFlow(; net_interchange_control = true)
     data = PowerFlowData(pf, sys)
     bus_lookup = PF.get_bus_lookup(data)
     nrd = PF.get_network_reduction_data(data)
@@ -423,7 +423,7 @@ end
 
 @testset "area interchange enrollment rule 4 area spans multiple islands (end-to-end)" begin
     sys = _make_two_island_spanning_area_system()
-    pf = ACPolarPowerFlow(; area_interchange_control = true)
+    pf = ACPolarPowerFlow(; net_interchange_control = true)
     # PNM's own Ybus/connectivity checks also warn (different wording) that the raw system
     # is disconnected -- expected, that's the point. match_mode = :any only asserts
     # enrollment's own guard-4 warning is present.
@@ -453,8 +453,8 @@ AC-disconnected system returns an empty `ac_ties` and a `dc_ties` that touches A
 entirely by a real `PowerFlowData`/`LCCParameters`/reduced-network build."""
 function _dc_tie_only_fixture()
     sys = System(100.0)
-    area1 = PSY.Area(; name = "Area1", input_basis = u"CU")
-    area3 = PSY.Area(; name = "Area3", input_basis = u"CU")
+    area1 = PSY.Area(; name = "Area1", scheduled_net_interchange = 0.0, input_basis = u"CU")
+    area3 = PSY.Area(; name = "Area3", scheduled_net_interchange = 0.0, input_basis = u"CU")
     PSY.add_component!(sys, area1)
     PSY.add_component!(sys, area3)
 
@@ -517,7 +517,7 @@ end
     # Area3's own bus has no electrical path to any REF, so PowerFlows auto-promotes it to
     # REF; guard 3 (not guard 5) is what keeps this fixture from enrolling end-to-end.
     pf_control =
-        ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; area_interchange_control = true)
+        ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; net_interchange_control = true)
     data_control = PowerFlowData(pf_control, sys)
     bus_lookup_control = PF.get_bus_lookup(data_control)
     @test data_control.bus_type[bus_lookup_control[3], 1] == PSY.ACBusTypes.REF
@@ -529,7 +529,7 @@ end
     sys = _make_two_area_system()
     _set_slack!(sys, "Bus 6")
     pf = ACPolarPowerFlow(;
-        area_interchange_control = true,
+        net_interchange_control = true,
         generator_slack_participation_factors = Dict(
             (PSY.ThermalStandard, "Bus6") => 1.0,
         ),
@@ -543,22 +543,20 @@ end
     @test PF.n_controlled_areas(aid) == 0
 end
 
-@testset "area interchange enrollment PDES aggregation" begin
+@testset "area interchange enrollment PDES from the Area field" begin
     sys = _make_three_area_system()
-    _add_area_interchange!(sys, "Area1", "Area2", 0.5)
-    _add_area_interchange!(sys, "Area3", "Area1", 0.2; name = "A3_A1")
-    pdes, incident = PF._area_pdes(sys)
+    _set_schedule!(sys, "Area1", 0.3)
+    _set_schedule!(sys, "Area2", -0.5)
+    PSY.set_scheduled_net_interchange!(PSY.get_component(PSY.Area, sys, "Area3"), nothing)
+    pdes = PF._area_pdes(sys)
     @test pdes["Area1"] ≈ 0.3
     @test pdes["Area2"] ≈ -0.5
-    @test pdes["Area3"] ≈ 0.2
-    @test incident["Area1"] == 2
-    @test incident["Area2"] == 1
-    @test incident["Area3"] == 1
+    @test !haskey(pdes, "Area3")
 end
 
 @testset "area interchange enrollment rule 9 single uncontrolled area (info)" begin
     sys = _three_area_transfer_fixture(; slack_area3 = true)
-    pf = ACPolarPowerFlow(; area_interchange_control = true)
+    pf = ACPolarPowerFlow(; net_interchange_control = true)
     data = PowerFlowData(pf, sys)
     aid = @test_logs(
         (:info, r"Area \"Area1\" is not embedded net-interchange-controlled"),
@@ -571,7 +569,7 @@ end
 
 @testset "area interchange enrollment rule 9 two uncontrolled areas (warn)" begin
     sys = _three_area_transfer_fixture(; slack_area3 = false)
-    pf = ACPolarPowerFlow(; area_interchange_control = true)
+    pf = ACPolarPowerFlow(; net_interchange_control = true)
     data = PowerFlowData(pf, sys)
     aid = @test_logs(
         (:warn, r"Areas Area1, Area3 are not embedded net-interchange-controlled"),
@@ -585,8 +583,7 @@ end
 @testset "area interchange enrollment rule 9 passive area stays silent" begin
     sys = _make_two_area_system()
     _set_slack!(sys, "Bus 6")
-    _add_area_interchange!(sys, "Area1", "Area2", 0.0)  # keeps guard 7 + rule 9 silent
-    pf = ACPolarPowerFlow(; area_interchange_control = true)
+    pf = ACPolarPowerFlow(; net_interchange_control = true)
     data = PowerFlowData(pf, sys)
     aid = @test_logs min_level = Logging.Warn PF.build_area_interchange_data(pf, sys, data)
     @test PF.n_controlled_areas(aid) == 1
@@ -595,9 +592,9 @@ end
 @testset "area interchange enrollment happy path: REF area de-enrolled, two enrolled" begin
     # Area1 (REF, no SLACK) stays uncontrolled; Area2/Area3 enroll with tail_ix 1,2 in
     # sorted-name order. pdes values come from `_three_area_transfer_fixture`'s
-    # AreaInterchange records.
+    # area schedules.
     sys = _three_area_transfer_fixture(; slack_area3 = true)
-    pf = ACPolarPowerFlow(; area_interchange_control = true)
+    pf = ACPolarPowerFlow(; net_interchange_control = true)
     data = PowerFlowData(pf, sys)
     aid =
         @test_logs (:info, r"Area \"Area1\"") match_mode = :any PF.build_area_interchange_data(
@@ -610,8 +607,8 @@ end
     area3 = only(filter(a -> a.name == "Area3", aid.areas))
     @test area2.tail_ix == 1
     @test area3.tail_ix == 2
-    @test area2.pdes ≈ 0.3
-    @test area3.pdes ≈ 0.2
+    @test area2.pdes[1] ≈ 0.3
+    @test area3.pdes[1] ≈ 0.2
     @test !isempty(aid.ties)
     for tie in aid.ties
         @test tie.from_area_tail in (0, 1, 2)
@@ -622,12 +619,91 @@ end
 @testset "area interchange enrollment wiring populates data.area_interchange" begin
     sys = _make_two_area_system()
     _set_slack!(sys, "Bus 6")
-    pf_off = ACPolarPowerFlow(; area_interchange_control = false)
+    pf_off = ACPolarPowerFlow(; net_interchange_control = false)
     data_off = PowerFlowData(pf_off, sys)
     @test PF.n_controlled_areas(data_off) == 0
 
-    pf_on = ACPolarPowerFlow(; area_interchange_control = true)
+    pf_on = ACPolarPowerFlow(; net_interchange_control = true)
     data_on = PowerFlowData(pf_on, sys)
     @test PF.n_controlled_areas(data_on) == 1
     @test only(PF.get_area_interchange_data(data_on).areas).name == "Area2"
+end
+
+function _two_area_pjm(name::String)
+    sys = PSB.build_system(
+        PSB.PSISystems,
+        name;
+        add_forecasts = false,
+        add_reserves = false,
+    )
+    _set_slack!(sys, "Bus_nodeC_2")
+    return sys
+end
+
+@testset "area interchange enrollment reads PDES from the Area field" begin
+    sys = _two_area_pjm("two_area_pjm_DA")
+    _set_schedule!(sys, "Area2", 0.25)
+    pf = ACPolarPowerFlow(; net_interchange_control = true)
+    data = PowerFlowData(pf, sys)
+    area = only(PF.get_area_interchange_data(data).areas)
+    @test area.name == "Area2"
+    @test area.pdes[1] ≈ 0.25
+end
+
+@testset "area interchange enrollment skips an area with no schedule" begin
+    sys = _two_area_pjm("two_area_pjm_DA")
+    PSY.set_scheduled_net_interchange!(PSY.get_component(PSY.Area, sys, "Area2"), nothing)
+    pf = ACPolarPowerFlow(; net_interchange_control = true)
+    data = PowerFlowData(pf, sys)
+    aid = @test_logs(
+        (:info, r"Area \"Area2\": no scheduled net interchange"),
+        match_mode = :any,
+        PF.build_area_interchange_data(pf, sys, data)
+    )
+    @test PF.n_controlled_areas(aid) == 0
+end
+
+@testset "area interchange off-area load records" begin
+    sys = _two_area_pjm("two_area_pjm_DA_off_area_load")
+    pf = ACPolarPowerFlow(; net_interchange_control = true)
+    data = PowerFlowData(pf, sys)
+    load = PSY.get_component(PSY.StandardLoad, sys, "OffAreaLoad")
+    bus_ix = PF.get_bus_lookup(data)[PSY.get_number(PSY.get_bus(load))]
+
+    records = PF.build_off_area_loads(pf, sys, data, Dict("Area1" => 1, "Area2" => 2))
+    @test length(records) == 2
+    owner = only(filter(r -> r.area_tail == 1, records))
+    host = only(filter(r -> r.area_tail == 2, records))
+    @test owner.sign == -1.0
+    @test host.sign == 1.0
+    for r in records
+        @test r.bus_ix == bus_ix
+        @test r.p_constant_power ≈ [0.2]
+        @test r.p_constant_current ≈ [0.1]
+        @test r.p_constant_impedance ≈ [0.08]
+    end
+
+    host_only = only(PF.build_off_area_loads(pf, sys, data, Dict("Area2" => 1)))
+    @test host_only.area_tail == 1
+    @test host_only.sign == 1.0
+
+    PSY.set_available!(load, false)
+    unavailable = PF.build_off_area_loads(pf, sys, data, Dict("Area1" => 1))
+    @test iszero(only(unavailable).p_constant_power)
+    @test iszero(only(unavailable).p_constant_current)
+    @test iszero(only(unavailable).p_constant_impedance)
+end
+
+@testset "area interchange off-area load in its own area errors" begin
+    sys = _two_area_pjm("two_area_pjm_DA_off_area_load")
+    load = PSY.get_component(PSY.StandardLoad, sys, "OffAreaLoad")
+    PSY.set_out_of_area_loads!(
+        PSY.get_component(PSY.Area, sys, "Area1"),
+        PSY.ElectricLoad[],
+    )
+    PSY.set_out_of_area_loads!(PSY.get_component(PSY.Area, sys, "Area2"), [load])
+    pf = ACPolarPowerFlow(; net_interchange_control = true)
+    data = PowerFlowData(pf, sys)
+    @test_throws r"Area \"Area2\" lists load \"OffAreaLoad\"" PF.build_off_area_loads(
+        pf, sys, data, Dict("Area2" => 1))
 end

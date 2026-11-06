@@ -843,13 +843,13 @@ function _ac_power_flow_with_area_relax!(
             gap, worst_ix = findmax(abs, gaps)
             area = data.area_interchange.areas[worst_ix]
             @error "Area interchange: Newton did not converge with area \"$(area.name)\" " *
-                   "controlled (target PDES = $(area.pdes), NI gap at the failed " *
+                   "controlled (target PDES = $(area.pdes[time_step]), NI gap at the failed " *
                    "iterate = $gap); de-enrolling it and re-solving with the remaining " *
                    "$(n_controlled_areas(data) - 1) controlled area(s)."
             if isempty(relaxed_this_step)
                 full_memo = data.ac_jacobian_structure_cache[]
             end
-            push!(relaxed_this_step, RelaxedAreaRecord(area.name, area.pdes))
+            push!(relaxed_this_step, RelaxedAreaRecord(area.name, area.pdes[time_step]))
             _deenroll_area!(data, worst_ix)
         end
         if !converged
@@ -865,8 +865,8 @@ function _ac_power_flow_with_area_relax!(
             (
                 let tail_ix = pristine_tail_of[r.name],
                     ni_solved = _area_net_interchange(
-                        aid.pristine_ties, aid.pristine_dc_ties, tail_ix, data,
-                        time_step,
+                        aid.pristine_ties, aid.pristine_dc_ties,
+                        aid.pristine_off_area_loads, tail_ix, data, time_step,
                     )
 
                     "$(r.name) (ni_solved=$(ni_solved), pdes=$(r.pdes), " *
