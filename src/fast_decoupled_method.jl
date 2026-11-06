@@ -1148,7 +1148,7 @@ function _fd_area_substep!(
 end
 
 # Accumulate a tie endpoint's contribution into area row `row` of `g`/`S`: `k` is the endpoint
-# bus's `pvpq` position (`0` for a REF endpoint — `_push_area_row_bus_cols!`'s exclusion), `coeff`
+# bus's `pvpq` position (`0` for a REF endpoint), `coeff`
 # is `σ·∂Pm/∂θ` for that endpoint. `S[row, :] += coeff · W[k, :]` since `S = Dᵀ·W` and row `k` of
 # `W` is the only nonzero contribution `Dᵀ[row, k]` makes to that dense product.
 function _fd_area_row_accumulate!(

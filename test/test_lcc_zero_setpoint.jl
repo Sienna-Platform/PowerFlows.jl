@@ -24,18 +24,19 @@ end
 
 @testset "0-MW LCC: Jacobian stays nonsingular and solves ($name)" for (name, PFType) in
                                                                        _ZERO_SP_FORMULATIONS
-    data = PowerFlowData(PFType(), _zero_setpoint_lcc_system())
-    residual = PF.ACPowerFlowResidual(data, 1)
-    jac = PF.ACPowerFlowJacobian(data, residual, 1)
-    x0 = PF.calculate_x0(data, 1)
+    pf = PFType()
+    data = PowerFlowData(pf, _zero_setpoint_lcc_system())
+    residual, jac, x0 = PF.initialize_power_flow_variables(pf, data, 1)
     residual(data, x0, 1)
     jac(data, 1)
 
     # i_dc of the degenerate converter is exactly 0.
     @test iszero(data.lcc.i_dc[1, 1])
     # Without the tap-pin this σ_min collapses to ~0 (κ̂ → ~1e27); with it the
-    # Jacobian is as well-conditioned as the rest of the network.
-    @test minimum(svdvals(Matrix(jac.Jv))) > 1e-3
+    # Jacobian is as well-conditioned as the rest of the network. The bound suits every
+    # formulation: on this case σ_min is ~3e-2 for polar and ~1.6e-4 for rect and mixed,
+    # with or without the 0-MW LCC.
+    @test minimum(svdvals(Matrix(jac.Jv))) > 1e-5
     # And the solve converges.
     @test solve_power_flow!(data)
 end
@@ -44,10 +45,9 @@ end
     name,
     PFType,
 ) in _ZERO_SP_FORMULATIONS
-    data = PowerFlowData(PFType(), _zero_setpoint_lcc_system())
-    residual = PF.ACPowerFlowResidual(data, 1)
-    jac = PF.ACPowerFlowJacobian(data, residual, 1)
-    x0 = PF.calculate_x0(data, 1)
+    pf = PFType()
+    data = PowerFlowData(pf, _zero_setpoint_lcc_system())
+    residual, jac, x0 = PF.initialize_power_flow_variables(pf, data, 1)
     Random.seed!(1)
     x = x0 .+ 0.01 .* randn(length(x0))
     residual(data, x, 1)

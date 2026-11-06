@@ -672,6 +672,91 @@ function _make_solvable_tap_shunt_system()
     return sys
 end
 
+"""Build a 3-bus system with one `TwoWindingTransformer` whose circuit regulates the reactive
+power flow at its from bus (`REACTIVE_POWER_FLOW`) by moving its tap ratio.
+
+REF(1) ─tap─ PQ(2); REF(1) ─line─ PQ(3); PQ(3) ─line─ PQ(2). The loop lets the tap drive a
+circulating reactive flow, so the from-bus flow responds to the ratio. At the default
+`tap = 1.02` the from-bus flow is outside the target band `q_band` (p.u. on the circuit base,
+100 MVA), and the band is reachable inside `tap_ratio_limits = (0.9, 1.1)`."""
+function _make_flow_tap_system(;
+    q_band = (min = 0.29, max = 0.31),
+    tap = 1.02,
+    circuit_base_power = 100.0,
+)
+    sys = System(100.0)
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.0, 0.0)
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.PQ, 230, 1.0, 0.0)
+    b3 = _add_simple_bus!(sys, 3, ACBusTypes.PQ, 230, 1.0, 0.0)
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    _add_mp_load!(sys, b2, 0.5, 0.25)
+    _add_mp_load!(sys, b3, 0.05, 0.025)
+    _add_simple_line!(sys, b1, b3, 1e-2, 1e-2, 0.0)
+    _add_simple_line!(sys, b3, b2, 1e-2, 5e-2, 0.0)
+    tx = TwoWindingTransformer(;
+        name = "flow_tap_1_2",
+        circuit = TransformerCircuit(;
+            available = true,
+            arc = Arc(; from = b1, to = b2),
+            r = 0.01,
+            x = 0.10,
+            tap = tap,
+            rating = 1.0,
+            base_power = circuit_base_power,
+            control_objective = PSY.TransformerControlObjective.REACTIVE_POWER_FLOW,
+            tap_ratio_limits = (min = 0.9, max = 1.1),
+            controlled_reactive_power_flow_limits = q_band,
+            input_basis = u"CU",
+        ), input_basis = u"CU",
+    )
+    add_component!(sys, tx)
+    return sys
+end
+
+"""Build a 3-bus loop with one `TwoWindingTransformer` whose circuit regulates the active power
+flow at its from bus (`ACTIVE_POWER_FLOW`) by moving its phase-shift angle.
+
+REF(1) ─xfmr─ PQ(2); REF(1) ─line─ PQ(3); PQ(3) ─line─ PQ(2). The loop splits the bus-2 load
+between the transformer and the path through bus 3, so the angle sets the transformer flow.
+The ratio `tap` stays fixed. At α = 0 the from-bus flow is outside the target band `p_band`
+(p.u. on the circuit base, 100 MVA), and the band is reachable inside
+`phase_angle_limits = ±30°`."""
+function _make_phase_shifter_system(;
+    p_band = (min = 0.95, max = 1.05),
+    α = 0.0,
+    tap = 1.05,
+    circuit_base_power = 100.0,
+)
+    sys = System(100.0)
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.0, 0.0)
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.PQ, 230, 1.0, 0.0)
+    b3 = _add_simple_bus!(sys, 3, ACBusTypes.PQ, 230, 1.0, 0.0)
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    _add_mp_load!(sys, b2, 0.6, 0.1)
+    _add_mp_load!(sys, b3, 0.2, 0.05)
+    _add_simple_line!(sys, b1, b3, 1e-2, 5e-2, 0.0)
+    _add_simple_line!(sys, b3, b2, 1e-2, 5e-2, 0.0)
+    tx = TwoWindingTransformer(;
+        name = "phase_shifter_1_2",
+        circuit = TransformerCircuit(;
+            available = true,
+            arc = Arc(; from = b1, to = b2),
+            r = 0.01,
+            x = 0.10,
+            tap = tap,
+            α = α,
+            rating = 1.0,
+            base_power = circuit_base_power,
+            control_objective = PSY.TransformerControlObjective.ACTIVE_POWER_FLOW,
+            phase_angle_limits = (min = -pi / 6, max = pi / 6),
+            controlled_active_power_flow_limits = p_band,
+            input_basis = u"CU",
+        ), input_basis = u"CU",
+    )
+    add_component!(sys, tx)
+    return sys
+end
+
 """Build a 2-bus system with a weak PQ bus regulated by a `FACTSControlDevice` (SVC/STATCOM).
 
 REF(1) ─line(x=0.10)─ PQ(2); bus 2 carries a reactive load that pulls its voltage below
@@ -1451,8 +1536,8 @@ end
 exactly three branches (Trans1 4-9, Trans2 5-6, Trans3 4-7) -- small and hand-checkable."""
 function _make_two_area_system()
     sys = deepcopy(PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false))
-    area1 = PSY.Area(; name = "Area1", input_basis = u"CU")
-    area2 = PSY.Area(; name = "Area2", input_basis = u"CU")
+    area1 = PSY.Area(; name = "Area1", scheduled_net_interchange = 0.0, input_basis = u"CU")
+    area2 = PSY.Area(; name = "Area2", scheduled_net_interchange = 0.0, input_basis = u"CU")
     PSY.add_component!(sys, area1)
     PSY.add_component!(sys, area2)
     area1_buses = Set(1:5)
@@ -1471,7 +1556,7 @@ Area3 (bus 9 has boundary degree 4: Trans1, Line11, Line12, Line16). Full bounda
 Trans1, Trans2, Trans3, Line11, Line12, Line16."""
 function _make_three_area_system()
     sys = _make_two_area_system()
-    area3 = PSY.Area(; name = "Area3", input_basis = u"CU")
+    area3 = PSY.Area(; name = "Area3", scheduled_net_interchange = 0.0, input_basis = u"CU")
     PSY.add_component!(sys, area3)
     bus9 = PSY.get_component(PSY.ACBus, sys, "Bus 9")
     PSY.set_area!(bus9, area3)
@@ -1484,9 +1569,9 @@ it genuinely spans both -- exercises enrollment guard 4 via the real production 
 a fabricated dict."""
 function _make_two_island_spanning_area_system()
     sys = System(100.0)
-    home1 = PSY.Area(; name = "Home1", input_basis = u"CU")
-    home2 = PSY.Area(; name = "Home2", input_basis = u"CU")
-    span = PSY.Area(; name = "Span", input_basis = u"CU")
+    home1 = PSY.Area(; name = "Home1", scheduled_net_interchange = 0.0, input_basis = u"CU")
+    home2 = PSY.Area(; name = "Home2", scheduled_net_interchange = 0.0, input_basis = u"CU")
+    span = PSY.Area(; name = "Span", scheduled_net_interchange = 0.0, input_basis = u"CU")
     PSY.add_component!(sys, home1)
     PSY.add_component!(sys, home2)
     PSY.add_component!(sys, span)
@@ -1522,9 +1607,9 @@ lcc_metered_end picks rectifier- vs inverter-metered DC tie.
 """
 function _comprehensive_area_dc_fixture(; lcc_metered_end::String = "from")
     sys = System(100.0)
-    area1 = PSY.Area(; name = "Area1", input_basis = u"CU")
-    area2 = PSY.Area(; name = "Area2", input_basis = u"CU")
-    area3 = PSY.Area(; name = "Area3", input_basis = u"CU")
+    area1 = PSY.Area(; name = "Area1", scheduled_net_interchange = 0.0, input_basis = u"CU")
+    area2 = PSY.Area(; name = "Area2", scheduled_net_interchange = 0.0, input_basis = u"CU")
+    area3 = PSY.Area(; name = "Area3", scheduled_net_interchange = 0.0, input_basis = u"CU")
     PSY.add_component!(sys, area1)
     PSY.add_component!(sys, area2)
     PSY.add_component!(sys, area3)
@@ -1643,8 +1728,9 @@ function _comprehensive_area_dc_fixture(; lcc_metered_end::String = "from")
     )
     PSY.add_component!(sys, vsc)
 
-    _add_area_interchange!(sys, "Area2", "Area1", 0.3; name = "A2_A1")
-    _add_area_interchange!(sys, "Area3", "Area1", 0.2; name = "A3_A1")
+    _set_schedule!(sys, "Area1", -0.5)
+    _set_schedule!(sys, "Area2", 0.3)
+    _set_schedule!(sys, "Area3", 0.2)
 
     return sys
 end
@@ -1659,10 +1745,8 @@ Area2's 0.3 pu. Do NOT raise the target much further — beyond roughly 100 pu t
 collapses entirely."""
 function _make_area3_schedule_infeasible!(sys::System)
     target = 30.0
-    PSY.set_active_power_flow!(
-        PSY.get_component(PSY.AreaInterchange, sys, "A3_A1"),
-        target * u"SU",
-    )
+    _set_schedule!(sys, "Area1", -(0.3 + target))
+    _set_schedule!(sys, "Area3", target)
     return target
 end
 

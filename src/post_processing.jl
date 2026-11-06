@@ -1106,17 +1106,8 @@ function write_power_flow_solution!(
     end
 
     if get_lcc_count(data) > 0
-        # Key on the reduction-mapped arc tuple so the lookup matches
-        # `data.lcc.arcs` (which stores reduced tuples); handles zero-impedance
-        # bus merges that relabel an LCC terminal (e.g. 102→100).
-        nrd = PNM.get_network_reduction_data(data.power_network_matrix)
-        arc_to_lcc = Dict{Tuple{Int, Int}, PSY.TwoTerminalLCCLine}()
-        for lcc in PSY.get_available_components(PSY.TwoTerminalLCCLine, sys)
-            arc_to_lcc[PNM.get_arc_tuple(PSY.get_arc(lcc), nrd)] = lcc
-        end
-
-        for (i, arc) in enumerate(data.lcc.arcs)
-            lcc = arc_to_lcc[arc]
+        for (i, name) in enumerate(get_lcc_names(data))
+            lcc = PSY.get_component(PSY.TwoTerminalLCCLine, sys, name)
             PSY.set_rectifier_tap_setting!(lcc, data.lcc.rectifier.tap[i, time_step])
             PSY.set_inverter_tap_setting!(lcc, data.lcc.inverter.tap[i, time_step])
             PSY.set_rectifier_delay_angle!(
@@ -1375,8 +1366,8 @@ Per-controlled-area results row: net interchange achieved vs. targeted, the conv
 `ΔP_a`, whether the schedule was `:enforced` or `:relaxed` by the greedy relax loop, and
 whether the slack bus's TOTAL solved output (distributed-slack share + `ΔP_a`) fits its
 machines' limits. One row per area enrolled at construction (`pristine_areas`); relaxed
-rows report `delta_p = 0.0`. `ni_solved` is recomputed from the tie-flow kernels against
-the pristine AC and DC tie lists (`_area_net_interchange`), not trusted off a stale
+rows report `delta_p = 0.0`. `ni_solved` is recomputed from the tie-flow and off-area load
+kernels against the pristine lists (`_area_net_interchange`), not trusted off a stale
 residual row, so it is correct for a relaxed area too; `ni_solved - pdes` is that area's
 infeasibility certificate. An enforced row's `delta_p` reads `pristine_delta_p` (never the
 WORKING `aid.delta_p`, which a relaxed step resets from `pristine_delta_p` at its end).
@@ -1401,7 +1392,8 @@ function area_interchange_results_dataframe(
     df = empty_area_interchange_results()
     for area in aid.pristine_areas
         ni_solved = _area_net_interchange(
-            aid.pristine_ties, aid.pristine_dc_ties, area.tail_ix, data, time_step,
+            aid.pristine_ties, aid.pristine_dc_ties, aid.pristine_off_area_loads,
+            area.tail_ix, data, time_step,
         )
         schedule_status = :enforced
         delta_p_pu = 0.0
@@ -1421,7 +1413,7 @@ function area_interchange_results_dataframe(
             (
                 area = area.name,
                 ni_solved = sys_basepower * ni_solved,
-                pdes = sys_basepower * area.pdes,
+                pdes = sys_basepower * area.pdes[time_step],
                 delta_p = sys_basepower * delta_p_pu,
                 schedule_status = schedule_status,
                 beyond_limits = beyond_limits,
@@ -1644,11 +1636,6 @@ function lcc_results_dataframe(
     # could simply omit the key from the results dict instead.
     get_lcc_count(data) == 0 && return empty_lcc_results()
 
-    arc_lookup = Dict{Tuple{Int, Int}, Int}()
-    for (i, arc) in enumerate(data.lcc.arcs)
-        arc_lookup[arc] = i
-    end
-
     rectifier_tap = data.lcc.rectifier.tap[:, time_step]
     inverter_tap = data.lcc.inverter.tap[:, time_step]
     rectifier_angle = data.lcc.rectifier.thyristor_angle[:, time_step]
@@ -1704,7 +1691,7 @@ function get_hvdc_results(sys::PSY.System, data::ACPowerFlowData)
     sys_basepower = PSY.get_base_power(sys)
     dcn = get_dc_network(data)
     nrd = PNM.get_network_reduction_data(get_power_network_matrix(data))
-    lcc_names = get_lcc_names(data, sys)
+    lcc_names = get_lcc_names(data)
     n = get_time_steps(data)
     return (
         lcc = _stamp_time_steps(
@@ -2058,24 +2045,7 @@ function get_arc_names(data::PowerFlowData)
     return arc_names
 end
 
-function get_lcc_names(data::PowerFlowData, sys::PSY.System)
-    lcc_names = String[]
-    if get_lcc_count(data) > 0
-        # `data.lcc.arcs` stores reduction-mapped arc tuples (see lcc_utils.jl, where
-        # they are set via `get_arc_tuple(arc, nrd)`), so the lookup must key on the
-        # same reduced tuple — otherwise zero-impedance bus merges (e.g. 102→100)
-        # produce a key miss.
-        nrd = PNM.get_network_reduction_data(data.power_network_matrix)
-        lcc_lookup = Dict{Tuple{Int, Int}, String}([
-            (PNM.get_arc_tuple(PSY.get_arc(lcc), nrd) => PSY.get_name(lcc))
-            for lcc in PSY.get_available_components(PSY.TwoTerminalLCCLine, sys)
-        ])
-        for arc in data.lcc.arcs
-            push!(lcc_names, lcc_lookup[arc])
-        end
-    end
-    return lcc_names
-end
+get_lcc_names(data::PowerFlowData) = data.lcc.names
 
 """
     write_results(
@@ -2129,7 +2099,7 @@ function write_results(
         temp_dict = _allocate_results_data(
             data,
             flow_results,
-            get_lcc_names(data, sys),
+            get_lcc_names(data),
             buses,
             PSY.get_base_power(sys, u"NU"),
             data.bus_magnitude[:, i],
@@ -2227,7 +2197,7 @@ function write_results(
     results = _allocate_results_data(
         data,
         flow_results,
-        get_lcc_names(data, sys),
+        get_lcc_names(data),
         bus_numbers,
         PSY.get_base_power(sys, u"NU"),
         data.bus_magnitude[:, time_step],

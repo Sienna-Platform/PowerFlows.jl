@@ -749,7 +749,7 @@ function _write_lcc_state_to_x!(
 end
 
 """
-Initialize the `arcs` and `bus_indices` fields of the LCCParameters structure in the PowerFlowData.
+Initialize the `arcs`, `names` and `bus_indices` fields of the LCCParameters structure in the PowerFlowData.
 """
 function initialize_LCC_arcs_and_buses!(
     data::PowerFlowData,
@@ -759,6 +759,7 @@ function initialize_LCC_arcs_and_buses!(
 )
     lcc_arcs = PSY.get_arc.(lccs)
     nrd = get_network_reduction_data(data)
+    data.lcc.names .= PSY.get_name.(lccs)
     for (i, arc) in enumerate(lcc_arcs)
         data.lcc.arcs[i] = PNM.get_arc_tuple(arc, nrd)
         data.lcc.bus_indices[i] = (

@@ -480,6 +480,8 @@ function PowerFlowData(
             DCTie[],
             zeros(Float64, 0, n_time_steps),
             Dict{Int, Vector{RelaxedAreaRecord}}(),
+            OffAreaLoad[],
+            OffAreaLoad[],
         ), # area_interchange (populated in initialize_power_flow_data!)
         Base.RefValue{DCNetwork}(DCNetwork()), # dc_network (built in initialize_DCNetwork!)
         arc_lossy_admittance_from_to,
@@ -545,6 +547,8 @@ function get_bus_reactive_power_non_impedance_withdrawals(
            pfd.bus_magnitude[ix, time_step]
 end
 
+_clear_off_area_loads!(::PowerFlowData) = nothing
+
 function clear_injection_data!(pfd::PowerFlowData)
     pfd.bus_active_power_injections .= 0.0
     pfd.bus_reactive_power_injections .= 0.0
@@ -560,6 +564,7 @@ function clear_injection_data!(pfd::PowerFlowData)
     for col in eachcol(pfd.bus_magnitude)
         any(isnan, col) && (col .= 1.0)
     end
+    _clear_off_area_loads!(pfd)
     return
 end
 

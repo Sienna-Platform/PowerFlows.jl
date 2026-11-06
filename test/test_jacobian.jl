@@ -248,14 +248,14 @@ function _has_stored_entry(A::SparseMatrixCSC, i::Int, j::Int)
 end
 
 # Runs the shared area-interchange Jacobian assertions against a system enrolled with
-# `area_interchange_control = true`: (1) no (area_row, area_col) diagonal entry in the
+# `net_interchange_control = true`: (1) no (area_row, area_col) diagonal entry in the
 # structure (the border's zero diagonal — KLU full pivoting handles it); (2) the -1.0
 # column entry at each area's slack-bus P-mismatch row; (3) the
 # full asymptotic FD sweep over EVERY state entry, including the area tail.
 function _verify_area_jacobian(sys::PSY.System, label::String)
     pf = PF.ACPowerFlow{NewtonRaphsonACPowerFlow}(;
         correct_bustypes = true,
-        area_interchange_control = true,
+        net_interchange_control = true,
     )
     data = PF.PowerFlowData(pf, sys)
     @test PF.n_controlled_areas(data) >= 1
@@ -284,7 +284,8 @@ end
 @testset "Jacobian verification with area interchange control (2-area, 1 controlled)" begin
     sys = _make_two_area_system()
     _set_slack!(sys, "Bus 6")
-    _add_area_interchange!(sys, "Area2", "Area1", 0.3; name = "A2_A1")
+    _set_schedule!(sys, "Area1", -0.3)
+    _set_schedule!(sys, "Area2", 0.3)
     _verify_area_jacobian(sys, "polar area interchange (1 controlled area)")
 end
 
@@ -308,7 +309,8 @@ _c14_gspf(c14) = Dict(
 function _area_interchange_fixture()
     sys = _make_two_area_system()
     _set_slack!(sys, "Bus 6")
-    _add_area_interchange!(sys, "Area2", "Area1", 0.3; name = "A2_A1")
+    _set_schedule!(sys, "Area1", -0.3)
+    _set_schedule!(sys, "Area2", 0.3)
     return sys
 end
 
@@ -364,7 +366,7 @@ end
     area_sys = _area_interchange_fixture()
     _check_fused_kernel(
         PF.PowerFlowData(
-            nr(; correct_bustypes = true, area_interchange_control = true), area_sys),
+            nr(; correct_bustypes = true, net_interchange_control = true), area_sys),
         "area interchange",
     )
 end
@@ -449,7 +451,7 @@ end
         ("two LCCs", nr(; correct_bustypes = true), build_lcc_control_system()),
         ("VSC", nr(; correct_bustypes = true), _build_vsc_system()),
         ("area interchange",
-            nr(; correct_bustypes = true, area_interchange_control = true),
+            nr(; correct_bustypes = true, net_interchange_control = true),
             area_sys),
     ]
     n_slotted = 0
