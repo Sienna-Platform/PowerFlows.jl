@@ -1422,7 +1422,7 @@ function area_interchange_results_dataframe(
             (
                 area = area.name,
                 ni_solved = sys_basepower * ni_solved,
-                pdes = sys_basepower * area.pdes,
+                pdes = sys_basepower * area.pdes[time_step],
                 delta_p = sys_basepower * delta_p_pu,
                 schedule_status = schedule_status,
                 beyond_limits = beyond_limits,

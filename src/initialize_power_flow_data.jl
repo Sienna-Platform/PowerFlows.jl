@@ -195,7 +195,7 @@ function initialize_power_flow_data!(
     # `PowerFlowData` is immutable but `area_interchange` is a mutable struct: `append!`
     # grows its Vector fields in place (mirroring `lcc`); `delta_p` (a Matrix) can't grow
     # rows in place, so it is reassigned wholesale from `build_area_interchange_data`.
-    if get_area_interchange_control(pf)
+    if get_net_interchange_control(pf)
         aid = build_area_interchange_data(pf, sys, data)
         append!(data.area_interchange.areas, aid.areas)
         append!(data.area_interchange.ties, aid.ties)

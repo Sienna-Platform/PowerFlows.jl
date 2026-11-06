@@ -170,33 +170,38 @@ function _load_active_power_parts(::PowerFlowEvaluationModel, l::PSY.ElectricLoa
     return (PSY.get_active_power(l, u"SU"), 0.0, 0.0)
 end
 
-function _add_active_power_parts!(p, l::PSY.ElectricLoad, pf, bus_ix::Int)
+function _add_active_power_parts!(
+    withdrawals::NTuple{3, Vector{Float64}},
+    l::PSY.ElectricLoad,
+    pf::PowerFlowEvaluationModel,
+    bus_ix::Int,
+)
     parts = _load_active_power_parts(pf, l)
     for k in 1:3
-        p[k][bus_ix] += parts[k]
+        withdrawals[k][bus_ix] += parts[k]
     end
     return
 end
 
 function _add_exponential_load!(
     pf::AbstractDCPowerFlow,
-    p,
-    q,
+    withdrawals::NTuple{3, Vector{Float64}},
+    q::NTuple{3, Vector{Float64}},
     l::PSY.ExponentialLoad,
     bus_ix::Int,
 )
-    _add_active_power_parts!(p, l, pf, bus_ix)
+    _add_active_power_parts!(withdrawals, l, pf, bus_ix)
     return
 end
 
 function _add_exponential_load!(
     pf::PowerFlowEvaluationModel,
-    p,
-    q,
+    withdrawals::NTuple{3, Vector{Float64}},
+    q::NTuple{3, Vector{Float64}},
     l::PSY.ExponentialLoad,
     bus_ix::Int,
 )
-    _add_active_power_parts!(p, l, pf, bus_ix)
+    _add_active_power_parts!(withdrawals, l, pf, bus_ix)
     q[_exponential_zip_slot(l, PSY.get_β(l))][bus_ix] += PSY.get_reactive_power(l, u"SU")
     return
 end

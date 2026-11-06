@@ -46,7 +46,7 @@ end
         maxIterations = 30,
         check_reactive_power_limits = true,
         control_discrete_devices = true,
-        area_interchange_control = true,
+        net_interchange_control = true,
         enhanced_flat_start = true,
     )
     pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; solution_parameters = params)
@@ -118,7 +118,7 @@ end
     @test params.maxIterations == 20
     @test params.check_reactive_power_limits    # VARLIM=0 applies the limits
     @test !params.control_discrete_devices
-    @test !params.area_interchange_control
+    @test !params.net_interchange_control
 
     # A v33 file carries no solution records at all.
     @test isnothing(read_solution_parameters(joinpath(TEST_DATA_DIR, "14_bus.raw")))
@@ -139,7 +139,7 @@ end
         maxIterations = 30,
         check_reactive_power_limits = true,
         control_discrete_devices = true,
-        area_interchange_control = true,
+        net_interchange_control = true,
     )
     pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; solution_parameters = params)
 
@@ -158,8 +158,8 @@ end
     @test recovered.maxIterations == params.maxIterations
     @test recovered.check_reactive_power_limits
     @test recovered.control_discrete_devices
-    @test recovered.area_interchange_control
-    @test recovered.tie_definition === :lines_only
+    @test recovered.net_interchange_control
+    @test recovered.tie_definition === PF.LinesOnly()
 
     written = _write_records(pf, params)
     reparsed = PF.read_solution_records(path)
@@ -257,10 +257,9 @@ end
 
 @testset "AREAIN=2 reads as tie lines and loads" begin
     values = PF.SolutionRecordValues(; areain = 2)
-    @test PF.solution_parameters(values, 100.0).tie_definition === :lines_and_loads
+    @test PF.solution_parameters(values, 100.0).tie_definition === PF.LinesAndLoads()
     @test PF.solution_parameters(
         PF.SolutionRecordValues(; areain = 1),
         100.0,
-    ).tie_definition ===
-          :lines_only
+    ).tie_definition === PF.LinesOnly()
 end

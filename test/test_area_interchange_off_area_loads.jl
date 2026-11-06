@@ -1,4 +1,4 @@
-# Off-area loads in area interchange control (`tie_definition = :lines_and_loads`, PSS/E
+# Off-area loads in area interchange control (`tie_definition = LinesAndLoads()`, PSS/E
 # AREAIN=2). Area1 holds REF and never enrolls, so Area2 is the one controlled area.
 # `host = true`: the load sits at a PQ bus of Area2 and Area1 owns it (Area2 exports it,
 # sign +1). `host = false`: the load sits at a PQ bus of Area1 and Area2 owns it (Area2
@@ -36,14 +36,14 @@ end
 
 function _pf_loads(solver = NewtonRaphsonACPowerFlow; kwargs...)
     return ACPolarPowerFlow{solver}(;
-        area_interchange_control = true,
-        tie_definition = :lines_and_loads,
+        net_interchange_control = true,
+        tie_definition = LinesAndLoads(),
         kwargs...,
     )
 end
 
 _pf_lines(solver = NewtonRaphsonACPowerFlow) =
-    ACPolarPowerFlow{solver}(; area_interchange_control = true)
+    ACPolarPowerFlow{solver}(; net_interchange_control = true)
 
 # Active power of the off-area load at the solved voltage of its bus, pu system base.
 function _off_area_load_p(data, load_bus_ix::Int)
@@ -73,8 +73,8 @@ end
     @test load.sign == 1.0
     @test load.area_tail == 1
     @test aid.pristine_off_area_loads == aid.off_area_loads
-    @test_throws ArgumentError ACPolarPowerFlow(;
-        area_interchange_control = true, tie_definition = :loads_only)
+    @test_throws TypeError ACPolarPowerFlow(;
+        net_interchange_control = true, tie_definition = :loads_only)
     data_lines = PowerFlowData(_pf_lines(), sys)
     @test isempty(PF.get_area_interchange_data(data_lines).off_area_loads)
 end
@@ -242,4 +242,139 @@ end
         aid.pristine_ties, aid.pristine_dc_ties, aid.pristine_off_area_loads, 1, data, 1,
     )
     @test isapprox(ni, _OFF_AREA_PDES2; atol = 1e-8)
+end
+
+# Load "Bus6" sits at Bus 6 of Area2 (a PV bus under a tight Q limit). Area1 or Area3 owns it.
+function _three_area_off_area_fixture(owners::Vector{String})
+    sys = _three_area_transfer_fixture(; slack_area3 = true)
+    load = PSY.get_component(PSY.PowerLoad, sys, "Bus6")
+    for owner in owners
+        PSY.set_out_of_area_loads!(
+            PSY.get_component(PSY.Area, sys, owner), PSY.ElectricLoad[load])
+    end
+    return sys
+end
+
+# Net interchange of every enrolled area, from the pristine records, at `time_step`.
+function _enrolled_net_interchange(data, time_step::Int = 1)
+    aid = PF.get_area_interchange_data(data)
+    return [
+        PF._area_net_interchange(
+            aid.pristine_ties, aid.pristine_dc_ties, aid.pristine_off_area_loads,
+            area.tail_ix, data, time_step,
+        ) for area in aid.pristine_areas
+    ]
+end
+
+@testset "area interchange off-area load survives a PV -> PQ flip at its bus" begin
+    sys = _three_area_off_area_fixture(["Area1"])
+    gen6 = PSY.get_component(PSY.ThermalStandard, sys, "Bus6")
+    PSY.set_reactive_power_limits!(gen6, (min = -0.001 * u"SU", max = 0.24 * u"SU"))
+    pf = _pf_loads(; check_reactive_power_limits = true)
+    data = PowerFlowData(pf, sys)
+    load_bus_ix = only(PF.get_area_interchange_data(data).off_area_loads).bus_ix
+    @test data.bus_type[load_bus_ix, 1] == PSY.ACBusTypes.PV
+    @test solve_power_flow!(data)
+    @test data.bus_type[load_bus_ix, 1] == PSY.ACBusTypes.PQ
+    aid = PF.get_area_interchange_data(data)
+    @test isapprox(
+        _enrolled_net_interchange(data), [area.pdes[1] for area in aid.pristine_areas];
+        atol = 1e-6,
+    )
+end
+
+@testset "area interchange off-area load in area B owned by area C, both enrolled" begin
+    sys = _three_area_off_area_fixture(["Area3"])
+    data = PowerFlowData(_pf_loads(), sys)
+    aid = PF.get_area_interchange_data(data)
+    @test sort([area.name for area in aid.areas]) == ["Area2", "Area3"]
+    @test sort([load.sign for load in aid.off_area_loads]) == [-1.0, 1.0]
+    @test all(load.name == "Bus6" for load in aid.off_area_loads)
+    @test solve_power_flow!(data)
+    @test isapprox(
+        _enrolled_net_interchange(data), [area.pdes[1] for area in aid.pristine_areas];
+        atol = 1e-6,
+    )
+end
+
+@testset "set_off_area_load_power! updates every record and the interchange follows" begin
+    delta = 0.05
+    function solve_second_step(use_setter::Bool)
+        sys = _three_area_off_area_fixture(["Area3"])
+        step_data = PowerFlowData(_pf_loads(; time_steps = 2), sys)
+        step_aid = PF.get_area_interchange_data(step_data)
+        @test PF.has_off_area_load(step_data, "Bus6")
+        @test !PF.has_off_area_load(step_data, "no_such_load")
+        @test solve_power_flow!(step_data; time_steps = [1])
+        records = step_aid.pristine_off_area_loads
+        (P, I, Z) = (
+            records[1].p_constant_power[1],
+            records[1].p_constant_current[1],
+            records[1].p_constant_impedance[1],
+        )
+        step_data.bus_active_power_withdrawals[records[1].bus_ix, 2] += delta
+        if use_setter
+            PF.set_off_area_load_power!(step_data, "Bus6", 2, P + delta, I, Z)
+            for load in records
+                @test load.p_constant_power[2] == P + delta
+                @test load.p_constant_power[1] == P
+            end
+            for (work, pristine) in zip(step_aid.off_area_loads, records)
+                @test work.p_constant_power === pristine.p_constant_power
+            end
+        end
+        @test solve_power_flow!(step_data; time_steps = [2])
+        return (step_data, step_aid)
+    end
+    (data, aid) = solve_second_step(true)
+    @test isapprox(
+        _enrolled_net_interchange(data, 2), [area.pdes[2] for area in aid.pristine_areas];
+        atol = 1e-6,
+    )
+    (data_stale, _) = solve_second_step(false)
+    @test !isapprox(
+        PF.get_area_interchange_data(data_stale).delta_p[:, 2],
+        aid.delta_p[:, 2];
+        atol = 1e-4,
+    )
+    @test_throws r"no_such_load" PF.set_off_area_load_power!(
+        data, "no_such_load", 2, 0.0, 0.0, 0.0)
+    @test_throws BoundsError PF.set_off_area_load_power!(data, "Bus6", 3, 0.0, 0.0, 0.0)
+end
+
+@testset "area interchange off-area load at an ISOLATED bus is skipped with a warning" begin
+    sys = _off_area_fixture()
+    bus = _add_simple_bus!(sys, 999, PSY.ACBusTypes.ISOLATED, 230)
+    PSY.set_area!(bus, PSY.get_component(PSY.Area, sys, "Area2"))
+    iso_load = _add_simple_load!(sys, bus, 0.05, 0.02)
+    area1 = PSY.get_component(PSY.Area, sys, "Area1")
+    PSY.set_out_of_area_loads!(
+        area1,
+        PSY.ElectricLoad[PSY.get_out_of_area_loads(area1)..., iso_load],
+    )
+    data =
+        @test_logs (:warn, r"off-area load \"load_999\".*ISOLATED bus bus_999") match_mode =
+            :any PowerFlowData(_pf_loads(), sys)
+    aid = PF.get_area_interchange_data(data)
+    @test [load.name for load in aid.off_area_loads] == ["OffAreaLoad"]
+    @test !PF.has_off_area_load(data, "load_999")
+    @test solve_power_flow!(data)
+end
+
+@testset "area interchange off-area load clear_injection_data! zeroes the records" begin
+    sys = _off_area_fixture()
+    data = PowerFlowData(_pf_loads(; time_steps = 2), sys)
+    records = PF.get_area_interchange_data(data).pristine_off_area_loads
+    @test any(!iszero, only(records).p_constant_power)
+    PF.clear_injection_data!(data)
+    for r in records
+        @test all(iszero, r.p_constant_power)
+        @test all(iszero, r.p_constant_current)
+        @test all(iszero, r.p_constant_impedance)
+    end
+    PF.set_off_area_load_power!(data, "OffAreaLoad", 2, 0.2, 0.1, 0.08)
+    r = only(records)
+    @test r.p_constant_power == [0.0, 0.2]
+    @test r.p_constant_current == [0.0, 0.1]
+    @test r.p_constant_impedance == [0.0, 0.08]
 end

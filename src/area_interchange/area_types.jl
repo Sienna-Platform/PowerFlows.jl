@@ -8,13 +8,15 @@ A PSY `Area` enrolled for embedded net-interchange control.
 # Fields
 - `name::String`: PSY area name.
 - `slack_bus_ix::Int`: reduced-network bus index of the area slack (PSS/E ISW).
-- `pdes::Float64`: net interchange target, pu system base.
+- `pdes::Vector{Float64}`: net interchange target per time step, pu system base, positive for
+  export. The working and pristine records of one area share this vector. Use
+  [`set_scheduled_net_interchange!`](@ref) to update it.
 - `tail_ix::Int`: 1-based slot in the area tail.
 """
 struct ControlledArea
     name::String
     slack_bus_ix::Int
-    pdes::Float64
+    pdes::Vector{Float64}
     tail_ix::Int
 end
 
@@ -97,17 +99,21 @@ One off-area load term of `NI_a` (PSS/E AREAIN=2). A load that area `o` owns at 
 `sign * (P_P + P_I * |V| + P_Z * |V|^2)` to `NI_a`.
 
 # Fields
+- `name::String`: PSY load name. A load owned by one area at a bus of another has one record
+  per enrolled area, all with this name. Use [`set_off_area_load_power!`](@ref) to update them.
 - `area_tail::Int`: `tail_ix` of the enrolled area. Pristine in `pristine_off_area_loads`,
   working in `off_area_loads` (see `AreaInterchangeData`).
 - `sign::Float64`: `+1.0` for the area of the load's bus, `-1.0` for the owning area.
 - `bus_ix::Int`: reduced-network index of the load's bus.
 - `p_constant_power::Vector{Float64}`, `p_constant_current::Vector{Float64}`,
   `p_constant_impedance::Vector{Float64}`: active power ZIP parts per time step, pu system
-  base at 1 pu voltage. All zero for an unavailable load. A caller that rewrites
-  `bus_active_power_withdrawals[:, t]` must also write `p_constant_power[t]` (and the other
-  parts), or `NI_a` and the bus balance disagree.
+  base at 1 pu voltage. All zero for an unavailable load. `clear_injection_data!` sets
+  these to zero. A caller that rewrites `bus_active_power_withdrawals[:, t]` must also call
+  [`set_off_area_load_power!`](@ref) for that load, or `NI_a` and the bus balance disagree.
+  Each record owns its vectors; the working and pristine records of one load share them.
 """
 struct OffAreaLoad
+    name::String
     area_tail::Int
     sign::Float64
     bus_ix::Int
@@ -126,7 +132,7 @@ has been de-enrolled).
 
 # Fields
 - `name::String`: PSY area name — matches a `pristine_areas` entry by name.
-- `pdes::Float64`: the area's original net-interchange target, pu system base — unaffected
+- `pdes::Float64`: the area's net-interchange target at that time step, pu system base — unaffected
   by relaxation or by any tail renumbering a de-enrollment does to OTHER areas.
 """
 struct RelaxedAreaRecord
@@ -176,7 +182,7 @@ Always present on [`PowerFlowData`](@ref) — empty vectors when control is off,
 - `off_area_loads::Vector{OffAreaLoad}`, `pristine_off_area_loads::Vector{OffAreaLoad}`:
   off-area load terms from `build_off_area_loads`, WORKING and PRISTINE sets, keyed by the
   matching `tail_ix` exactly like `ties`/`pristine_ties`. A de-enrolled area's records leave
-  the working set. Empty unless `tie_definition === :lines_and_loads`.
+  the working set. Empty unless `tie_definition` is [`LinesAndLoads`](@ref).
 """
 mutable struct AreaInterchangeData
     areas::Vector{ControlledArea}

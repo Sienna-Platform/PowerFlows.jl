@@ -161,7 +161,7 @@ function _set_area_tail_residuals!(
         ni[load.area_tail] += _off_area_load_active_power(load, Vm, time_step)
     end
     @inbounds for area in aid.areas
-        F[area_off + area.tail_ix] = ni[area.tail_ix] - area.pdes
+        F[area_off + area.tail_ix] = ni[area.tail_ix] - area.pdes[time_step]
     end
     return
 end
@@ -311,8 +311,8 @@ rebuilt at the new (smaller) size with each survivor's row carried over from its
 not corrupted by a de-enrollment that only THIS time step's relax loop decided on).
 
 Invalidates the Jacobian-structure/NR-factorization caches for the reason documented on
-`_restore_pristine_area_set!`. The dropped `ControlledArea`'s ORIGINAL `pdes` survives on
-it, unaffected by the renumbering.
+`_restore_pristine_area_set!`. The dropped `ControlledArea`'s `pdes` vector (all time
+steps) survives on it, shared with the pristine record and unaffected by the renumbering.
 """
 function _deenroll_area!(data::ACPowerFlowData, drop_tail_ix::Int)
     aid = data.area_interchange
@@ -345,7 +345,7 @@ function _deenroll_area!(data::ACPowerFlowData, drop_tail_ix::Int)
     ]
     new_off_area_loads = [
         OffAreaLoad(
-            _translate(load.area_tail), load.sign, load.bus_ix,
+            load.name, _translate(load.area_tail), load.sign, load.bus_ix,
             load.p_constant_power, load.p_constant_current, load.p_constant_impedance,
         ) for load in aid.off_area_loads if load.area_tail != drop_tail_ix
     ]
@@ -384,8 +384,9 @@ function _warn_area_violations(data::ACPowerFlowData, time_step::Int)
     for area in aid.areas
         gap = gaps[area.tail_ix]
         abs(gap) > aid.tolerance || continue
+        pdes = area.pdes[time_step]
         @warn "Area interchange: area \"$(area.name)\" achieved NI = " *
-              "$(area.pdes + gap) misses its target PDES = $(area.pdes) by $gap " *
+              "$(pdes + gap) misses its target PDES = $pdes by $gap " *
               "(tolerance $(aid.tolerance))."
     end
     return

@@ -1341,3 +1341,22 @@ end
     )
     @test parse(Float64, split(record, ",")[4]) ≈ 0.07 * PSY.get_base_power(sys, u"NU")
 end
+
+@testset "PSSE Exporter: area names are sanitized to a valid ARNAME" begin
+    sys = load_test_system("pti_case16_complete_sys")
+    long_area = PSY.Area(;
+        name = "-a_long_area_name", scheduled_net_interchange = 0.1, input_basis = u"CU",
+    )
+    PSY.add_component!(sys, long_area)
+    export_location = joinpath(test_psse_export_dir, "v33", "long_area_name")
+    exporter = PSSEExporter(sys, :v33, export_location; overwrite = true)
+    write_export(exporter, "long_area_name"; overwrite = true)
+    raw_path, _ = get_psse_export_paths(joinpath(export_location, "long_area_name"))
+    @test any(endswith("'a_long_area_'"), readlines(raw_path))
+
+    bad_area = PSY.Area(;
+        name = "---", scheduled_net_interchange = 0.1, input_basis = u"CU")
+    PSY.add_component!(sys, bad_area)
+    bad_exporter = PSSEExporter(sys, :v33, export_location; overwrite = true)
+    @test_throws r"Area \"---\"" write_export(bad_exporter, "bad_area"; overwrite = true)
+end
