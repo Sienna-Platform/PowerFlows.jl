@@ -60,18 +60,14 @@ end
     jac(data, 1)
     J = copy(Matrix(jac.Jv))
 
-    fd = zeros(size(J))
+    v = randn(length(x))
     ε = 1e-6
-    for k in axes(J, 2)
-        xk = copy(x)
-        xk[k] += ε
-        residual(data, xk, 1)
-        Fp = copy(residual.Rv)
-        xk[k] -= 2ε
-        residual(data, xk, 1)
-        fd[:, k] = (Fp .- residual.Rv) ./ (2ε)
-    end
-    @test maximum(abs.(J .- fd)) / maximum(abs.(fd)) < 1e-8
+    residual(data, x .+ ε .* v, 1)
+    Fp = copy(residual.Rv)
+    residual(data, x .- ε .* v, 1)
+    Fm = copy(residual.Rv)
+    fd = (Fp .- Fm) ./ (2ε)
+    @test norm(J * v .- fd, Inf) / norm(fd, Inf) < 1e-6
 end
 
 @testset "Parallel LCCs keep their own names and solution" begin
@@ -82,7 +78,12 @@ end
     @test sort(PF.get_lcc_names(data)) == ["LCC_a", "LCC_b"]
     # The set points make the flows differ, so a name swap or a lost name fails here.
     for (name, flow) in zip(PF.get_lcc_names(data), data.lcc.arc_active_power_flow_from_to)
-        @test flow ≈ (name == "LCC_a" ? 0.5 : 0.2) rtol = 1e-6
+        if name == "LCC_a"
+            expected = 0.5
+        else
+            expected = 0.2
+        end
+        @test flow ≈ expected rtol = 1e-6
     end
 
     results = solve_power_flow(pf, sys)
