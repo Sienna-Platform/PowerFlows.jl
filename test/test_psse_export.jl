@@ -1009,7 +1009,7 @@ end
     pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(; control_discrete_devices = true)
     data = PowerFlowData(pf, sys)
     @test PowerFlows.solve_power_flow!(data)
-    t = data.controlled_devices.taps[1]
+    t = data.controlled_devices.voltage_taps[1]
     @test t.current != tap_before
 
     export_location = joinpath(test_psse_export_dir, "v33", "controlled_tap_update")

@@ -707,3 +707,110 @@ end
     @test_throws r"Area \"Area2\" lists load \"OffAreaLoad\"" PF.build_off_area_loads(
         pf, sys, data, Dict("Area2" => 1))
 end
+
+_add_tie_fixture_leg!(sys, ::String, from, to, ::Nothing, band) =
+    _add_simple_line!(sys, from, to, 1e-2, 5e-2, 0.0)
+function _add_tie_fixture_leg!(sys, name::String, from, to, objective, band)
+    tx = TwoWindingTransformer(;
+        name = name,
+        circuit = TransformerCircuit(;
+            available = true,
+            arc = Arc(; from = from, to = to),
+            r = 0.01,
+            x = 0.10,
+            tap = 1.0,
+            rating = 1.0,
+            base_power = 100.0,
+            control_objective = objective,
+            tap_ratio_limits = (min = 0.9, max = 1.1),
+            phase_angle_limits = (min = -pi / 6, max = pi / 6),
+            controlled_active_power_flow_limits = band,
+            controlled_reactive_power_flow_limits = band,
+            input_basis = u"CU",
+        ), input_basis = u"CU",
+    )
+    add_component!(sys, tx)
+    return tx
+end
+
+# REF(1, AreaA) ─"tie"─ SLACK(2, AreaB) ─"inner"─ PQ(3, AreaB). Each leg is a line (`nothing`)
+# or a transformer circuit with that control objective and flow band `band`. AreaA holds REF
+# and has no schedule, so AreaB is the only controlled area.
+function _controlled_tie_fixture(;
+    tie = nothing,
+    inner = nothing,
+    pdes_b = -0.5,
+    band = (min = 0.4, max = 0.6),
+)
+    sys = System(100.0)
+    area_a = PSY.Area(; name = "AreaA", scheduled_net_interchange = nothing,
+        input_basis = u"CU")
+    area_b = PSY.Area(; name = "AreaB", scheduled_net_interchange = pdes_b,
+        input_basis = u"CU")
+    PSY.add_component!(sys, area_a)
+    PSY.add_component!(sys, area_b)
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230)
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.PV, 230)
+    b3 = _add_simple_bus!(sys, 3, ACBusTypes.PQ, 230)
+    PSY.set_area!(b1, area_a)
+    PSY.set_area!(b2, area_b)
+    PSY.set_area!(b3, area_b)
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    _add_simple_thermal_standard!(sys, b2, 0.1, 0.0)
+    _add_simple_load!(sys, b3, 0.6, 0.1)
+    _add_tie_fixture_leg!(sys, "tie", b1, b2, tie, band)
+    _add_tie_fixture_leg!(sys, "inner", b2, b3, inner, band)
+    PSY.set_bustype!(b2, ACBusTypes.SLACK)
+    return sys
+end
+
+function _enroll_controlled_tie_fixture(sys)
+    data = PowerFlowData(ACPowerFlow(), sys)
+    pf = ACPolarPowerFlow(; area_interchange_control = true)
+    return (pf, data)
+end
+
+@testset "area interchange diag pollution guard skips phase shifters" begin
+    TCO = PSY.TransformerControlObjective
+    sys = _controlled_tie_fixture(; inner = TCO.ACTIVE_POWER_FLOW)
+    pf, data = _enroll_controlled_tie_fixture(sys)
+    aid = @test_logs min_level = Logging.Warn PF.build_area_interchange_data(pf, sys, data)
+    @test PF.n_controlled_areas(aid) == 1
+
+    sys = _controlled_tie_fixture(; inner = TCO.REACTIVE_POWER_FLOW)
+    pf, data = _enroll_controlled_tie_fixture(sys)
+    @test_logs(
+        (:warn, r"ControlledFlowTap \"inner\": incident to the tie"),
+        min_level = Logging.Warn,
+        PF.build_area_interchange_data(pf, sys, data)
+    )
+end
+
+@testset "area interchange phase shifter on a tie warns" begin
+    TCO = PSY.TransformerControlObjective
+    # AreaB exports minus the from-bus flow of "tie", so its export band is [-0.6, -0.4].
+    sys = _controlled_tie_fixture(; tie = TCO.ACTIVE_POWER_FLOW, pdes_b = -0.5)
+    pf, data = _enroll_controlled_tie_fixture(sys)
+    aid = @test_logs(
+        (:warn, r"ControlledPhaseShifter \"tie\": .* uncontrolled area and area \"AreaB\""),
+        min_level = Logging.Warn,
+        PF.build_area_interchange_data(pf, sys, data)
+    )
+    @test PF.n_controlled_areas(aid) == 1
+
+    sys = _controlled_tie_fixture(; tie = TCO.ACTIVE_POWER_FLOW, pdes_b = 0.3)
+    pf, data = _enroll_controlled_tie_fixture(sys)
+    @test_logs(
+        (:warn, r"ControlledPhaseShifter \"tie\": a member of the tie"),
+        (:warn, r"Area \"AreaB\": every tie .*PDES = 0\.3 p\.u\..*\[-0\.6, -0\.4\]"),
+        min_level = Logging.Warn,
+        PF.build_area_interchange_data(pf, sys, data)
+    )
+end
+
+@testset "area interchange no phase shifter warning off the tie" begin
+    TCO = PSY.TransformerControlObjective
+    sys = _controlled_tie_fixture(; tie = TCO.REACTIVE_POWER_FLOW, pdes_b = 0.3)
+    pf, data = _enroll_controlled_tie_fixture(sys)
+    @test_logs min_level = Logging.Warn PF.build_area_interchange_data(pf, sys, data)
+end

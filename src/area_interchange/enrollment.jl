@@ -178,12 +178,14 @@ _tie_corridor_member(fix::Int, tix::Int, tie::AreaTie) =
     (fix == tie.from_bus_ix && tix == tie.to_bus_ix) ||
     (fix == tie.to_bus_ix && tix == tie.from_bus_ix)
 
-# Guard 7a: a voltage-controlling tap incident to a tie endpoint bus, but between a
+# Guard 7a: a ratio-moving transformer circuit incident to a tie endpoint bus, but between a
 # DIFFERENT bus pair than that tie's own corridor.
-function _warn_tap_pollution_hazard(tap_name::String, fix::Int, tix::Int, tie::AreaTie)
+function _warn_tap_pollution_hazard(
+    label::String, tap_name::String, fix::Int, tix::Int, tie::AreaTie,
+)
     _tie_corridor_member(fix, tix, tie) && return
     (_tie_touches(fix, tie) || _tie_touches(tix, tie)) || return
-    @warn "ControlledTap \"$tap_name\": incident to the tie between reduced-\
+    @warn "$label \"$tap_name\": incident to the tie between reduced-\
         network buses $(tie.from_bus_ix) and $(tie.to_bus_ix) without being a member of \
         its corridor; its tap movement mutates that tie endpoint's Y-bus diagonal, which \
         the cached `diag_pollution` correction cannot track live. Net-interchange \
@@ -217,7 +219,9 @@ function _warn_diag_pollution_hazards(
     reverse_bus_search_map::Dict{Int, Int},
 )
     isempty(ties) && return
-    for (name, _, circuit, _, _) in _voltage_controlled_tap_candidates(sys)
+    for (name, _, circuit, _, _) in _controlled_circuit_candidates(sys)
+        T = _circuit_control(PSY.get_control_objective(circuit))
+        _moves_diagonal(T) || continue
         arc = PSY.get_arc(circuit)
         fix = _resolve_bus_ix(
             bus_lookup, reverse_bus_search_map, PSY.get_number(PSY.get_from(arc)))
@@ -225,7 +229,7 @@ function _warn_diag_pollution_hazards(
             bus_lookup, reverse_bus_search_map, PSY.get_number(PSY.get_to(arc)))
         (isnothing(fix) || isnothing(tix)) && continue
         for tie in ties
-            _warn_tap_pollution_hazard(name, fix, tix, tie)
+            _warn_tap_pollution_hazard(_control_label(T), name, fix, tix, tie)
         end
     end
     for sa in PSY.get_available_components(PSY.SwitchedAdmittance, sys)
@@ -236,6 +240,124 @@ function _warn_diag_pollution_hazards(
         for tie in ties
             _warn_shunt_pollution_hazard(sa, bix, tie)
         end
+    end
+    return
+end
+
+_tie_key(fix::Int, tix::Int) = (min(fix, tix), max(fix, tix))
+
+function _tail_at(bus_ix::Int, tie::AreaTie)
+    if bus_ix == tie.from_bus_ix
+        return tie.from_area_tail
+    end
+    return tie.to_area_tail
+end
+
+function _tie_area_label(tail::Int, areas::Vector{ControlledArea})
+    if iszero(tail)
+        return "an uncontrolled area"
+    end
+    return "area \"$(areas[tail].name)\""
+end
+
+function _add_export_band!(lo::Vector{Float64}, hi::Vector{Float64}, tail::Int, a, b)
+    iszero(tail) && return
+    lo[tail] += a
+    hi[tail] += b
+    return
+end
+
+# Number of in-service branch arcs in each tie corridor, as `build_area_ties` enumerates them.
+function _corridor_member_counts(
+    sys::PSY.System,
+    tie_of::Dict{Tuple{Int, Int}, Int},
+    bus_lookup::Dict{Int, Int},
+    reverse_bus_search_map::Dict{Int, Int},
+)
+    counts = zeros(Int, length(tie_of))
+    for branch in PSY.get_available_components(PSY.ACTransmission, sys)
+        _tie_in_service(branch) || continue
+        for (arc, _) in _tie_arcs(branch)
+            fix = _resolve_bus_ix(
+                bus_lookup, reverse_bus_search_map, PSY.get_number(PSY.get_from(arc)))
+            tix = _resolve_bus_ix(
+                bus_lookup, reverse_bus_search_map, PSY.get_number(PSY.get_to(arc)))
+            (isnothing(fix) || isnothing(tix)) && continue
+            k = get(tie_of, _tie_key(fix, tix), 0)
+            iszero(k) || (counts[k] += 1)
+        end
+    end
+    return counts
+end
+
+function _only_phase_shifter_ties(
+    tail::Int,
+    ties::Vector{AreaTie},
+    dc_ties::Vector{DCTie},
+    n_members::Vector{Int},
+    n_shifters::Vector{Int},
+)
+    any(t -> t.from_area_tail == tail || t.to_area_tail == tail, dc_ties) && return false
+    found = false
+    for (k, tie) in enumerate(ties)
+        (tie.from_area_tail == tail || tie.to_area_tail == tail) || continue
+        n_shifters[k] == n_members[k] || return false
+        found = true
+    end
+    return found
+end
+
+# Guard 8: a phase shifter in a tie corridor regulates a flow that the area schedule also
+# constrains. PSS/E accepts the combination, so both checks only warn. The band sum ignores
+# tie losses.
+function _warn_phase_shifter_ties(
+    sys::PSY.System,
+    ties::Vector{AreaTie},
+    dc_ties::Vector{DCTie},
+    areas::Vector{ControlledArea},
+    bus_lookup::Dict{Int, Int},
+    reverse_bus_search_map::Dict{Int, Int},
+)
+    isempty(ties) && return
+    tie_of = Dict(_tie_key(t.from_bus_ix, t.to_bus_ix) => k for (k, t) in enumerate(ties))
+    n_shifters = zeros(Int, length(ties))
+    # Per-area export band: a from-bus flow is an export of the from-bus area.
+    band_lo = zeros(length(areas))
+    band_hi = zeros(length(areas))
+    for (name, _, circuit, _, _) in _controlled_circuit_candidates(sys)
+        T = _circuit_control(PSY.get_control_objective(circuit))
+        _is_phase_shifter(T) || continue
+        arc = PSY.get_arc(circuit)
+        fix = _resolve_bus_ix(
+            bus_lookup, reverse_bus_search_map, PSY.get_number(PSY.get_from(arc)))
+        tix = _resolve_bus_ix(
+            bus_lookup, reverse_bus_search_map, PSY.get_number(PSY.get_to(arc)))
+        (isnothing(fix) || isnothing(tix)) && continue
+        k = get(tie_of, _tie_key(fix, tix), 0)
+        iszero(k) && continue
+        tie = ties[k]
+        label = _control_label(T)
+        band = _target_band(ActivePowerFlow(), circuit, label)
+        n_shifters[k] += 1
+        from_tail = _tail_at(fix, tie)
+        to_tail = _tail_at(tix, tie)
+        _add_export_band!(band_lo, band_hi, from_tail, band.min, band.max)
+        _add_export_band!(band_lo, band_hi, to_tail, -band.max, -band.min)
+        @warn "$label \"$name\": a member of the tie between \
+            $(_tie_area_label(from_tail, areas)) and $(_tie_area_label(to_tail, areas)). \
+            Its active-power flow band [$(band.min), $(band.max)] p.u. and the area \
+            net-interchange schedule both constrain this flow and can conflict."
+    end
+    any(!iszero, n_shifters) || return
+    n_members = _corridor_member_counts(sys, tie_of, bus_lookup, reverse_bus_search_map)
+    for area in areas
+        a = area.tail_ix
+        _only_phase_shifter_ties(a, ties, dc_ties, n_members, n_shifters) || continue
+        band_lo[a] <= area.pdes <= band_hi[a] && continue
+        @warn "Area \"$(area.name)\": every tie is a phase shifter with a flow band. The \
+            scheduled net interchange PDES = $(area.pdes) p.u. lies outside the sum of the \
+            bands [$(band_lo[a]), $(band_hi[a])] p.u. The schedule cannot be met and the \
+            phase shifters will saturate."
     end
     return
 end
@@ -485,6 +607,7 @@ function build_area_interchange_data(
         ControlledArea(name, slack_ix_of[name], fill(pdes[name], n_time_steps), tail_ix) for
         (tail_ix, name) in enumerate(enrolled_names)
     ]
+    _warn_phase_shifter_ties(sys, ties, dc_ties, areas, bus_lookup, reverse_bus_search_map)
 
     enrolled_set = Set(enrolled_names)
     _report_unenforceable_schedules(

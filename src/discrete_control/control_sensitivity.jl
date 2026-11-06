@@ -102,31 +102,47 @@ function _refresh_or_rebuild_context(
     return _sensitivity_context(pf, data, ts; kwargs...)
 end
 
-# ∂Y/∂p of the from-side terms (t_c = p·cis(α)); Y_tt = yt is p-independent (see `_branch_terms`).
-function _tap_dY(d::ControlledTap)
-    p, a = d.current, d.alpha
+# ∂Y/∂p of the from-side terms (t = p·cis(α)); Y_tt = yt is p-independent (see `_branch_terms`).
+function _branch_dY(d::ControlledBranch{TapRatio})
+    p, a = d.current, d.fixed
     dYff = -2.0 * d.yt / p^3
     dYft = d.yt * cis(a) / p^2
     dYtf = d.yt * cis(-a) / p^2
     return dYff, dYft, dYtf
 end
 
+# The phase-angle actuator moves α at a fixed ratio p, so |t| and Y_ff do not change.
+function _branch_dY(d::ControlledBranch{PhaseAngle})
+    p, a = d.fixed, d.current
+    dYff = 0.0 + 0.0im
+    c = cis(a)
+    dYft = -im * d.yt * c / p
+    dYtf = im * d.yt * conj(c) / p
+    return dYff, dYft, dYtf
+end
+
+# Explicit part of ∂S_f/∂p: V_f·conj(∂I_f/∂p) at fixed voltages.
+function _explicit_dSf(d::ControlledBranch, Vf::ComplexF64, Vt::ComplexF64)
+    dYff, dYft, _ = _branch_dY(d)
+    return Vf * conj(dYff * Vf + dYft * Vt)
+end
+
 # Row convention: F[2b−1] active, F[2b] reactive balance at bus b (see `_update_residual_values!`).
 # Returns `false` when no analytic form exists here; caller then falls back to the FD probe.
 function _dF_dp!(
     rhs::Vector{Float64},
-    d::ControlledTap,
+    d::ControlledBranch,
     ::ACPowerFlowResidual,
     data,
     ts::Int,
 )
     fill!(rhs, 0.0)
     f, t = d.from_ix, d.to_ix
-    Vf = data.bus_magnitude[f, ts] * cis(data.bus_angles[f, ts])
-    Vt = data.bus_magnitude[t, ts] * cis(data.bus_angles[t, ts])
-    dYff, dYft, dYtf = _tap_dY(d)
+    Vf = _polar_bus_voltage(data, f, ts)
+    Vt = _polar_bus_voltage(data, t, ts)
+    _, _, dYtf = _branch_dY(d)
     # ∂S_i/∂p = V_i·conj(Σ_k ∂Y_ik/∂p·V_k); only Y_ff,Y_ft (row f) and Y_tf (row t) change.
-    dSf = Vf * conj(dYff * Vf + dYft * Vt)
+    dSf = _explicit_dSf(d, Vf, Vt)
     dSt = Vt * conj(dYtf * Vf)
     @inbounds begin
         rhs[2 * f - 1] = real(dSf)
@@ -159,6 +175,10 @@ _dVm_from_sol(::ACPowerFlowResidual, sol::Vector{Float64}, cbus::Int, data, ts::
 
 function _linear_plant_sign(d, data, ts::Int, ctx::_SensitivityContext)
     _dF_dp!(ctx.rhs, d, ctx.residual, data, ts) || return 0.0, false
+    return _quantity_sensitivity(regulated_quantity(d), d, ctx, data, ts)
+end
+
+function _quantity_sensitivity(::BusVoltage, d, ctx::_SensitivityContext, data, ts::Int)
     cbus = controlled_bus_ix(d)
     # Voltage is a free state only at PQ (PV/REF pin it), so dVm/dp = 0 there by construction —
     # matches the FD probe's behavior and freezes the device via the caller's gain floor.
@@ -168,6 +188,72 @@ function _linear_plant_sign(d, data, ts::Int, ctx::_SensitivityContext)
     copyto!(ctx.sol, ctx.rhs)
     solve!(ctx.lin_cache, ctx.sol)        # sol = J⁻¹·(∂F/∂p)
     return _dVm_from_sol(ctx.residual, ctx.sol, cbus, data, ts), true
+end
+
+function _quantity_sensitivity(
+    q::Union{ReactivePowerFlow, ActivePowerFlow},
+    d,
+    ctx::_SensitivityContext,
+    data,
+    ts::Int,
+)
+    copyto!(ctx.sol, ctx.rhs)
+    solve!(ctx.lin_cache, ctx.sol)        # sol = J⁻¹·(∂F/∂p)
+    return _flow_component(q, _dSf_dp(d, ctx.residual, ctx.sol, data, ts)), true
+end
+
+# ∂S_f/∂(θ_f, θ_t, Vm_f, Vm_t) in polar coordinates.
+function _flow_partials_polar(
+    Vf::ComplexF64, Vt::ComplexF64, Yff::ComplexF64, Yft::ComplexF64, If::ComplexF64,
+)
+    cross = Vf * conj(Yft * Vt)
+    dθf = im * cross
+    dθt = -im * cross
+    dVmf = (Vf / abs(Vf)) * conj(If + Yff * Vf)
+    dVmt = Vf * conj(Yft * Vt / abs(Vt))
+    return dθf, dθt, dVmf, dVmt
+end
+
+# ∂S_f/∂(e_f, f_f, e_t, f_t) in rectangular coordinates, V = e + jf.
+function _flow_partials_rect(
+    Vf::ComplexF64, Yff::ComplexF64, Yft::ComplexF64, If::ComplexF64,
+)
+    de_f = conj(If) + Vf * conj(Yff)
+    df_f = im * conj(If) - im * Vf * conj(Yff)
+    de_t = Vf * conj(Yft)
+    df_t = -im * Vf * conj(Yft)
+    return de_f, df_f, de_t, df_t
+end
+
+# ∂S_f/∂p = ∂S_f/∂Y·dY/∂p (explicit) + Σ ∂S_f/∂x_b·dx_b/dp, with dx/dp = −sol.
+function _dSf_dp(
+    d::ControlledBranch,
+    ::ACPowerFlowResidual,
+    sol::Vector{Float64},
+    data,
+    ts::Int,
+)
+    f, t = d.from_ix, d.to_ix
+    Vf = _polar_bus_voltage(data, f, ts)
+    Vt = _polar_bus_voltage(data, t, ts)
+    Yff, Yft, If = _from_side_terms(d, Vf, Vt)
+    dθf, dθt, dVmf, dVmt = _flow_partials_polar(Vf, Vt, Yff, Yft, If)
+    dS = _explicit_dSf(d, Vf, Vt)
+    dS += _polar_bus_term(data.bus_type[f, ts], sol, f, dVmf, dθf)
+    dS += _polar_bus_term(data.bus_type[t, ts], sol, t, dVmt, dθt)
+    return ComplexF64(dS)
+end
+
+# Vm is a free state only at PQ; θ at PQ and PV; REF carries neither (see `update_state!`).
+function _polar_bus_term(
+    bt::PSY.ACBusTypes.Value, sol::Vector{Float64}, b::Int, cVm::ComplexF64, cθ::ComplexF64,
+)
+    if bt == PSY.ACBusTypes.PQ
+        return -(cVm * sol[2 * b - 1] + cθ * sol[2 * b])
+    elseif bt == PSY.ACBusTypes.PV
+        return -(cθ * sol[2 * b])
+    end
+    return 0.0 + 0.0im
 end
 
 # ── Rectangular CI and MCPB ───────────────────────────────────────────────────────────────
@@ -237,10 +323,10 @@ _bus_voltage(r::_RectOrMixedResidual, i::Int) = complex(r.e_state[i], r.f_state[
 _dI_dp(d::Union{ControlledSwitchedShunt, ControlledFACTS}, r::_RectOrMixedResidual) =
     ((d.bus_ix, im * _bus_voltage(r, d.bus_ix)),)
 
-function _dI_dp(d::ControlledTap, r::_RectOrMixedResidual)
+function _dI_dp(d::ControlledBranch, r::_RectOrMixedResidual)
     f, t = d.from_ix, d.to_ix
     Vf, Vt = _bus_voltage(r, f), _bus_voltage(r, t)
-    dYff, dYft, dYtf = _tap_dY(d)
+    dYff, dYft, dYtf = _branch_dY(d)
     return ((f, dYff * Vf + dYft * Vt), (t, dYtf * Vf))
 end
 
@@ -338,4 +424,27 @@ function _sensitivity_residual_jacobian(::ACMixedPowerFlow, data, ts::Int)
     J = ACMixedCPBJacobian(data, residual, ts)
     J(data, ts)
     return residual, J
+end
+
+# Rect/mixed: (e, f) are free states at PQ and PV; REF slots hold (P, Q), so its voltage is fixed.
+function _dSf_dp(
+    d::ControlledBranch, r::_RectOrMixedResidual, sol::Vector{Float64}, data, ts::Int,
+)
+    f, t = d.from_ix, d.to_ix
+    Vf, Vt = ComplexF64(_bus_voltage(r, f)), ComplexF64(_bus_voltage(r, t))
+    Yff, Yft, If = _from_side_terms(d, Vf, Vt)
+    de_f, df_f, de_t, df_t = _flow_partials_rect(Vf, Yff, Yft, If)
+    dS = _explicit_dSf(d, Vf, Vt)
+    dS += _rect_bus_term(data.bus_type[f, ts], sol, _state_offset(r, f), de_f, df_f)
+    dS += _rect_bus_term(data.bus_type[t, ts], sol, _state_offset(r, t), de_t, df_t)
+    return ComplexF64(dS)
+end
+
+function _rect_bus_term(
+    bt::PSY.ACBusTypes.Value, sol::Vector{Float64}, off::Int, ce::ComplexF64, cf::ComplexF64,
+)
+    if bt == PSY.ACBusTypes.REF
+        return 0.0 + 0.0im
+    end
+    return -(ce * sol[off] + cf * sol[off + 1])
 end
