@@ -422,33 +422,24 @@ function _set_entries_for_lcc_rect!(
         # Tail rows × bus (e, f), chain-ruled from ∂/∂|V|; zero at a REF terminal, whose
         # columns hold (P, Q). Rows 9,10: ∂F_t_fb/∂(e_fb, f_fb), nonzero only with a
         # rectifier-side set point; 11,12: ∂F_t_tb/∂(e_fb, f_fb).
-        if bus_type_fb == PSY.ACBusTypes.REF
-            Jvnz[lcc_nz[9, i]] = 0.0
-            Jvnz[lcc_nz[10, i]] = 0.0
-            Jvnz[lcc_nz[11, i]] = 0.0
-            Jvnz[lcc_nz[12, i]] = 0.0
-        else
+        _zero_lcc_tail_bus_slots!(Jvnz, lcc_nz, i)
+        if bus_type_fb != PSY.ACBusTypes.REF
             de_dV_fb = e_fb / Vm_fb
             df_dV_fb = f_fb / Vm_fb
-            Jvnz[lcc_nz[9, i]] = s.d_Ft_fb_d_V_fb * de_dV_fb
-            Jvnz[lcc_nz[10, i]] = s.d_Ft_fb_d_V_fb * df_dV_fb
-            Jvnz[lcc_nz[11, i]] = s.dP_dV_fb * de_dV_fb
-            Jvnz[lcc_nz[12, i]] = s.dP_dV_fb * df_dV_fb
+            Jvnz[lcc_nz[9, i]] += s.d_Ft_fb_d_V_fb * de_dV_fb
+            Jvnz[lcc_nz[10, i]] += s.d_Ft_fb_d_V_fb * df_dV_fb
+            Jvnz[lcc_nz[11, i]] += s.dP_dV_fb * de_dV_fb
+            Jvnz[lcc_nz[12, i]] += s.dP_dV_fb * df_dV_fb
         end
         # Rows 13,14: ∂F_t_tb/∂(e_tb, f_tb); 21,22: ∂F_t_fb/∂(e_tb, f_tb), nonzero only with
         # an inverter-side set point.
-        if bus_type_tb == PSY.ACBusTypes.REF
-            Jvnz[lcc_nz[13, i]] = 0.0
-            Jvnz[lcc_nz[14, i]] = 0.0
-            Jvnz[lcc_nz[21, i]] = 0.0
-            Jvnz[lcc_nz[22, i]] = 0.0
-        else
+        if bus_type_tb != PSY.ACBusTypes.REF
             de_dV_tb = e_tb / Vm_tb
             df_dV_tb = f_tb / Vm_tb
-            Jvnz[lcc_nz[13, i]] = s.dP_dV_tb * de_dV_tb
-            Jvnz[lcc_nz[14, i]] = s.dP_dV_tb * df_dV_tb
-            Jvnz[lcc_nz[21, i]] = s.d_Ft_fb_d_V_tb * de_dV_tb
-            Jvnz[lcc_nz[22, i]] = s.d_Ft_fb_d_V_tb * df_dV_tb
+            Jvnz[lcc_nz[13, i]] += s.dP_dV_tb * de_dV_tb
+            Jvnz[lcc_nz[14, i]] += s.dP_dV_tb * df_dV_tb
+            Jvnz[lcc_nz[21, i]] += s.d_Ft_fb_d_V_tb * de_dV_tb
+            Jvnz[lcc_nz[22, i]] += s.d_Ft_fb_d_V_tb * df_dV_tb
         end
         # Tail × tail; the scalars helper zeroes the side the set point is not on.
         Jvnz[lcc_nz[15, i]] = s.d_Ft_fb_d_tap_r
@@ -459,6 +450,20 @@ function _set_entries_for_lcc_rect!(
         Jvnz[lcc_nz[20, i]] = s.d_Ft_tb_d_alpha_i
         Jvnz[lcc_nz[23, i]] = s.d_Ft_fb_d_tap_i
         Jvnz[lcc_nz[24, i]] = s.d_Ft_fb_d_alpha_i
+    end
+    return
+end
+
+# Zero the tail-row × bus-column slots of LCC `i`, which the caller then accumulates into. If a
+# reduction merges the terminals (fb == tb), `lcc_nz` rows 9–12 and rows 13, 14, 21, 22 name
+# the same slots, so the from and to terms must add.
+@inline function _zero_lcc_tail_bus_slots!(
+    Jvnz::Vector{Float64},
+    lcc_nz::Matrix{Int},
+    i::Int,
+)
+    for row in (9, 10, 11, 12, 13, 14, 21, 22)
+        @inbounds Jvnz[lcc_nz[row, i]] = 0.0
     end
     return
 end
