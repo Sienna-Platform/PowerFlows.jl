@@ -766,7 +766,7 @@ end
 
 function _enroll_controlled_tie_fixture(sys)
     data = PowerFlowData(ACPowerFlow(), sys)
-    pf = ACPolarPowerFlow(; area_interchange_control = true)
+    pf = ACPolarPowerFlow(; net_interchange_control = true)
     return (pf, data)
 end
 

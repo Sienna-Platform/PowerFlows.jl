@@ -353,9 +353,10 @@ function _warn_phase_shifter_ties(
     for area in areas
         a = area.tail_ix
         _only_phase_shifter_ties(a, ties, dc_ties, n_members, n_shifters) || continue
-        band_lo[a] <= area.pdes <= band_hi[a] && continue
+        pdes = area.pdes[1]
+        band_lo[a] <= pdes <= band_hi[a] && continue
         @warn "Area \"$(area.name)\": every tie is a phase shifter with a flow band. The \
-            scheduled net interchange PDES = $(area.pdes) p.u. lies outside the sum of the \
+            scheduled net interchange PDES = $(pdes) p.u. lies outside the sum of the \
             bands [$(band_lo[a]), $(band_hi[a])] p.u. The schedule cannot be met and the \
             phase shifters will saturate."
     end
