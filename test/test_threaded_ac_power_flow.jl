@@ -221,6 +221,25 @@ end
     @test all(isnothing(s.solver_cache[]) for s in d.worker_slots[cleared])
 end
 
+@testset "a raising serial solve clears its caches" begin
+    T = 8
+    for F in (ACPolarPowerFlow, ACRectangularPowerFlow, ACMixedPowerFlow)
+        pf = F(; time_steps = T, solution_parameters = _threaded_params(1))
+        d = PowerFlowData(
+            pf, PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false))
+        prepare_ts_data!(d, T)
+        @test solve_power_flow!(d)
+        @test !isnothing(d.polar_nr_cache[]) || !isnothing(d.solver_cache[])
+        saved = d.bus_type[:, 7]
+        d.bus_type[:, 7] .= PSY.ACBusTypes.PQ
+        @test_throws ArgumentError solve_power_flow!(d)
+        @test isnothing(d.polar_nr_cache[])
+        @test isnothing(d.solver_cache[])
+        d.bus_type[:, 7] .= saved
+        @test solve_power_flow!(d)
+    end
+end
+
 @testset "threaded parity: Q limits" begin
     seq, thr = _solve_sequential_and_threaded(
         () -> PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false),

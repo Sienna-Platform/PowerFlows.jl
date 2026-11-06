@@ -304,8 +304,8 @@ function solve_power_flow!(
             ts_converged, data, pf, sorted_time_steps, n_work, merged_kwargs)
     else
         backend = resolve_linear_solver_backend(get(merged_kwargs, :linear_solver, nothing))
-        _solve_columns!(
-            ts_converged, data, pf, sorted_time_steps, 1:length(sorted_time_steps),
+        _solve_slot!(
+            ts_converged, data, data, pf, sorted_time_steps, 1:length(sorted_time_steps),
             backend, merged_kwargs; build_plan = true)
     end
 
@@ -586,12 +586,12 @@ function _worker_slots!(data::ACPowerFlowData, n::Int)
     return view(slots, 1:n)
 end
 
-# A worker that raised an error leaves its caches in an unknown state.
-# Drop them so that the next call rebuilds them.
+# A solve that raised an error leaves its caches in an unknown state.
+# Drop them so that the next call rebuilds them. A serial solve passes `data` as `slot`.
 function _solve_slot!(
     ts_converged::Vector{Bool},
     worker::ACPowerFlowData,
-    slot::WorkerSlot,
+    slot::Union{WorkerSlot, ACPowerFlowData},
     pf::AbstractACPowerFlow,
     steps::AbstractVector{Int},
     positions,
