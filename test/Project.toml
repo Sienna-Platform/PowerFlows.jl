@@ -28,15 +28,15 @@ Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 TimeSeries = "9e3dc215-6440-5c97-bce1-76c03772f85e"
 
 [sources]
-PowerOperationsOpenAPIModels = {url = "https://github.com/Sienna-Platform/PowerOpenAPIModels.git", rev = "rh/series-admittance", subdir = "PowerOperationsOpenAPIModels.jl"}  # temporary: revert after the SeriesAdmittance PRs merge
+PowerOperationsOpenAPIModels = {url = "https://github.com/Sienna-Platform/PowerOpenAPIModels.git", rev = "rh/series-admittance", subdir = "PowerOperationsOpenAPIModels.jl"}  # temporary: revert after the SeriesCompensator PRs merge
 PowerFlows = {path = ".."}
 InfrastructureSystems = {rev = "IS4", url = "https://github.com/Sienna-Platform/InfrastructureSystems.jl.git"}
 PowerSystemCaseBuilder = {url = "https://github.com/Sienna-Platform/PowerSystemCaseBuilder.jl.git", rev = "psy6"}
-PowerSystems = {url = "https://github.com/Sienna-Platform/PowerSystems.jl.git", rev = "rh/series-admittance"}  # temporary: revert after the SeriesAdmittance PRs merge
-PowerFlowFileParser = {url = "https://github.com/Sienna-Platform/PowerFlowFileParser.jl.git", rev = "rh/series-admittance"}  # temporary: revert after the SeriesAdmittance PRs merge
+PowerSystems = {url = "https://github.com/Sienna-Platform/PowerSystems.jl.git", rev = "rh/series-admittance"}  # temporary: revert after the SeriesCompensator PRs merge
+PowerFlowFileParser = {url = "https://github.com/Sienna-Platform/PowerFlowFileParser.jl.git", rev = "rh/series-admittance"}  # temporary: revert after the SeriesCompensator PRs merge
 # Pinned to the branch rather than the registry: registry PNM v0.24 requires PowerSystems
 # 5.11, which this line (5.10.0) does not satisfy.
-PowerNetworkMatrices = {url = "https://github.com/Sienna-Platform/PowerNetworkMatrices.jl.git", rev = "rh/series-admittance"}  # temporary: revert after the SeriesAdmittance PRs merge
+PowerNetworkMatrices = {url = "https://github.com/Sienna-Platform/PowerNetworkMatrices.jl.git", rev = "rh/series-admittance"}  # temporary: revert after the SeriesCompensator PRs merge
 # PSCB's own [sources] pin for this is ignored once PSCB is a dependency rather than the root
 # project; the test env needs its own pin so Pkg can resolve PSCB's unregistered parser dep.
 PowerTableDataParser = {url = "https://github.com/NLR-Sienna/PowerTableDataParser.jl.git", rev = "psy6"}
