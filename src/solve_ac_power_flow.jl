@@ -304,8 +304,8 @@ function solve_power_flow!(
             ts_converged, data, pf, sorted_time_steps, n_work, merged_kwargs)
     else
         backend = resolve_linear_solver_backend(get(merged_kwargs, :linear_solver, nothing))
-        _solve_slot!(
-            ts_converged, data, data, pf, sorted_time_steps, 1:length(sorted_time_steps),
+        _solve_columns!(
+            ts_converged, data, pf, sorted_time_steps, 1:length(sorted_time_steps),
             backend, merged_kwargs; build_plan = true)
     end
 
@@ -347,6 +347,8 @@ Base.IteratorSize(::Type{ClaimedPositions}) = Base.SizeUnknown()
 
 # `build_plan` is true on the serial driver and on the threaded head step: each builds the
 # lean plan after its first converged step. A task never writes the shared lean slot.
+# A solve that raised an error leaves its caches in an unknown state. Drop them so that the
+# next call rebuilds them. A worker holds its slot's refs, so this also clears the slot.
 function _solve_columns!(
     ts_converged::Vector{Bool},
     data::ACPowerFlowData,
@@ -360,12 +362,18 @@ function _solve_columns!(
     flows = Base.RefValue{ArcFlowScratch}()
     cd = get_controlled_devices(data)
     start_types = PSY.ACBusTypes.Value[]
-    for pos in positions
-        t = steps[pos]
-        build_plan && _snapshot_start_types!(start_types, data, t)
-        converged = _solve_column!(data, pf, t, flows, cd, merged_kwargs)
-        ts_converged[pos] = converged
-        build_plan && _settle_lean_plan!(pf, backend, data, t, converged, start_types)
+    try
+        for pos in positions
+            t = steps[pos]
+            build_plan && _snapshot_start_types!(start_types, data, t)
+            converged = _solve_column!(data, pf, t, flows, cd, merged_kwargs)
+            ts_converged[pos] = converged
+            build_plan && _settle_lean_plan!(pf, backend, data, t, converged, start_types)
+        end
+    catch
+        data.polar_nr_cache[] = nothing
+        data.solver_cache[] = nothing
+        rethrow()
     end
     @debug "lean LU refactors on this cache so far" lean = _lean_counts(data)
     return ts_converged
@@ -536,14 +544,14 @@ function _solve_columns_threaded!(
     if _head_needed(pf, backend, data, slots[1])
         pos = Threads.atomic_add!(next, 1)
         push!(claims[1].taken, pos)
-        _solve_slot!(
-            ts_converged, workers[1], slots[1], pf, steps, pos:pos, backend,
+        _solve_columns!(
+            ts_converged, workers[1], pf, steps, pos:pos, backend,
             merged_kwargs; build_plan = true)
     end
     _seed_workers!(data, workers, first(steps))
     @sync for i in eachindex(workers)
-        Threads.@spawn _solve_slot!(
-            ts_converged, workers[i], slots[i], pf, steps, claims[i], backend,
+        Threads.@spawn _solve_columns!(
+            ts_converged, workers[i], pf, steps, claims[i], backend,
             merged_kwargs; build_plan = false)
     end
     for i in eachindex(workers)
@@ -584,30 +592,6 @@ function _worker_slots!(data::ACPowerFlowData, n::Int)
         push!(slots, WorkerSlot())
     end
     return view(slots, 1:n)
-end
-
-# A solve that raised an error leaves its caches in an unknown state.
-# Drop them so that the next call rebuilds them. A serial solve passes `data` as `slot`.
-function _solve_slot!(
-    ts_converged::Vector{Bool},
-    worker::ACPowerFlowData,
-    slot::Union{WorkerSlot, ACPowerFlowData},
-    pf::AbstractACPowerFlow,
-    steps::AbstractVector{Int},
-    positions,
-    backend::PNM.LinearSolverType,
-    kwargs::NamedTuple;
-    build_plan::Bool,
-)
-    try
-        _solve_columns!(
-            ts_converged, worker, pf, steps, positions, backend, kwargs; build_plan)
-    catch
-        slot.polar_nr_cache[] = nothing
-        slot.solver_cache[] = nothing
-        rethrow()
-    end
-    return
 end
 
 # `seed_step` sets only the initial lean alignment of each worker. Each reuse calls
