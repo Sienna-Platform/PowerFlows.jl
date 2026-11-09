@@ -719,24 +719,24 @@ function _control_continuation!(
         ok = _regulate_devices!(pf, data, set, ts, pre; with_q...)
     elseif q_limits
         # Bad starting device settings can make the Q-limited solve fail, and regulation
-        # needs a converged start. Regulate without Q limits, then enforce them at the end.
+        # needs a converged start. Regulate without Q limits to reach one, then regulate
+        # again with the limits: the PV→PQ switches of the Q-limited solve move voltage, so
+        # the devices must settle against it, exactly as on the path above.
         @warn "discrete control: the initial solve with reactive power limits did not \
             converge at time step $ts; regulating devices without the limits, then \
-            re-solving with them"
+            again with them"
         _restore_state!(data, ts, pre)
         ok =
             _ctrl_solve!(pf, data, ts; without_q...) &&
             _regulate_devices!(pf, data, set, ts, pre; without_q...) &&
-            _ctrl_solve!(pf, data, ts; with_q...)
+            _ctrl_solve!(pf, data, ts; with_q...) &&
+            _regulate_devices!(pf, data, set, ts, pre; with_q...)
     else
         return false
     end
     # Classify each FACTS endpoint against its final voltage-dependent bound and setpoint
-    # (`saturated` reported by `get_controlled_device_results` and written back to PSY). Uses
-    # the final converged voltages. The bound was last refreshed before the final solves, which
-    # can move voltage materially after a retry; after a failed solve, keep the last good bound.
+    # (`saturated` reported by `get_controlled_device_results` and written back to PSY).
     for d in set.facts
-        ok && _refresh_facts_limit!(d, data, ts, false)
         classify_facts_saturation!(d, measured_value(d, data, ts))
     end
     # Reported branch flows are computed from the arc-admittance matrices right after
