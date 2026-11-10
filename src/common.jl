@@ -121,8 +121,10 @@ function _switched_admittance(
     return sum(engaged .* y_increase; init = 0.0 + 0.0im)
 end
 
-# A switched admittance is a constant impedance load. The ZIP inputs are for V = 1.0 p.u., so
-# S = V * conj(Y * V) gives P = G and Q = -B. Returns the (P, Q) withdrawal.
+# A switched admittance is a constant impedance load.
+# The ZIP inputs are for V = 1.0 p.u.
+# At this voltage, S = V * conj(Y * V) gives P = G and Q = -B.
+# The function returns the (P, Q) withdrawal.
 function _switched_admittance_withdrawal(sa::PSY.SwitchedAdmittance)
     Y = _switched_admittance(
         PSY.get_solved_admittance(sa),

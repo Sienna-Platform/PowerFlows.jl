@@ -26,7 +26,7 @@ function _all_withdrawals_zero(data)
     return all(iszero, arrays)
 end
 
-function _off_area_fixture()
+function _off_area_zip_load_fixture()
     sys = PSB.build_system(
         PSB.PSISystems,
         "two_area_pjm_DA_off_area_load";
@@ -194,7 +194,7 @@ end
 end
 
 @testset "an off-area load record gets the three parts" begin
-    sys = _off_area_fixture()
+    sys = _off_area_zip_load_fixture()
     pf = ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(;
         net_interchange_control = true,
         tie_definition = LinesAndLoads(),
@@ -243,6 +243,36 @@ end
     PF.add_switched_admittance!(data, sa)
     @test data.bus_active_power_constant_impedance_withdrawals == p_expected
     @test data.bus_reactive_power_constant_impedance_withdrawals == q_expected
+end
+
+function _constant_power_and_impedance_arrays(data)
+    return (
+        copy(data.bus_active_power_withdrawals),
+        copy(data.bus_reactive_power_withdrawals),
+        copy(data.bus_active_power_constant_impedance_withdrawals),
+        copy(data.bus_reactive_power_constant_impedance_withdrawals),
+    )
+end
+
+@testset "DC data puts the real part of a switched admittance in constant power" begin
+    (sys, sa) = _engaged_shunt_system()
+    (sys_off, sa_off) = _engaged_shunt_system()
+    PSY.set_number_engaged!(sa_off, [0])
+    data = PowerFlowData(DCPowerFlow(; time_steps = 2), sys)
+    data_off = PowerFlowData(DCPowerFlow(; time_steps = 2), sys_off)
+    expected = map(
+        -,
+        _constant_power_and_impedance_arrays(data),
+        _constant_power_and_impedance_arrays(data_off),
+    )
+    ix = PF.get_bus_lookup(data)[PSY.get_number(PSY.get_bus(sa))]
+    @test expected[1][ix, :] ≈ [0.06, 0.06]
+    @test iszero(expected[3])
+    PF.clear_injection_data!(data)
+    PF.add_switched_admittance!(data, sa)
+    for (actual, copied) in zip(_constant_power_and_impedance_arrays(data), expected)
+        @test actual ≈ copied
+    end
 end
 
 @testset "a switched admittance on a bus outside the power flow adds nothing" begin

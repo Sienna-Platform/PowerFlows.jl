@@ -160,14 +160,15 @@ Add the active power of one component to `data` for every time step.
 `net_injection[t]` is the power that `component` injects at time step `t`. The unit is p.u. on
 the system base, at 1 p.u. voltage. A withdrawal is negative. The function throws
 `DimensionMismatch` when the length of `net_injection` is not the number of time steps of `data`.
+The function throws an error when the bus of the component is not in the power flow.
 The function adds to the arrays. Call `clear_injection_data!` before the first call.
 
 A component that is not a `PSY.ElectricLoad` adds `net_injection[t]` to
 `bus_active_power_injections`. A `PSY.ElectricLoad` adds `-net_injection[t]` times a share to
 `bus_active_power_withdrawals`, `bus_active_power_constant_current_withdrawals` and
-`bus_active_power_constant_impedance_withdrawals`. The three shares are the constant power, constant
-current and constant impedance parts of the load. A DC power flow treats every load as constant
-power.
+`bus_active_power_constant_impedance_withdrawals`. The three shares are the fractions of the load at
+constant power, constant current and constant impedance. A DC power flow treats every load as
+constant power.
 
 For an AC power flow, the shares of a `PSY.StandardLoad` or `PSY.InterruptibleStandardLoad` are
 its parts in the `System`, divided by their sum. A load with parts that sum to zero is constant
@@ -202,13 +203,14 @@ Add the reactive power of one component to `data` for every time step.
 `net_injection[t]` is the power that `component` injects at time step `t`. The unit is p.u. on
 the system base, at 1 p.u. voltage. A withdrawal is negative. The function throws
 `DimensionMismatch` when the length of `net_injection` is not the number of time steps of `data`.
+The function throws an error when the bus of the component is not in the power flow.
 The function adds to the arrays. Call `clear_injection_data!` before the first call.
 
 A component that is not a `PSY.ElectricLoad` adds `net_injection[t]` to
 `bus_reactive_power_injections`. A `PSY.ElectricLoad` adds `-net_injection[t]` times a share to
 `bus_reactive_power_withdrawals`, `bus_reactive_power_constant_current_withdrawals` and
-`bus_reactive_power_constant_impedance_withdrawals`. The three shares are the constant power,
-constant current and constant impedance parts of the load. A DC power flow treats every load as
+`bus_reactive_power_constant_impedance_withdrawals`. The three shares are the fractions of the load
+at constant power, constant current and constant impedance. A DC power flow treats every load as
 constant power.
 
 For an AC power flow, the shares of a `PSY.StandardLoad` or `PSY.InterruptibleStandardLoad` are
@@ -232,6 +234,13 @@ function add_reactive_power!(
     return
 end
 
+_switched_admittance_active_withdrawals(data::PowerFlowData{<:AbstractACPowerFlow}) =
+    get_bus_active_power_constant_impedance_withdrawals(data)
+
+# `handle_zip_loads!` moves the constant impedance part of DC data into constant power.
+_switched_admittance_active_withdrawals(data::PowerFlowData{<:AbstractDCPowerFlow}) =
+    get_bus_active_power_withdrawals(data)
+
 """
     add_switched_admittance!(data::PowerFlowData, sa::PSY.SwitchedAdmittance)
 
@@ -240,7 +249,8 @@ Add the admittance of one switched admittance to `data` for every time step.
 The admittance is the one that the `System` holds for `sa`. The function treats it as a constant
 impedance load. It adds the real part of the admittance to
 `bus_active_power_constant_impedance_withdrawals`. It subtracts the imaginary part from
-`bus_reactive_power_constant_impedance_withdrawals`. The function adds to the arrays.
+`bus_reactive_power_constant_impedance_withdrawals`. The function adds to the arrays. For DC data,
+the function adds the real part to `bus_active_power_withdrawals` instead.
 
 When the bus of `sa` is not in the power flow, the function adds nothing. The initialization of
 `PowerFlowData` skips such a bus in the same way.
@@ -252,7 +262,7 @@ function add_switched_admittance!(data::PowerFlowData, sa::PSY.SwitchedAdmittanc
     if _bus_in_power_flow(data, sa)
         bus_ix = _component_bus_ix(data, sa)
         (p, q) = _switched_admittance_withdrawal(sa)
-        @views get_bus_active_power_constant_impedance_withdrawals(data)[bus_ix, :] .+= p
+        @views _switched_admittance_active_withdrawals(data)[bus_ix, :] .+= p
         @views get_bus_reactive_power_constant_impedance_withdrawals(data)[bus_ix, :] .+= q
     end
     return
