@@ -6,18 +6,13 @@ function _zip_shares(parts::NTuple{3, Float64})
     return parts ./ total
 end
 
-function _exponent_shares(load::PSY.ExponentialLoad, exponent::Float64)
-    slot = _exponential_zip_slot(load, exponent)
-    return ntuple(k -> ifelse(k == slot, 1.0, 0.0), 3)
-end
-
 _active_power_shares(::PowerFlowEvaluationModel, ::PSY.ElectricLoad) = (1.0, 0.0, 0.0)
 _active_power_shares(
     pf::AbstractACPowerFlow,
     l::Union{PSY.StandardLoad, PSY.InterruptibleStandardLoad},
 ) = _zip_shares(_load_active_power_parts(pf, l))
 _active_power_shares(::AbstractACPowerFlow, l::PSY.ExponentialLoad) =
-    _exponent_shares(l, PSY.get_α(l))
+    _exponential_zip_parts(l, PSY.get_α(l), 1.0)
 
 _reactive_power_shares(::PowerFlowEvaluationModel, ::PSY.ElectricLoad) = (1.0, 0.0, 0.0)
 _reactive_power_shares(
@@ -25,7 +20,7 @@ _reactive_power_shares(
     l::Union{PSY.StandardLoad, PSY.InterruptibleStandardLoad},
 ) = _zip_shares(_load_reactive_power_parts(pf, l))
 _reactive_power_shares(::AbstractACPowerFlow, l::PSY.ExponentialLoad) =
-    _exponent_shares(l, PSY.get_β(l))
+    _exponential_zip_parts(l, PSY.get_β(l), 1.0)
 
 function _check_net_injection_length(
     data::PowerFlowData,
@@ -58,17 +53,6 @@ function _bus_in_power_flow(data::PowerFlowData, component::PSY.StaticInjection)
         PNM.get_reverse_bus_search_map(get_network_reduction_data(data))
     bus_number = PSY.get_number(PSY.get_bus(component))
     return haskey(get_bus_lookup(data), get(reverse_bus_search_map, bus_number, bus_number))
-end
-
-function _add_injection!(
-    injections::Matrix{Float64},
-    bus_ix::Int,
-    net_injection::AbstractVector{Float64},
-)
-    for (t, value) in enumerate(net_injection)
-        injections[bus_ix, t] += value
-    end
-    return
 end
 
 function _add_withdrawal_parts!(
@@ -120,7 +104,7 @@ function _add_active_power!(
     bus_ix::Int,
     net_injection::AbstractVector{Float64},
 )
-    _add_injection!(get_bus_active_power_injections(data), bus_ix, net_injection)
+    @views get_bus_active_power_injections(data)[bus_ix, :] .+= net_injection
     return
 end
 
@@ -147,7 +131,7 @@ function _add_reactive_power!(
     bus_ix::Int,
     net_injection::AbstractVector{Float64},
 )
-    _add_injection!(get_bus_reactive_power_injections(data), bus_ix, net_injection)
+    @views get_bus_reactive_power_injections(data)[bus_ix, :] .+= net_injection
     return
 end
 
@@ -182,18 +166,18 @@ A component that is not a `PSY.ElectricLoad` adds `net_injection[t]` to
 `bus_active_power_injections`. A `PSY.ElectricLoad` adds `-net_injection[t]` times a share to
 `bus_active_power_withdrawals`, `bus_active_power_constant_current_withdrawals` and
 `bus_active_power_constant_impedance_withdrawals`. The three shares are the constant power, constant
-current and constant impedance parts of the load.
+current and constant impedance parts of the load. A DC power flow treats every load as constant
+power.
 
 For an AC power flow, the shares of a `PSY.StandardLoad` or `PSY.InterruptibleStandardLoad` are
 its parts in the `System`, divided by their sum. A load with parts that sum to zero is constant
 power. The share of a `PSY.ExponentialLoad` is 1 in the slot of its exponent `α` and 0 in the other
 two slots. The exponent 0 is constant power, 1 is constant current and 2 is constant impedance. The
 value of the load in the `System` does not change the shares. Every other load is constant power.
-A DC power flow treats every load as constant power. For an AC power flow, the function also updates
-the off-area record of a load that has one.
 
-The function sets the off-area record. It does not add to it, so one load takes one call between two
-calls of `clear_injection_data!`.
+For an AC power flow, the function also sets the off-area record of a load that has one. It does
+not add to the record. Call the function one time for each load between two calls of
+`clear_injection_data!`.
 
 These functions cover the power that an operations model decides. Condenser losses, FACTS devices
 and the DC network of PowerFlows use other paths.
@@ -224,14 +208,15 @@ A component that is not a `PSY.ElectricLoad` adds `net_injection[t]` to
 `bus_reactive_power_injections`. A `PSY.ElectricLoad` adds `-net_injection[t]` times a share to
 `bus_reactive_power_withdrawals`, `bus_reactive_power_constant_current_withdrawals` and
 `bus_reactive_power_constant_impedance_withdrawals`. The three shares are the constant power,
-constant current and constant impedance parts of the load.
+constant current and constant impedance parts of the load. A DC power flow treats every load as
+constant power.
 
 For an AC power flow, the shares of a `PSY.StandardLoad` or `PSY.InterruptibleStandardLoad` are
 its reactive parts in the `System`, divided by their sum. A load with parts that sum to zero is
 constant power. The share of a `PSY.ExponentialLoad` is 1 in the slot of its exponent `β` and 0 in
 the other two slots. The exponent 0 is constant power, 1 is constant current and 2 is constant
 impedance. The value of the load in the `System` does not change the shares. Every other load is
-constant power. A DC power flow treats every load as constant power.
+constant power.
 
 These functions cover the power that an operations model decides. Condenser losses, FACTS devices
 and the DC network of PowerFlows use other paths.
@@ -267,8 +252,8 @@ function add_switched_admittance!(data::PowerFlowData, sa::PSY.SwitchedAdmittanc
     if _bus_in_power_flow(data, sa)
         bus_ix = _component_bus_ix(data, sa)
         (p, q) = _switched_admittance_withdrawal(sa)
-        get_bus_active_power_constant_impedance_withdrawals(data)[bus_ix, :] .+= p
-        get_bus_reactive_power_constant_impedance_withdrawals(data)[bus_ix, :] .+= q
+        @views get_bus_active_power_constant_impedance_withdrawals(data)[bus_ix, :] .+= p
+        @views get_bus_reactive_power_constant_impedance_withdrawals(data)[bus_ix, :] .+= q
     end
     return
 end
