@@ -121,6 +121,17 @@ function _switched_admittance(
     return sum(engaged .* y_increase; init = 0.0 + 0.0im)
 end
 
+# A switched admittance is a constant impedance load. The ZIP inputs are for V = 1.0 p.u., so
+# S = V * conj(Y * V) gives P = G and Q = -B. Returns the (P, Q) withdrawal.
+function _switched_admittance_withdrawal(sa::PSY.SwitchedAdmittance)
+    Y = _switched_admittance(
+        PSY.get_solved_admittance(sa),
+        PSY.get_number_engaged(sa),
+        PSY.get_Y_increase(sa),
+    )
+    return (real(Y), -imag(Y))
+end
+
 # P0 * V^e is exactly the constant power (slot 1), current (2) or impedance (3) term for
 # e = 0, 1, 2. Any other exponent has no ZIP equivalent, so it errors instead of an approximation.
 function _exponential_zip_slot(load::PSY.ExponentialLoad, exponent::Float64)
@@ -231,7 +242,7 @@ function _add_exponential_load!(
     bus_ix::Int,
 )
     _add_active_power_parts!(withdrawals, l, pf, bus_ix)
-    q[_exponential_zip_slot(l, PSY.get_β(l))][bus_ix] += PSY.get_reactive_power(l, u"SU")
+    _add_reactive_power_parts!(q, l, pf, bus_ix)
     return
 end
 
@@ -296,18 +307,9 @@ function _get_withdrawals!(
         bus = PSY.get_bus(sa)
         PSY.get_number(bus) in removed_buses && continue
         bus_ix = _get_bus_ix(bus_lookup, reverse_bus_search_map, PSY.get_number(bus))
-        Y = _switched_admittance(
-            PSY.get_solved_admittance(sa),
-            PSY.get_number_engaged(sa),
-            PSY.get_Y_increase(sa),
-        )
-        # Here we implement the switched admittance element as a constant impedance load.
-        # The inputs for ZIP loads are provided for V = 1.0 p.u., so
-        # the following is equivalent to S = V * conj(Y * V) for V = 1.0 p.u.
-        # As conj(Y) = G - jB, we have P = G and Q = -B
-        # (we could use +=real(conj(Y)) and +=imag(conj(Y)) as well).
-        bus_active_power_constant_impedance_withdrawals[bus_ix] += real(Y)
-        bus_reactive_power_constant_impedance_withdrawals[bus_ix] -= imag(Y)
+        (p_sa, q_sa) = _switched_admittance_withdrawal(sa)
+        bus_active_power_constant_impedance_withdrawals[bus_ix] += p_sa
+        bus_reactive_power_constant_impedance_withdrawals[bus_ix] += q_sa
     end
     for sc in PSY.get_available_components(PSY.SynchronousCondenser, sys)
         bus = PSY.get_bus(sc)

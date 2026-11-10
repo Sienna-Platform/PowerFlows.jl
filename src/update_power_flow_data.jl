@@ -53,6 +53,13 @@ function _component_bus_ix(data::PowerFlowData, component::PSY.StaticInjection)
     )
 end
 
+function _bus_in_power_flow(data::PowerFlowData, component::PSY.StaticInjection)
+    reverse_bus_search_map =
+        PNM.get_reverse_bus_search_map(get_network_reduction_data(data))
+    bus_number = PSY.get_number(PSY.get_bus(component))
+    return haskey(get_bus_lookup(data), get(reverse_bus_search_map, bus_number, bus_number))
+end
+
 function _add_injection!(
     injections::Matrix{Float64},
     bus_ix::Int,
@@ -185,6 +192,9 @@ value of the load in the `System` does not change the shares. Every other load i
 A DC power flow treats every load as constant power. For an AC power flow, the function also updates
 the off-area record of a load that has one.
 
+The function sets the off-area record. It does not add to it, so one load takes one call between two
+calls of `clear_injection_data!`.
+
 These functions cover the power that an operations model decides. Condenser losses, FACTS devices
 and the DC network of PowerFlows use other paths.
 """
@@ -234,5 +244,31 @@ function add_reactive_power!(
     _check_net_injection_length(data, net_injection)
     bus_ix = _component_bus_ix(data, component)
     _add_reactive_power!(data, component, bus_ix, net_injection)
+    return
+end
+
+"""
+    add_switched_admittance!(data::PowerFlowData, sa::PSY.SwitchedAdmittance)
+
+Add the admittance of one switched admittance to `data` for every time step.
+
+The admittance is the one that the `System` holds for `sa`. The function treats it as a constant
+impedance load. It adds the real part of the admittance to
+`bus_active_power_constant_impedance_withdrawals`. It subtracts the imaginary part from
+`bus_reactive_power_constant_impedance_withdrawals`. The function adds to the arrays.
+
+When the bus of `sa` is not in the power flow, the function adds nothing. The initialization of
+`PowerFlowData` skips such a bus in the same way.
+
+`clear_injection_data!` sets these arrays to zero. After `clear_injection_data!`, call this function
+again for every switched admittance.
+"""
+function add_switched_admittance!(data::PowerFlowData, sa::PSY.SwitchedAdmittance)
+    if _bus_in_power_flow(data, sa)
+        bus_ix = _component_bus_ix(data, sa)
+        (p, q) = _switched_admittance_withdrawal(sa)
+        get_bus_active_power_constant_impedance_withdrawals(data)[bus_ix, :] .+= p
+        get_bus_reactive_power_constant_impedance_withdrawals(data)[bus_ix, :] .+= q
+    end
     return
 end
