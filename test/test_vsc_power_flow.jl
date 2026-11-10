@@ -127,11 +127,11 @@ end
         ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
         power_factor_setpoint_to = 1.0,
         dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE_DROOP,
-        dc_voltage_droop_from = 0.05,
+        dc_voltage_droop_from = 0.2, # kV/MW: 0.05 pu on 400 kV, 100 MVA
         dc_voltage_setpoint_from = 1.0,
         rated_dc_voltage = 400.0,
         dc_control_to = PSY.VSCDCControlModes.DC_VOLTAGE_DROOP,
-        dc_voltage_droop_to = 0.05,
+        dc_voltage_droop_to = 0.2, # kV/MW: 0.05 pu on 400 kV, 100 MVA
         dc_voltage_setpoint_to = 1.0, input_basis = u"CU",
     )
     PSY.add_component!(sys, vsc)
@@ -256,12 +256,12 @@ end
     sys, _, _ = _vsc_system(;
         g = 1 / 32.0,
         dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE_DROOP,
-        dc_voltage_droop_from = 0.02,
+        dc_voltage_droop_from = 0.08, # kV/MW: 0.02 pu on 400 kV, 100 MVA
         dc_voltage_setpoint_from = 1.05,
         rated_dc_voltage = 400.0,
         reactive_power_from = 0.0,
         dc_control_to = PSY.VSCDCControlModes.DC_VOLTAGE_DROOP,
-        dc_voltage_droop_to = 0.03,
+        dc_voltage_droop_to = 0.12, # kV/MW: 0.03 pu
         dc_voltage_setpoint_to = 1.03,
         reactive_power_to = 0.0,
     )
@@ -274,6 +274,8 @@ end
     @test solve_power_flow!(data)
     dcn = PF.get_dc_network(data)
     @test dcn.converter_mode[1] == PF.ControlPVdcDroop
+    # kV/MW → per unit: k * sys_base / rated_dc_voltage
+    @test dcn.droop_k ≈ [0.02, 0.03]
     for c in 1:2
         node = dcn.converter_dc_node_ix[c]
         @test isapprox(
@@ -520,12 +522,12 @@ function _vsc_droop_system()
     sys, _, _ = _vsc_system(;
         g = 1 / 32.0,
         dc_control_from = PSY.VSCDCControlModes.DC_VOLTAGE_DROOP,
-        dc_voltage_droop_from = 0.02,
+        dc_voltage_droop_from = 0.08, # kV/MW: 0.02 pu on 400 kV, 100 MVA
         dc_voltage_setpoint_from = 1.05,
         rated_dc_voltage = 400.0,
         reactive_power_from = 0.0,
         dc_control_to = PSY.VSCDCControlModes.DC_VOLTAGE_DROOP,
-        dc_voltage_droop_to = 0.03,
+        dc_voltage_droop_to = 0.12, # kV/MW: 0.03 pu
         dc_voltage_setpoint_to = 1.03,
         reactive_power_to = 0.0,
         converter_loss_to = PSY.LossCurve(
@@ -815,7 +817,7 @@ end
         dc_voltage_setpoint_from = 1.04,
         rated_dc_voltage = 400.0,
         dc_control_to = PSY.VSCDCControlModes.DC_VOLTAGE_DROOP,
-        dc_voltage_droop_to = 0.05,
+        dc_voltage_droop_to = 0.2, # kV/MW: 0.05 pu on 400 kV, 100 MVA
         dc_voltage_setpoint_to = 1.0,
     )
     vsc = first(PSY.get_components(PSY.TwoTerminalVSCLine, sys))
