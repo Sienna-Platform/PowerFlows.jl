@@ -1320,7 +1320,7 @@ function write_to_buffers!(
     end
     pumps = get!(exporter.components_cache, "pump_loads") do
         sort!(
-            collect(PSY.get_available_components(PSY.HydroPumpTurbine, exporter.system));
+            collect(PSY.get_components(PSY.HydroPumpTurbine, exporter.system));
             by = PSY.get_name,
         )
     end

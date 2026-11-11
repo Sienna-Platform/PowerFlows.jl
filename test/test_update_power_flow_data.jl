@@ -179,16 +179,26 @@ end
     )
 end
 
-@testset "a component on a bus outside the power flow throws a named error" begin
+@testset "a component on a removed bus adds nothing" begin
     sys = _make_tap_shunt_system()
     isolated = _add_simple_bus!(sys, 4, ACBusTypes.ISOLATED, 230, 1.0, 0.0)
     source = _add_simple_source!(sys, isolated, 0.0, 0.0)
     data = PowerFlowData(ACPowerFlow(; time_steps = 2), sys)
     PF.clear_injection_data!(data)
+    PF.add_active_power!(data, source, [0.1, 0.1])
+    @test iszero(data.bus_active_power_injections)
+end
+
+@testset "a component on an unknown bus throws a named error" begin
+    sys = _make_tap_shunt_system()
+    data = PowerFlowData(ACPowerFlow(; time_steps = 2), sys)
+    unknown = _add_simple_bus!(sys, 5, ACBusTypes.PQ, 230, 1.0, 0.0)
+    source = _add_simple_source!(sys, unknown, 0.0, 0.0)
+    PF.clear_injection_data!(data)
     @test_throws ErrorException PF.add_active_power!(data, source, [0.1, 0.1])
     @test_throws string(typeof(source)) PF.add_active_power!(data, source, [0.1, 0.1])
     @test_throws PSY.get_name(source) PF.add_active_power!(data, source, [0.1, 0.1])
-    @test_throws "bus 4" PF.add_active_power!(data, source, [0.1, 0.1])
+    @test_throws "bus 5" PF.add_active_power!(data, source, [0.1, 0.1])
 end
 
 @testset "an off-area load record gets the three parts" begin
@@ -475,6 +485,63 @@ end
     @test set.shunt_current[1, :] == [0.1, 0.2]
 end
 
+@testset "the one-argument writer keeps the shunt controller in step after a solve" begin
+    function tap_shunt_data()
+        sys = _make_tap_shunt_system()
+        sa = only(PSY.get_components(PSY.SwitchedAdmittance, sys))
+        PSY.set_voltage_limits!(sa, (min = 1.03, max = 1.03))
+        pf = ACPowerFlow(; control_discrete_devices = true, time_steps = 2)
+        return (sys, sa, PowerFlowData(pf, sys))
+    end
+    function rewrite_all!(data, sys)
+        PF.clear_injection_data!(data)
+        for c in PSY.get_components(PSY.StaticInjection, sys)
+            _replay_component!(data, c)
+        end
+        return
+    end
+    (sys, sa, data) = tap_shunt_data()
+    ix = PF.get_bus_lookup(data)[PSY.get_number(PSY.get_bus(sa))]
+    solve_power_flow!(data)
+    set = PF.get_controlled_devices(data)
+    first_current = set.shunt_current[1, 1]
+    @test first_current > 0.0
+    @test data.bus_reactive_power_constant_impedance_withdrawals[ix, 1] ≈ -first_current
+    v_first = data.bus_magnitude[ix, 1]
+    rewrite_all!(data, sys)
+    @test data.bus_reactive_power_constant_impedance_withdrawals[ix, 1] ≈ 0.0
+    @test set.shunt_current[1, 1] ≈ 0.0
+    @test set.shunt_initial[1, 1] ≈ 0.0
+    solve_power_flow!(data)
+    @test data.bus_reactive_power_constant_impedance_withdrawals[ix, 1] ≈ -first_current
+    @test data.bus_magnitude[ix, 1] ≈ v_first atol = 1e-8
+    (_, _, fresh) = tap_shunt_data()
+    solve_power_flow!(fresh)
+    @test fresh.bus_magnitude[ix, 1] ≈ data.bus_magnitude[ix, 1] atol = 1e-8
+end
+
+@testset "a seeded susceptance inside the deadband is held and sets the block counts" begin
+    sys = _make_tap_shunt_system()
+    sa = only(PSY.get_components(PSY.SwitchedAdmittance, sys))
+    data =
+        PowerFlowData(ACPowerFlow(; control_discrete_devices = true, time_steps = 2), sys)
+    set = PF.get_controlled_devices(data)
+    PF.clear_injection_data!(data)
+    # One block of 4 steps of 0.05 p.u. 0.1 is on the grid, 0.12 is not.
+    PF.add_switched_admittance!(data, sa, [0.1, 0.12])
+    @test set.shunt_initial[1, :] == [0.1, 0.12]
+    @test set.shunt_block_n[1, :] == [[2], [2]]
+    d = only(set.shunts)
+    for ts in 1:2
+        PF.load_device_state!(set, data, ts)
+        @test d.initial == d.current
+        before = data.bus_reactive_power_constant_impedance_withdrawals[d.bus_ix, ts]
+        PF._snap_device_group!(set.shunts, data, ts)
+        @test data.bus_reactive_power_constant_impedance_withdrawals[d.bus_ix, ts] == before
+        @test d.current == d.initial
+    end
+end
+
 # ---- condenser losses ----
 
 function _add_condenser!(sys, bus; losses = 0.02)
@@ -506,6 +573,37 @@ end
         PF.add_active_power_losses!(data, sc)
         @test data.bus_active_power_withdrawals ≈ expected
     end
+end
+
+@testset "the condenser loss writer skips a bus that the reduction removed" begin
+    sys = System(100.0)
+    buses = [
+        _add_simple_bus!(sys, i, i == 1 ? ACBusTypes.REF : ACBusTypes.PQ, 230, 1.0, 0.0)
+        for i in 1:4
+    ]
+    for (a, b) in ((1, 2), (2, 3), (3, 4), (4, 1))
+        _add_simple_line!(sys, buses[a], buses[b], 1e-2, 1e-1, 0.0)
+    end
+    _add_simple_source!(sys, buses[1], 0.0, 0.0)
+    _add_simple_load!(sys, buses[3], 0.1, 0.05)
+    sc = _add_condenser!(sys, buses[2])
+    pf = DCPowerFlow(;
+        time_steps = 2,
+        network_reductions = PNM.NetworkReduction[PNM.DegreeTwoReduction()],
+    )
+    data = PowerFlowData(pf, sys)
+    @test !haskey(PF.get_bus_lookup(data), 2)
+    expected = copy(data.bus_active_power_withdrawals)
+    PF.clear_injection_data!(data)
+    PF.add_active_power_losses!(data, sc)
+    PF.add_reactive_power!(data, sc, [0.0, 0.0])
+    @test iszero(data.bus_active_power_withdrawals)
+    PF.clear_injection_data!(data)
+    for c in PSY.get_components(PSY.PowerLoad, sys)
+        _replay_component!(data, c)
+    end
+    PF.add_active_power_losses!(data, sc)
+    @test data.bus_active_power_withdrawals ≈ expected
 end
 
 @testset "the reactive power of a FACTS device adds nothing" begin
@@ -599,7 +697,10 @@ end
 
     sys_off = _build_zip_2bus_system()
     _add_pump!(sys_off, PSY.get_component(PSY.ACBus, sys_off, "bus_2"); available = false)
-    @test length(exported_load_lines(sys_off)) == 1
+    off_records = exported_load_lines(sys_off)
+    @test length(off_records) == 2
+    off_pump = only(filter(r -> parse(Float64, strip(r[6])) ≈ 5.0, off_records))
+    @test parse(Int, strip(off_pump[3])) == 0
 end
 
 # ---- converter ----
@@ -663,4 +764,67 @@ end
         PF.add_active_power!(data, ic2, [0.35, 0.45])
         @test data.bus_active_power_injections[ix, :] == [0.35, 0.45]
     end
+end
+
+# ---- exponential load split ----
+
+function _exponential_fixture(α::Float64, β::Float64)
+    sys = _build_zip_2bus_system()
+    bus_2 = PSY.get_component(PSY.ACBus, sys, "bus_2")
+    load = PSY.ExponentialLoad(;
+        name = "exp_helper",
+        available = true,
+        bus = bus_2,
+        active_power = 0.15,
+        reactive_power = 0.07,
+        α = α,
+        β = β,
+        base_power = 100.0,
+        max_active_power = 1.0,
+        max_reactive_power = 1.0,
+        input_basis = u"CU",
+    )
+    PSY.add_component!(sys, load)
+    return (sys, load)
+end
+
+@testset "the exponential load helpers split by the exponent on AC data" begin
+    (sys, load) = _exponential_fixture(1.0, 2.0)
+    data = PowerFlowData(ACPowerFlow(; time_steps = 2), sys)
+    p = PF.exponential_load_active_parts(data, load, [-0.15, -0.1])
+    @test p.constant_power == [0.0, 0.0]
+    @test p.constant_current == [-0.15, -0.1]
+    @test p.constant_impedance == [0.0, 0.0]
+    q = PF.exponential_load_reactive_parts(data, load, [-0.07, -0.05])
+    @test q.constant_power == [0.0, 0.0]
+    @test q.constant_current == [0.0, 0.0]
+    @test q.constant_impedance == [-0.07, -0.05]
+    @test p isa NamedTuple{(:constant_power, :constant_current, :constant_impedance)}
+    @test all(x -> x isa Vector{Float64}, values(p))
+    @test_throws DimensionMismatch PF.exponential_load_active_parts(data, load, [0.1])
+end
+
+@testset "the exponential load helpers put everything in constant power on DC data" begin
+    (sys, load) = _exponential_fixture(1.0, 2.0)
+    data = PowerFlowData(DCPowerFlow(; time_steps = 2), sys)
+    p = PF.exponential_load_active_parts(data, load, [-0.15, -0.1])
+    @test p.constant_power == [-0.15, -0.1]
+    @test iszero(p.constant_current)
+    @test iszero(p.constant_impedance)
+    (sys_odd, odd) = _exponential_fixture(1.5, 0.5)
+    dc_odd = PowerFlowData(DCPowerFlow(; time_steps = 2), sys_odd)
+    @test PF.exponential_load_active_parts(dc_odd, odd, [-0.1, -0.1]).constant_power ==
+          [-0.1, -0.1]
+end
+
+@testset "the exponential load helpers reject an exponent without a ZIP term on AC data" begin
+    (sys, _) = _exponential_fixture(1.0, 2.0)
+    data = PowerFlowData(ACPowerFlow(; time_steps = 2), sys)
+    (_, odd) = _exponential_fixture(1.5, 0.5)
+    @test_throws "voltage exponent" PF.exponential_load_active_parts(
+        data, odd, [-0.1, -0.1],
+    )
+    @test_throws "voltage exponent" PF.exponential_load_reactive_parts(
+        data, odd, [-0.1, -0.1],
+    )
 end
