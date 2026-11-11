@@ -1230,6 +1230,78 @@ end
 
 _psse_interruptible(::PSY.ControllableLoad) = 1
 _psse_interruptible(::PSY.StaticLoad) = 0
+_psse_interruptible(::PSY.HydroPumpTurbine) = 0
+
+function _psse_load_scale(load::PSY.StaticLoad)
+    if PSY.get_conformity(load) == PSY.LoadConformity.CONFORMING
+        return 1
+    end
+    return 0
+end
+_psse_load_scale(::PSY.HydroPumpTurbine) = 0
+
+# The pump of a pump turbine is a constant power load. The turbine side is a generator record.
+_psse_get_load_data(exporter::PSSEExporter, pt::PSY.HydroPumpTurbine) = (
+    PSY.get_active_power_pump(pt, u"NU"),
+    0.0,
+    PSSE_DEFAULT,
+    PSSE_DEFAULT,
+    PSSE_DEFAULT,
+    PSSE_DEFAULT,
+)
+
+function _psse_load_area(md, load_owner, component)
+    key = (PSY.get_number(PSY.get_bus(component)), PSY.get_name(component))
+    if haskey(load_owner, key)
+        return md["area_mapping"][load_owner[key]]
+    elseif !isnothing(PSY.get_area(PSY.get_bus(component)))
+        return md["area_mapping"][PSY.get_name(PSY.get_area(PSY.get_bus(component)))]
+    end
+    return PSSE_DEFAULT
+end
+
+function _psse_load_zone(component)
+    zone = PSY.get_load_zone(PSY.get_bus(component))
+    if isnothing(zone)
+        return PSSE_DEFAULT
+    end
+    return _permissive_parse_int(PSY.get_name(zone))
+end
+
+function _write_load_record!(
+    exporter::PSSEExporter,
+    load_owner::Dict{Tuple{Int, String}, String},
+    component::PSY.StaticInjection,
+    ID::String,
+)
+    io = exporter.raw_buffer
+    md = exporter.md_dict
+    sienna_bus_number = PSY.get_number(PSY.get_bus(component))
+    I = md["bus_number_mapping"][sienna_bus_number]
+    STATUS = Int(PSY.get_available(component))
+    AREA = _psse_load_area(md, load_owner, component)
+    ZONE = _psse_load_zone(component)
+    PL, QL, IP, IQ, YP, YQ = _psse_get_load_data(exporter, component)
+    OWNER = PSSE_DEFAULT  # defaults to bus's owner
+    SCALE = _psse_load_scale(component)
+    INTRPT = _psse_interruptible(component)
+
+    if exporter.psse_version == :v35
+        DGENP = PSSE_DEFAULT
+        DGENQ = PSSE_DEFAULT
+        DGENF = PSSE_DEFAULT
+        LOAD_TYPE = PSSE_DEFAULT
+
+        @fastprintdelim_unroll(io, true, I, ID, STATUS, AREA, ZONE,
+            PL, QL, IP, IQ, YP, YQ, OWNER,
+            SCALE, INTRPT, DGENP, DGENQ, DGENF, LOAD_TYPE)
+    else
+        @fastprintdelim_unroll(io, true, I, ID, STATUS, AREA, ZONE,
+            PL, QL, IP, IQ, YP, YQ, OWNER,
+            SCALE, INTRPT)
+    end
+    return
+end
 
 # WRITTEN TO SPEC: PSS/E 33.3/35.4 POM 5.2.1 Load Data
 function write_to_buffers!(
@@ -1246,10 +1318,22 @@ function write_to_buffers!(
     loads = get!(exporter.components_cache, "loads") do
         sort!(collect(PSY.get_components(PSY.StaticLoad, exporter.system)); by = PSY.get_name)
     end
+    pumps = get!(exporter.components_cache, "pump_loads") do
+        sort!(
+            collect(PSY.get_available_components(PSY.HydroPumpTurbine, exporter.system));
+            by = PSY.get_name,
+        )
+    end
+    # Loads come first in the ID assignment, then pumps, so the IDs do not depend on the pumps
+    # unless a bus holds both.
+    pump_key_names = ["pump_" * PSY.get_name(pt) for pt in pumps]
     load_name_mapping = get!(exporter.components_cache, "load_name_mapping") do
         create_component_ids(
-            convert_empty_stringvec(PSY.get_name.(loads)),
-            PSY.get_number.(PSY.get_bus.(loads));
+            convert_empty_stringvec(vcat(PSY.get_name.(loads), pump_key_names)),
+            vcat(
+                PSY.get_number.(PSY.get_bus.(loads)),
+                PSY.get_number.(PSY.get_bus.(pumps)),
+            );
             singles_to_1 = true,
         )
     end
@@ -1261,42 +1345,16 @@ function write_to_buffers!(
         end
     end
     for load in loads
-        sienna_bus_number = PSY.get_number(PSY.get_bus(load))
-        I = md["bus_number_mapping"][sienna_bus_number]
-        ID = _psse_quote_string(load_name_mapping[(sienna_bus_number, PSY.get_name(load))])
-        STATUS = PSY.get_available(load) ? 1 : 0
-        if haskey(load_owner, (sienna_bus_number, PSY.get_name(load)))
-            AREA = md["area_mapping"][load_owner[(sienna_bus_number, PSY.get_name(load))]]
-        elseif !isnothing(PSY.get_area(PSY.get_bus(load)))
-            AREA = md["area_mapping"][PSY.get_name(PSY.get_area(PSY.get_bus(load)))]
-        else
-            AREA = PSSE_DEFAULT
-        end
-        if !isnothing(PSY.get_load_zone(PSY.get_bus(load)))
-            ZONE = _permissive_parse_int(PSY.get_name(PSY.get_load_zone(PSY.get_bus(load))))
-        else
-            ZONE = PSSE_DEFAULT
-        end
-        PL, QL, IP, IQ, YP, YQ = _psse_get_load_data(exporter, load)
-        OWNER = PSSE_DEFAULT  # defaults to bus's owner
-        load_conformity = PSY.get_conformity(load)
-        SCALE = load_conformity == PSY.LoadConformity.CONFORMING ? 1 : 0
-        INTRPT = _psse_interruptible(load)
-
-        if exporter.psse_version == :v35
-            DGENP = PSSE_DEFAULT
-            DGENQ = PSSE_DEFAULT
-            DGENF = PSSE_DEFAULT
-            LOAD_TYPE = PSSE_DEFAULT
-
-            @fastprintdelim_unroll(io, true, I, ID, STATUS, AREA, ZONE,
-                PL, QL, IP, IQ, YP, YQ, OWNER,
-                SCALE, INTRPT, DGENP, DGENQ, DGENF, LOAD_TYPE)
-        else
-            @fastprintdelim_unroll(io, true, I, ID, STATUS, AREA, ZONE,
-                PL, QL, IP, IQ, YP, YQ, OWNER,
-                SCALE, INTRPT)
-        end
+        ID = _psse_quote_string(
+            load_name_mapping[(PSY.get_number(PSY.get_bus(load)), PSY.get_name(load))],
+        )
+        _write_load_record!(exporter, load_owner, load, ID)
+    end
+    for (pt, key_name) in zip(pumps, pump_key_names)
+        ID = _psse_quote_string(
+            load_name_mapping[(PSY.get_number(PSY.get_bus(pt)), key_name)],
+        )
+        _write_load_record!(exporter, load_owner, pt, ID)
     end
     end_group(io, md, exporter, "Load Data", true)
     exporter.md_valid ||

@@ -295,6 +295,7 @@ Base.@kwdef struct _DCNetworkBuilder
     dc_node_ix::Vector{Int} = Int[]
     mode::Vector{VSCControlMode} = VSCControlMode[]
     ac_bus_number::Vector{Int} = Int[]
+    name::Vector{String} = String[]
     loss_a::Vector{Float64} = Float64[]
     loss_b::Vector{Float64} = Float64[]
     loss_c::Vector{Float64} = Float64[]
@@ -361,6 +362,7 @@ function _push_converter!(
     push!(b.dc_node_ix, dc_node_ix)
     push!(b.mode, mode)
     push!(b.ac_bus_number, ac_bus_number)
+    push!(b.name, name)
     (la, lb, lc) = _loss_coefficients(loss_curve)
     push!(b.loss_a, la)
     push!(b.loss_b, lb)
@@ -642,6 +644,7 @@ function initialize_DCNetwork!(
         converter_dc_node_ix = b.dc_node_ix,
         converter_mode = b.mode,
         converter_ac_bus_number = b.ac_bus_number,
+        converter_name = b.name,
         loss_a = b.loss_a,
         loss_b = b.loss_b,
         loss_c = b.loss_c,

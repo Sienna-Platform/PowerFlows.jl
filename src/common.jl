@@ -309,6 +309,12 @@ function _get_withdrawals!(
         # reactive power handled already:
         # contributes_reactive_power(PSY.SynchronousCondenser) is true.
     end
+    for pt in PSY.get_available_components(PSY.HydroPumpTurbine, sys)
+        bus = PSY.get_bus(pt)
+        PSY.get_number(bus) in removed_buses && continue
+        bus_ix = _get_bus_ix(bus_lookup, reverse_bus_search_map, PSY.get_number(bus))
+        bus_active_power_withdrawals[bus_ix] += PSY.get_active_power_pump(pt, u"SU")
+    end
     return
 end
 
