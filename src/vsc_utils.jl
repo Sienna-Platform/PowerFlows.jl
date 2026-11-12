@@ -480,7 +480,10 @@ function _lower_vsc_lines!(
         _push_converter!(
             b, "$(PSY.get_name(line)) (from)", from_ix, from_number, nf,
             PSY.get_dc_control_from(line), PSY.get_ac_control_from(line),
-            PSY.get_dc_voltage_droop_from(line),
+            _droop_pu(
+                PSY.get_dc_voltage_droop_from(line), PSY.get_rated_dc_voltage(line),
+                sys_base, line,
+            ),
             IS.convert_power_units(
                 line,
                 _vsc_power_axis_loss(line, PSY.get_converter_loss_from(line)),
@@ -495,7 +498,10 @@ function _lower_vsc_lines!(
         _push_converter!(
             b, "$(PSY.get_name(line)) (to)", to_ix, to_number, nt,
             PSY.get_dc_control_to(line), PSY.get_ac_control_to(line),
-            PSY.get_dc_voltage_droop_to(line),
+            _droop_pu(
+                PSY.get_dc_voltage_droop_to(line), PSY.get_rated_dc_voltage(line),
+                sys_base, line,
+            ),
             IS.convert_power_units(
                 line,
                 _vsc_power_axis_loss(line, PSY.get_converter_loss_to(line)),
@@ -511,6 +517,21 @@ function _lower_vsc_lines!(
         push!(b.branch_g, _vsc_branch_g_pu(line, sys_base))
     end
     return
+end
+
+# PowerSystems stores the DC-voltage droop gain in kV/MW; the droop row
+# `(V_dc - V_set) - k * P_c` works per unit of the DC voltage base and the system base.
+function _droop_pu(k_kv_per_mw::Float64, v_dc_kv, sys_base::Float64, device)
+    iszero(k_kv_per_mw) && return 0.0
+    if isnothing(v_dc_kv) || !(v_dc_kv > 0.0)
+        throw(
+            ArgumentError(
+                "$(typeof(device)) $(PSY.get_name(device)) has a DC-voltage droop of " *
+                "$(k_kv_per_mw) kV/MW but no DC base voltage to convert it to per unit.",
+            ),
+        )
+    end
+    return k_kv_per_mw * sys_base / v_dc_kv
 end
 
 # PowerSystems stores DC-line impedances in natural units (siemens, ohms). The DC network works
@@ -566,7 +587,11 @@ function _lower_mtdc!(
         _push_converter!(
             b, PSY.get_name(ic), ac_ix, bus_number, node,
             PSY.get_dc_control(ic), PSY.get_ac_control(ic),
-            PSY.get_dc_voltage_droop(ic), PSY.get_loss_function(ic, u"SU"),
+            _droop_pu(
+                PSY.get_dc_voltage_droop(ic), PSY.get_base_voltage(PSY.get_dc_bus(ic)),
+                sys_base, ic,
+            ),
+            PSY.get_loss_function(ic, u"SU"),
             PSY.get_rating(ic, u"SU"), PSY.get_active_power_limits(ic, u"SU"),
             PSY.get_reactive_power_limits(ic, u"SU"), _converter_dc_set(ic),
             _converter_ac_set(ic), 0.0,
