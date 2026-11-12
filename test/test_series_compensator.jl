@@ -46,7 +46,7 @@ end
 bus_voltages(results) = Dict(
     row.bus_number => (row.Vm, row.θ) for row in eachrow(results["bus_results"]))
 
-@testset "AC power flow through a FIXED SeriesCompensator matches the folded line" begin
+@testset "AC power flow through a SeriesCompensator matches the folded line" begin
     compensated = bus_voltages(solve_power_flow(ACPowerFlow(), compensated_c_sys14()))
     folded = bus_voltages(solve_power_flow(ACPowerFlow(), folded_c_sys14()))
     # Two independent solves agree to the solver's convergence tolerance.
@@ -64,7 +64,7 @@ end
     raw_path, metadata_path = get_psse_export_paths(joinpath(dir, "compensated"))
     sys2 = PSY.System(raw_path, Dict(JSON3.read(metadata_path, Dict)))
     compensator = only(PSY.get_components(PSY.SeriesCompensator, sys2))
-    @test PSY.get_control_mode(compensator) == PSY.SeriesCompensatorControlMode.FIXED
+    @test !PSY.get_bypassed(compensator)
     @test PSY.get_x(compensator, u"SU") ≈ PSY.get_x(
         PSY.get_component(PSY.SeriesCompensator, sys, "compensator"), u"SU")
 end

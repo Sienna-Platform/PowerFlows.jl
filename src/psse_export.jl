@@ -1780,12 +1780,13 @@ sorts them by their bus numbers, and returns a vector of tuples (branch, bus_num
 """
 function get_branches_with_numbers(exporter::PSSEExporter)
     lines = collect(PSY.get_components(PSY.Line, exporter.system))
-    compensators = collect(PSY.get_components(PSY.SeriesCompensator, exporter.system))
+    series_compensators =
+        collect(PSY.get_components(PSY.SeriesCompensator, exporter.system))
     discrete_ac_branches =
         collect(PSY.get_components(PSY.DiscreteControlledACBranch, exporter.system))
 
     # Merge all branch variables into a single vector
-    branches = vcat(lines, compensators, discrete_ac_branches)
+    branches = vcat(lines, series_compensators, discrete_ac_branches)
     # Sort branches by their bus numbers to order them at exporting
     sort!(branches; by = branch_to_bus_numbers)
     # Pair each branch with its bus numbers.
@@ -1821,11 +1822,10 @@ _psse_branch_name(branch::PSY.ACBranch) =
 _psse_series_impedance(branch::PSY.ACBranch) =
     (PSY.get_r(branch, u"SU"), PSY.get_x(branch, u"SU"))
 function _psse_series_impedance(branch::PSY.SeriesCompensator)
-    if PSY.get_control_mode(branch) == PSY.SeriesCompensatorControlMode.BYPASSED
+    if PSY.get_bypassed(branch)
         return (0.0, 0.0)
-    else
-        return (PSY.get_r(branch, u"SU"), PSY.get_x(branch, u"SU"))
     end
+    return (PSY.get_r(branch, u"SU"), PSY.get_x(branch, u"SU"))
 end
 _psse_line_charging(branch::PSY.ACBranch) =
     (PSY.get_b(branch, u"SU"), PSY.get_g(branch, u"SU"))
