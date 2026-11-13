@@ -121,6 +121,19 @@ function _switched_admittance(
     return sum(engaged .* y_increase; init = 0.0 + 0.0im)
 end
 
+# A switched admittance is a constant impedance load.
+# The ZIP inputs are for V = 1.0 p.u.
+# At this voltage, S = V * conj(Y * V) gives P = G and Q = -B.
+# The function returns the (P, Q) withdrawal.
+function _switched_admittance_withdrawal(sa::PSY.SwitchedAdmittance)
+    Y = _switched_admittance(
+        PSY.get_solved_admittance(sa),
+        PSY.get_number_engaged(sa),
+        PSY.get_Y_increase(sa),
+    )
+    return (real(Y), -imag(Y))
+end
+
 # P0 * V^e is exactly the constant power (slot 1), current (2) or impedance (3) term for
 # e = 0, 1, 2. Any other exponent has no ZIP equivalent, so it errors instead of an approximation.
 function _exponential_zip_slot(load::PSY.ExponentialLoad, exponent::Float64)
@@ -138,6 +151,15 @@ function _exponential_zip_slot(load::PSY.ExponentialLoad, exponent::Float64)
     )
 end
 
+function _exponential_zip_parts(
+    load::PSY.ExponentialLoad,
+    exponent::Float64,
+    value::Float64,
+)
+    slot = _exponential_zip_slot(load, exponent)
+    return ntuple(k -> ifelse(k == slot, value, 0.0), 3)
+end
+
 # Active power withdrawal of one load as (constant power, constant current, constant
 # impedance) parts, system base, at V = 1 p.u.
 _load_active_power_parts(
@@ -152,11 +174,8 @@ _load_active_power_parts(
 # of an ExponentialLoad is a constant power term there. Any exponent is valid.
 _load_active_power_parts(::AbstractDCPowerFlow, l::PSY.ExponentialLoad) =
     (PSY.get_active_power(l, u"SU"), 0.0, 0.0)
-function _load_active_power_parts(::PowerFlowEvaluationModel, l::PSY.ExponentialLoad)
-    slot = _exponential_zip_slot(l, PSY.get_α(l))
-    P = PSY.get_active_power(l, u"SU")
-    return ntuple(k -> ifelse(k == slot, P, 0.0), 3)
-end
+_load_active_power_parts(::PowerFlowEvaluationModel, l::PSY.ExponentialLoad) =
+    _exponential_zip_parts(l, PSY.get_α(l), PSY.get_active_power(l, u"SU"))
 function _load_active_power_parts(::PowerFlowEvaluationModel, l::PSY.ElectricLoad)
     if !(
         contributes_active_power(l) &&
@@ -170,13 +189,24 @@ function _load_active_power_parts(::PowerFlowEvaluationModel, l::PSY.ElectricLoa
     return (PSY.get_active_power(l, u"SU"), 0.0, 0.0)
 end
 
-function _add_active_power_parts!(
+# Reactive power withdrawal of one load as (constant power, constant current, constant
+# impedance) parts, system base, at V = 1 p.u.
+_load_reactive_power_parts(
+    ::PowerFlowEvaluationModel,
+    l::Union{PSY.StandardLoad, PSY.InterruptibleStandardLoad},
+) = (
+    PSY.get_constant_reactive_power(l, u"SU"),
+    PSY.get_current_reactive_power(l, u"SU"),
+    PSY.get_impedance_reactive_power(l, u"SU"),
+)
+_load_reactive_power_parts(::PowerFlowEvaluationModel, l::PSY.ExponentialLoad) =
+    _exponential_zip_parts(l, PSY.get_β(l), PSY.get_reactive_power(l, u"SU"))
+
+function _add_parts!(
     withdrawals::NTuple{3, Vector{Float64}},
-    l::PSY.ElectricLoad,
-    pf::PowerFlowEvaluationModel,
+    parts::NTuple{3, Float64},
     bus_ix::Int,
 )
-    parts = _load_active_power_parts(pf, l)
     for k in 1:3
         withdrawals[k][bus_ix] += parts[k]
     end
@@ -190,7 +220,7 @@ function _add_exponential_load!(
     l::PSY.ExponentialLoad,
     bus_ix::Int,
 )
-    _add_active_power_parts!(withdrawals, l, pf, bus_ix)
+    _add_parts!(withdrawals, _load_active_power_parts(pf, l), bus_ix)
     return
 end
 
@@ -201,8 +231,8 @@ function _add_exponential_load!(
     l::PSY.ExponentialLoad,
     bus_ix::Int,
 )
-    _add_active_power_parts!(withdrawals, l, pf, bus_ix)
-    q[_exponential_zip_slot(l, PSY.get_β(l))][bus_ix] += PSY.get_reactive_power(l, u"SU")
+    _add_parts!(withdrawals, _load_active_power_parts(pf, l), bus_ix)
+    _add_parts!(q, _load_reactive_power_parts(pf, l), bus_ix)
     return
 end
 
@@ -241,6 +271,11 @@ function _get_withdrawals!(
         bus_active_power_constant_current_withdrawals,
         bus_active_power_constant_impedance_withdrawals,
     )
+    q = (
+        bus_reactive_power_withdrawals,
+        bus_reactive_power_constant_current_withdrawals,
+        bus_reactive_power_constant_impedance_withdrawals,
+    )
     for l in PSY.get_available_components(
         Union{PSY.StandardLoad, PSY.InterruptibleStandardLoad},
         sys,
@@ -248,18 +283,9 @@ function _get_withdrawals!(
         bus = PSY.get_bus(l)
         PSY.get_number(bus) in removed_buses && continue
         bus_ix = _get_bus_ix(bus_lookup, reverse_bus_search_map, PSY.get_number(bus))
-        _add_active_power_parts!(p, l, pf, bus_ix)
-        bus_reactive_power_withdrawals[bus_ix] += PSY.get_constant_reactive_power(l, u"SU")
-        bus_reactive_power_constant_current_withdrawals[bus_ix] +=
-            PSY.get_current_reactive_power(l, u"SU")
-        bus_reactive_power_constant_impedance_withdrawals[bus_ix] +=
-            PSY.get_impedance_reactive_power(l, u"SU")
+        _add_parts!(p, _load_active_power_parts(pf, l), bus_ix)
+        _add_parts!(q, _load_reactive_power_parts(pf, l), bus_ix)
     end
-    q = (
-        bus_reactive_power_withdrawals,
-        bus_reactive_power_constant_current_withdrawals,
-        bus_reactive_power_constant_impedance_withdrawals,
-    )
     for l in PSY.get_available_components(PSY.ExponentialLoad, sys)
         bus = PSY.get_bus(l)
         PSY.get_number(bus) in removed_buses && continue
@@ -271,18 +297,9 @@ function _get_withdrawals!(
         bus = PSY.get_bus(sa)
         PSY.get_number(bus) in removed_buses && continue
         bus_ix = _get_bus_ix(bus_lookup, reverse_bus_search_map, PSY.get_number(bus))
-        Y = _switched_admittance(
-            PSY.get_solved_admittance(sa),
-            PSY.get_number_engaged(sa),
-            PSY.get_Y_increase(sa),
-        )
-        # Here we implement the switched admittance element as a constant impedance load.
-        # The inputs for ZIP loads are provided for V = 1.0 p.u., so
-        # the following is equivalent to S = V * conj(Y * V) for V = 1.0 p.u.
-        # As conj(Y) = G - jB, we have P = G and Q = -B
-        # (we could use +=real(conj(Y)) and +=imag(conj(Y)) as well).
-        bus_active_power_constant_impedance_withdrawals[bus_ix] += real(Y)
-        bus_reactive_power_constant_impedance_withdrawals[bus_ix] -= imag(Y)
+        (p_sa, q_sa) = _switched_admittance_withdrawal(sa)
+        bus_active_power_constant_impedance_withdrawals[bus_ix] += p_sa
+        bus_reactive_power_constant_impedance_withdrawals[bus_ix] += q_sa
     end
     for sc in PSY.get_available_components(PSY.SynchronousCondenser, sys)
         bus = PSY.get_bus(sc)
@@ -291,6 +308,12 @@ function _get_withdrawals!(
         bus_active_power_withdrawals[bus_ix] += PSY.get_active_power_losses(sc, u"SU")
         # reactive power handled already:
         # contributes_reactive_power(PSY.SynchronousCondenser) is true.
+    end
+    for pt in PSY.get_available_components(PSY.HydroPumpTurbine, sys)
+        bus = PSY.get_bus(pt)
+        PSY.get_number(bus) in removed_buses && continue
+        bus_ix = _get_bus_ix(bus_lookup, reverse_bus_search_map, PSY.get_number(bus))
+        bus_active_power_withdrawals[bus_ix] += PSY.get_active_power_pump(pt, u"SU")
     end
     return
 end
