@@ -93,6 +93,31 @@ end
     @test length(unique(round.(facts_rows.final; digits = 6))) >= 2
 end
 
+@testset "FACTS state restarts after clear_injection_data!" begin
+    pf = ACPowerFlow{NewtonRaphsonACPowerFlow}(; control_discrete_devices = true)
+    fresh = PowerFlowData(pf, _make_multiperiod_facts_system())
+    @test solve_power_flow!(fresh)
+    data = PowerFlowData(pf, _make_multiperiod_facts_system())
+    fields = (:bus_active_power_injections, :bus_reactive_power_injections,
+        :bus_active_power_withdrawals, :bus_active_power_constant_current_withdrawals,
+        :bus_active_power_constant_impedance_withdrawals,
+        :bus_reactive_power_withdrawals,
+        :bus_reactive_power_constant_current_withdrawals,
+        :bus_reactive_power_constant_impedance_withdrawals)
+    built = Dict(f => copy(getfield(data, f)) for f in fields)
+    for _ in 1:3
+        PF.clear_injection_data!(data)
+        for (f, v) in built
+            getfield(data, f) .= v
+        end
+        @test solve_power_flow!(data)
+        @test data.bus_magnitude ≈ fresh.bus_magnitude atol = 1e-8
+        cd, cd_fresh = data.controlled_devices, fresh.controlled_devices
+        @test cd.facts_current ≈ cd_fresh.facts_current atol = 1e-8
+        @test cd.facts_saturated == cd_fresh.facts_saturated
+    end
+end
+
 @testset "write-back is skipped under time_steps>1 (no silent last-ts write)" begin
     sys = _make_multiperiod_shunt_system()
     # capture the shunt's PSY settings before solving

@@ -270,6 +270,21 @@ function save_device_state!(set::ControlledDeviceSet, data, ts::Int)
 end
 save_device_state!(::Nothing, data, ts::Int) = nothing
 
+# `clear_injection_data!` zeroes the constant impedance slot that holds the FACTS susceptance,
+# and no writer adds it back, so every FACTS controller restarts from its enrollment state.
+function _reset_facts_state!(set::ControlledDeviceSet)
+    for (i, d) in enumerate(set.facts)
+        d.current = d.initial
+        d.b_lim = d.rating
+        d.saturated = false
+        set.facts_current[i, :] .= d.initial
+        set.facts_b_lim[i, :] .= d.rating
+        set.facts_saturated[i, :] .= false
+    end
+    return
+end
+_reset_facts_state!(::Nothing) = nothing
+
 """Width (number of time steps) of the per-time-step device store; all store matrices share
 it by construction."""
 store_time_steps(set::ControlledDeviceSet) = size(set.shunt_current, 2)
