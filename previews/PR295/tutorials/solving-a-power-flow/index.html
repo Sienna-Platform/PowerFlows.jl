@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>Solving a Power Flow · PowerFlows.jl</title><meta name="title" content="Solving a Power Flow · PowerFlows.jl"/><meta property="og:title" content="Solving a Power Flow · PowerFlows.jl"/><meta property="twitter:title" content="Solving a Power Flow · PowerFlows.jl"/><meta name="description" content="Documentation for PowerFlows.jl."/><meta property="og:description" content="Documentation for PowerFlows.jl."/><meta property="twitter:description" content="Documentation for PowerFlows.jl."/><script data-outdated-warner src="../../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.050/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL="../.."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../../assets/documenter.js"></script><script src="../../search_index.js"></script><script src="../../siteinfo.js"></script><script src="../../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../../assets/themeswap.js"></script></head><body><div id="documenter"><nav class="docs-sidebar"><a class="docs-logo" href="../../"><img src="../../assets/logo.png" alt="PowerFlows.jl logo"/></a><div class="docs-package-name"><span class="docs-autofit"><a href="../../">PowerFlows.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../../">Welcome Page</a></li><li><a class="tocitem" href="../../how-tos/stub/">How-to-Guides</a></li><li><span class="tocitem">Tutorials</span><ul><li class="is-active"><a class="tocitem" href>Solving a Power Flow</a><ul class="internal"><li><a class="tocitem" href="#Building-a-System"><span>Building a System</span></a></li><li><a class="tocitem" href="#DC-Power-Flow"><span>DC Power Flow</span></a></li><li><a class="tocitem" href="#PTDF-DC-Power-Flow"><span>PTDF DC Power Flow</span></a></li><li><a class="tocitem" href="#AC-Power-Flow"><span>AC Power Flow</span></a></li><li><a class="tocitem" href="#When-AC-Power-Flow-Fails"><span>When AC Power Flow Fails</span></a></li></ul></li></ul></li><li><a class="tocitem" href="../../explanation/stub/">Explanation</a></li><li><span class="tocitem">Reference</span><ul><li><a class="tocitem" href="../../reference/developers/developer/">Code Base Developer Guide</a></li><li><a class="tocitem" href="../../reference/developers/lcc_model/">LCC Model Implementation</a></li><li><a class="tocitem" href="../../reference/api/public/">Public API Reference</a></li><li><a class="tocitem" href="../../reference/api/internal/">Internal API Reference</a></li></ul></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li><a class="is-disabled">Tutorials</a></li><li class="is-active"><a href>Solving a Power Flow</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>Solving a Power Flow</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/NREL-Sienna/PowerFlows.jl" title="View the repository on GitHub"><span class="docs-icon fa-brands"></span><span class="docs-label is-hidden-touch">GitHub</span></a><a class="docs-navbar-link" href="https://github.com/NREL-Sienna/PowerFlows.jl/blob/main/docs/src/tutorials/solving-a-power-flow.md" title="Edit source on GitHub"><span class="docs-icon fa-solid"></span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><h1 id="Solving-a-Power-Flow"><a class="docs-heading-anchor" href="#Solving-a-Power-Flow">Solving a Power Flow</a><a id="Solving-a-Power-Flow-1"></a><a class="docs-heading-anchor-permalink" href="#Solving-a-Power-Flow" title="Permalink"></a></h1><p>In this tutorial, you&#39;ll solve power flows on a 5-bus test system using three different solvers and compare their results.</p><h2 id="Building-a-System"><a class="docs-heading-anchor" href="#Building-a-System">Building a System</a><a id="Building-a-System-1"></a><a class="docs-heading-anchor-permalink" href="#Building-a-System" title="Permalink"></a></h2><p>Create a <a href="https://nrel-sienna.github.io/PowerSystems.jl/stable/api/public/#PowerSystems.System"><code>System</code></a> from <a href="https://github.com/NREL-Sienna/PowerSystemCaseBuilder.jl">PowerSystemCaseBuilder.jl</a>:</p><pre><code class="language-julia-repl hljs" style="display:block;">julia&gt; sys = with_logger(SimpleLogger(stderr, Logging.Error)) do
+           build_system(MatpowerTestSystems, &quot;matpower_case5_sys&quot;)
+       end</code><code class="nohighlight hljs ansi" style="display:block;"><span class="sgr1">              System
+┌───────────────────┬─────────────┐
+│ Property          │ Value       │
+├───────────────────┼─────────────┤
+│ Name              │             │
+│ Description       │             │
+│ System Units Base │ SYSTEM_BASE │
+│ Base Power        │ 100.0       │
+│ Base Frequency    │ 60.0        │
+│ Num Components    │ 28          │
+└───────────────────┴─────────────┘
+
+         Static Components
+┌──────────────────────────┬───────┐
+│ Type                     │ Count │
+├──────────────────────────┼───────┤
+│ ACBus                    │ 5     │
+│ Arc                      │ 6     │
+│ Area                     │ 1     │
+│ Line                     │ 5     │
+│ LoadZone                 │ 1     │
+│ PhaseShiftingTransformer │ 2     │
+│ PowerLoad                │ 3     │
+│ ThermalStandard          │ 5     │
+└──────────────────────────┴───────┘</span></code></pre><h2 id="DC-Power-Flow"><a class="docs-heading-anchor" href="#DC-Power-Flow">DC Power Flow</a><a id="DC-Power-Flow-1"></a><a class="docs-heading-anchor-permalink" href="#DC-Power-Flow" title="Permalink"></a></h2><p>Create a <a href="../../reference/api/public/#PowerFlows.DCPowerFlow"><code>DCPowerFlow</code></a> solver:</p><pre><code class="language-julia-repl hljs" style="display:block;">julia&gt; pf_dc = DCPowerFlow()</code><code class="nohighlight hljs ansi" style="display:block;">DCPowerFlow(nothing)</code></pre><p>Solve the power flow with <a href="../../reference/api/public/#PowerFlows.solve_power_flow-Tuple{Union{PowerFlows.PowerFlowData{PowerNetworkMatrices.DC_ABA_Matrix_Factorized, PowerNetworkMatrices.DC_BA_Matrix}, PowerFlows.PowerFlowData{PowerNetworkMatrices.DC_PTDF_Matrix, PowerNetworkMatrices.DC_ABA_Matrix_Factorized}, PowerFlows.PowerFlowData{&lt;:PowerNetworkMatrices.DC_vPTDF_Matrix, PowerNetworkMatrices.DC_ABA_Matrix_Factorized}}, System}"><code>solve_power_flow</code></a>:</p><pre><code class="language-julia-repl hljs" style="display:block;">julia&gt; dc_results = with_logger(SimpleLogger(stderr, Logging.Error)) do
+           solve_power_flow(pf_dc, sys)
+       end</code><code class="nohighlight hljs ansi" style="display:block;">Dict{String, Dict{String, DataFrames.DataFrame}} with 1 entry:
+  &quot;1&quot; =&gt; Dict(&quot;flow_results&quot;=&gt;<span class="sgr1">6×9 DataFrame</span>…</code></pre><p>Look at the bus results:</p><pre><code class="language-julia-repl hljs" style="display:block;">julia&gt; dc_results[&quot;1&quot;][&quot;bus_results&quot;]</code><code class="nohighlight hljs ansi" style="display:block;"><span class="sgr1">5×9 DataFrame
+ Row │ bus_number  Vm       θ            P_gen    P_load   P_net     Q_gen     ⋯
+     │<span class="sgr90"> Int64       Float64  Float64      Float64  Float64  Float64   Float64   ⋯
+─────┼──────────────────────────────────────────────────────────────────────────
+   1 │          1      1.0   0.0581371   210.0        0.0   210.0        0.0   ⋯
+   2 │          2      1.0  -0.0106971     0.0      300.0  -300.0        0.0
+   3 │          3      1.0  -0.00475297  324.498    300.0    24.498      0.0
+   4 │          4      1.0   0.0           0.0      400.0  -400.0        0.0
+   5 │         10      1.0   0.0726141   470.694      0.0   470.694      0.0   ⋯
+</span><span class="sgr36">                                                               2 columns omitted</span></span></code></pre><p>Notice that <code>Vm</code> is 1.0 for all buses, and <code>Q_gen</code> and <code>Q_load</code> are 0. This is expected for DC power flow.</p><p>Look at the line flows:</p><pre><code class="language-julia-repl hljs" style="display:block;">julia&gt; dc_results[&quot;1&quot;][&quot;flow_results&quot;]</code><code class="nohighlight hljs ansi" style="display:block;"><span class="sgr1">6×9 DataFrame
+ Row │ line_name         bus_from  bus_to  P_from_to  Q_from_to  P_to_from  Q_ ⋯
+     │<span class="sgr90"> String            Int64     Int64   Float64    Float64    Float64    Fl ⋯
+─────┼──────────────────────────────────────────────────────────────────────────
+   1 │ bus-1-bus-2-i_1          1       2   244.962         0.0  -244.962      ⋯
+   2 │ bus-1-bus-4-i_2          1       4   191.241         0.0  -191.241
+   3 │ bus-1-bus-10-i_3         1      10  -226.202         0.0   226.202
+   4 │ bus-2-bus-3-i_4          2       3   -55.0383        0.0    55.0383
+   5 │ bus-3-bus-4-i_6          3       4   -30.5403        0.0    30.5403     ⋯
+   6 │ bus-4-bus-10-i_7         4      10  -244.492         0.0   244.492
+</span><span class="sgr36">                                                               3 columns omitted</span></span></code></pre><p>Notice that <code>Q_from_to</code> and <code>Q_to_from</code> are zero.</p><h2 id="PTDF-DC-Power-Flow"><a class="docs-heading-anchor" href="#PTDF-DC-Power-Flow">PTDF DC Power Flow</a><a id="PTDF-DC-Power-Flow-1"></a><a class="docs-heading-anchor-permalink" href="#PTDF-DC-Power-Flow" title="Permalink"></a></h2><p>Create a <a href="../../reference/api/public/#PowerFlows.PTDFDCPowerFlow"><code>PTDFDCPowerFlow</code></a> solver:</p><pre><code class="language-julia-repl hljs" style="display:block;">julia&gt; pf_ptdf = PTDFDCPowerFlow()</code><code class="nohighlight hljs ansi" style="display:block;">PTDFDCPowerFlow(nothing)</code></pre><p>Solve the power flow:</p><pre><code class="language-julia-repl hljs" style="display:block;">julia&gt; ptdf_results = with_logger(SimpleLogger(stderr, Logging.Error)) do
+           solve_power_flow(pf_ptdf, sys)
+       end</code><code class="nohighlight hljs ansi" style="display:block;">Dict{String, Dict{String, DataFrames.DataFrame}} with 1 entry:
+  &quot;1&quot; =&gt; Dict(&quot;flow_results&quot;=&gt;<span class="sgr1">6×9 DataFrame</span>…</code></pre><p>Look at the bus results:</p><pre><code class="language-julia-repl hljs" style="display:block;">julia&gt; ptdf_results[&quot;1&quot;][&quot;bus_results&quot;]</code><code class="nohighlight hljs ansi" style="display:block;"><span class="sgr1">5×9 DataFrame
+ Row │ bus_number  Vm       θ            P_gen    P_load   P_net     Q_gen     ⋯
+     │<span class="sgr90"> Int64       Float64  Float64      Float64  Float64  Float64   Float64   ⋯
+─────┼──────────────────────────────────────────────────────────────────────────
+   1 │          1      1.0   0.0581371   210.0        0.0   210.0        0.0   ⋯
+   2 │          2      1.0  -0.0106971     0.0      300.0  -300.0        0.0
+   3 │          3      1.0  -0.00475297  324.498    300.0    24.498      0.0
+   4 │          4      1.0   0.0           0.0      400.0  -400.0        0.0
+   5 │         10      1.0   0.0726141   470.694      0.0   470.694      0.0   ⋯
+</span><span class="sgr36">                                                               2 columns omitted</span></span></code></pre><p>The results match <code>DCPowerFlow</code>. For very large systems, consider <a href="../../reference/api/public/#PowerFlows.vPTDFDCPowerFlow"><code>vPTDFDCPowerFlow</code></a> instead.</p><h2 id="AC-Power-Flow"><a class="docs-heading-anchor" href="#AC-Power-Flow">AC Power Flow</a><a id="AC-Power-Flow-1"></a><a class="docs-heading-anchor-permalink" href="#AC-Power-Flow" title="Permalink"></a></h2><p>Create an <a href="../../reference/api/public/#PowerFlows.ACPowerFlow"><code>ACPowerFlow</code></a> solver:</p><pre><code class="language-julia-repl hljs" style="display:block;">julia&gt; pf_ac = ACPowerFlow()</code><code class="nohighlight hljs ansi" style="display:block;">ACPowerFlow{NewtonRaphsonACPowerFlow}(false, nothing, false, false, nothing, true, false, false)</code></pre><p>Solve the power flow:</p><pre><code class="language-julia-repl hljs" style="display:block;">julia&gt; ac_results = with_logger(SimpleLogger(stderr, Logging.Error)) do
+           solve_power_flow(pf_ac, sys)
+       end</code><code class="nohighlight hljs ansi" style="display:block;">Dict{String, DataFrames.DataFrame} with 3 entries:
+  &quot;flow_results&quot; =&gt; <span class="sgr1">6×9 DataFrame</span>…
+  &quot;bus_results&quot;  =&gt; <span class="sgr1">5×9 DataFrame</span>…
+  &quot;lcc_results&quot;  =&gt; <span class="sgr1">0×13 DataFrame</span>…</code></pre><p>Look at the bus results:</p><pre><code class="language-julia-repl hljs" style="display:block;">julia&gt; ac_results[&quot;bus_results&quot;]</code><code class="nohighlight hljs ansi" style="display:block;"><span class="sgr1">5×9 DataFrame
+ Row │ bus_number  Vm       θ           P_gen      P_load   P_net     Q_gen    ⋯
+     │<span class="sgr90"> Int64       Float64  Float64     Float64    Float64  Float64   Float64  ⋯
+─────┼──────────────────────────────────────────────────────────────────────────
+   1 │          1  1.07762  0.0537797   210.0          0.0   210.0     155.862 ⋯
+   2 │          2  1.08419  8.15235e-5    0.0        300.0  -300.0       0.0
+   3 │          3  1.1      0.00616059  324.498      300.0    24.498   518.182
+   4 │          4  1.06414  0.0           2.20156    400.0  -397.798  -116.004
+   5 │         10  1.06907  0.066656    470.694        0.0   470.694  -164.317 ⋯
+</span><span class="sgr36">                                                               2 columns omitted</span></span></code></pre><p>Notice that <code>Vm</code> now varies across buses (not all 1.0), and <code>Q_gen</code> has non-zero values.</p><p>Look at the line flows:</p><pre><code class="language-julia-repl hljs" style="display:block;">julia&gt; ac_results[&quot;flow_results&quot;]</code><code class="nohighlight hljs ansi" style="display:block;"><span class="sgr1">6×9 DataFrame
+ Row │ line_name         bus_from  bus_to  P_from_to  Q_from_to  P_to_from  Q_ ⋯
+     │<span class="sgr90"> String            Int64     Int64   Float64    Float64    Float64    Fl ⋯
+─────┼──────────────────────────────────────────────────────────────────────────
+   1 │ bus-1-bus-2-i_1          1       2   219.048    -41.5383  -217.846      ⋯
+   2 │ bus-1-bus-4-i_2          1       4   206.032     32.2526  -204.893    -
+   3 │ bus-1-bus-10-i_3         1      10  -215.08     165.149    215.488   -1
+   4 │ bus-2-bus-3-i_4          2       3   -82.1539  -151.337     82.4233   1
+   5 │ bus-3-bus-4-i_6          3       4   -57.9253   267.75      60.6074  -2 ⋯
+   6 │ bus-4-bus-10-i_7         4      10  -253.513     15.8121   255.206
+</span><span class="sgr36">                                                               3 columns omitted</span></span></code></pre><p>Notice that <code>Q_from_to</code> and <code>Q_to_from</code> now show reactive power flows, and <code>P_from_to</code> differs from <code>P_to_from</code> due to losses.</p><h2 id="When-AC-Power-Flow-Fails"><a class="docs-heading-anchor" href="#When-AC-Power-Flow-Fails">When AC Power Flow Fails</a><a id="When-AC-Power-Flow-Fails-1"></a><a class="docs-heading-anchor-permalink" href="#When-AC-Power-Flow-Fails" title="Permalink"></a></h2><p>Let&#39;s create a system with data issues to see what failure looks like.</p><pre><code class="language-julia-repl hljs" style="display:block;">julia&gt; bad_sys = with_logger(SimpleLogger(stderr, Logging.Error)) do
+           build_system(PSITestSystems, &quot;c_sys5_re&quot;; add_forecasts = false)
+       end</code><code class="nohighlight hljs ansi" style="display:block;"><span class="sgr1">              System
+┌───────────────────┬─────────────┐
+│ Property          │ Value       │
+├───────────────────┼─────────────┤
+│ Name              │             │
+│ Description       │             │
+│ System Units Base │ SYSTEM_BASE │
+│ Base Power        │ 100.0       │
+│ Base Frequency    │ 60.0        │
+│ Num Components    │ 28          │
+└───────────────────┴─────────────┘
+
+      Static Components
+┌───────────────────┬───────┐
+│ Type              │ Count │
+├───────────────────┼───────┤
+│ ACBus             │ 5     │
+│ Arc               │ 6     │
+│ Line              │ 6     │
+│ PowerLoad         │ 3     │
+│ RenewableDispatch │ 3     │
+│ ThermalStandard   │ 5     │
+└───────────────────┴───────┘</span></code></pre><p>Remove some lines and increase impedance on another to create an infeasible case:</p><pre><code class="language-julia-repl hljs" style="display:block;">julia&gt; remove_component!(Line, bad_sys, &quot;1&quot;)</code></pre><pre><code class="language-julia-repl hljs" style="display:block;">julia&gt; remove_component!(Line, bad_sys, &quot;2&quot;)</code></pre><pre><code class="language-julia-repl hljs" style="display:block;">julia&gt; br = get_component(Line, bad_sys, &quot;6&quot;)</code><code class="nohighlight hljs ansi" style="display:block;">Line: 6:
+   name: 6
+   available: true
+   active_power_flow: 0.0
+   reactive_power_flow: 0.0
+   arc: Arc: nodeD -&gt; nodeE
+   r: 0.00297
+   x: 0.0297
+   b: (from = 0.00337, to = 0.00337)
+   rating: 3.29
+   angle_limits: (min = -0.7, max = 0.7)
+   rating_b: nothing
+   rating_c: nothing
+   g: (from = 0.0, to = 0.0)
+   services: 0-element Vector{Service}
+   ext: Dict{String, Any}()
+   InfrastructureSystems.SystemUnitsSettings:
+      base_value: 100.0
+      unit_system: UnitSystem.SYSTEM_BASE = 0
+   has_supplemental_attributes: false
+   has_time_series: false</code></pre><pre><code class="language-julia-repl hljs" style="display:block;">julia&gt; set_x!(br, 20.0)</code><code class="nohighlight hljs ansi" style="display:block;">20.0</code></pre><pre><code class="language-julia-repl hljs" style="display:block;">julia&gt; set_r!(br, 2.0)</code><code class="nohighlight hljs ansi" style="display:block;">2.0</code></pre><p>Now try to solve:</p><pre><code class="language-julia-repl hljs" style="display:block;">julia&gt; bad_results = solve_power_flow(ACPowerFlow(), bad_sys)</code><code class="nohighlight hljs ansi" style="display:block;"><span class="sgr36"><span class="sgr1">[ Info: </span></span>Finding subnetworks via iterative union find
+<span class="sgr36"><span class="sgr1">[ Info: </span></span>Finding subnetworks via iterative union find
+<span class="sgr36"><span class="sgr1">[ Info: </span></span>Validating connectivity with depth first search (network traversal)
+<span class="sgr36"><span class="sgr1">[ Info: </span></span>Finding subnetworks via iterative union find
+<span class="sgr36"><span class="sgr1">[ Info: </span></span>Finding subnetworks via iterative union find
+<span class="sgr36"><span class="sgr1">[ Info: </span></span>Initial residual size: 7.898578323538985 L2, 5.9999999715946615 L∞
+<span class="sgr36"><span class="sgr1">[ Info: </span></span>Final residual size: 77.36457268489082 L2, 54.09572612807426 L∞.
+<span class="sgr91"><span class="sgr1">┌ Error: </span></span>The NewtonRaphsonACPowerFlow solver failed to converge.
+<span class="sgr91"><span class="sgr1">└ </span></span><span class="sgr90">@ PowerFlows ~/work/PowerFlows.jl/PowerFlows.jl/src/power_flow_method.jl:450</span>
+<span class="sgr91"><span class="sgr1">┌ Error: </span></span>The power flow solver returned convergence = false
+<span class="sgr91"><span class="sgr1">└ </span></span><span class="sgr90">@ PowerFlows ~/work/PowerFlows.jl/PowerFlows.jl/src/solve_ac_power_flow.jl:104</span>
+missing</code></pre><p>The solver returns <code>nothing</code> when it fails to converge. You can try a more robust solver, but if the system is truly infeasible, no solver will converge:</p><pre><code class="language-julia-repl hljs" style="display:block;">julia&gt; bad_results_robust = solve_power_flow(ACPowerFlow{TrustRegionACPowerFlow}(), bad_sys)</code><code class="nohighlight hljs ansi" style="display:block;"><span class="sgr36"><span class="sgr1">[ Info: </span></span>Finding subnetworks via iterative union find
+<span class="sgr36"><span class="sgr1">[ Info: </span></span>Finding subnetworks via iterative union find
+<span class="sgr36"><span class="sgr1">[ Info: </span></span>Validating connectivity with depth first search (network traversal)
+<span class="sgr36"><span class="sgr1">[ Info: </span></span>Finding subnetworks via iterative union find
+<span class="sgr36"><span class="sgr1">[ Info: </span></span>Finding subnetworks via iterative union find
+<span class="sgr36"><span class="sgr1">[ Info: </span></span>Initial residual size: 7.898578323538985 L2, 5.9999999715946615 L∞
+<span class="sgr36"><span class="sgr1">[ Info: </span></span>Final residual size: 6.270753155294392 L2, 4.107156868506067 L∞.
+<span class="sgr91"><span class="sgr1">┌ Error: </span></span>The TrustRegionACPowerFlow solver failed to converge.
+<span class="sgr91"><span class="sgr1">└ </span></span><span class="sgr90">@ PowerFlows ~/work/PowerFlows.jl/PowerFlows.jl/src/power_flow_method.jl:450</span>
+<span class="sgr91"><span class="sgr1">┌ Error: </span></span>The power flow solver returned convergence = false
+<span class="sgr91"><span class="sgr1">└ </span></span><span class="sgr90">@ PowerFlows ~/work/PowerFlows.jl/PowerFlows.jl/src/solve_ac_power_flow.jl:104</span>
+missing</code></pre><p>Let&#39;s decrease the resistance and impedance on that line and try again:</p><pre><code class="language-julia-repl hljs" style="display:block;">julia&gt; set_x!(br, 0.03)</code><code class="nohighlight hljs ansi" style="display:block;">0.03</code><br/><code class="language-julia-repl hljs" style="display:block;">julia&gt; set_r!(br, 0.003)</code><code class="nohighlight hljs ansi" style="display:block;">0.003</code></pre><pre><code class="language-julia-repl hljs" style="display:block;">julia&gt; good_results_robust = solve_power_flow(ACPowerFlow{TrustRegionACPowerFlow}(), bad_sys)</code><code class="nohighlight hljs ansi" style="display:block;"><span class="sgr36"><span class="sgr1">[ Info: </span></span>Finding subnetworks via iterative union find
+<span class="sgr36"><span class="sgr1">[ Info: </span></span>Finding subnetworks via iterative union find
+<span class="sgr36"><span class="sgr1">[ Info: </span></span>Validating connectivity with depth first search (network traversal)
+<span class="sgr36"><span class="sgr1">[ Info: </span></span>Finding subnetworks via iterative union find
+<span class="sgr36"><span class="sgr1">[ Info: </span></span>Finding subnetworks via iterative union find
+<span class="sgr36"><span class="sgr1">[ Info: </span></span>Initial residual size: 7.898578815975891 L2, 6.000000715255737 L∞
+<span class="sgr36"><span class="sgr1">[ Info: </span></span>Final residual size: 3.345531406279922e-14 L2, 2.0872192862952943e-14 L∞.
+<span class="sgr36"><span class="sgr1">[ Info: </span></span>The TrustRegionACPowerFlow solver converged after 3 iterations.
+<span class="sgr36"><span class="sgr1">[ Info: </span></span>PowerFlow solve converged, the results are exported in DataFrames
+<span class="sgr36"><span class="sgr1">[ Info: </span></span>Voltages are exported in pu. Powers are exported in MW/MVAr.
+Dict{String, DataFrames.DataFrame} with 3 entries:
+  &quot;flow_results&quot; =&gt; <span class="sgr1">4×9 DataFrame</span>…
+  &quot;bus_results&quot;  =&gt; <span class="sgr1">5×9 DataFrame</span>…
+  &quot;lcc_results&quot;  =&gt; <span class="sgr1">0×13 DataFrame</span>…</code></pre></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../../how-tos/stub/">« How-to-Guides</a><a class="docs-footer-nextpage" href="../../explanation/stub/">Explanation »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.16.1 on <span class="colophon-date" title="Friday 23 January 2026 00:45">Friday 23 January 2026</span>. Using Julia version 1.12.4.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
