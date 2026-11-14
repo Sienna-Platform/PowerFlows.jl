@@ -11,9 +11,7 @@ end
 end
 
 @testset "Aqua: stale dependencies" begin
-    # PowerMatricesCore is unregistered, so it is a direct dependency only to give its
-    # `[sources]` entry effect for PowerNetworkMatrices.
-    Aqua.test_stale_deps(PowerFlows; ignore = [:PowerMatricesCore])
+    Aqua.test_stale_deps(PowerFlows)
 end
 
 @testset "Aqua: deps compat" begin
