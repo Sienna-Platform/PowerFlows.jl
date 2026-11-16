@@ -1635,7 +1635,8 @@ end
     @test only(data.controlled_devices.shunts).current > 0
 
     # The Q limits move voltage, so the FACTS device regulates again with them. It ends at
-    # its setpoint or is reported saturated. Its bound tracks the final voltage.
+    # its setpoint or is reported saturated. Its bound is within `CONTROL_FACTS_LIMIT_RTOL` of
+    # the bound at the final voltage.
     sys = _q_limited_shunt_system()
     _add_facts_shunt!(sys, 3; max_shunt_current = 20.0)
     data = PowerFlowData(pf, sys)

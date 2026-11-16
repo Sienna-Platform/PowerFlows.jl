@@ -787,10 +787,11 @@ function _control_continuation!(
     else
         return false
     end
-    # Classify each FACTS endpoint against its bound and setpoint (`saturated` is reported by
-    # `get_controlled_device_results` and written back to PSY). The voltage is the final
-    # converged voltage from `snap_and_restore!`. The bound comes from the last regulation
-    # pass, before the solve after the snap, so it can lag that voltage.
+    # Classify each FACTS endpoint against its voltage-dependent bound and setpoint (`saturated`
+    # reported by `get_controlled_device_results` and written back to PSY). The voltage is the
+    # final one from `snap_and_restore!`, but `b_lim` and `current` come from the last
+    # regulation pass, before the snap. The snap solve can move voltage after that pass, so the
+    # bound can be slightly stale.
     for d in set.facts
         classify_facts_saturation!(d, measured_value(d, data, ts))
     end
