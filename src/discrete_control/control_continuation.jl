@@ -277,8 +277,9 @@ end
 # slope m = 1 + ω·(g′−1), g′ = σ′(V)·dV/dp ≤ 0 after sign correction. ω is chosen to
 # keep m NON-negative (monotone, 0≤m<1, not merely |m|<1): m ≥ θ ⟹ ω ≤ (1−θ)/(1+|g′|).
 # `_relaxation` uses the maximum slope |hi−lo|·Se/4, which holds at the setpoint. Away from
-# the setpoint, `_local_relaxation` uses the slope at the current y. It never steps past
-# the setpoint on the linear model. The oscillation freeze is the backstop.
+# the setpoint, `_local_relaxation` uses the sigmoid slope at the current value. The linear
+# prediction covers at most (1 − θ) of the distance to the setpoint. This keeps the
+# contraction margin when regulators are coupled. The oscillation freeze is the backstop.
 @inline function _relaxation(d, Se::Float64, dVdp::Float64)
     lo, hi = parameter_limits(d)
     gbound = 0.25 * abs(hi - lo) * Se * abs(dVdp)
@@ -286,8 +287,9 @@ end
     return (1.0 - CONTROL_CONTRACTION) / (1.0 + gbound)
 end
 
-# Relaxation from the sigmoid slope at the current y, shortened to land on the setpoint
-# when the linear model (Δy = dv·step) would cross it. Returns ω before the n_shared split.
+# Relaxation from the sigmoid slope at the current value. The guard shortens ω so the linear
+# prediction (Δy = dv·step) covers at most (1 − θ) of the distance to the setpoint.
+# Returns ω before the n_shared split.
 @inline function _local_relaxation(
     d, Se::Float64, dv::Float64, yc::Float64, p_now::Float64, p_tgt::Float64,
 )
@@ -297,8 +299,9 @@ end
     slope = abs(hi - lo) * Se * w / (1.0 + w)^2
     ω = (1.0 - CONTROL_CONTRACTION) / (1.0 + slope * abs(dv))
     full = dv * (p_tgt - p_now)
-    if !iszero(full) && sign(full) == sign(e) && ω * abs(full) > abs(e)
-        ω = abs(e / full)
+    if !iszero(full) && sign(full) == sign(e) &&
+       ω * abs(full) > (1.0 - CONTROL_CONTRACTION) * abs(e)
+        ω = (1.0 - CONTROL_CONTRACTION) * abs(e / full)
     end
     return ω
 end
@@ -335,10 +338,9 @@ function _refresh_facts_limits!(
 end
 
 # Compute the damped, sign-corrected target parameter for one device and advance its
-# oscillation state. Returns `(p_new, yc, ok, gap)`: `yc` is the pre-move regulated quantity (for a
+# oscillation state. Returns `(p_new, yc, ok)`: `yc` is the pre-move regulated quantity (for a
 # secant refresh); `ok=false` means the device was frozen (oscillation) or held in its deadband —
-# do not move it. `gap` is the undamped distance to the clamped target (0.0 when `ok=false`).
-# Shared by the sequential (`_step_device!`) and batched (`_batched_pass!`) paths.
+# do not move it. Shared by the sequential (`_step_device!`) and batched (`_batched_pass!`) paths.
 function _damped_target!(
     d, idx::Int, data, ts::Int, S::Float64, frozen::Vector{Bool},
     dVdp::Vector{Float64}, osc::Vector{Int}, prev_sign::Vector{Int}, n_shared::Vector{Int},
@@ -349,7 +351,7 @@ function _damped_target!(
         # PSS/E deadband semantics: a device whose regulated quantity is inside its
         # band is held, not driven to the band midpoint.
         prev_sign[idx] = 0
-        return p_now, yc, false, 0.0
+        return p_now, yc, false
     end
     lo, hi = parameter_limits(d)
     tol_d = _param_tol(d)
@@ -374,26 +376,11 @@ function _damped_target!(
         if osc[idx] > CONTROL_OSCILLATION_LIMIT
             _freeze_device!(frozen, idx, d, ts,
                 "oscillating ($(osc[idx]) direction reversals within a steepness stage)")
-            return p_now, yc, false, 0.0
+            return p_now, yc, false
         end
     end
     prev_sign[idx] = s
-    gap = abs(clamp(p_tgt, lo, hi) - p_now)
-    step = ω * (p_tgt - p_now)
-    # At the final stage, a sub-tolerance step cannot pass the move gates.
-    # The step is at least twice the tolerance.
-    # When the gap is smaller, the device moves to its target.
-    # This keeps the gates clear of rounding.
-    if S >= MAX_CONTROL_STEEPNESS && gap >= tol_d && abs(step) < tol_d
-        if gap < 2 * tol_d
-            p_new = clamp(p_tgt, lo, hi)
-        else
-            p_new = clamp(p_now + sign(p_tgt - p_now) * 2 * tol_d, lo, hi)
-        end
-    else
-        p_new = clamp(p_now + step, lo, hi)
-    end
-    return p_new, yc, true, gap
+    return clamp(p_now + ω * (p_tgt - p_now), lo, hi), yc, true
 end
 
 # Freeze on a detected plant-gain sign reversal (OLTC reverse action) or a collapse below the
@@ -425,11 +412,10 @@ function _maybe_refresh_gain!(d, idx::Int, data, ts::Int, frozen::Vector{Bool},
     return
 end
 
-# One damped, sign-corrected proportional update of a single device (SEQUENTIAL path: apply
-# + solve per device). Returns the settling measure: the magnitude of the parameter change
-# applied, or at the final steepness stage the undamped gap to the target. Frozen and
-# in-deadband devices return 0.0. The measured plant gain is refreshed by a secant update
-# from the numbers the step just produced (zero extra solves).
+# One damped, sign-corrected proportional update of a single device (SEQUENTIAL path: apply +
+# solve per device). Returns the magnitude of the parameter change actually applied (for the
+# settling test); frozen and in-deadband devices return 0.0. The measured plant gain is refreshed
+# by a secant update from the numbers the step just produced (zero extra solves).
 function _step_device!(
     d,
     idx::Int,
@@ -446,7 +432,7 @@ function _step_device!(
     kwargs...,
 )::Float64
     frozen[idx] && return 0.0
-    p_new, yc, ok, gap =
+    p_new, yc, ok =
         _damped_target!(d, idx, data, ts, S, frozen, dVdp, osc, prev_sign, n_shared)
     ok || return 0.0
     p_now = current_parameter(d)
@@ -464,9 +450,6 @@ function _step_device!(
     if abs(Δp) >= tol_d
         Δy = measured_value(d, data, ts) - yc
         _maybe_refresh_gain!(d, idx, data, ts, frozen, dVdp, dv, Δy / Δp, Δy)
-    end
-    if S >= MAX_CONTROL_STEEPNESS
-        return gap
     end
     return abs(Δp)
 end
@@ -507,8 +490,8 @@ function _probe_device_signs!(
 end
 
 # One proportional update over a concrete device vector; returns `true` iff every device
-# in it settled (settling measure below its scale-aware tolerance; see `_step_device!`).
-# Same function-barrier + `offset` indexing.
+# in it settled (parameter change below its scale-aware tolerance). Same function-barrier
+# + `offset` indexing.
 function _step_device_group!(
     devices, offset::Int, data, ts::Int, S::Float64, pf,
     scratch_snap::ControlStateSnapshot,
@@ -533,33 +516,26 @@ end
 
 # Apply every non-frozen device's damped target WITHOUT solving; record pre-move parameters in
 # `p_prev`/`did_move` (indexed globally) for rollback and the post-solve gain refresh. Returns
-# `(any_moved, any_unsettled)`. `any_unsettled` is true when, at the final steepness stage, a
-# device has an undamped gap at or above its tolerance. Function-barrier per concrete device
-# vector (no dynamic dispatch).
+# whether any device moved. Function-barrier per concrete device vector (no dynamic dispatch).
 function _apply_targets_group!(
     devices, offset::Int, data, ts::Int, S::Float64, frozen::Vector{Bool},
     dVdp::Vector{Float64}, osc::Vector{Int}, prev_sign::Vector{Int}, n_shared::Vector{Int},
     p_prev::Vector{Float64}, did_move::Vector{Bool},
 )
-    final_stage = S >= MAX_CONTROL_STEEPNESS
     any_moved = false
-    any_unsettled = false
     for (i, d) in enumerate(devices)
         idx = offset + i
         frozen[idx] && continue
         p_now = current_parameter(d)
-        p_new, _, ok, gap =
+        p_new, _, ok =
             _damped_target!(d, idx, data, ts, S, frozen, dVdp, osc, prev_sign, n_shared)
-        if final_stage && gap >= _param_tol(d)
-            any_unsettled = true
-        end
         (ok && abs(p_new - p_now) >= _param_tol(d)) || continue
         p_prev[idx] = p_now
         apply_parameter!(d, data, p_new, ts)
         did_move[idx] = true
         any_moved = true
     end
-    return any_moved, any_unsettled
+    return any_moved
 end
 
 # Undo an applied batched pass: restore each moved device's parameter (delta-based apply reverses
@@ -626,29 +602,21 @@ function _batched_pass!(
     # authoritative pass: snapshot the per-device bookkeeping `_damped_target!` mutates
     # (oscillation counter, direction, freezes) and restore it on rollback.
     osc0, prev0, frozen0 = copy(osc), copy(prev_sign), copy(frozen)
-    moved, unsettled = _apply_targets_group!(set.voltage_taps, 0, data, ts, S, frozen,
-        dVdp, osc, prev_sign, n_shared, p_prev, did_move)
-    m, u = _apply_targets_group!(set.flow_taps, offs.flow_taps, data, ts, S, frozen, dVdp,
-        osc, prev_sign, n_shared, p_prev, did_move)
-    moved |= m
-    unsettled |= u
-    m, u = _apply_targets_group!(set.phase_shifters, offs.phase_shifters, data, ts, S,
-        frozen, dVdp, osc, prev_sign, n_shared, p_prev, did_move)
-    moved |= m
-    unsettled |= u
-    m, u = _apply_targets_group!(set.shunts, offs.shunts, data, ts, S, frozen, dVdp, osc,
+    moved = _apply_targets_group!(set.voltage_taps, 0, data, ts, S, frozen, dVdp, osc,
         prev_sign, n_shared, p_prev, did_move)
-    moved |= m
-    unsettled |= u
+    moved |=
+        _apply_targets_group!(set.flow_taps, offs.flow_taps, data, ts, S, frozen, dVdp,
+            osc, prev_sign, n_shared, p_prev, did_move)
+    moved |= _apply_targets_group!(set.phase_shifters, offs.phase_shifters, data, ts, S,
+        frozen, dVdp, osc, prev_sign, n_shared, p_prev, did_move)
+    moved |= _apply_targets_group!(set.shunts, offs.shunts, data, ts, S, frozen, dVdp, osc,
+        prev_sign, n_shared, p_prev, did_move)
     # FACTS branch: refresh each device's |V|-dependent susceptance bound from the voltage at
     # the start of this pass (no solve has run yet within this batched pass) before it moves.
     _refresh_facts_limits!(set.facts, offs.facts, data, ts, frozen)
-    m, u = _apply_targets_group!(set.facts, offs.facts, data, ts, S, frozen, dVdp, osc,
+    moved |= _apply_targets_group!(set.facts, offs.facts, data, ts, S, frozen, dVdp, osc,
         prev_sign, n_shared, p_prev, did_move)
-    moved |= m
-    unsettled |= u
-    # nothing moved ⇒ no solve needed; settled unless a final-stage gap remains
-    moved || return !unsettled, true, ctx
+    moved || return true, true, ctx       # nothing wanted to move ⇒ settled, no solve needed
     if _ctrl_solve!(pf, data, ts; kwargs...)
         refreshed = _refresh_or_rebuild_context(ctx, pf, data, ts; kwargs...)
         if _accept_refreshed_context!(

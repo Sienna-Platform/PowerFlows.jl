@@ -429,12 +429,15 @@ end
     # Far from the setpoint the slope is zero, so ω is the largest allowed value.
     ω = PowerFlows._local_relaxation(d, 100.0, 1.0, vset + 0.6, 1.0, 1.001)
     @test isapprox(ω, 1.0 - PowerFlows.CONTROL_CONTRACTION)
-    # The linear step would cross the setpoint, so ω shortens to land on it.
+    # The linear step would pass 1 − θ of the distance to the setpoint, so ω shortens.
     dv = 20.0
     yc = vset + 0.5
     ω = PowerFlows._local_relaxation(d, 10.0, dv, yc, 1.0, 0.9)
     @test ω < 1.0 - PowerFlows.CONTROL_CONTRACTION
-    @test isapprox(dv * ω * (0.9 - 1.0), vset - yc)
+    @test isapprox(
+        dv * ω * (0.9 - 1.0),
+        (1.0 - PowerFlows.CONTROL_CONTRACTION) * (vset - yc),
+    )
 end
 
 @testset "discrete control: ramp completes, tight regulation" begin

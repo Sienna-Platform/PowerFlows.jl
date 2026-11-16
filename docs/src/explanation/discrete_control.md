@@ -225,7 +225,8 @@ the closed-loop gain bound ``|h - \ell| \cdot S/4 \cdot |dy/dp|``
 setpoint, where the sigmoid is steepest. Away from the setpoint the sigmoid is
 flatter, so `_local_relaxation` computes the same bound from the sigmoid slope at
 the current regulated value, and ``\omega`` is the larger of the two. The local
-value is shortened so the linear prediction never crosses the setpoint. Both
+value is shortened so the linear prediction covers at most ``1-\theta`` of the
+distance to the setpoint. Both
 formulas cap ``\omega \le 1-\theta = 0.5``, so far from the setpoint ``\omega`` can
 reach 0.5. The guarantee is conditional on the plant gain measured at the base
 point remaining representative along the trajectory, and the oscillation
@@ -261,14 +262,8 @@ the full tolerance. `get_control_inner_solve_count(data)` reports the
 continuation's inner-solve count — the metric its performance is measured by.
 
 **Settling and steepness ramp.** A pass is considered settled when every device
-meets its scale-aware tolerance
-``\max(10^{-5},\ 10^{-4}\cdot(p_\max - p_\min))``. At intermediate stages the test
-is on the damped step the device moves by. At the final stage (``S`` at
-`MAX_CONTROL_STEEPNESS`) the test is on the undamped gap to the clamped sigmoid
-target, so a heavily damped device cannot count as settled while far from its
-target. At the final stage a step below the tolerance is raised to twice the
-tolerance, or the device moves to its target when the gap is under twice the
-tolerance, so rounding does not block the move gates. Each steepness stage has
+moves by less than its scale-aware tolerance
+``\max(10^{-5},\ 10^{-4}\cdot(p_\max - p_\min))``. Each steepness stage has
 its own budget of `MAX_CONTROL_PASSES_PER_STAGE = 20` passes, so a
 slow-settling early stage cannot starve the stiffer later stages; ``S`` is
 advanced when the stage settles (or its budget runs out). If the final stage
