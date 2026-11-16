@@ -202,9 +202,9 @@ end
     @test solve_power_flow!(d)
     slot = d.worker_slots[2]
     @test !isnothing(slot.polar_nr_cache[])
-    @test_throws Exception PF._solve_slot!(
-        fill(false, 8), PF._column_worker(d, 1:8, slot), slot,
-        d.pf, 1:8, 5:99, PF.resolve_linear_solver_backend("KLU"), (;); build_plan = false)
+    @test_throws Exception PF._solve_columns!(
+        fill(false, 8), PF._column_worker(d, 1:8, slot), d.pf, 1:8, 5:99,
+        PF.resolve_linear_solver_backend("KLU"), (;); build_plan = false)
     @test isnothing(slot.polar_nr_cache[])
     @test isnothing(slot.solver_cache[])
     @test solve_power_flow!(d)
@@ -219,6 +219,25 @@ end
     cleared = [isnothing(s.polar_nr_cache[]) for s in d.worker_slots]
     @test count(cleared) == 1
     @test all(isnothing(s.solver_cache[]) for s in d.worker_slots[cleared])
+end
+
+@testset "a raising serial solve clears its caches" begin
+    T = 8
+    for F in (ACPolarPowerFlow, ACRectangularPowerFlow, ACMixedPowerFlow)
+        pf = F(; time_steps = T, solution_parameters = _threaded_params(1))
+        d = PowerFlowData(
+            pf, PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false))
+        prepare_ts_data!(d, T)
+        @test solve_power_flow!(d)
+        @test !isnothing(d.polar_nr_cache[]) || !isnothing(d.solver_cache[])
+        saved = d.bus_type[:, 7]
+        d.bus_type[:, 7] .= PSY.ACBusTypes.PQ
+        @test_throws ArgumentError solve_power_flow!(d)
+        @test isnothing(d.polar_nr_cache[])
+        @test isnothing(d.solver_cache[])
+        d.bus_type[:, 7] .= saved
+        @test solve_power_flow!(d)
+    end
 end
 
 @testset "threaded parity: Q limits" begin
