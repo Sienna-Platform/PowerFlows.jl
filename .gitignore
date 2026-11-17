@@ -130,3 +130,7 @@ $RECYCLE.BIN/
 # Claude Code working notes (local scratch, never shipped)
 .claude/plans/
 .claude/drafts/
+
+# Local agent files (never committed)
+.claude/worktrees/
+.claude/settings.local.json

@@ -1,266 +1,183 @@
-# Sienna Programming Practices — psy6 / Sienna 1.0 line
+# Sienna Practices — psy6 / Sienna 1.0 line
 
-General practices and cross-package architecture for the **psy6 (Sienna 1.0) development line**. This file is intended to be **identical across every repo in the psy6 workspace** — package-specific guidance belongs in that repo's `.claude/CLAUDE.md`, and workspace wiring/policy in the psy6 workspace root `CLAUDE.md`. The psy5 (released) line at the workspace top level has its own copy of this file; never mix checkouts between the two lines.
+The rules for every repository of the **psy6 (Sienna 1.0) development line**. This file is identical
+in each repository that has it; the master copy is in InfrastructureSystems.jl. Each repository's
+`.claude/CLAUDE.md` imports it and adds the package specifics. The `sienna-dev` skill holds the
+context: the full stack, the data pipeline, the glossary, and the psy5 → psy6 translation map. Load
+the skill before cross-package work, a units question, or any port from psy5 code, PSI PRs, or older
+docs — many psy5 facts are wrong here.
 
-## Start here (fresh-session reading order)
+psy6 is a breaking rewrite. The released psy5 line has the same package names in other checkouts;
+never mix the two lines.
 
-1. This file — shared practices, the stack, and the vocabulary (glossary at the end).
-2. The current repo's `.claude/CLAUDE.md` — package specifics, verified commands, gotchas.
-3. the psy6 workspace root `CLAUDE.md` — workspace architecture, design decisions, seams, and the knowledge index (audit, active plans).
-4. the workspace top-level `CLAUDE.md` (one level above the psy6 root) — the two-line workspace layout and git/test policy.
+## The stack and the blast radius
 
-If you are porting anything from the psy5 line (or reading psy5-era docs/PRs), read the psy5 → psy6 translation map below first — many psy5 facts are actively wrong here.
+Acyclic DAG. Each package owns one concept and depends only on layers below it.
 
-## The psy6 stack and change blast radius
-
-Acyclic DAG. Each package owns one concept and depends only on layers below. **A change in any package can break every layer above it — plan to run the affected downstream suites, not just the package you edited.**
-
-```
-Layer 0  InfrastructureSystems (IS, branch IS4)     data infra: SystemData, containers, time
-                                                     series, serialization, struct codegen,
-                                                     RelativeUnits (SU/DU/NU)
-         InfrastructureOptimizationModels (IOM)     domain-neutral optimization layer:
-                                                     OptimizationContainer, Decision/Emulation
-                                                     models, stores, settings
-Layer 1  PowerSystems (PSY, branch psy6)            the power data model on IS: System,
-                                                     ~210 generated component types,
-                                                     explicit-units getters. NO parsers.
-Layer 2  PowerNetworkMatrices (PNM, branch psy6)    Ybus/PTDF/LODF/MODF, ContingencySpec,
-                                                     network reductions (owns them exclusively)
-         PowerFlowFileParser (main, IS-only dep)    Matpower/PSSE raw → Dict; the ONLY parser
-Layer 3  PowerFlows (PF, branch psy6)               AC/DC power flow, PowerFlowData, PSSE export
-         PowerOperationsModels (POM)                power optimization on IOM+PNM+PSY+PF;
-                                                     PSI ≈ POM + IOM in this line
-Support  PowerSystemCaseBuilder (PSB, branch psy6)  test-system registry + serialized cache
-```
-
-Blast-radius quick reference — after changing:
-
-- **IS** → recompile/smoke every other package; time-series, serialization, and units changes are highest risk.
-- **PSY** → PNM, PF, POM, PSB all consume it; also **clear PSB's `data/serialized_system/` cache** (no version-aware invalidation) and check SiennaSchemas drift (schemas mirror PSY fields).
-- **PNM** → PF and POM iterate its reduction maps and matrices; matrix/reduction-map/KLU-cache changes break them, sometimes latently.
-- **PF** → POM consumes it via `ext/PowerFlowsExt` and `PowerFlowEvaluator`.
-- **IOM** → POM implements its stubs and (today) calls many non-exported `IOM._*` helpers; treat that surface as load-bearing.
-- **SiennaSchemas** → both generated model packages (Julia + Python) and the SiennaGridDB unit registry regenerate from it.
-
-Downstream smoke check after upstream edits:
-
-```sh
-julia --project=<psy6-workspace-root> -e 'using PowerNetworkMatrices, PowerFlows, PowerOperationsModels, PowerSystemCaseBuilder'
-```
-
-## The data/schema pipeline (SiennaSchemas → OpenAPI models → SiennaGridDB)
-
-The psy6 platform adds a language-neutral data architecture alongside the Julia stack:
-
-```
-SiennaSchemas (hand-written draft-07 JSON Schemas + Core/units.json unit vocabulary)
-  ├─ datamodel-codegen  ──▶ power-openapi-models   (Python / pydantic v2)
-  ├─ openapi-generator  ──▶ PowerOpenAPIModels     (5 Julia packages)
-  └─ generate_unit_registry.py ──▶ SiennaGridDB    (SQLite schema + sealed unit registry)
-```
-
-- **SiennaSchemas is the single source of truth**; the model packages and the GridDB unit registry are generated — never hand-edit generated output (fixes go in the schemas or the generator/post-processing scripts).
-- Schemas mirror PSY component types field-for-field but use **natural units and integer-id references** (PSY internals are per-unit). `Core/units.json` is the unit vocabulary; `x-unit` annotations must validate against it.
-- **The serialize/deserialize loop is NOT closed yet**: no converter exists between a PSY6 `System` and the OpenAPI model types or GridDB rows. That bridge is the next stage. Until then, consistency is held by validators (`validate_units.py`, the GridDB registry generator, schema↔GridDB↔PSY-descriptor sync checks) — treat schema/PSY field drift as a defect to surface, not to silently absorb.
-
-## psy5 → psy6 translation map (for porting code and knowledge)
-
-Anything read from psy5 repos, PSI PRs, or older docs must be translated:
-
-| psy5 concept | psy6 equivalent |
+| Layer | Packages |
 |---|---|
-| PowerSimulations.jl (PSI) | split into IOM (domain-neutral core) + POM (power formulations); simulation orchestration is **not ported** |
-| `set_units_base_system!` stateful global units | explicit-unit getters/setters (`get_x(c, PSY.SU)`, tagged setters); the old API survives as display-only |
-| `PM.AbstractPowerModel` / PowerModels re-exports | POM-native `DCPPowerModel`/`ACPPowerModel` structs (POM embeds its own PM submodule) |
-| PSY `src/parsers/` (Matpower/PSSE/tabular) | PowerFlowFileParser.jl — the sole parser |
-| `OptimizationProblemResults`, `RunStatus.SUCCESSFULLY_FINISHED` | `IOM.OptimizationProblemOutputs`, `RunStatus.SUCCESSFULLY_FINALIZED` |
-| "never modify PSI `src/core/optimization_container.jl`" | same rule, now IOM `src/core/optimization_container.jl` |
-| LODF-based security constraints; generator-side G-1 | branch-side MODF (`VirtualMODF`/`ContingencySpec`); gen-side G-1 removed — do not reintroduce |
-| `IS.UnitSystem` enum (cost curves, serialization) | unit marker as type parameter: `CostCurve{T,U}` with `SystemBaseUnit()` etc. |
-| PSY serialization ⇄ external tools | JSON+HDF5 device-base serialization unchanged; the OpenAPI/GridDB path is new and its converter does not exist yet |
-| "PSI PR #NNNN added X" | check POM `.claude/pom_port_plan.md` before assuming X exists in POM |
+| 0 | InfrastructureSystems (IS), InfrastructureOptimizationModels (IOM) |
+| 1 | PowerSystems (PSY) — the data model; no parsers |
+| 2 | PowerNetworkMatrices (PNM), PowerFlowFileParser (PFFP, raw files), PowerTableDataParser (PTDP, tables) |
+| 3 | PowerFlows (PF), PowerOperationsModels (POM), PowerSystemsInvestmentsPortfolios (PSIP) |
+| 4 | PowerSimulations (PSI), PowerAnalytics (PA), PowerGraphics (PG), PowerTransmissionSecurityAnalysis (PTSA) |
+| Support | PowerSystemCaseBuilder (PSB), PowerSystemsUpdater (PSU) |
 
-The psy5 repos remain the richer source for *numerics and domain* knowledge (PNM solver rules, PF solver design, PSB cache semantics) — that transfers; the *API and package* facts above do not.
+A change can break every layer above it. Run the downstream suites in dependency order, not only the
+suite of the package you edited:
 
-## Breaking-release policy (no shims)
+- **IS** → everything. Time-series, serialization, and units changes are highest risk; extend the
+  serialization round-trip tests when you touch them.
+- **PSY** → PNM, PF, POM, PSB, PA. Also clear PSB's `data/serialized_system/` cache (it has no
+  version-aware invalidation) and check SiennaSchemas drift — the schemas mirror PSY fields.
+- **PNM** → PF and POM iterate its reduction maps and matrices; breakage is often latent.
+- **PF** → POM, through `ext/PowerFlowsExt` and `PowerFlowEvaluator`.
+- **IOM** → POM implements its stubs and calls non-exported `IOM._*` helpers, so a `_*` signature
+  change is a breaking change. POM and IOM → PSI, which re-exports their public API.
+- **SiennaSchemas** → both generated model packages and the GridDB unit registry regenerate from it.
 
-psy6 is a planned breaking release. **No compat shims, no deprecation aliases, no defensive deserialization for renamed enums, no changelog entries.** Fix callers instead of bridging; regenerate old serialized systems. Structural cleanups are cheaper now than after 1.0 ships — the window closes at release. (Sanctioned exception: PSB's `psy6_compat.jl`, scoped to pre-psy6 external artifact data.)
+## Before you edit
 
-## Explicit units (SU / DU / NU)
+- State the target first: repository, branch, and checkout path, one line per repository. Read the
+  branch with `git rev-parse --abbrev-ref HEAD` and diff against its real base. Never assume `psy6`.
+- **A function with no caller in its own package is not dead code.** Every repository here is a
+  library for the ones above it. Before you remove, rename, or narrow a function, method, accessor,
+  or export — or add a required argument to it — grep for it in every sibling repository's `src/`
+  and `test/`. If the sweep is clean and you still want it gone, ask first.
+- Do exactly what the task asks. Do not restructure, delete, or "clean up" code the task does not name.
 
-The single most important psy6 correctness rule. The stateful `set_units_base_system!` global is display-only; unit-bearing values flow through explicit-unit APIs:
+## Non-negotiables
 
-- Markers `SU` (system base), `DU` (device base), `NU` (natural, MW/MVA) live in `IS.RelativeUnits`; `RelativeQuantity` carries the base in its type. Cross-unit arithmetic/comparison throws.
-- Getters on convertible fields take the unit system explicitly: `PSY.get_rating(br, PSY.SU)`. Setters take **tagged** values and reject bare floats: `set_rating_b!(line, 0.9 * PSY.SU)`.
-- **In optimization/power-flow build code, every PSY getter on a convertible field passes `PSY.SU`** (models are all-system-base). PNM aggregators already return system base. A bare `PSY.get_*` on a convertible field in consumer code is a defect.
-- Angle limits are radians (no base conversion) — don't "fix" them with SU.
-- Wrong objective/limit/rating magnitudes after a refactor → suspect units first.
+- **No shims.** psy6 is a planned breaking release: no compat aliases, no deprecation paths, no
+  defensive deserialization for renamed enums, no changelog entries. Fix the callers; regenerate old
+  serialized systems.
+- **No version or compat bumps in any `Project.toml` until release.** PSY reads 5.10.0 and IS 3.6.0
+  on the 6.0/4.0 lines. A bump can reappear during a session; revert it. The `[sources]` pins, not
+  the compat entries, select the psy6 line.
+- **Never hand-edit generated code**: IS `src/generated/`, PSY `src/models/generated/`, the OpenAPI
+  model packages, GridDB `unit_registry.sql`. Edit the descriptor or schema and regenerate.
+- **Never extend a silent-failure pattern.** New code errors loudly with context (type, name,
+  expectation). Known patterns, flagged for removal: a missing time series skips the device (POM
+  `add_parameters`); a missing validation descriptor passes validation (IS); a non-converged power
+  flow fills `PowerFlowData` with NaN (PF). No `isnothing(x) && continue` guards and no
+  `Union{Nothing,T}` sentinel returns — use a Bool predicate plus an accessor that always returns a
+  concrete value.
+- **Never commit, stage, or push unless the user asks.** Leave changes unstaged; use `git add -N`
+  for new files so they show in `git diff`. Plan files in `.claude/plans/` are local and never committed.
 
-## Silent-failure patterns — never extend
+## Explicit units (SU / CU / NU)
 
-These exist in the codebase and are flagged for removal; new code must error loudly with context (type, name, expectation) instead:
+The most important psy6 correctness rule. There is no stateful units mode; every unit-bearing value
+goes through an explicit-unit API.
 
-- missing time series → `@debug` + skip the device (POM `add_parameters`)
-- missing validation descriptor → validation silently passes (IS)
-- non-converged power flow → NaN-poisoned `PowerFlowData` (PF)
-- no `isnothing(x) && continue` absence-sentinel guards; no `Union{Nothing,T}` return sentinels — use a Bool predicate + an accessor that always returns a concrete value.
+- Units are Unitful: `u"SU"` (system base), `u"CU"` (component base), `u"NU"` (natural, MW/MVA).
+  Bring them into scope with `using PowerSystems: @u_str, PerUnit`. Bases do not mix. Say
+  "component base"; "device base" is the psy5 name.
+- Getters on convertible fields take the unit: `PSY.get_rating(br, u"SU")`. Setters take tagged
+  values and reject bare floats: `set_rating_b!(line, 0.9u"SU")`.
+- Optimization and power-flow build code passes `u"SU"` to every PSY getter on a convertible field;
+  the models are all on the system base. PNM aggregators already return system base. A bare
+  `PSY.get_*` on a convertible field in consumer code is a defect.
+- The `SU`/`CU`/`NU` markers remain only for the unit parameter of cost curves and for the `units`
+  mode of `to_file`.
+- Angle limits are radians; do not convert them. An AC apparent-power rating RHS is squared:
+  `(rating · factor)^2`.
+- Wrong objective, limit, or rating magnitudes after a refactor: suspect units first.
 
-## Environments and testing in the psy6 workspace
+## Environments and commands
 
-- **Shared dev env:** `julia --project=<psy6-workspace-root>` dev-wires all co-developed packages (rebuild with the workspace's `wire_psy6.jl`). A dev'd dependency's own `[sources]` pins are ignored by the parent env — only the active project's count; that is why the shared env exists.
-- **Per-package `Pkg.test()` honors that package's own `[sources]` git pins**, not the shared env. To test against local checkouts, temporarily repoint that repo's `test/Project.toml` `[sources]` to local paths (restore before finishing).
-- **No version/compat bumps in any Project.toml until release** (PSY reads 5.10.0, IS 3.6.0 despite being the 6.0/4.0 lines). Bumps have reappeared spontaneously mid-session — revert them.
-- PSB cache: no version-aware invalidation — clear `data/serialized_system/` after PSY changes; the CaseData artifact download can flake (retry once).
-- Python tooling: use `python3` (never `python`); the units venv is `.venv-units` at the psy6 workspace root; **`just` is not installed** — run the underlying commands from the `.justfile` directly.
-
-## Performance Requirements
-
-**Priority:** Critical. See the [Julia Performance Tips](https://docs.julialang.org/en/v1/manual/performance-tips/). Apply with judgment — focus optimization on hot paths and frequently called code, not every function.
-
-### Anti-Patterns to Avoid
-
-- **Type instability** — functions must return consistent concrete types. Check with `@code_warntype`. Bad: `f(x) = x > 0 ? 1 : 1.0`; good: `f(x) = x > 0 ? 1.0 : 1.0`.
-- **Abstract field types** — struct fields must be concrete or parameterized. Bad: `struct Foo; data::AbstractVector; end`; good: `struct Foo{T<:AbstractVector}; data::T; end`.
-- **Untyped containers** — use `Vector{Float64}()`, not `Vector{Any}()` / `Vector{Real}()`.
-- **Non-const globals** — use `const THRESHOLD = 0.5`. (No type annotation needed on a `const`; the compiler already infers it.)
-- **Unnecessary allocations** — use views (`@view`/`@views`), pre-allocate instead of `push!` in loops, use in-place (`!`) operations.
-- **Captured variables** — avoid closures that box captured variables; pass them as arguments instead.
-- **Splatting penalty** — avoid `...` in performance-critical code.
-- **Abstract return types** — avoid returning `Union`s or abstract types.
-
-#### Runtime type checking (`isa` and `<:`) — the canonical rule
-
-**ABSOLUTELY FORBIDDEN unless the user explicitly asks for it.** Never use `isa` or `<:` (subtype) checks to branch on types in a function body — use multiple dispatch instead. Using `<:` to branch is just `isa` with extra steps.
-
-- Bad: `if x isa Float64 ... elseif x isa Int ... end`
-- Bad: `if typeof(x) <: AbstractVector ... end`
-- Bad: `if T <: SomeAbstractType ... else ... end` (branching on a type parameter)
-- Good: `f(x::AbstractVector) = sum(x); f(x::Number) = x`
-
-**Why:** runtime type checks force the compiler to handle multiple paths at runtime, lose type information, prevent specialization, and trigger runtime compilation — defeating Julia's performance model. The only acceptable uses of `isa` are filtering inside a `catch` block (where dispatch is unavailable) and, sanctioned in IS, inside `serialize`/`deserialize` bodies.
-
-### Best Practices
-
-- Use `@inbounds` when bounds are verified; use broadcasting for element-wise ops.
-- Avoid `try-catch` in hot paths; use function barriers to isolate type instability.
-
-## Code Conventions
-
-Style guide: <https://sienna-platform.github.io/InfrastructureSystems.jl/stable/style/>
-
-**Always run the formatter after completing each task — before reporting it done. This is not optional.** Run the package's formatter script (the script self-activates its own environment):
+No workspace-level Julia environment exists. Each package has its own environments:
 
 ```sh
+julia --project -e 'using PackageName'                       # compile-check after each edit
+julia --project=test -e 'using Pkg; Pkg.instantiate()'       # test env setup
+julia --project=test test/runtests.jl                        # full suite
+julia --project=docs docs/make.jl                            # docs build
 julia --project=scripts/formatter -e 'include("scripts/formatter/formatter_code.jl")'
 ```
 
-This applies after any change to `.jl` files. Treat the formatter's output as authoritative; do not manually revert its changes.
+- Run tests with `--project=test`, never bare `julia` or bare `--project`. The test runners differ
+  per repository (ReTest name filters, `@includetests` file stems, ParallelTestRunner); the
+  repository guide gives the exact filter syntax.
+- `Pkg.test()` honors the package's own `[sources]` git pins. To test against local checkouts,
+  repoint `test/Project.toml` `[sources]` to local paths and restore the git pins before you finish.
+  Do not `Pkg.develop` into an environment that carries `[sources]` git pins.
+- PSB fixtures (`build_system(Category, "name")`) are cached with no version-aware invalidation.
+  After a PSY change, clear `data/serialized_system/` or pass `force_build=true`. A test that mutates
+  a PSB system must `deepcopy` it first; a read-only test must not.
+- Python tooling: `python3`, never `python`.
 
-Key rules:
+## Definition of done
 
-- Constructors: use `function Foo()`, not `Foo() = ...`
-- Asserts: prefer `InfrastructureSystems.@assert_op` over `@assert`
-- Globals: `UPPER_CASE` for constants; exports: all in the main module file
-- Comments: complete sentences; describe why, not how; default to no comment
-- Nothing checks: use `isnothing(x)` / `!isnothing(x)`, not `x === nothing` / `x !== nothing`
-- Type checks: use multiple dispatch, never `isa`/`<:` branching — see the canonical rule above
-- Conditionals: prefer `if/else` over the ternary `? :`
-- Zero checks: use `iszero(x)`, never `x == 0` / `f(x) == 0.0`
-- Explicit `function … end` with explicit `return` for any non-trivial body; assignment form only for genuine one-liners
-- Cache lookups: use the lazy closure form `get!(dict, key) do ... end` (only evaluates on a miss). Never use 3-arg `get!(dict, key, default)` when `default` is expensive — Julia evaluates arguments eagerly, so `default` runs on every call and silently defeats the cache.
-- User-facing code (tutorials, docs, public APIs): use `get_*` getters, never dot field access. Getter bodies may use dot access internally.
+A change is done when all of these hold, and the report states each one with its evidence:
 
-## Documentation Practices and Requirements
+- It compiles (`julia --project -e 'using PackageName'`) after each file edit.
+- The full test suite passes; report the pass count. A failure is acceptable only when you show it
+  also fails on the base branch.
+- The formatter ran and its output stays.
+- The docs build when the change touches docstrings, exports, or public API. Fix Documenter
+  `missing_docs` by registering the docstring in `@autodocs`/`@docs`, never with `warnonly`.
+- The downstream suites from the blast-radius list pass, when the change touches an API they use.
+
+## Julia code conventions
+
+Style guide: <https://sienna-platform.github.io/InfrastructureSystems.jl/stable/style/>
+
+- Dispatch, not runtime type checks. Do not branch on `isa` or `<:` in a function body; define a
+  method per type. Runtime type checks lose type information and block specialization. The only
+  accepted `isa` uses: filtering inside a `catch` block, and IS `serialize`/`deserialize` bodies.
+- No large `Union{...}` aliases that enumerate concrete types to drive dispatch. Use an abstract
+  supertype, or a trait when the grouping cuts across the type tree.
+- Type stability: concrete return types (check with `@code_warntype`), concrete or parameterized
+  struct fields (`struct Foo{T<:AbstractVector}; data::T; end`), typed containers
+  (`Vector{Float64}()`), `const` globals.
+- Hot paths: views and in-place `!` functions, pre-allocation instead of `push!` in loops, no
+  splatting, no closures that box captured variables, no `try`/`catch`, function barriers around
+  unstable code.
+- Constructors use `function Foo() ... end`. Non-trivial bodies use `function ... end` with an
+  explicit `return`; the assignment form is for genuine one-liners.
+- Prefer `InfrastructureSystems.@assert_op` over `@assert`; `if/else` over the ternary operator;
+  `iszero(x)` over `x == 0`; `isnothing(x)` over `x === nothing`.
+- Cache lookups use the lazy form `get!(dict, key) do ... end`. The 3-argument
+  `get!(dict, key, default)` evaluates `default` on every call.
+- `UPPER_CASE` for constants. All exports in the main module file.
+- User-facing code (tutorials, docs, public APIs, tests) uses `get_*`/`set_*` accessors, not dot
+  field access. Accessor bodies may use dot access.
+- Comments explain a non-obvious why. Default to no comment; no comments that restate the code or
+  narrate a change.
+- Mirror the existing structure when you add a parallel implementation (another solver, formulation,
+  or backend), so that validation is a direct comparison.
+
+## Tests
+
+Test custom logic, not language guarantees: dispatch and predicates you defined, type-mapping tables
+and accessors, serialization round-trips, custom `show` output, validation, error paths, and edge
+cases. Do not test that a struct stores its constructor arguments, that inherited `==` works, or that
+`obj isa T` holds where the type tree makes it true.
+
+Constraint math and numerics need coefficient-level ground truth: compare the built model's
+coefficients with an independently computed reference (the MODF suite asserts JuMP `AffExpr`
+coefficients against `VirtualMODF` columns), not only objective values or convergence flags.
+
+## Docs
 
 Framework: [Diataxis](https://diataxis.fr/). Sienna guides:
+[explanation](https://sienna-platform.github.io/InfrastructureSystems.jl/stable/docs_best_practices/explanation/) ·
+[tutorials](https://sienna-platform.github.io/InfrastructureSystems.jl/stable/docs_best_practices/how-to/write_a_tutorial/) ·
+[how-tos](https://sienna-platform.github.io/InfrastructureSystems.jl/stable/docs_best_practices/how-to/write_a_how-to/) ·
+[docstrings](https://sienna-platform.github.io/InfrastructureSystems.jl/stable/docs_best_practices/how-to/write_docstrings_org_api/).
+Docstrings cover every public-interface element, with
+signatures and argument lists through `DocStringExtensions.TYPEDSIGNATURES`. Add "see also" links
+between same-named methods. Most repositories keep the public and internals pages in
+`docs/src/reference/`; PSY, PSI, and PSIP use `docs/src/api/`.
 
-- Explanation / best practices: <https://sienna-platform.github.io/InfrastructureSystems.jl/stable/docs_best_practices/explanation/>
-- Tutorials: <https://sienna-platform.github.io/InfrastructureSystems.jl/stable/docs_best_practices/how-to/write_a_tutorial/> (script format via Literate.jl: <https://fredrikekre.github.io/Literate.jl/v2/>)
-- How-to's: <https://sienna-platform.github.io/InfrastructureSystems.jl/stable/docs_best_practices/how-to/write_a_how-to/>
-- API docstrings: <https://sienna-platform.github.io/InfrastructureSystems.jl/stable/docs_best_practices/how-to/write_docstrings_org_api/>
+## Agents
 
-Docstrings: cover all public-interface elements; include signatures + argument lists; automate with `DocStringExtensions.TYPEDSIGNATURES` (`TYPEDFIELDS` sparingly); add "see also" links for same-named (multiple-dispatch) functions. API docs: public in `docs/src/api/public.md` via `@autodocs` (`Public=true, Private=false`); internals in `docs/src/api/internals.md`.
+Each repository defines two subagents, in `.claude/agents/` for Claude Code and in
+`.opencode/agents/` for OpenCode:
 
-**The documentation must build for the effort to be accepted.** This is an acceptance criterion for any change, not only documentation work — docstring, export, and public-API edits routinely break the build. Confirm it before reporting done; a broken docs build is a task failure, not a warning:
+- `sienna-dev` — implements one scoped task in one repository and reports against the definition
+  of done. Use it when the main session coordinates and reviews.
+- `sienna-reviewer` — reviews a diff against these rules and reports findings; it does not edit.
 
-```sh
-julia --project=docs -e 'using Pkg; Pkg.develop(PackageSpec(path=pwd())); Pkg.instantiate()'   # first time
-julia --project=docs docs/make.jl                                                              # must finish without errors
-```
-
-Fix Documenter `missing_docs` by registering docstrings in `@autodocs`/`@docs`, never by silencing with `warnonly`.
-
-## Design Principles
-
-- Elegance and concision in both interface and implementation
-- Fail fast with actionable error messages rather than hiding problems
-- Validate invariants explicitly in subtle cases
-- Avoid over-adherence to backwards compatibility for internal helpers (and, in this line, for public ones — see the no-shims policy)
-
-## Contribution Workflow
-
-**The default branch for all Sienna packages is `main`, not `master`** — but note the psy6 checkouts sit on their line branches (`IS4`, `psy6`, feature branches); diff against the correct base. Branch naming: `feature/description` or `fix/description`. Never commit, stage, or push without an explicit ask; leave changes unstaged (`git add -N` for new files so they show in `git diff`).
-
-## Testing Guidelines
-
-**Test custom logic, not language guarantees.** Do not write tests that only verify Julia's built-in behavior.
-
-Avoid: `@test obj isa SomeType` when the type hierarchy makes it tautological; testing that a plain data-holder struct stores the value it was constructed with; testing `==`/`isequal`/`hash` inherited from a parent with no added logic; duplicating a test with trivially different inputs that exercise no new code path.
-
-Instead test: custom dispatch logic and predicates you defined; type-mapping tables and accessors (where typos hide); serialization round-trips; custom `show`/display formatting; validation logic, error paths, and edge cases.
-
-**Constraint math and numerics deserve coefficient-level ground truth.** The MODF suite's pattern — assert JuMP `AffExpr` coefficients equal the corresponding `VirtualMODF` columns — is the template: compare built model coefficients against an independently computed reference, not just objective values or convergence flags.
-
-## Julia Environment Best Practices
-
-**CRITICAL: always run Julia with `julia --project=<env>`** — never bare `julia` or `julia --project` without specifying the environment. Each package defines its environments under `test/`, `docs/`, and `scripts/formatter/`.
-
-```sh
-julia --project=test test/runtests.jl                       # full test suite
-julia --project=test test/runtests.jl test_file_name        # a single test file (runner-dependent)
-julia --project=test -e 'using Pkg; Pkg.instantiate()'      # instantiate test env
-julia --project=docs docs/make.jl                           # build docs
-```
-
-Test runners differ per repo (ReTest name filters vs `@includetests` file stems vs POM's ParallelTestRunner) — see each repo's `CLAUDE.md` for its exact, verified commands. Compile-check after each edit (`julia --project=<env> -e 'using PackageName'`) before moving on.
-
-## AI Agent Guidance
-
-**Priorities:** read existing patterns first; maintain consistency; use concrete types in hot paths; add docstrings to public API; consider downstream-package impact (see blast radius above); ensure tests pass. **Then run the formatter and never edit auto-generated files** (IS `src/generated/`, PSY `src/models/generated/`, OpenAPI model packages, GridDB `unit_registry.sql`). The rules most often violated:
-
-- **Never use `isa`/`<:` for runtime type branching** — use multiple dispatch.
-- **Always run the formatter** before reporting a task done.
-- **The docs must build** — in repos with a `docs/` build, the effort is not accepted until `julia --project=docs docs/make.jl` completes without errors.
-- **Never pass a bare float to a unit-bearing setter or call a convertible getter without a unit argument** in consumer code.
-- Mirror existing structure when adding a parallel implementation (alternate solver/formulation/backend) so validation is a mechanical comparison.
-
-## Troubleshooting
-
-- **Tests fail unexpectedly / packages missing:** re-instantiate — `julia --project=test -e 'using Pkg; Pkg.instantiate()'`.
-- **Poor performance, many allocations:** run `@code_warntype` on the suspect function.
-- **`UndefVarError` during precompile for a symbol that "should" exist:** mismatched upstream branch in a dev checkout — verify the upstream repo is on its psy6-line branch.
-- **A PSB-built system deserializes strangely after a PSY change:** stale cache — clear `data/serialized_system/` or pass `force_build=true`.
-- **Wrong magnitudes (rating², limits, objective) after a refactor:** units first — audit every `PSY.get_*` on convertible fields for the explicit-unit argument.
-
-## Glossary (platform vocabulary)
-
-- **psy5 / psy6** — the released line (workspace top level) vs this breaking Sienna 1.0 line (`psy6/` folder). Same package may exist in both; never mix checkouts.
-- **IS, PSY, PNM, PF, PFFP, IOM, POM, PSB** — InfrastructureSystems, PowerSystems, PowerNetworkMatrices, PowerFlows, PowerFlowFileParser, InfrastructureOptimizationModels, PowerOperationsModels, PowerSystemCaseBuilder (see stack diagram).
-- **PSI** — PowerSimulations.jl, the psy5 operations package. Does not exist here: PSI ≈ IOM + POM.
-- **SU / DU / NU** — system-base / device-base / natural-units markers (`IS.RelativeUnits`); a `RelativeQuantity` is a number tagged with one (`0.9 * PSY.SU`).
-- **System / Component** — PSY's container and its typed contents (~210 generated component types); mutate only via `add_component!`/setters, read via `get_*`.
-- **Arc** — directed (from, to) bus pair underlying branches; orientation carries sign meaning in Ybus/PTDF/flows.
-- **Ybus / PTDF / LODF / MODF** — admittance matrix; power-transfer, line-outage, and modified-outage distribution factors. `Virtual*` variants compute rows lazily with an LRU cache.
-- **ContingencySpec** — PNM's N-1 modification descriptor; feeds POM's branch-side security constraints via `VirtualMODF`.
-- **Network reduction** — PNM-owned topology simplification (radial, degree-2, Ward, zero-impedance, parallel/series merge). `NetworkReductionData` is the consumer-facing map set; consumers never re-derive it.
-- **Formulation** — a model variant selected by type, not flags: POM `DeviceModel{Device,Formulation}`/`NetworkModel{F}`; PF formulation×solver type parameters.
-- **Two-stage construction** — POM `construct_device!` runs `ArgumentConstructStage` (variables/parameters/expressions) then `ModelConstructStage` (constraints/objective).
-- **ProblemTemplate / DecisionModel / EmulationModel** — IOM's problem description and model wrappers; POM's `PowerOperationModel` chain hangs off `IOM.AbstractOptimizationProblem`.
-- **Result key** — `"VariableType__ComponentType"` string (e.g. `"FlowActivePowerVariable__Line"`) read from `IOM.OptimizationProblemOutputs` via `read_variable(res, key; table_format=TableFormat.WIDE)`.
-- **PSB fixture** — a named test system from `build_system(Category, "name")`, cached on disk under `data/serialized_system/` with **no version-aware invalidation**.
-- **SiennaSchemas / x-unit / units.json** — hand-written JSON-schema source of truth mirroring PSY types in natural units; `x-unit` annotations validate against the `Core/units.json` vocabulary.
-- **GridDB** — SiennaGridDB's SQLite schema; its unit registry is generated from `units.json` and sha256-sealed.
-- **OpenAPI models** — generated transport types (Julia `PowerOpenAPIModels`, Python `power-openapi-models`); zero PSY/IS deps. The System ⇄ OpenAPI ⇄ GridDB converter is the not-yet-built bridge.
-- **`[sources]` / shared env** — Project.toml git/path pins vs the workspace env at `psy6/Project.toml` that dev-wires all packages; a dev'd dependency's own `[sources]` are ignored by the parent env.
-- **no-shims** — the breaking-release policy: fix callers, regenerate data, no compat layers (single sanctioned exception: PSB `psy6_compat.jl`).
+Both block `git commit` and `git push`.
