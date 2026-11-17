@@ -30,7 +30,7 @@ uses_vdc_setpoint(m::VSCControlMode) =
 # Whether the second control row pins AC voltage (|V_ac|² − V_set²) rather than reactive power.
 controls_ac_voltage(m::VSCControlMode) = m == ControlPVac || m == ControlVdcQ
 
-# Keyword-constructed (`@kwdef`) so the 27-field build sites name every field — many fields share
+# Keyword-constructed (`@kwdef`) so the 28-field build sites name every field — many fields share
 # `Vector{Float64}`/`Matrix{Float64}` types, so positional construction would silently corrupt on a
 # field reorder. All fields default to empty, so a bare `DCNetwork()` is the empty network used for
 # pure-AC systems (regression-safe — pure AC is untouched).
@@ -47,6 +47,7 @@ Base.@kwdef struct DCNetwork
     converter_dc_node_ix::Vector{Int} = Int[]       # DC node index this converter feeds
     converter_mode::Vector{VSCControlMode} = VSCControlMode[]  # per-converter control mode
     converter_ac_bus_number::Vector{Int} = Int[]    # AC bus number (results / diagnostics)
+    converter_name::Vector{String} = String[]       # PSY component name; line converters end in "(from)"/"(to)"
     loss_a::Vector{Float64} = Float64[]             # P_loss = a + b·I_c + c·I_c²
     loss_b::Vector{Float64} = Float64[]
     loss_c::Vector{Float64} = Float64[]

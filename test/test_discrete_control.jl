@@ -418,6 +418,28 @@ end
     end
 end
 
+@testset "discrete control: local relaxation" begin
+    d = PowerFlows.ControlledVoltageTap("t", 1, 2, 2, 1.0, 1.0, 1.0, 1.0 / (0.01 + 0.1im),
+        0.0im, 0.0, 0.9, 1.1, collect(range(0.9, 1.1; length = 33)),
+        (1, 2, 3, 4), 1.0, 1.0, "t", 1)
+    vset = PowerFlows.control_setpoint(d)
+    # At the setpoint the sigmoid slope is at its maximum, so both functions agree.
+    ω = PowerFlows._local_relaxation(d, 100.0, 1.0, vset, 1.0, 1.001)
+    @test isapprox(ω, PowerFlows._relaxation(d, 100.0, 1.0))
+    # Far from the setpoint the slope is zero, so ω is the largest allowed value.
+    ω = PowerFlows._local_relaxation(d, 100.0, 1.0, vset + 0.6, 1.0, 1.001)
+    @test isapprox(ω, 1.0 - PowerFlows.CONTROL_CONTRACTION)
+    # The linear step would pass 1 − θ of the distance to the setpoint, so ω shortens.
+    dv = 20.0
+    yc = vset + 0.5
+    ω = PowerFlows._local_relaxation(d, 10.0, dv, yc, 1.0, 0.9)
+    @test ω < 1.0 - PowerFlows.CONTROL_CONTRACTION
+    @test isapprox(
+        dv * ω * (0.9 - 1.0),
+        (1.0 - PowerFlows.CONTROL_CONTRACTION) * (vset - yc),
+    )
+end
+
 @testset "discrete control: ramp completes, tight regulation" begin
     # After the monotone-convergence fix the steepness ramp runs to completion
     # (no oscillation freeze at the initial steepness), so the controlled bus is
@@ -1576,24 +1598,25 @@ end
     @test PowerFlows._maybe_repromote(ctx, pf, data, ts) === ctx
 end
 
+function _q_limited_shunt_system()
+    sys = System(100.0)
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.0, 0.0)
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.PV, 230, 1.0, 0.0)
+    b3 = _add_simple_bus!(sys, 3, ACBusTypes.PQ, 230, 1.0, 0.0)
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    gen = _add_simple_thermal_standard!(sys, b2, 0.0, 0.0)
+    set_reactive_power_limits!(gen, (min = -0.5 * u"SU", max = 0.5 * u"SU"))
+    _add_simple_line!(sys, b1, b2, 0.01, 0.4, 0.0)
+    _add_simple_line!(sys, b2, b3, 0.01, 0.1, 0.0)
+    _add_simple_load!(sys, b3, 50.0, 150.0)
+    _add_switched_shunt!(sys, 3; n_steps = 10, mvar_per_step = 20.0, deadband = 0.02)
+    return sys
+end
+
 @testset "discrete control: Q-limited start that only converges once devices move" begin
     # REF(1) ─weak line─ PV(2, |Q| ≤ 0.5) ─ PQ(3, heavy Q load + switched shunt). At the
     # initial shunt setting the Q-limited solve diverges, so regulation must start from a
     # solve without Q limits and enforce them only after the shunt has moved.
-    function _q_limited_shunt_system()
-        sys = System(100.0)
-        b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.0, 0.0)
-        b2 = _add_simple_bus!(sys, 2, ACBusTypes.PV, 230, 1.0, 0.0)
-        b3 = _add_simple_bus!(sys, 3, ACBusTypes.PQ, 230, 1.0, 0.0)
-        _add_simple_source!(sys, b1, 0.0, 0.0)
-        gen = _add_simple_thermal_standard!(sys, b2, 0.0, 0.0)
-        set_reactive_power_limits!(gen, (min = -0.5 * u"SU", max = 0.5 * u"SU"))
-        _add_simple_line!(sys, b1, b2, 0.01, 0.4, 0.0)
-        _add_simple_line!(sys, b2, b3, 0.01, 0.1, 0.0)
-        _add_simple_load!(sys, b3, 50.0, 150.0)
-        _add_switched_shunt!(sys, 3; n_steps = 10, mvar_per_step = 20.0, deadband = 0.02)
-        return sys
-    end
     no_control = PowerFlowData(
         ACPolarPowerFlow(; check_reactive_power_limits = true),
         _q_limited_shunt_system(),
@@ -1614,8 +1637,9 @@ end
     @test q_min - 1e-6 <= data.bus_reactive_power_injections[gen_ix, 1] <= q_max + 1e-6
     @test only(data.controlled_devices.shunts).current > 0
 
-    # The final Q-limited solve moves voltage after regulation last refreshed the FACTS bound,
-    # so the reported bound must come from the final voltage.
+    # The Q limits move voltage, so the FACTS device regulates again with them. It ends at
+    # its setpoint or is reported saturated. Its bound is within `CONTROL_FACTS_LIMIT_RTOL` of
+    # the bound at the final voltage.
     sys = _q_limited_shunt_system()
     _add_facts_shunt!(sys, 3; max_shunt_current = 20.0)
     data = PowerFlowData(pf, sys)
@@ -1623,7 +1647,33 @@ end
         data)
     @test all(data.converged)
     f = only(data.controlled_devices.facts)
-    @test f.b_lim == PowerFlows._facts_b_limit(f, PowerFlows.measured_value(f, data, 1))
+    vmag = PowerFlows.measured_value(f, data, 1)
+    @test isapprox(
+        f.b_lim,
+        PowerFlows._facts_b_limit(f, vmag);
+        rtol = PowerFlows.CONTROL_FACTS_LIMIT_RTOL,
+    )
+    @test f.saturated || abs(vmag - f.vset) <= PowerFlows.CONTROL_FACTS_SETPOINT_BAND
+end
+
+@testset "discrete control: FACTS regulation without Q limits settles" begin
+    sys = _q_limited_shunt_system()
+    _add_facts_shunt!(sys, 3; max_shunt_current = 20.0)
+    pf = ACPolarPowerFlow(;
+        check_reactive_power_limits = false,
+        control_discrete_devices = true,
+    )
+    data = PowerFlowData(pf, sys)
+    tl = Test.TestLogger(; min_level = Logging.Warn)
+    converged = Logging.with_logger(tl) do
+        solve_power_flow!(data)
+    end
+    @test converged
+    @test all(data.converged)
+    f = only(data.controlled_devices.facts)
+    vmag = PowerFlows.measured_value(f, data, 1)
+    @test f.saturated || abs(vmag - f.vset) <= PowerFlows.CONTROL_FACTS_SETPOINT_BAND
+    @test !any(occursin("did not settle", r.message) for r in tl.logs)
 end
 
 # ── Flow-regulating transformer circuits ─────────────────────────────────────────────────

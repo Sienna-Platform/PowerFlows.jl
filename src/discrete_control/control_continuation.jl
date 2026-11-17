@@ -276,13 +276,34 @@ end
 # Adaptive under-relaxation. The damped iteration p ← p + ω·(σ(V(p)) − p) has local
 # slope m = 1 + ω·(g′−1), g′ = σ′(V)·dV/dp ≤ 0 after sign correction. ω is chosen to
 # keep m NON-negative (monotone, 0≤m<1, not merely |m|<1): m ≥ θ ⟹ ω ≤ (1−θ)/(1+|g′|).
-# |σ′| ≤ |hi−lo|·Se/4 bounds g′ at the CURRENT gain estimate (refreshed each step by a
-# secant update, so the bound tracks the operating point). `Se` is the effective steepness.
+# `_relaxation` uses the maximum slope |hi−lo|·Se/4, which holds at the setpoint. Away from
+# the setpoint, `_local_relaxation` uses the sigmoid slope at the current value. The linear
+# prediction covers at most (1 − θ) of the distance to the setpoint. This keeps the
+# contraction margin when regulators are coupled. The oscillation freeze is the backstop.
 @inline function _relaxation(d, Se::Float64, dVdp::Float64)
     lo, hi = parameter_limits(d)
     gbound = 0.25 * abs(hi - lo) * Se * abs(dVdp)
     # ω ≤ 1−θ = 0.5 for any gbound ≥ 0, so no additional cap is needed.
     return (1.0 - CONTROL_CONTRACTION) / (1.0 + gbound)
+end
+
+# Relaxation from the sigmoid slope at the current value. The guard shortens ω so the linear
+# prediction (Δy = dv·step) covers at most (1 − θ) of the distance to the setpoint.
+# Returns ω before the n_shared split.
+@inline function _local_relaxation(
+    d, Se::Float64, dv::Float64, yc::Float64, p_now::Float64, p_tgt::Float64,
+)
+    lo, hi = parameter_limits(d)
+    e = control_setpoint(d) - yc
+    w = exp(-abs(Se * e))
+    slope = abs(hi - lo) * Se * w / (1.0 + w)^2
+    ω = (1.0 - CONTROL_CONTRACTION) / (1.0 + slope * abs(dv))
+    full = dv * (p_tgt - p_now)
+    if !iszero(full) && sign(full) == sign(e) &&
+       ω * abs(full) > (1.0 - CONTROL_CONTRACTION) * abs(e)
+        ω = (1.0 - CONTROL_CONTRACTION) * abs(e / full)
+    end
+    return ω
 end
 
 # Freeze a device (PSS/E lock-and-continue): it holds its current parameter, counts as
@@ -339,8 +360,10 @@ function _damped_target!(
     # bound does not see the cross-coupling, and N co-located controllers stepping the
     # full error together have an in-phase gain ≈ N× the measured self-gain.
     Se = _effective_steepness(d, S, dv)
-    ω = _relaxation(d, Se, dv) / n_shared[idx]
     p_tgt = _control_target(d, yc, Se, dv)
+    ω =
+        max(_local_relaxation(d, Se, dv, yc, p_now, p_tgt), _relaxation(d, Se, dv)) /
+        n_shared[idx]
     # Track sign reversals to detect within-stage oscillation. Sub-tolerance target
     # moves carry no direction information (grid/tolerance dither, not instability).
     s = 0
@@ -580,8 +603,7 @@ function _batched_pass!(
     # (oscillation counter, direction, freezes) and restore it on rollback.
     osc0, prev0, frozen0 = copy(osc), copy(prev_sign), copy(frozen)
     moved = _apply_targets_group!(set.voltage_taps, 0, data, ts, S, frozen, dVdp, osc,
-        prev_sign,
-        n_shared, p_prev, did_move)
+        prev_sign, n_shared, p_prev, did_move)
     moved |=
         _apply_targets_group!(set.flow_taps, offs.flow_taps, data, ts, S, frozen, dVdp,
             osc, prev_sign, n_shared, p_prev, did_move)
@@ -719,24 +741,26 @@ function _control_continuation!(
         ok = _regulate_devices!(pf, data, set, ts, pre; with_q...)
     elseif q_limits
         # Bad starting device settings can make the Q-limited solve fail, and regulation
-        # needs a converged start. Regulate without Q limits, then enforce them at the end.
+        # needs a converged start. Regulate without Q limits to get one. The Q limits then
+        # move voltage, so regulate again with them.
         @warn "discrete control: the initial solve with reactive power limits did not \
             converge at time step $ts; regulating devices without the limits, then \
-            re-solving with them"
+            again with them"
         _restore_state!(data, ts, pre)
         ok =
             _ctrl_solve!(pf, data, ts; without_q...) &&
             _regulate_devices!(pf, data, set, ts, pre; without_q...) &&
-            _ctrl_solve!(pf, data, ts; with_q...)
+            _ctrl_solve!(pf, data, ts; with_q...) &&
+            _regulate_devices!(pf, data, set, ts, pre; with_q...)
     else
         return false
     end
-    # Classify each FACTS endpoint against its final voltage-dependent bound and setpoint
-    # (`saturated` reported by `get_controlled_device_results` and written back to PSY). Uses
-    # the final converged voltages. The bound was last refreshed before the final solves, which
-    # can move voltage materially after a retry; after a failed solve, keep the last good bound.
+    # Classify each FACTS endpoint against its voltage-dependent bound and setpoint (`saturated`
+    # reported by `get_controlled_device_results` and written back to PSY). The voltage is the
+    # final one from `snap_and_restore!`, but `b_lim` and `current` come from the last
+    # regulation pass, before the snap. The snap solve can move voltage after that pass, so the
+    # bound can be slightly stale.
     for d in set.facts
-        ok && _refresh_facts_limit!(d, data, ts, false)
         classify_facts_saturation!(d, measured_value(d, data, ts))
     end
     # Reported branch flows are computed from the arc-admittance matrices right after
@@ -1056,7 +1080,7 @@ function get_controlled_device_results(data)
                     push!(time_step, ts)
                     push!(lower, lo)
                     push!(upper, hi)
-                    push!(initial, d.initial)
+                    push!(initial, stored_initial(set, d, i, ts))
                     push!(final, stored_current(set, d, i, ts))
                     push!(delivered_q_mvar, stored_delivered_q_mvar(set, d, i, data, ts))
                     push!(saturated, stored_saturated(set, d, i, ts))

@@ -565,6 +565,7 @@ function clear_injection_data!(pfd::PowerFlowData)
         any(isnan, col) && (col .= 1.0)
     end
     _clear_off_area_loads!(pfd)
+    _reset_facts_state!(get_controlled_devices(pfd))
     return
 end
 

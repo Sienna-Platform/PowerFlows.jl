@@ -120,6 +120,8 @@ struct ControlledDeviceSet
     # in/out of the device scratch. Branch devices mutate the SHARED Y-bus, so each step instead
     # returns every branch device to `d.initial` and rewrites the device entries.
     shunt_current::Matrix{Float64}
+    # The value the deadband hold compares `current` with. `add_switched_admittance!` sets it.
+    shunt_initial::Matrix{Float64}
     shunt_block_n::Matrix{Vector{Int}}
     facts_current::Matrix{Float64}
     facts_b_lim::Matrix{Float64}
@@ -147,6 +149,7 @@ function ControlledDeviceSet(
     n_time_steps::Int = 1,
 )
     shunt_current = [d.current for d in shunts, _ in 1:n_time_steps]
+    shunt_initial = [d.initial for d in shunts, _ in 1:n_time_steps]
     shunt_block_n = [copy(d.block_n) for d in shunts, _ in 1:n_time_steps]
     facts_current = [d.current for d in facts, _ in 1:n_time_steps]
     facts_b_lim = [d.b_lim for d in facts, _ in 1:n_time_steps]
@@ -161,6 +164,7 @@ function ControlledDeviceSet(
         shunts,
         facts,
         shunt_current,
+        shunt_initial,
         shunt_block_n,
         facts_current,
         facts_b_lim,
@@ -214,6 +218,7 @@ steps."""
 function load_device_state!(set::ControlledDeviceSet, data, ts::Int)
     for (i, d) in enumerate(set.shunts)
         d.current = set.shunt_current[i, ts]
+        d.initial = set.shunt_initial[i, ts]
         d.block_n .= set.shunt_block_n[i, ts]
     end
     for (i, d) in enumerate(set.facts)
@@ -264,6 +269,21 @@ function save_device_state!(set::ControlledDeviceSet, data, ts::Int)
     return
 end
 save_device_state!(::Nothing, data, ts::Int) = nothing
+
+# `clear_injection_data!` zeroes the constant impedance slot that holds the FACTS susceptance,
+# and no writer adds it back, so every FACTS controller restarts from its enrollment state.
+function _reset_facts_state!(set::ControlledDeviceSet)
+    for (i, d) in enumerate(set.facts)
+        d.current = d.initial
+        d.b_lim = d.rating
+        d.saturated = false
+        set.facts_current[i, :] .= d.initial
+        set.facts_b_lim[i, :] .= d.rating
+        set.facts_saturated[i, :] .= false
+    end
+    return
+end
+_reset_facts_state!(::Nothing) = nothing
 
 """Width (number of time steps) of the per-time-step device store; all store matrices share
 it by construction."""
@@ -340,6 +360,10 @@ stored_current(
 ) = set.phase_shifter_current[i, ts]
 stored_current(set::ControlledDeviceSet, ::ControlledSwitchedShunt, i::Int, ts::Int) =
     set.shunt_current[i, ts]
+
+stored_initial(::ControlledDeviceSet, d::AbstractControlledDevice, ::Int, ::Int) = d.initial
+stored_initial(set::ControlledDeviceSet, ::ControlledSwitchedShunt, i::Int, ts::Int) =
+    set.shunt_initial[i, ts]
 stored_current(set::ControlledDeviceSet, ::ControlledFACTS, i::Int, ts::Int) =
     set.facts_current[i, ts]
 

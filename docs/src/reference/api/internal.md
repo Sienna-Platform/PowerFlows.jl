@@ -54,6 +54,7 @@ Private = true
 Pages = [
     "state_indexing_helpers.jl",
     "initialize_power_flow_data.jl",
+    "update_power_flow_data.jl",
     "power_flow_setup.jl",
 ]
 ```

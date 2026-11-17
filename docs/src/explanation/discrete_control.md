@@ -221,10 +221,17 @@ after sign correction. The factor ``\omega`` is chosen to keep ``m`` non-negativ
 
 where `CONTROL_CONTRACTION = 0.5` is the contraction target ``\theta`` and ``g'`` is
 the closed-loop gain bound ``|h - \ell| \cdot S/4 \cdot |dy/dp|``
-(the maximum sigmoid derivative times the plant gain). Note this formula
-already caps ``\omega \le 1-\theta = 0.5``, and the guarantee is conditional on
-the plant gain measured at the base point remaining representative along the
-trajectory — it is a safeguard, not an unconditional convergence proof.
+(the maximum sigmoid derivative times the plant gain). This bound holds at the
+setpoint, where the sigmoid is steepest. Away from the setpoint the sigmoid is
+flatter, so `_local_relaxation` computes the same bound from the sigmoid slope at
+the current regulated value, and ``\omega`` is the larger of the two. The local
+value is shortened so the linear prediction covers at most ``1-\theta`` of the
+distance to the setpoint. Both
+formulas cap ``\omega \le 1-\theta = 0.5``, so far from the setpoint ``\omega`` can
+reach 0.5. The guarantee is conditional on the plant gain measured at the base
+point remaining representative along the trajectory, and the oscillation
+safeguard below is the backstop — it is a safeguard, not an unconditional
+convergence proof.
 
 **Deadband.** A switched shunt whose controlled voltage is anywhere inside its
 parsed `[VSWLO, VSWHI]` band is held, not driven toward the band midpoint —
