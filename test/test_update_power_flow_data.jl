@@ -111,7 +111,7 @@ end
     @test _all_withdrawals_zero(data)
 end
 
-function _exponential_load_fixture(; α::Float64, β::Float64, P::Float64, Q::Float64)
+function _exponential_load_fixture(; alpha::Float64, beta::Float64, P::Float64, Q::Float64)
     sys = _build_zip_2bus_system()
     bus = PSY.get_component(PSY.ACBus, sys, "bus_2")
     load = PSY.ExponentialLoad(;
@@ -120,8 +120,8 @@ function _exponential_load_fixture(; α::Float64, β::Float64, P::Float64, Q::Fl
         bus = bus,
         active_power = P,
         reactive_power = Q,
-        α = α,
-        β = β,
+        alpha = alpha,
+        beta = beta,
         base_power = 100.0,
         max_active_power = 1.0,
         max_reactive_power = 1.0,
@@ -380,8 +380,8 @@ function _replay_system()
         bus = bus_2,
         active_power = 0.15,
         reactive_power = 0.07,
-        α = 1.0,
-        β = 2.0,
+        alpha = 1.0,
+        beta = 2.0,
         base_power = 100.0,
         max_active_power = 1.0,
         max_reactive_power = 1.0,
@@ -438,7 +438,7 @@ end
 end
 
 @testset "an exponential load in the replay fills its slots" begin
-    (sys, load) = _exponential_load_fixture(; α = 1.0, β = 2.0, P = 0.5, Q = 0.2)
+    (sys, load) = _exponential_load_fixture(; alpha = 1.0, beta = 2.0, P = 0.5, Q = 0.2)
     data = PowerFlowData(ACPowerFlow(; time_steps = 2), sys)
     ix = PF.get_bus_lookup(data)[PSY.get_number(PSY.get_bus(load))]
     (p_system, _, _) = _active_withdrawal_rows(data, ix)
@@ -777,8 +777,8 @@ function _exponential_fixture(α::Float64, β::Float64)
         bus = bus_2,
         active_power = 0.15,
         reactive_power = 0.07,
-        α = α,
-        β = β,
+        alpha = α,
+        beta = β,
         base_power = 100.0,
         max_active_power = 1.0,
         max_reactive_power = 1.0,

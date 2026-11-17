@@ -130,8 +130,12 @@ function ga_check_against_dense(sys, n_iter)
 end
 
 function ga_add_vsc!(
-    sys::PSY.System, name::String; to_bus = ga_pq_buses(sys)[2], kw...,
+    sys::PSY.System, name::String; to_bus = ga_pq_buses(sys)[2],
+    ac_voltage_setpoint_from = nothing, ac_voltage_setpoint_to = nothing, kw...,
 )
+    _set_vsc_ac_targets!(
+        ga_pq_buses(sys)[1], to_bus; ac_voltage_setpoint_from, ac_voltage_setpoint_to,
+    )
     arc = _get_or_make_arc(sys, ga_pq_buses(sys)[1], to_bus)
     PSY.add_component!(
         sys,

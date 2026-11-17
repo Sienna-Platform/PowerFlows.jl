@@ -114,7 +114,7 @@ end
 _write_actuator!(circuit::PSY.TransformerCircuit, d::ControlledBranch{TapRatio}) =
     PSY.set_tap!(circuit, d.current)
 _write_actuator!(circuit::PSY.TransformerCircuit, d::ControlledBranch{PhaseAngle}) =
-    PSY.set_α!(circuit, d.current)
+    PSY.set_alpha!(circuit, d.current)
 
 """
     write_device_settings!(system::PSY.System, data)

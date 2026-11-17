@@ -908,7 +908,7 @@ end
 # source for export too. Shared by the two- and three-winding paths, which differ only in
 # which circuit they read.
 function _circuit_ang(circuit::PSY.TransformerCircuit)
-    return rad2deg(PSY.get_α(circuit))
+    return rad2deg(PSY.get_alpha(circuit))
 end
 
 # COD/MODSW are PSS/E control codes and the control enums' values are exactly those codes.
@@ -949,6 +949,24 @@ _band_degrees(band) = (min = rad2deg(band.min), max = rad2deg(band.max))
 # RMA/RMI: the actuator band the objective selects, the phase-angle band in degrees for the four
 # phase-shift objectives and the tap-ratio band otherwise. Not `PSY.is_phase_shifting` — that
 # predicate is also true for α ≠ 0 with a voltage objective.
+# PSS/E REMOT/FCREG/SWREM: 0 stands for the device's own bus.
+_psse_remote_bus_number(::Nothing) = 0
+_psse_remote_bus_number(bus::PSY.ACBus) = PSY.get_number(bus)
+
+# CONT: the sign carries the regulation side, as PowerFlowFileParser reads it. PSY keeps the
+# orientation only for a bus that is not an end of the arc.
+function _psse_transformer_cont(circuit::PSY.TransformerCircuit)
+    cont = _psse_remote_bus_number(PSY.get_regulated_bus(circuit))
+    if PSY.get_regulated_bus_orientation(circuit) ==
+       PSY.TransformerRegulationOrientation.FROM
+        return -cont
+    end
+    return cont
+end
+
+_psse_voltage_setpoint(::Nothing, default) = default
+_psse_voltage_setpoint(vset::Float64, ::Any) = vset
+
 function _circuit_control_limits_degrees(circuit::PSY.TransformerCircuit)
     if PSY.get_control_objective(circuit) in _PSSE_PHASE_SHIFT_OBJECTIVES
         return _band_degrees(PSY.get_phase_angle_limits(circuit))
@@ -992,7 +1010,7 @@ function _write_2w_transformer_record3_winding1!(
     VMI1 = controlled_quantity_limits.min
     NTP1 = PSY.get_number_of_tap_positions(circuit)
     NOD1 = PSSE_DEFAULT
-    CONT1 = PSY.get_regulated_bus_number(circuit)
+    CONT1 = _psse_transformer_cont(circuit)
 
     supp_attr = PSY.get_supplemental_attributes(PSY.ImpedanceCorrectionData, transformer)
     TAB1 = !isempty(supp_attr) ? PSY.get_table_number(supp_attr[1]) : 0
@@ -1106,7 +1124,7 @@ function _collect_3w_winding_data(
             PSY.get_control_objective(circuit),
             PSY.TransformerControlObjective.UNDEFINED,
         )
-        CONT = PSY.get_regulated_bus_number(circuit)
+        CONT = _psse_transformer_cont(circuit)
         NOD = PSSE_DEFAULT
         control_limits = _circuit_control_limits_degrees(circuit)
         RMA = control_limits.max
@@ -1208,8 +1226,8 @@ end
 function _psse_get_load_data(exporter::PSSEExporter, load::PSY.ExponentialLoad)
     p = PSY.get_active_power(load, u"NU")
     q = PSY.get_reactive_power(load, u"NU")
-    p_slot = _exponential_zip_slot(load, PSY.get_α(load))
-    q_slot = _exponential_zip_slot(load, PSY.get_β(load))
+    p_slot = _exponential_zip_slot(load, PSY.get_alpha(load))
+    q_slot = _exponential_zip_slot(load, PSY.get_beta(load))
     return (
         _psse_zip_field(p_slot, 1, p),
         _psse_zip_field(q_slot, 1, q),
@@ -1777,7 +1795,10 @@ function write_to_buffers!(
         )
 
         # Get common fields
-        VS = PSY.get_magnitude(PSY.get_bus(generator), u"CU")
+        gen_bus = PSY.get_bus(generator)
+        VS = _psse_voltage_setpoint(
+            PSY.get_voltage_setpoint(gen_bus), PSY.get_magnitude(gen_bus, u"CU"),
+        )
         MBASE = PSY.get_base_power(generator, u"NU")
         STAT = 0
         if PSY.get_available(generator)
@@ -2617,12 +2638,24 @@ end
 function _vsc_export_acset(vscline::PSY.TwoTerminalVSCLine, side::Symbol)
     if side == :from
         if PSY.get_ac_control_from(vscline) == PSY.VSCACControlModes.AC_VOLTAGE
-            return PSY.get_ac_voltage_setpoint_from(vscline)
+            return _regulated_voltage_target(
+                vscline,
+                _regulated_bus(
+                    PSY.get_from(PSY.get_arc(vscline)),
+                    PSY.get_remote_regulated_bus_from(vscline),
+                ),
+            )
         end
         return PSY.get_power_factor_setpoint_from(vscline)
     end
     if PSY.get_ac_control_to(vscline) == PSY.VSCACControlModes.AC_VOLTAGE
-        return PSY.get_ac_voltage_setpoint_to(vscline)
+        return _regulated_voltage_target(
+            vscline,
+            _regulated_bus(
+                PSY.get_to(PSY.get_arc(vscline)),
+                PSY.get_remote_regulated_bus_to(vscline),
+            ),
+        )
     end
     return PSY.get_power_factor_setpoint_to(vscline)
 end
@@ -2653,7 +2686,7 @@ function _compute_vsc_converter_fields(
         PWF = PSY.get_power_factor_weighting_fraction_from(vscline)
         q_limits = PSY.get_reactive_power_limits_from(vscline, u"SU")
         # PSY spells local (terminal-bus) regulation as `nothing`; PSS/E as REMOT = 0.
-        REMOT = _value_or_default(PSY.get_remote_bus_control_from(vscline), 0)
+        REMOT = _psse_remote_bus_number(PSY.get_remote_regulated_bus_from(vscline))
         RMPCT = PSSE_DEFAULT
     else
         MODE =
@@ -2665,7 +2698,7 @@ function _compute_vsc_converter_fields(
         get_imax = PSY.get_max_dc_current_to
         PWF = PSY.get_power_factor_weighting_fraction_to(vscline)
         q_limits = PSY.get_reactive_power_limits_to(vscline, u"SU")
-        REMOT = _value_or_default(PSY.get_remote_bus_control_to(vscline), 0)
+        REMOT = _psse_remote_bus_number(PSY.get_remote_regulated_bus_to(vscline))
         RMPCT = PSSE_DEFAULT
     end
 
@@ -3041,7 +3074,9 @@ function write_to_buffers!(
         MODE = get(FACTS_MODE_MAP, PSY.get_control_mode(facts), 2)
         PDES = PSSE_DEFAULT
         QDES = PSSE_DEFAULT
-        VSET = PSY.get_voltage_setpoint(facts)
+        facts_bus = PSY.get_bus(facts)
+        facts_reg_bus = _regulated_bus(facts_bus, PSY.get_remote_regulated_bus(facts))
+        VSET = _psse_voltage_setpoint(PSY.get_voltage_setpoint(facts_reg_bus), PSSE_DEFAULT)
         SHMX = PSY.get_max_shunt_current(facts, u"NU")
         TRMX = PSY.get_max_reactive_power(facts, u"NU")
         VTMX = PSSE_DEFAULT
@@ -3054,9 +3089,9 @@ function write_to_buffers!(
         SET1 = PSSE_DEFAULT
         SET2 = PSSE_DEFAULT
         VSREF = PSSE_DEFAULT
-        FCREG = PSY.get_regulated_bus_number(facts)
+        FCREG = _psse_remote_bus_number(PSY.get_remote_regulated_bus(facts))
         NREG = PSSE_DEFAULT
-        REMOT = PSY.get_regulated_bus_number(facts)
+        REMOT = FCREG
         MNAME = _psse_quote_string("")
 
         if exporter.psse_version == :v35
@@ -3202,10 +3237,10 @@ function write_to_buffers!(
         VSWLO = switching_band.min
 
         if exporter.psse_version == :v35
-            SWREG = PSY.get_regulated_bus_number(shunt)
+            SWREG = _psse_remote_bus_number(PSY.get_remote_regulated_bus(shunt))
             NREG = PSSE_DEFAULT
         else
-            SWREM = PSY.get_regulated_bus_number(shunt)
+            SWREM = _psse_remote_bus_number(PSY.get_remote_regulated_bus(shunt))
         end
 
         RMPCT = PSSE_DEFAULT

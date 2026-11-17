@@ -188,17 +188,30 @@ _target_band(::ActivePowerFlow, circuit::PSY.TransformerCircuit, label::String) 
         label, :controlled_active_power_flow_limits,
     )
 
-# Voltage control regulates the to bus, or the remote bus that `regulated_bus_number` names. The
-# sign of that number marks the regulation side (PSS/E CONT<0); the bus number is its magnitude.
-# PSS/E measures a flow at the winding-1 (from) bus, and `regulated_bus_number` does not apply.
+# `remote_regulated_bus === nothing` means the device's own bus.
+_regulated_bus(own_bus::PSY.ACBus, ::Nothing) = own_bus
+_regulated_bus(::PSY.ACBus, remote_bus::PSY.ACBus) = remote_bus
+
+# The AC voltage target of a device is the `voltage_setpoint` of the bus it regulates (per unit).
+_bus_voltage_target(::Any, bus::PSY.ACBus, vset::Float64) = vset
+function _bus_voltage_target(device, bus::PSY.ACBus, ::Nothing)
+    error(
+        "$(typeof(device)) $(PSY.get_name(device)) regulates bus $(PSY.get_name(bus)) " *
+        "(number $(PSY.get_number(bus))), which has no voltage_setpoint.",
+    )
+end
+_regulated_voltage_target(device, bus::PSY.ACBus) =
+    _bus_voltage_target(device, bus, PSY.get_voltage_setpoint(bus))
+
+# Voltage control regulates the to bus, or `regulated_bus`. The orientation field carries the
+# regulation side, so the bus number needs no sign. PSS/E measures a flow at the winding-1 (from)
+# bus, and `regulated_bus` does not apply.
+_regulated_bus_number(::Nothing, to_bus::Int) = to_bus
+_regulated_bus_number(bus::PSY.ACBus, ::Int) = PSY.get_number(bus)
 function _controlled_bus(
     ::BusVoltage, circuit::PSY.TransformerCircuit, from_bus::Int, to_bus::Int,
 )
-    reg = PSY.get_regulated_bus_number(circuit)
-    if iszero(reg)
-        return to_bus
-    end
-    return abs(reg)
+    return _regulated_bus_number(PSY.get_regulated_bus(circuit), to_bus)
 end
 _controlled_bus(
     ::Union{ReactivePowerFlow, ActivePowerFlow},
@@ -332,12 +345,10 @@ function build_controlled_device_set(
                 network; leaving the shunt locked."
             continue
         end
-        # `regulated_bus_number` is 0 for local control (PSS/E SWREM/NREG map to it in the parser).
-        reg = PSY.get_regulated_bus_number(sa)
-        cbus = bus
-        if !iszero(reg)
-            cbus = reg
-        end
+        # `remote_regulated_bus` is `nothing` for local control.
+        cbus = PSY.get_number(
+            _regulated_bus(PSY.get_bus(sa), PSY.get_remote_regulated_bus(sa)),
+        )
         cix = _resolve_bus_ix(bus_lookup, reverse_bus_search_map, cbus)
         if isnothing(cix)
             @warn "ControlledSwitchedShunt \"$name\": controlled bus $cbus is not in \
@@ -469,7 +480,7 @@ end
 
 # Continuous shunt FACTS (SVC/STATCOM) voltage control. `rating` (SHMX) bounds the SVC
 # susceptance-at-unity or the STATCOM current; `q_cap` is an independent MVA ceiling. Both
-# combine into the |V|-dependent limit `_facts_b_limit`. FCREG (`regulated_bus_number`)
+# combine into the |V|-dependent limit `_facts_b_limit`. FCREG (`remote_regulated_bus`)
 # selects local vs. remote-bus regulation.
 function _enroll_facts!(
     facts::Vector{ControlledFACTS},
@@ -494,11 +505,9 @@ function _enroll_facts!(
                 device not enrolled."
             continue
         end
-        reg = PSY.get_regulated_bus_number(fd)
-        cix = bix
-        if !iszero(reg)
-            cix = _resolve_bus_ix(bus_lookup, reverse_bus_search_map, reg)
-        end
+        reg_bus = _regulated_bus(PSY.get_bus(fd), PSY.get_remote_regulated_bus(fd))
+        reg = PSY.get_number(reg_bus)
+        cix = _resolve_bus_ix(bus_lookup, reverse_bus_search_map, reg)
         if isnothing(cix)
             @warn "ControlledFACTS \"$name\": regulated bus $reg is not in the \
                 (reduced) network; device not enrolled."
@@ -514,7 +523,7 @@ function _enroll_facts!(
                 (series-only FACTS records parse with 0.0); device not enrolled."
             continue
         end
-        vset = PSY.get_voltage_setpoint(fd)
+        vset = _regulated_voltage_target(fd, reg_bus)
         _validate_vset("ControlledFACTS", name, vset) || continue
         b0 = rating   # enrollment-time bound at unity voltage
         push!(

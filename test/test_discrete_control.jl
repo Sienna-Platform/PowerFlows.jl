@@ -6,9 +6,10 @@ const IEEE14_FACTS_RAW = joinpath(TEST_DATA_DIR, "14_bus.raw")
 `stress` scales every `StandardLoad`'s ZIP P/Q components (the PSS/E parser's load type);
 `shunt9_off` disables the bus-9 fixed shunt so the FACTS device carries more of the
 reactive burden. `svc`/`shunt_control_type` selects the SVC vs STATCOM reactive-limit law;
-`regulated_bus_number` sets FCREG (0 ⇒ local/sending-bus regulation)."""
+`remote_bus_number` sets FCREG (0 ⇒ local/sending-bus regulation). `vset` becomes the
+`voltage_setpoint` of the regulated bus."""
 function build_ieee14_facts_system(;
-    regulated_bus_number::Int = 0,
+    remote_bus_number::Int = 0,
     shmx_mva::Float64 = 25.0,
     mva_cap::Float64 = 9999.0,
     svc::Bool = false,
@@ -42,14 +43,18 @@ function build_ieee14_facts_system(;
     if svc
         shunt_control_type = PSY.FACTSShuntControlType.SVC
     end
+    remote_bus = nothing
+    if !iszero(remote_bus_number)
+        remote_bus = get_bus(sys, remote_bus_number)
+    end
+    PSY.set_voltage_setpoint!(something(remote_bus, get_bus(sys, 14)), vset)
     facts = FACTSControlDevice(;
         name = "facts_14",
         available = true,
         bus = get_bus(sys, 14),
         control_mode = PSY.FACTSOperationModes.NML,
-        voltage_setpoint = vset,
         shunt_control_type = shunt_control_type,
-        regulated_bus_number = regulated_bus_number, input_basis = u"CU",
+        remote_regulated_bus = remote_bus, input_basis = u"CU",
     )
     # `max_shunt_current`/`max_reactive_power` are stored in device base; the constructor
     # kwargs take a raw CU value, so set them through the units-aware setters to honor the
@@ -70,7 +75,7 @@ end
 end
 
 @testset "FACTS remote FCREG regulation targets the remote bus" begin
-    sys = build_ieee14_facts_system(; regulated_bus_number = 13)   # device at 14, regulates 13
+    sys = build_ieee14_facts_system(; remote_bus_number = 13)   # device at 14, regulates 13
     pf = ACPowerFlow(; control_discrete_devices = true)
     data = PowerFlows.PowerFlowData(pf, sys)
     set = PowerFlows.get_controlled_devices(data)
@@ -184,7 +189,7 @@ end
     # de-enroll the device with a warning, not abort PowerFlowData construction.
     sys = _make_tap_shunt_system()
     tx = first(PSY.get_components(PSY.TwoWindingTransformer, sys))
-    PSY.set_regulated_bus_number!(PSY.get_circuit(tx), 99)   # no bus 99
+    PSY.set_regulated_bus!(PSY.get_circuit(tx), _make_detached_bus(99))   # no bus 99
     data = PowerFlowData(ACPolarPowerFlow(), sys)
     set = @test_logs (:warn, r"controlled bus 99") match_mode = :any (
         PowerFlows.build_controlled_device_set(
@@ -195,11 +200,11 @@ end
 end
 
 @testset "discrete control: tap reads first-class control fields" begin
-    # The builder reads regulated_bus_number (controlled bus), control_limits (ratio band),
+    # The builder reads regulated_bus (controlled bus), control_limits (ratio band),
     # number_of_tap_positions, and controlled_quantity_limits (VMI/VMA) off the PSY circuit.
     sys = _make_tap_shunt_system()
     tx = first(PSY.get_components(PSY.TwoWindingTransformer, sys))
-    PSY.set_regulated_bus_number!(PSY.get_circuit(tx), 3)
+    PSY.set_regulated_bus!(PSY.get_circuit(tx), get_bus(sys, 3))
     PSY.set_tap_ratio_limits!(PSY.get_circuit(tx), (min = 0.88, max = 1.12))
     PSY.set_number_of_tap_positions!(PSY.get_circuit(tx), 25)
     # A degenerate band pins the regulation target to a single voltage.
@@ -219,13 +224,14 @@ end
     @test t.band_hi ≈ 1.03
 end
 
-@testset "discrete control: negative regulated_bus_number resolves via abs (PSS/E CONT<0)" begin
-    # PSS/E CONT1<0 marks which side of the transformer regulates; the bus number itself is
-    # |CONT1|. A raw negative value must not be used as a bus number directly (it resolves no
-    # bus, so the tap would de-enroll with "controlled bus -3 is not in the network").
+@testset "discrete control: regulated_bus_orientation does not change the controlled bus" begin
+    # PSS/E CONT1<0 maps to the FROM orientation. The orientation names the regulation side;
+    # the controlled bus is still `regulated_bus`.
     sys = _make_tap_shunt_system()
     tx = first(PSY.get_components(PSY.TwoWindingTransformer, sys))
-    PSY.set_regulated_bus_number!(PSY.get_circuit(tx), -3)
+    PSY.set_regulated_bus!(PSY.get_circuit(tx), get_bus(sys, 3))
+    PSY.set_regulated_bus_orientation!(
+        PSY.get_circuit(tx), PSY.TransformerRegulationOrientation.FROM)
     data = PowerFlowData(ACPolarPowerFlow(), sys)
     bl = PF.get_bus_lookup(data)
     set = PowerFlows.build_controlled_device_set(
@@ -266,12 +272,12 @@ end
     @test s.current ≈ 0.1        # baseline at BINIT, inside the reachable range
 end
 
-@testset "discrete control: shunt controlled bus (regulated_bus_number)" begin
-    function _shunt(regulated_bus_number = nothing)
+@testset "discrete control: shunt controlled bus (remote_regulated_bus)" begin
+    function _shunt(remote_bus_number = nothing)
         sys = _make_tap_shunt_system()
         sa = first(PSY.get_components(PSY.SwitchedAdmittance, sys))
-        isnothing(regulated_bus_number) ||
-            PSY.set_regulated_bus_number!(sa, regulated_bus_number)
+        isnothing(remote_bus_number) ||
+            PSY.set_remote_regulated_bus!(sa, get_bus(sys, remote_bus_number))
         data = PowerFlowData(ACPolarPowerFlow(), sys)
         bl = PF.get_bus_lookup(data)
         set = PowerFlows.build_controlled_device_set(
@@ -279,11 +285,11 @@ end
         return set.shunts[1], bl
     end
 
-    # regulated_bus_number set ⇒ remote controlled bus.
+    # remote_regulated_bus set ⇒ remote controlled bus.
     s_remote, bl = _shunt(2)
     @test s_remote.controlled_ix == bl[2]
 
-    # regulated_bus_number 0 (default) ⇒ falls back to the shunt's local bus (3).
+    # remote_regulated_bus nothing (default) ⇒ falls back to the shunt's local bus (3).
     s_local, bl2 = _shunt()
     @test s_local.controlled_ix == bl2[3]
 end
@@ -695,7 +701,7 @@ end
     solve_power_flow!(data)
     @test all(data.converged)
     t = data.controlled_devices.voltage_taps[1]
-    # The controlled bus is the tap's FROM bus (set via regulated_bus_number = 2).
+    # The controlled bus is the tap's FROM bus (set via regulated_bus = bus 2).
     @test t.controlled_ix == t.from_ix
     @test t.current in t.levels
     @test abs(data.bus_magnitude[t.controlled_ix, 1] - t.setpoint) <=
@@ -875,7 +881,7 @@ end
     @test t.p_max ≈ 1.15
     @test length(t.levels) == 17
     @test t.setpoint ≈ 1.02
-    # regulated_bus_number = 3 ⇒ remote controlled bus, not the to-bus.
+    # regulated_bus = bus 3 ⇒ remote controlled bus, not the to-bus.
     @test t.controlled_ix == PNM.get_bus_lookup(data.power_network_matrix)[3]
 end
 
@@ -1730,7 +1736,7 @@ end
     @test PowerFlows.regulated_quantity(d) === PowerFlows.ReactivePowerFlow()
 
     # Active-flow phase shifter: the actuator is α, the ratio stays fixed.
-    sys = _make_phase_shifter_system(; α = 0.1, circuit_base_power = 50.0)
+    sys = _make_phase_shifter_system(; alpha = 0.1, circuit_base_power = 50.0)
     data = PowerFlowData(ACPolarPowerFlow(), sys)
     set = PowerFlows.build_controlled_device_set(
         sys, PF.get_bus_lookup(data), data.power_network_matrix)
@@ -1767,7 +1773,7 @@ end
         ),
         (
             _make_phase_shifter_system, :controlled_active_power_flow_limits,
-            c -> PSY.set_α!(c, 1.0), r"outside the phase-angle band",
+            c -> PSY.set_alpha!(c, 1.0), r"outside the phase-angle band",
         ),
     )
         # A reversed band is not ordered: warn, lock.
@@ -1958,7 +1964,7 @@ end
     @test d.current != d.initial
     @test solve_and_store_power_flow!(pf, sys)
     @test PSY.get_tap(circuit) == d.current
-    @test iszero(PSY.get_α(circuit))
+    @test iszero(PSY.get_alpha(circuit))
 
     sys = _make_phase_shifter_system()
     circuit = PSY.get_circuit(first(PSY.get_components(PSY.TwoWindingTransformer, sys)))
@@ -1967,7 +1973,7 @@ end
     d = only(data.controlled_devices.phase_shifters)
     @test !iszero(d.current)
     @test solve_and_store_power_flow!(pf, sys)
-    @test PSY.get_α(circuit) == d.current
+    @test PSY.get_alpha(circuit) == d.current
     @test PSY.get_tap(circuit) ≈ 1.05
     # Re-enrolling from the written-back system starts at the solved angle.
     data2 = PowerFlowData(pf, sys)

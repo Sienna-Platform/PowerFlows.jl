@@ -424,8 +424,11 @@ end
 function _vsc_ac_set_from(line::PSY.TwoTerminalVSCLine)
     mode = _vsc_control_mode(PSY.get_dc_control_from(line), PSY.get_ac_control_from(line))
     if controls_ac_voltage(mode)
-        return _required_setpoint(
-            PSY.get_ac_voltage_setpoint_from(line), line, :ac_voltage_setpoint_from,
+        return _regulated_voltage_target(
+            line,
+            _regulated_bus(
+                PSY.get_from(PSY.get_arc(line)), PSY.get_remote_regulated_bus_from(line),
+            ),
         )
     end
     return 1.0
@@ -434,15 +437,18 @@ end
 function _vsc_ac_set_to(line::PSY.TwoTerminalVSCLine)
     mode = _vsc_control_mode(PSY.get_dc_control_to(line), PSY.get_ac_control_to(line))
     if controls_ac_voltage(mode)
-        return _required_setpoint(
-            PSY.get_ac_voltage_setpoint_to(line), line, :ac_voltage_setpoint_to,
+        return _regulated_voltage_target(
+            line,
+            _regulated_bus(
+                PSY.get_to(PSY.get_arc(line)), PSY.get_remote_regulated_bus_to(line),
+            ),
         )
     end
     return 1.0
 end
 
-# An `InterconnectingConverter` stores its voltage targets in kV; the solver works per unit of the
-# DC and AC bus base voltages.
+# An `InterconnectingConverter` stores its DC voltage target in kV; the solver works per unit of
+# the DC bus base voltage. The AC target is the regulated bus `voltage_setpoint`, already per unit.
 function _converter_dc_set(ic::PSY.InterconnectingConverter)
     mode = _vsc_control_mode(PSY.get_dc_control(ic), PSY.get_ac_control(ic))
     if uses_vdc_setpoint(mode)
@@ -456,9 +462,9 @@ end
 function _converter_ac_set(ic::PSY.InterconnectingConverter)
     mode = _vsc_control_mode(PSY.get_dc_control(ic), PSY.get_ac_control(ic))
     if controls_ac_voltage(mode)
-        vac_kv =
-            _required_setpoint(PSY.get_ac_voltage_setpoint(ic), ic, :ac_voltage_setpoint)
-        return vac_kv / PSY.get_base_voltage(PSY.get_bus(ic))
+        return _regulated_voltage_target(
+            ic, _regulated_bus(PSY.get_bus(ic), PSY.get_remote_regulated_bus(ic)),
+        )
     end
     return 1.0
 end

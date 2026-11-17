@@ -432,7 +432,7 @@ end
         force_build = false,
     )
     @assert any(
-        t -> !iszero(PSY.get_α(PSY.get_circuit(t))),
+        t -> !iszero(PSY.get_alpha(PSY.get_circuit(t))),
         get_components(TwoWindingTransformer, sys),
     ) "System should have phase shifting transformers: " *
       "change `force_build` to `true` in the test."
@@ -660,7 +660,7 @@ end
             r = 0.01,
             x = 0.05,
             tap = 1.0,
-            α = deg2rad(30),
+            alpha = deg2rad(30),
             rating = 1.0,
             base_power = 100.0,
             base_voltage_primary = 230,

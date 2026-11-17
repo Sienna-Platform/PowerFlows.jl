@@ -70,7 +70,7 @@ weak_bus = get_bus(sys, weak_bus_number)
 # A `FACTSControlDevice` in `NML` mode is a continuously controllable shunt
 # (an SVC or STATCOM): its susceptance can take any value between
 # `-max_shunt_current` and `+max_shunt_current`, so it can inject exactly the
-# reactive power needed to hold its bus at `voltage_setpoint`. Add one at
+# reactive power needed to hold its bus at the bus's `voltage_setpoint`. Add one at
 # `weak_bus`:
 
 facts = FACTSControlDevice(;
@@ -78,11 +78,11 @@ facts = FACTSControlDevice(;
     available = true,
     bus = weak_bus,
     control_mode = FACTSOperationModes.NML,
-    voltage_setpoint = 1.0,
     max_shunt_current = 100.0,
     shunt_control_type = FACTSShuntControlType.STATCOM,
     input_basis = u"CU",
 )
+set_voltage_setpoint!(weak_bus, 1.0)
 add_component!(sys, facts)
 
 # Solve with `control_discrete_devices = true` so the FACTS device's
@@ -174,11 +174,11 @@ facts_tight = FACTSControlDevice(;
     available = true,
     bus = weak_bus3,
     control_mode = FACTSOperationModes.NML,
-    voltage_setpoint = 1.0,
     max_shunt_current = 5.0,
     shunt_control_type = FACTSShuntControlType.STATCOM,
     input_basis = u"CU",
 )
+set_voltage_setpoint!(weak_bus3, 1.0)
 add_component!(sys3, facts_tight)
 
 data3 = PowerFlows.PowerFlowData(pf, sys3)

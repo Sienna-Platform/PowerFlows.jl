@@ -280,7 +280,7 @@ function _tapped_magnetizing_shunt_system()
             r = 0.005,
             x = 0.08,
             tap = 1.05,
-            α = 0.0,
+            alpha = 0.0,
             rating = 2.0,
             base_power = 100.0, input_basis = u"CU",
         ),
@@ -355,7 +355,7 @@ function _zero_impedance_transformer_system()
             r = 0.0,
             x = 0.0,
             tap = 1.0,
-            α = 0.0,
+            alpha = 0.0,
             rating = 2.0,
             base_power = 100.0, input_basis = u"CU",
         ), input_basis = u"CU",
@@ -418,7 +418,7 @@ function _pst_line_parallel_degree_two_system()
             r = 0.05,
             x = 0.20,
             tap = 1.0,
-            α = 0.15,
+            alpha = 0.15,
             rating = 2.0,
             base_power = 100.0,
             input_basis = u"CU",
@@ -707,7 +707,7 @@ function _phase_shifter_system()
             r = 0.005,
             x = 0.08,
             tap = 1.0,
-            α = 0.15,           # nonzero phase shift
+            alpha = 0.15,           # nonzero phase shift
             rating = 2.0,
             base_power = 100.0,
             # Phase-angle bounds (rad) live in the circuit's control band.

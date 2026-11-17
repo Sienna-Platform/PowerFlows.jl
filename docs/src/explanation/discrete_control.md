@@ -338,20 +338,21 @@ three-winding transformer contributes each available circuit independently — i
 may regulate on one winding while the other two are fixed. The other two
 regulating objectives are described [below](@ref discrete-control-flow-circuits).
 
-| Parameter      | First-class field on the circuit          |
-|:-------------- |:----------------------------------------- |
-| Controlled bus | `regulated_bus_number` (0 ⇒ local/to-bus) |
-| Tap ratio min  | `tap_ratio_limits.min`                    |
-| Tap ratio max  | `tap_ratio_limits.max`                    |
-| Tap positions  | `number_of_tap_positions`                 |
-| Voltage band   | `controlled_voltage_limits` (VMI/VMA)     |
+| Parameter      | First-class field on the circuit                |
+|:-------------- |:----------------------------------------------- |
+| Controlled bus | `regulated_bus` (`nothing` ⇒ to bus)            |
+| Orientation    | `regulated_bus_orientation` (UNDEFINED/FROM/TO) |
+| Tap ratio min  | `tap_ratio_limits.min`                          |
+| Tap ratio max  | `tap_ratio_limits.max`                          |
+| Tap positions  | `number_of_tap_positions`                       |
+| Voltage band   | `controlled_voltage_limits` (VMI/VMA)           |
 
-A nonzero `regulated_bus_number` wins for the controlled bus, otherwise the
+A set `regulated_bus` wins for the controlled bus, otherwise the
 to-bus is used. The tap is held anywhere inside the VMA/VMI band and regulates
 toward its midpoint on an excursion — the same posture as a switched shunt's
 VSWLO/VSWHI. The discrete tap levels are `range(p_min, p_max; length=NTP)`,
 collected once at construction. The phase shift is taken from
-`PSY.get_α(circuit)`. Setpoints outside `[0.5, 1.5]` p.u. de-enroll the device
+`PSY.get_alpha(circuit)`. Setpoints outside `[0.5, 1.5]` p.u. de-enroll the device
 with a warning.
 
 Results follow the same circuit-level shape for both arities — see
@@ -383,8 +384,8 @@ PSS/E `COD = 2` and `COD = 3`.
 | Target band     | `controlled_reactive_power_flow_limits` (p.u., system base) | `controlled_active_power_flow_limits` (p.u., system base) |
 | Positions       | `number_of_tap_positions`                                   | `number_of_tap_positions`                                 |
 | Measuring point | from bus, positive into the transformer                     | from bus, positive into the transformer                   |
-| Regulated bus   | not used (`regulated_bus_number` is ignored)                | not used (`regulated_bus_number` is ignored)              |
-| Starts from     | `PSY.get_tap(circuit)`                                      | `PSY.get_α(circuit)`                                      |
+| Regulated bus   | not used (`regulated_bus` is ignored)                       | not used (`regulated_bus` is ignored)                     |
+| Starts from     | `PSY.get_tap(circuit)`                                      | `PSY.get_alpha(circuit)`                                  |
 
 The solver reads the two flow bands with `PSY.get_controlled_reactive_power_flow_limits(circuit, u"SU")`
 and the matching active-power getter, so the band is on the system base whatever
@@ -399,7 +400,7 @@ included in `Y_ff`. The analytic sensitivity `dS_f/dp` adds the explicit change 
 `Y_ff`, `Y_ft` and the response of the two terminal voltages. The flow groups do not
 share a controlled bus, so they never split the correction.
 
-The write-back sets `PSY.set_tap!` for a `TapRatio` device and `PSY.set_α!` for a
+The write-back sets `PSY.set_tap!` for a `TapRatio` device and `PSY.set_alpha!` for a
 `PhaseAngle` device.
 
 ### `SwitchedAdmittance` → `ControlledSwitchedShunt`
@@ -407,7 +408,7 @@ The write-back sets `PSY.set_tap!` for a `TapRatio` device and `PSY.set_α!` for
 | Parameter         | Source                                                                                                           |
 |:----------------- |:---------------------------------------------------------------------------------------------------------------- |
 | Control mode      | `get_control_mode`: locked ⇒ skipped; discrete and continuous enroll; unsupported modes warn + lock              |
-| Controlled bus    | `regulated_bus_number` (0 ⇒ own bus)                                                                             |
+| Controlled bus    | `remote_regulated_bus` (`nothing` ⇒ own bus)                                                                     |
 | Voltage setpoint  | midpoint of `get_voltage_limits` — the VSWLO/VSWHI band for parsed systems                                       |
 | Susceptance range | spanned by the blocks: `[Σ min(steps·dB, 0), Σ max(steps·dB, 0)]` (plus the fixed base for API-built components) |
 | Block structure   | `get_number_of_steps`, `get_Y_increase`, `get_number_engaged`                                                    |
@@ -422,16 +423,16 @@ outside it.
 
 A `FACTSControlDevice` in a non-out-of-service control mode enrolls
 unconditionally (no flag) as a *continuous* shunt: it varies a symmetric
-susceptance `b` to hold its regulated bus at `voltage_setpoint`, injecting
+susceptance `b` to hold its regulated bus at that bus's `voltage_setpoint`, injecting
 `Q = b·|V|²`.
 
-| Parameter          | First-class field                              |
-|:------------------ |:---------------------------------------------- |
-| Regulated bus      | `regulated_bus_number` (0 ⇒ local/sending bus) |
-| Voltage setpoint   | `voltage_setpoint`                             |
-| Shunt current cap  | `max_shunt_current` (MVA at unity voltage)     |
-| Reactive power cap | `max_reactive_power` (MVA)                     |
-| Device class       | `shunt_control_type` (SVC / STATCOM)           |
+| Parameter          | First-class field                            |
+|:------------------ |:-------------------------------------------- |
+| Regulated bus      | `remote_regulated_bus` (`nothing` ⇒ own bus) |
+| Voltage setpoint   | `voltage_setpoint` of the regulated bus      |
+| Shunt current cap  | `max_shunt_current` (MVA at unity voltage)   |
+| Reactive power cap | `max_reactive_power` (MVA)                   |
+| Device class       | `shunt_control_type` (SVC / STATCOM)         |
 
 `max_shunt_current` is the PSS/E `SHMX` shunt *current* capability, **not** a
 reactive-power limit. The series-branch current `IMX` and `RMPCT` are not
@@ -452,7 +453,7 @@ refreshing bound from chattering, a device that has been oscillation-frozen hold
 its last `b_lim` instead of continuing to track voltage.
 
 **Saturation reporting.** After the solve each FACTS device is classified: one
-pinned at `b_lim` while its regulated bus remains off `voltage_setpoint` is
+pinned at `b_lim` while its regulated bus remains off its `voltage_setpoint` is
 flagged `saturated = true` (with a warning). `get_controlled_device_results`
 carries that flag plus `delivered_q_mvar = b·|V|²·S_base` on the FACTS rows, and
 under active controls the solved `Q` is written back to the component's

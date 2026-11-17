@@ -222,7 +222,10 @@ end
 
 # Flexible builder: one VSC line between the first two PQ buses of c_sys14, control fields passed
 # through as keyword args.
-function _vsc_system(; g = 1 / 32.0, vsc_kwargs...)
+function _vsc_system(;
+    g = 1 / 32.0, ac_voltage_setpoint_from = nothing, ac_voltage_setpoint_to = nothing,
+    vsc_kwargs...,
+)
     sys = deepcopy(PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false))
     pq = sort!(
         collect(
@@ -234,6 +237,7 @@ function _vsc_system(; g = 1 / 32.0, vsc_kwargs...)
         );
         by = PSY.get_number,
     )
+    _set_vsc_ac_targets!(pq[1], pq[2]; ac_voltage_setpoint_from, ac_voltage_setpoint_to)
     arc = _get_or_make_arc(sys, pq[1], pq[2])
     vsc = PSY.TwoTerminalVSCLine(;
         name = "vsc",
@@ -1099,8 +1103,21 @@ end
             by = PSY.get_number,
         ),
     )
-    arc = _get_or_make_arc(sys_pv, pick(sys_pv, PSY.ACBusTypes.PQ),
-        pick(sys_pv, PSY.ACBusTypes.PV))
+    pv_bus = pick(sys_pv, PSY.ACBusTypes.PV)
+    # The converter's target is the `voltage_setpoint` of its regulated bus. A remote bus
+    # whose setpoint differs from the PV terminal magnitude is the conflicting target.
+    target_bus = sort!(
+        collect(
+            PSY.get_components(
+                b -> PSY.get_bustype(b) == PSY.ACBusTypes.PQ,
+                PSY.ACBus,
+                sys_pv,
+            ),
+        );
+        by = PSY.get_number,
+    )[2]
+    PSY.set_voltage_setpoint!(target_bus, 1.0)
+    arc = _get_or_make_arc(sys_pv, pick(sys_pv, PSY.ACBusTypes.PQ), pv_bus)
     vsc = PSY.TwoTerminalVSCLine(;
         name = "vsc_bad_pv",
         available = true,
@@ -1116,7 +1133,7 @@ end
         dc_control_to = PSY.VSCDCControlModes.DC_POWER,
         ac_control_to = PSY.VSCACControlModes.AC_VOLTAGE,
         dc_power_setpoint_to = 0.3,
-        ac_voltage_setpoint_to = 1.0, input_basis = u"CU",
+        remote_regulated_bus_to = target_bus, input_basis = u"CU",
     )
     PSY.add_component!(sys_pv, vsc)
     @test_throws ErrorException PowerFlowData(
@@ -1141,6 +1158,7 @@ end
     )
     for (k, to_bus) in enumerate((pq[2], pq[3]))
         arc_k = _get_or_make_arc(sys_dup, pq[1], to_bus)
+        PSY.set_voltage_setpoint!(pq[1], 1.0)
         vsc_k = PSY.TwoTerminalVSCLine(;
             name = "vsc_dup$k",
             available = true,
@@ -1152,7 +1170,6 @@ end
             ac_control_from = PSY.VSCACControlModes.AC_VOLTAGE,
             dc_voltage_setpoint_from = 1.03,
             rated_dc_voltage = 400.0,
-            ac_voltage_setpoint_from = 1.0,
             dc_control_to = PSY.VSCDCControlModes.DC_POWER,
             ac_control_to = PSY.VSCACControlModes.AC_REACTIVE_POWER,
             power_factor_setpoint_to = 1.0,
@@ -1178,6 +1195,16 @@ end
         )
         pv = first(buses(PSY.ACBusTypes.PV))
         v_pv = PSY.get_magnitude(pv, u"SU")
+        # `vac_set(v_pv)` equal to `v_pv` is the bus's own setpoint. A different value sits on a
+        # remote PQ bus the converter regulates, conflicting with the PV terminal magnitude.
+        target = vac_set(v_pv)
+        remote = nothing
+        if isapprox(target, v_pv)
+            PSY.set_voltage_setpoint!(pv, v_pv)
+        else
+            remote = buses(PSY.ACBusTypes.PQ)[2]
+            PSY.set_voltage_setpoint!(remote, target)
+        end
         arc = _get_or_make_arc(sys, first(buses(PSY.ACBusTypes.PQ)), pv)
         PSY.add_component!(
             sys,
@@ -1196,7 +1223,7 @@ end
                 dc_control_to = PSY.VSCDCControlModes.DC_POWER,
                 ac_control_to = PSY.VSCACControlModes.AC_VOLTAGE,
                 dc_power_setpoint_to = 0.3,
-                ac_voltage_setpoint_to = vac_set(v_pv),
+                remote_regulated_bus_to = remote,
                 reactive_power_to = 0.05,
                 input_basis = u"CU",
             ),

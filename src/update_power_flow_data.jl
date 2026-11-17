@@ -511,7 +511,7 @@ function exponential_load_active_parts(
     load::PSY.ExponentialLoad,
     values::AbstractVector{Float64},
 )
-    return _exponential_load_parts(data, load, PSY.get_α(load), values)
+    return _exponential_load_parts(data, load, PSY.get_alpha(load), values)
 end
 
 """
@@ -529,5 +529,5 @@ function exponential_load_reactive_parts(
     load::PSY.ExponentialLoad,
     values::AbstractVector{Float64},
 )
-    return _exponential_load_parts(data, load, PSY.get_β(load), values)
+    return _exponential_load_parts(data, load, PSY.get_beta(load), values)
 end

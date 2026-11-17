@@ -146,7 +146,7 @@ function _exponential_zip_slot(load::PSY.ExponentialLoad, exponent::Float64)
     end
     error(
         "ExponentialLoad $(PSY.get_name(load)) has voltage exponent $(exponent) " *
-        "(α = $(PSY.get_α(load)), β = $(PSY.get_β(load))); power flow supports only " *
+        "(α = $(PSY.get_alpha(load)), β = $(PSY.get_beta(load))); power flow supports only " *
         "0 (constant power), 1 (constant current) and 2 (constant impedance).",
     )
 end
@@ -175,7 +175,7 @@ _load_active_power_parts(
 _load_active_power_parts(::AbstractDCPowerFlow, l::PSY.ExponentialLoad) =
     (PSY.get_active_power(l, u"SU"), 0.0, 0.0)
 _load_active_power_parts(::PowerFlowEvaluationModel, l::PSY.ExponentialLoad) =
-    _exponential_zip_parts(l, PSY.get_α(l), PSY.get_active_power(l, u"SU"))
+    _exponential_zip_parts(l, PSY.get_alpha(l), PSY.get_active_power(l, u"SU"))
 function _load_active_power_parts(::PowerFlowEvaluationModel, l::PSY.ElectricLoad)
     if !(
         contributes_active_power(l) &&
@@ -200,7 +200,7 @@ _load_reactive_power_parts(
     PSY.get_impedance_reactive_power(l, u"SU"),
 )
 _load_reactive_power_parts(::PowerFlowEvaluationModel, l::PSY.ExponentialLoad) =
-    _exponential_zip_parts(l, PSY.get_β(l), PSY.get_reactive_power(l, u"SU"))
+    _exponential_zip_parts(l, PSY.get_beta(l), PSY.get_reactive_power(l, u"SU"))
 
 function _add_parts!(
     withdrawals::NTuple{3, Vector{Float64}},
@@ -411,9 +411,23 @@ function _set_bus_angles_and_magnitudes!(
             )
             bus_vm = BUS_VOLTAGE_MAGNITUDE_CUTOFF_MAX
         end
-        bus_magnitude[ix] = bus_vm
+        bus_magnitude[ix] = _scheduled_magnitude(
+            bus_type[ix], bus_vm, PSY.get_voltage_setpoint(bus),
+        )
     end
     return
+end
+
+# A PV or REF bus holds its `voltage_setpoint` when set; `magnitude` stays the initial guess
+# for the other buses and for buses without a setpoint.
+_scheduled_magnitude(::PSY.ACBusTypes.Value, vm::Float64, ::Nothing) = vm
+function _scheduled_magnitude(
+    bus_type::PSY.ACBusTypes.Value, vm::Float64, vset::Float64,
+)
+    if bus_type == PSY.ACBusTypes.PV || bus_type == PSY.ACBusTypes.REF
+        return vset
+    end
+    return vm
 end
 
 # ensures that we don't error/warn for PV vs PQ bus types in DC power flow.

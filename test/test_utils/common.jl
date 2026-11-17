@@ -209,6 +209,20 @@ function _check_name(sys::System, name::String, component_type::DataType)
     return name
 end
 
+"""An `ACBus` that no system holds, for a regulated bus that the network does not contain."""
+function _make_detached_bus(number::Int)
+    return ACBus(; input_basis = u"CU",
+        number = number,
+        name = "detached_bus_$number",
+        available = true,
+        bustype = ACBusTypes.PQ,
+        angle = 0.0,
+        magnitude = 1.0,
+        voltage_limits = (min = 0.0, max = 2.0),
+        base_voltage = 230.0,
+    )
+end
+
 """
     _add_simple_bus!(sys::System, number::Int, bus_type::ACBusTypes.Value, base_voltage::Number, voltage_magnitude::Float64=1.0, voltage_angle::Float64=0.0)
     Simplified function to create and add a bus to the system with the given parameters.
@@ -723,7 +737,7 @@ The ratio `tap` stays fixed. At α = 0 the from-bus flow is outside the target b
 `phase_angle_limits = ±30°`."""
 function _make_phase_shifter_system(;
     p_band = (min = 0.95, max = 1.05),
-    α = 0.0,
+    alpha = 0.0,
     tap = 1.05,
     circuit_base_power = 100.0,
 )
@@ -744,7 +758,7 @@ function _make_phase_shifter_system(;
             r = 0.01,
             x = 0.10,
             tap = tap,
-            α = α,
+            alpha = alpha,
             rating = 1.0,
             base_power = circuit_base_power,
             control_objective = PSY.TransformerControlObjective.ACTIVE_POWER_FLOW,
@@ -784,12 +798,12 @@ function _make_svc_system(;
         max_reactive_power = 100.0, input_basis = u"CU",
     )
     add_component!(sys, load2)
+    PSY.set_voltage_setpoint!(b2, 1.0)
     svc = FACTSControlDevice(;
         name = "svc_2",
         available = true,
         bus = b2,
         control_mode = control_mode,
-        voltage_setpoint = 1.0,
         reactive_power_required = 100.0, input_basis = u"CU",
     )
     # `max_shunt_current` is stored in device base; the constructor kwarg takes a raw CU
@@ -969,12 +983,12 @@ function _make_multiperiod_facts_system()
     _add_simple_source!(sys, b1, 0.0, 0.0)
     _add_simple_line!(sys, b1, b2, 0.01, 0.10, 0.0)
     _add_mp_load!(sys, b2, 0.2, 0.3)
+    PSY.set_voltage_setpoint!(b2, 1.0)
     svc = FACTSControlDevice(;
         name = "svc_2",
         available = true,
         bus = b2,
         control_mode = PSY.FACTSOperationModes.NML,
-        voltage_setpoint = 1.0,
         shunt_control_type = PSY.FACTSShuntControlType.SVC,
         reactive_power_required = 100.0, input_basis = u"CU",
     )
@@ -993,7 +1007,7 @@ end
 the PQ bus, for multiperiod discrete-control tests (reset-to-baseline tap design). Mirrors
 `_make_solvable_tap_shunt_system`'s impedance (r=0.01, x=0.10) and base load (0.5+j0.25) so
 the tap has full authority over bus 2; the explicit control fields (`tap_limits`,
-`number_of_tap_positions`, `regulated_bus_number`, `voltage_setpoint`) pin a fine tap grid
+`number_of_tap_positions`, `regulated_bus`, bus `voltage_setpoint`) pin a fine tap grid
 (31 positions over [0.85, 1.15]) so `_set_multiperiod_tap_loads!`'s per-step reactive-load
 scaling drives the required tap to a DIFFERENT discrete position at each time step."""
 function _make_multiperiod_tap_system()
@@ -1015,7 +1029,7 @@ function _make_multiperiod_tap_system()
             base_power = 100.0,
             tap_ratio_limits = (min = 0.85, max = 1.15),
             number_of_tap_positions = 31,
-            regulated_bus_number = 2,
+            regulated_bus = b2,
             controlled_voltage_limits = (min = 1.0, max = 1.0),
             control_objective = PSY.TransformerControlObjective.VOLTAGE,
             input_basis = u"CU",
@@ -1079,8 +1093,8 @@ function _make_shunt_snap_system()
 end
 
 """Build a 3-bus system with one voltage-controlling `TwoWindingTransformer` whose controllability is set
-through the FIRST-CLASS PSY fields (`tap_limits`, `number_of_tap_positions`, `regulated_bus_number`,
-`voltage_setpoint`) — no `ext` scrape — to exercise the post-#1684 builder path. The tap (b1→b2)
+through the FIRST-CLASS PSY fields (`tap_limits`, `number_of_tap_positions`, `regulated_bus`,
+bus `voltage_setpoint`) — no `ext` scrape — to exercise the post-#1684 builder path. The tap (b1→b2)
 remotely regulates b3."""
 function _make_field_controlled_tap_system()
     sys = System(100.0)
@@ -1101,7 +1115,8 @@ function _make_field_controlled_tap_system()
             base_power = 100.0,
             tap_ratio_limits = (min = 0.85, max = 1.15),
             number_of_tap_positions = 17,
-            regulated_bus_number = 3,
+            regulated_bus = b3,
+            regulated_bus_orientation = PSY.TransformerRegulationOrientation.TO,
             controlled_voltage_limits = (min = 1.02, max = 1.02),
             control_objective = PSY.TransformerControlObjective.VOLTAGE,
             input_basis = u"CU",
@@ -1132,12 +1147,12 @@ function _add_facts_shunt!(
     max_shunt_current::Float64 = 100.0,
 )
     b = get_bus(sys, bus_number)
+    PSY.set_voltage_setpoint!(b, voltage_setpoint)
     facts = FACTSControlDevice(;
         name = "facts_$bus_number",
         available = true,
         bus = b,
         control_mode = PSY.FACTSOperationModes.NML,
-        voltage_setpoint = voltage_setpoint,
         reactive_power_required = 100.0, input_basis = u"CU",
     )
     # `max_shunt_current` is stored in device base; the constructor kwarg takes a raw CU
@@ -1185,7 +1200,7 @@ exercising the from-side control orientation (the plant-sign probe must measure 
 opposite dV/dp sign to the usual to-side wiring).
 
 Topology: REF(1) ─line─ PQ(2) ─tap─ PQ(3); REF(1) ─line─ PQ(4).
-Bus 2 is both the FROM bus of the tap and the controlled bus (set via `regulated_bus_number`).
+Bus 2 is both the FROM bus of the tap and the controlled bus (set via `regulated_bus`).
 The tap has real authority over bus 2 voltage through the impedance seen by bus 2."""
 function _make_primary_controlled_tap_system()
     sys = System(100.0)
@@ -1215,7 +1230,7 @@ function _make_primary_controlled_tap_system()
             control_objective = PSY.TransformerControlObjective.VOLTAGE,
             tap_ratio_limits = (min = 0.9, max = 1.1),
             controlled_voltage_limits = (min = 1.0, max = 1.0),
-            regulated_bus_number = 2, input_basis = u"CU",  # controlled bus = bus 2 (FROM) → primary
+            regulated_bus = b2, input_basis = u"CU",  # controlled bus = bus 2 (FROM) → primary
         ), input_basis = u"CU",
     )
     add_component!(sys, tx)
@@ -1396,6 +1411,20 @@ const FD_PARITY_PARAMETERS = SolutionParameters(; tol = PF.DEFAULT_NR_TOL)
 # (DC slack), to = (P, Q) control. Extra `TwoTerminalVSCLine` fields pass through `vsc_kwargs...`
 # (last-wins, so callers may override the defaults below, e.g. capability limits).
 # `g` is the DC-line conductance in S and `rated_dc_voltage` the DC voltage base in kV.
+"""Put a VSC terminal's AC-voltage target on its bus `voltage_setpoint` (the line no longer
+stores it). `nothing` leaves the bus untouched."""
+function _set_vsc_ac_targets!(
+    from_bus, to_bus; ac_voltage_setpoint_from = nothing, ac_voltage_setpoint_to = nothing,
+)
+    if !isnothing(ac_voltage_setpoint_from)
+        PSY.set_voltage_setpoint!(from_bus, ac_voltage_setpoint_from)
+    end
+    if !isnothing(ac_voltage_setpoint_to)
+        PSY.set_voltage_setpoint!(to_bus, ac_voltage_setpoint_to)
+    end
+    return
+end
+
 function _build_vsc_pq_system(;
     g = 1 / 32.0,
     rated_dc_voltage = 400.0,
@@ -1406,6 +1435,8 @@ function _build_vsc_pq_system(;
     name = "vsc_i1",
     active_power_flow = p_set,
     set_system_base = false,
+    ac_voltage_setpoint_from = nothing,
+    ac_voltage_setpoint_to = nothing,
     vsc_kwargs...,
 )
     sys = deepcopy(PSB.build_system(PSB.PSITestSystems, "c_sys14"; add_forecasts = false))
@@ -1421,6 +1452,7 @@ function _build_vsc_pq_system(;
     )
     from_bus = pq[1]
     to_bus = pq[2]
+    _set_vsc_ac_targets!(from_bus, to_bus; ac_voltage_setpoint_from, ac_voltage_setpoint_to)
     arc = _get_or_make_arc(sys, from_bus, to_bus)
     vsc = PSY.TwoTerminalVSCLine(;
         name = name,

@@ -132,7 +132,6 @@ end
 # ─────────────────────────────────────────────────────────────────────────────
 println("Loading system: ", SYSTEM_NAME)
 const SYS = build_system(_system_group(SYSTEM_NAME), SYSTEM_NAME)
-PSY.set_units_base_system!(SYS, "SYSTEM_BASE")
 println("  buses    = ", length(PSY.get_components(PSY.Bus, SYS)))
 println("  branches = ", length(PSY.get_components(PSY.ACBranch, SYS)))
 println("  backends = ", join(available_backends(), ", "))

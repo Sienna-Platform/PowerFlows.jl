@@ -636,22 +636,22 @@ end
     end
 end
 
-@testset "PSSE Exporter FACTS: RMPCT blank, FCREG/REMOT from regulated_bus_number (v33/v35)" begin
+@testset "PSSE Exporter FACTS: RMPCT blank, FCREG/REMOT from remote_regulated_bus (v33/v35)" begin
     # `reactive_power_required` is a solver OUTPUT, not the PSS/E RMPCT input, and PSY models no
     # RMPCT, so the field is written blank — the exporter must not fall back to `ext`. FCREG/REMOT
-    # come from the first-class `regulated_bus_number` field.
+    # come from the first-class `remote_regulated_bus` field.
     sys = System(100.0)
     b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.0, 0.0)
     b7 = _add_simple_bus!(sys, 7, ACBusTypes.PQ, 230, 1.0, 0.0)
     _add_simple_source!(sys, b1, 0.0, 0.0)
     _add_simple_line!(sys, b1, b7, 0.01, 0.10, 0.0)
+    PSY.set_voltage_setpoint!(b7, 1.0)
     facts = PSY.FACTSControlDevice(;
         name = "facts_1",
         available = true,
         bus = b1,
         control_mode = PSY.FACTSOperationModes.NML,
-        voltage_setpoint = 1.0,
-        regulated_bus_number = 7,
+        remote_regulated_bus = b7,
         reactive_power_required = 42.0,  # solved output; must NOT be written as RMPCT
         ext = Dict{String, Any}("RMPCT" => 55.0), input_basis = u"CU",  # stale ext; the exporter must ignore it
     )
@@ -680,10 +680,10 @@ end
 
     sys2 = read_system_with_metadata(raw_path, metadata_path)
     facts2 = only(collect(PSY.get_components(PSY.FACTSControlDevice, sys2)))
-    @test PSY.get_regulated_bus_number(facts2) == 7
+    @test PSY.get_number(PSY.get_remote_regulated_bus(facts2)) == 7
 end
 
-@testset "PSSE Exporter: switched shunt control_mode/regulated_bus_number round-trip (v33)" begin
+@testset "PSSE Exporter: switched shunt control_mode/remote_regulated_bus round-trip (v33)" begin
     # MODSW/SWREM must survive export + reimport so parsed switched shunts keep
     # regulating instead of silently defaulting to FIXED (control_mode = 0).
     sys = System(100.0)
@@ -700,7 +700,7 @@ end
         Y_increase = [0.0 + 0.05im],
         voltage_limits = (min = 0.9, max = 1.1),
         control_mode = PSY.SwitchedAdmittanceControlMode.DISCRETE_VOLTAGE,
-        regulated_bus_number = 7,
+        remote_regulated_bus = b7,
     )
     PSY.add_component!(sys, shunt)
 
@@ -712,7 +712,7 @@ end
     sys2 = read_system_with_metadata(raw_path, metadata_path)
     shunt2 = only(collect(PSY.get_components(PSY.SwitchedAdmittance, sys2)))
     @test PSY.get_control_mode(shunt2) == PSY.SwitchedAdmittanceControlMode.DISCRETE_VOLTAGE
-    @test PSY.get_regulated_bus_number(shunt2) == 7
+    @test PSY.get_number(PSY.get_remote_regulated_bus(shunt2)) == 7
 end
 
 @testset "PSSE Exporter: v35 switched shunt Si is a 0/1 block status" begin

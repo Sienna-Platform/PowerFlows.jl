@@ -87,10 +87,6 @@ end
 function run_system(group, name, build_kwargs, extra_settings)
     println("\n=== $name ===")
     sys = PSB.build_system(group, name; build_kwargs...)
-    try
-        PSY.set_units_base_system!(sys, "SYSTEM_BASE")
-    catch
-    end
     for (fname, F) in FORMULATIONS, (sname, S) in SOLVERS
         settings = if F === ACPolarPowerFlow
             extra_settings

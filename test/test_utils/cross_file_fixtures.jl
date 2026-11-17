@@ -170,6 +170,7 @@ function build_lcc_control_system(; p_set_mw::Union{Nothing, Float64} = nothing)
             control_mode = PSY.SwitchedAdmittanceControlMode.DISCRETE_VOLTAGE,
         ),
     )
+    PSY.set_voltage_setpoint!(bus101, 1.06)
     add_component!(
         sys,
         FACTSControlDevice(;
@@ -177,11 +178,10 @@ function build_lcc_control_system(; p_set_mw::Union{Nothing, Float64} = nothing)
             available = true,
             bus = bus101,
             control_mode = PSY.FACTSOperationModes.NML,
-            voltage_setpoint = 1.06,
             max_shunt_current = 1000.0,
             max_reactive_power = 9999.0,
             shunt_control_type = PSY.FACTSShuntControlType.STATCOM,
-            regulated_bus_number = 0, input_basis = u"CU",
+            input_basis = u"CU",
         ),
     )
     if p_set_mw !== nothing
