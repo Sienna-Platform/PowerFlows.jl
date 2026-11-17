@@ -1,0 +1,638 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>Solving a Power Flow · PowerFlows.jl</title><meta name="title" content="Solving a Power Flow · PowerFlows.jl"/><meta property="og:title" content="Solving a Power Flow · PowerFlows.jl"/><meta property="twitter:title" content="Solving a Power Flow · PowerFlows.jl"/><meta name="description" content="Documentation for PowerFlows.jl."/><meta property="og:description" content="Documentation for PowerFlows.jl."/><meta property="twitter:description" content="Documentation for PowerFlows.jl."/><script data-outdated-warner src="../../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.050/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL="../.."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../../assets/documenter.js"></script><script src="../../search_index.js"></script><script src="../../siteinfo.js"></script><script src="../../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../../assets/themeswap.js"></script></head><body><div id="documenter"><nav class="docs-sidebar"><a class="docs-logo" href="../../"><img src="../../assets/logo.png" alt="PowerFlows.jl logo"/></a><div class="docs-package-name"><span class="docs-autofit"><a href="../../">PowerFlows.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../../">Welcome Page</a></li><li><span class="tocitem">Tutorials</span><ul><li class="is-active"><a class="tocitem" href>Solving a Power Flow</a><ul class="internal"><li><a class="tocitem" href="#Building-a-System"><span>Building a System</span></a></li><li><a class="tocitem" href="#DC-Power-Flow"><span>DC Power Flow</span></a></li><li><a class="tocitem" href="#PTDF-DC-Power-Flow"><span>PTDF DC Power Flow</span></a></li><li><a class="tocitem" href="#AC-Power-Flow"><span>AC Power Flow</span></a></li><li><a class="tocitem" href="#Fast-Decoupled-AC-Power-Flow"><span>Fast Decoupled AC Power Flow</span></a></li><li><a class="tocitem" href="#When-AC-Power-Flow-Fails"><span>When AC Power Flow Fails</span></a></li><li><a class="tocitem" href="#Next-Steps"><span>Next Steps</span></a></li></ul></li></ul></li><li><span class="tocitem">How-to-Guides</span><ul><li><a class="tocitem" href="../../how-tos/choose_ac_formulation_and_solver/">How to choose an AC formulation and solver</a></li></ul></li><li><span class="tocitem">Explanation</span><ul><li><a class="tocitem" href="../../explanation/models-and-solvers/">Evaluation Models vs. Solver Algorithms</a></li><li><a class="tocitem" href="../../explanation/mixed_cpb_formulation/">Mixed Current-Power Balance Formulation</a></li><li><a class="tocitem" href="../../explanation/fast_decoupled/">Fast/Fixed Decoupled Power Flow</a></li><li><a class="tocitem" href="../../explanation/lm_vs_gauss_seidel/">Levenberg-Marquardt vs Gauss-Seidel</a></li><li><a class="tocitem" href="../../explanation/folds_and_diagnostics/">Folds, Voltage Collapse, and Solver Diagnostics</a></li><li><a class="tocitem" href="../../explanation/lcc_model/">LCC Model Implementation</a></li></ul></li><li><span class="tocitem">Reference</span><ul><li><a class="tocitem" href="../../reference/api/public/">Public API Reference</a></li><li><a class="tocitem" href="../../reference/api/internal/">Internal API Reference - Core</a></li><li><a class="tocitem" href="../../reference/api/internal_solvers/">Internal API Reference - Solvers &amp; Utilities</a></li><li><input class="collapse-toggle" id="menuitem-5-4" type="checkbox"/><label class="tocitem" for="menuitem-5-4"><span class="docs-label">Code Base Developer Guide</span><i class="docs-chevron"></i></label><ul class="collapsed"><li><a class="tocitem" href="../../reference/developers/developer/">Guidelines</a></li><li><a class="tocitem" href="../../reference/developers/power_flow/">Power Flow Overview for Developers</a></li></ul></li></ul></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li><a class="is-disabled">Tutorials</a></li><li class="is-active"><a href>Solving a Power Flow</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>Solving a Power Flow</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/Sienna-Platform/PowerFlows.jl" title="View the repository on GitHub"><span class="docs-icon fa-brands"></span><span class="docs-label is-hidden-touch">GitHub</span></a><a class="docs-navbar-link" href="https://github.com/Sienna-Platform/PowerFlows.jl/blob/main/docs/src/tutorials/solving_a_power_flow.jl" title="Edit source on GitHub"><span class="docs-icon fa-solid"></span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><h1 id="Solving-a-Power-Flow"><a class="docs-heading-anchor" href="#Solving-a-Power-Flow">Solving a Power Flow</a><a id="Solving-a-Power-Flow-1"></a><a class="docs-heading-anchor-permalink" href="#Solving-a-Power-Flow" title="Permalink"></a></h1><p><em>To follow along, you can download this tutorial as a <a href="https://sienna-platform.github.io/PowerFlows.jl/v0.22.0/tutorials/solving_a_power_flow.jl">Julia script (.jl)</a> or <a href="https://sienna-platform.github.io/PowerFlows.jl/v0.22.0/tutorials/generated_solving_a_power_flow.ipynb">Jupyter notebook (.ipynb)</a>.</em></p><p>In this tutorial, you&#39;ll solve power flows on a 5-bus test system using three different solvers and compare their results.</p><h2 id="Building-a-System"><a class="docs-heading-anchor" href="#Building-a-System">Building a System</a><a id="Building-a-System-1"></a><a class="docs-heading-anchor-permalink" href="#Building-a-System" title="Permalink"></a></h2><p>To get started, load the needed packages.</p><pre><code class="language-julia hljs">using PowerSystemCaseBuilder
+using PowerFlows
+using PowerSystems</code></pre><p>Create a <a href="https://sienna-platform.github.io/PowerSystems.jl/stable/reference/public/#PowerSystems.System"><code>PowerSystems.System</code></a> from <a href="https://sienna-platform.github.io/PowerSystemCaseBuilder.jl/stable/reference/public/#PowerSystemCaseBuilder.build_system"><code>PowerSystemCaseBuilder.build_system</code></a>. We build the test system with <code>runchecks = false</code> to reduce REPL output:</p><pre><code class="language-julia hljs">sys = build_system(MatpowerTestSystems, &quot;matpower_case5_sys&quot;; runchecks = false)</code></pre><table>
+  <thead>
+    <tr class = "title">
+      <td colspan = "2" style = "font-size: x-large; font-weight: bold; text-align: center;">System</td>
+    </tr>
+    <tr class = "columnLabelRow">
+      <th style = "font-weight: bold; text-align: left;">Property</th>
+      <th style = "font-weight: bold; text-align: left;">Value</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr class = "dataRow">
+      <td style = "text-align: left;">Name</td>
+      <td style = "text-align: left;"></td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: left;">Description</td>
+      <td style = "text-align: left;"></td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: left;">System Units Base</td>
+      <td style = "text-align: left;">SYSTEM_BASE</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: left;">Base Power</td>
+      <td style = "text-align: left;">100.0</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: left;">Base Frequency</td>
+      <td style = "text-align: left;">60.0</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: left;">Num Components</td>
+      <td style = "text-align: left;">28</td>
+    </tr>
+  </tbody>
+</table>
+
+<table>
+  <thead>
+    <tr class = "title">
+      <td colspan = "2" style = "font-size: x-large; font-weight: bold; text-align: center;">Static Components</td>
+    </tr>
+    <tr class = "columnLabelRow">
+      <th style = "font-weight: bold; text-align: left;">Type</th>
+      <th style = "font-weight: bold; text-align: left;">Count</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr class = "dataRow">
+      <td style = "text-align: left;">ACBus</td>
+      <td style = "text-align: left;">5</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: left;">Arc</td>
+      <td style = "text-align: left;">6</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: left;">Area</td>
+      <td style = "text-align: left;">1</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: left;">Line</td>
+      <td style = "text-align: left;">5</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: left;">LoadZone</td>
+      <td style = "text-align: left;">1</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: left;">PhaseShiftingTransformer</td>
+      <td style = "text-align: left;">2</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: left;">PowerLoad</td>
+      <td style = "text-align: left;">3</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: left;">ThermalStandard</td>
+      <td style = "text-align: left;">5</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2 id="DC-Power-Flow"><a class="docs-heading-anchor" href="#DC-Power-Flow">DC Power Flow</a><a id="DC-Power-Flow-1"></a><a class="docs-heading-anchor-permalink" href="#DC-Power-Flow" title="Permalink"></a></h2><p><a href="../../reference/api/public/#PowerFlows.DCPowerFlow"><code>DCPowerFlow</code></a> solves for bus voltage angles using the bus admittance matrix, then computes branch flows from the angle differences. Create a <a href="../../reference/api/public/#PowerFlows.DCPowerFlow"><code>DCPowerFlow</code></a> solver:</p><pre><code class="language-julia hljs">pf_dc = DCPowerFlow()</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">DCPowerFlow(nothing, PowerNetworkMatrices.NetworkReduction[], 1, String[], false, false)</code></pre><p>Solve the power flow with <a href="../../reference/api/public/#PowerFlows.solve_power_flow-Tuple{Union{PowerFlows.PowerFlowData{DCPowerFlow, PowerNetworkMatrices.DC_ABA_Matrix_Factorized, PowerNetworkMatrices.DC_BA_Matrix}, PowerFlows.PowerFlowData{PTDFDCPowerFlow, PowerNetworkMatrices.DC_PTDF_Matrix, PowerNetworkMatrices.DC_ABA_Matrix_Factorized}, PowerFlows.PowerFlowData{vPTDFDCPowerFlow, &lt;:PowerNetworkMatrices.DC_vPTDF_Matrix, PowerNetworkMatrices.DC_ABA_Matrix_Factorized}}, System, FlowReporting}"><code>solve_power_flow</code></a>. For DC methods, pass a <a href="../../reference/api/public/#PowerFlows.FlowReportingModule.FlowReporting"><code>FlowReporting</code></a> mode so flows are reported on the same arc basis as elsewhere in the package:</p><pre><code class="language-julia hljs">dc_results = solve_power_flow(pf_dc, sys, FlowReporting.ARC_FLOWS)</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">Dict{String, Dict{String, DataFrame}} with 1 entry:
+  &quot;1&quot; =&gt; Dict(&quot;flow_results&quot;=&gt;<span class="sgr1">6×10 DataFrame</span>…</code></pre><p>The result is a <code>Dict{String, Dict{String, DataFrame}}</code>. The outer key is the time step name: <code>&quot;1&quot;</code>. The inner dictionary stores the power flow results at that time step: <code>&quot;bus_results&quot;</code> for bus data and <code>&quot;flow_results&quot;</code> for AC line data. (There is also a third key, <code>&quot;lcc_results&quot;</code>, for HVDC lines, but this system contains no such components, so the matching dataframe will be empty.) Inspect <code>&quot;bus_results&quot;</code>:</p><pre><code class="language-julia hljs">dc_results[&quot;1&quot;][&quot;bus_results&quot;]</code></pre><table>
+  <thead>
+    <tr class = "columnLabelRow">
+      <th style = "font-weight: bold; text-align: right;">bus_number</th>
+      <th style = "font-weight: bold; text-align: right;">Vm</th>
+      <th style = "font-weight: bold; text-align: right;">θ</th>
+      <th style = "font-weight: bold; text-align: right;">P_gen</th>
+      <th style = "font-weight: bold; text-align: right;">P_load</th>
+      <th style = "font-weight: bold; text-align: right;">P_net</th>
+      <th style = "font-weight: bold; text-align: right;">Q_gen</th>
+      <th style = "font-weight: bold; text-align: right;">Q_load</th>
+      <th style = "font-weight: bold; text-align: right;">Q_net</th>
+    </tr>
+    <tr class = "columnLabelRow">
+      <th style = "text-align: right;">Int64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">1</td>
+      <td style = "text-align: right;">1.0</td>
+      <td style = "text-align: right;">0.05813712342707429</td>
+      <td style = "text-align: right;">210.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">210.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.0</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">2</td>
+      <td style = "text-align: right;">1.0</td>
+      <td style = "text-align: right;">-0.010697105096729564</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">300.0</td>
+      <td style = "text-align: right;">-300.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.0</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">3</td>
+      <td style = "text-align: right;">1.0</td>
+      <td style = "text-align: right;">-0.004752965105551588</td>
+      <td style = "text-align: right;">324.498</td>
+      <td style = "text-align: right;">300.0</td>
+      <td style = "text-align: right;">24.497999999999998</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.0</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">4</td>
+      <td style = "text-align: right;">1.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">400.0</td>
+      <td style = "text-align: right;">-400.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.0</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">10</td>
+      <td style = "text-align: right;">1.0</td>
+      <td style = "text-align: right;">0.07261406474007273</td>
+      <td style = "text-align: right;">470.694</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">470.694</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.0</td>
+    </tr>
+  </tbody>
+</table>
+<p>Notice that <code>Vm</code> (voltage magnitude) is 1.0 for all buses, and <code>Q_gen</code> and <code>Q_load</code> are 0. This is expected for DC power flow, which assumes flat voltage magnitudes and ignores reactive power.</p><pre><code class="language-julia hljs">dc_results[&quot;1&quot;][&quot;flow_results&quot;]</code></pre><table>
+  <thead>
+    <tr class = "columnLabelRow">
+      <th style = "font-weight: bold; text-align: right;">flow_name</th>
+      <th style = "font-weight: bold; text-align: right;">bus_from</th>
+      <th style = "font-weight: bold; text-align: right;">bus_to</th>
+      <th style = "font-weight: bold; text-align: right;">P_from_to</th>
+      <th style = "font-weight: bold; text-align: right;">Q_from_to</th>
+      <th style = "font-weight: bold; text-align: right;">P_to_from</th>
+      <th style = "font-weight: bold; text-align: right;">Q_to_from</th>
+      <th style = "font-weight: bold; text-align: right;">P_losses</th>
+      <th style = "font-weight: bold; text-align: right;">Q_losses</th>
+      <th style = "font-weight: bold; text-align: right;">angle_difference</th>
+    </tr>
+    <tr class = "columnLabelRow">
+      <th style = "text-align: right;">String</th>
+      <th style = "text-align: right;">Int64</th>
+      <th style = "text-align: right;">Int64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">1-2</td>
+      <td style = "text-align: right;">1</td>
+      <td style = "text-align: right;">2</td>
+      <td style = "text-align: right;">244.9616680920614</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">-244.9616680920614</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">1.6861747492479113</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.06883422852380386</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">1-4</td>
+      <td style = "text-align: right;">1</td>
+      <td style = "text-align: right;">4</td>
+      <td style = "text-align: right;">191.2405399235394</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">-191.2405399235394</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">1.1118175009515048</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.05813712342707429</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">1-10</td>
+      <td style = "text-align: right;">1</td>
+      <td style = "text-align: right;">10</td>
+      <td style = "text-align: right;">-226.20220801560063</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">226.20220801560063</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.32747160903125155</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">-0.01447694131299844</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">2-3</td>
+      <td style = "text-align: right;">2</td>
+      <td style = "text-align: right;">3</td>
+      <td style = "text-align: right;">-55.03833190793862</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">55.03833190793862</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.03271555417545088</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">-0.005944139991177976</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">3-4</td>
+      <td style = "text-align: right;">3</td>
+      <td style = "text-align: right;">4</td>
+      <td style = "text-align: right;">-30.5403319079386</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">30.5403319079386</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.03054095074902095</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">-0.004752965105551588</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">4-10</td>
+      <td style = "text-align: right;">4</td>
+      <td style = "text-align: right;">10</td>
+      <td style = "text-align: right;">-244.49179198439933</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">244.49179198439933</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">1.7753542195279608</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">-0.07261406474007273</td>
+    </tr>
+  </tbody>
+</table>
+<p>Likewise, <code>Q_from_to</code> and <code>Q_to_from</code> (reactive power flow on the line) are zero, for all lines.</p><h2 id="PTDF-DC-Power-Flow"><a class="docs-heading-anchor" href="#PTDF-DC-Power-Flow">PTDF DC Power Flow</a><a id="PTDF-DC-Power-Flow-1"></a><a class="docs-heading-anchor-permalink" href="#PTDF-DC-Power-Flow" title="Permalink"></a></h2><p><a href="../../reference/api/public/#PowerFlows.PTDFDCPowerFlow"><code>PTDFDCPowerFlow</code></a> computes branch flows directly from bus power injections using the Power Transfer Distribution Factor matrix, without solving for voltage angles as an intermediate step. (This means we can omit the angle computation in contexts where we only care about line flows, though we don&#39;t have that option implemented here.) Create a <a href="../../reference/api/public/#PowerFlows.PTDFDCPowerFlow"><code>PTDFDCPowerFlow</code></a> solver:</p><pre><code class="language-julia hljs">pf_ptdf = PTDFDCPowerFlow()</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">PTDFDCPowerFlow(nothing, false, PowerNetworkMatrices.NetworkReduction[], 1, String[], false)</code></pre><p>As before, solve the power flow with <a href="../../reference/api/public/#PowerFlows.solve_power_flow-Tuple{Union{PowerFlows.PowerFlowData{DCPowerFlow, PowerNetworkMatrices.DC_ABA_Matrix_Factorized, PowerNetworkMatrices.DC_BA_Matrix}, PowerFlows.PowerFlowData{PTDFDCPowerFlow, PowerNetworkMatrices.DC_PTDF_Matrix, PowerNetworkMatrices.DC_ABA_Matrix_Factorized}, PowerFlows.PowerFlowData{vPTDFDCPowerFlow, &lt;:PowerNetworkMatrices.DC_vPTDF_Matrix, PowerNetworkMatrices.DC_ABA_Matrix_Factorized}}, System, FlowReporting}"><code>solve_power_flow</code></a>:</p><pre><code class="language-julia hljs">ptdf_results = solve_power_flow(pf_ptdf, sys, FlowReporting.ARC_FLOWS)</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">Dict{String, Dict{String, DataFrame}} with 1 entry:
+  &quot;1&quot; =&gt; Dict(&quot;flow_results&quot;=&gt;<span class="sgr1">6×10 DataFrame</span>…</code></pre><p>Look at the bus results:</p><pre><code class="language-julia hljs">ptdf_results[&quot;1&quot;][&quot;bus_results&quot;]</code></pre><table>
+  <thead>
+    <tr class = "columnLabelRow">
+      <th style = "font-weight: bold; text-align: right;">bus_number</th>
+      <th style = "font-weight: bold; text-align: right;">Vm</th>
+      <th style = "font-weight: bold; text-align: right;">θ</th>
+      <th style = "font-weight: bold; text-align: right;">P_gen</th>
+      <th style = "font-weight: bold; text-align: right;">P_load</th>
+      <th style = "font-weight: bold; text-align: right;">P_net</th>
+      <th style = "font-weight: bold; text-align: right;">Q_gen</th>
+      <th style = "font-weight: bold; text-align: right;">Q_load</th>
+      <th style = "font-weight: bold; text-align: right;">Q_net</th>
+    </tr>
+    <tr class = "columnLabelRow">
+      <th style = "text-align: right;">Int64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">1</td>
+      <td style = "text-align: right;">1.0</td>
+      <td style = "text-align: right;">0.05813712342707429</td>
+      <td style = "text-align: right;">210.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">210.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.0</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">2</td>
+      <td style = "text-align: right;">1.0</td>
+      <td style = "text-align: right;">-0.010697105096729564</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">300.0</td>
+      <td style = "text-align: right;">-300.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.0</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">3</td>
+      <td style = "text-align: right;">1.0</td>
+      <td style = "text-align: right;">-0.004752965105551588</td>
+      <td style = "text-align: right;">324.498</td>
+      <td style = "text-align: right;">300.0</td>
+      <td style = "text-align: right;">24.497999999999998</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.0</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">4</td>
+      <td style = "text-align: right;">1.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">400.0</td>
+      <td style = "text-align: right;">-400.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.0</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">10</td>
+      <td style = "text-align: right;">1.0</td>
+      <td style = "text-align: right;">0.07261406474007273</td>
+      <td style = "text-align: right;">470.694</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">470.694</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">0.0</td>
+    </tr>
+  </tbody>
+</table>
+<p>The results match <code>DCPowerFlow</code>, as they should: the two are mathematically equivalent. For very large systems where forming the full PTDF matrix would be too expensive, consider <a href="../../reference/api/public/#PowerFlows.vPTDFDCPowerFlow"><code>vPTDFDCPowerFlow</code></a>, which computes the same results without storing the dense matrix.</p><h2 id="AC-Power-Flow"><a class="docs-heading-anchor" href="#AC-Power-Flow">AC Power Flow</a><a id="AC-Power-Flow-1"></a><a class="docs-heading-anchor-permalink" href="#AC-Power-Flow" title="Permalink"></a></h2><p>Create an <a href="../../reference/api/public/#PowerFlows.ACPowerFlow"><code>ACPowerFlow</code></a> solver:</p><pre><code class="language-julia hljs">pf_ac = ACPowerFlow()</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">ACPolarPowerFlow{NewtonRaphsonACPowerFlow}(false, nothing, false, false, false, nothing, true, false, false, false, PowerNetworkMatrices.NetworkReduction[], 1, String[], false, Dict{Symbol, Any}())</code></pre><p>Solve the power flow:</p><pre><code class="language-julia hljs">ac_results = solve_power_flow(pf_ac, sys)</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">Dict{String, DataFrame} with 3 entries:
+  &quot;flow_results&quot; =&gt; <span class="sgr1">6×10 DataFrame</span>…
+  &quot;bus_results&quot;  =&gt; <span class="sgr1">5×9 DataFrame</span>…
+  &quot;lcc_results&quot;  =&gt; <span class="sgr1">0×13 DataFrame</span>…</code></pre><p>AC results are returned as a flat <code>Dict{String, DataFrame}</code>, with the same keys as before: <code>&quot;bus_results&quot;</code>, <code>&quot;flow_results&quot;</code> (AC lines), and <code>&quot;lcc_results&quot;</code> (HVDC lines). (We don&#39;t support multi-period AC power flows yet.) Look at the bus results:</p><pre><code class="language-julia hljs">ac_results[&quot;bus_results&quot;]</code></pre><table>
+  <thead>
+    <tr class = "columnLabelRow">
+      <th style = "font-weight: bold; text-align: right;">bus_number</th>
+      <th style = "font-weight: bold; text-align: right;">Vm</th>
+      <th style = "font-weight: bold; text-align: right;">θ</th>
+      <th style = "font-weight: bold; text-align: right;">P_gen</th>
+      <th style = "font-weight: bold; text-align: right;">P_load</th>
+      <th style = "font-weight: bold; text-align: right;">P_net</th>
+      <th style = "font-weight: bold; text-align: right;">Q_gen</th>
+      <th style = "font-weight: bold; text-align: right;">Q_load</th>
+      <th style = "font-weight: bold; text-align: right;">Q_net</th>
+    </tr>
+    <tr class = "columnLabelRow">
+      <th style = "text-align: right;">Int64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">1</td>
+      <td style = "text-align: right;">1.07762</td>
+      <td style = "text-align: right;">0.05377973212862824</td>
+      <td style = "text-align: right;">210.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">210.0</td>
+      <td style = "text-align: right;">155.86199106764073</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">155.86199106764073</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">2</td>
+      <td style = "text-align: right;">1.0841946221315348</td>
+      <td style = "text-align: right;">8.152349463538256e-5</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">300.0</td>
+      <td style = "text-align: right;">-300.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">98.61</td>
+      <td style = "text-align: right;">-98.61</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">3</td>
+      <td style = "text-align: right;">1.1</td>
+      <td style = "text-align: right;">0.006160589908746271</td>
+      <td style = "text-align: right;">324.498</td>
+      <td style = "text-align: right;">300.0</td>
+      <td style = "text-align: right;">24.497999999999998</td>
+      <td style = "text-align: right;">518.182149466319</td>
+      <td style = "text-align: right;">98.61</td>
+      <td style = "text-align: right;">419.57214946631893</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">4</td>
+      <td style = "text-align: right;">1.06414</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">2.2015611506636112</td>
+      <td style = "text-align: right;">400.0</td>
+      <td style = "text-align: right;">-397.7984388493364</td>
+      <td style = "text-align: right;">-116.00444489674346</td>
+      <td style = "text-align: right;">131.47</td>
+      <td style = "text-align: right;">-247.47444489674345</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">10</td>
+      <td style = "text-align: right;">1.06907</td>
+      <td style = "text-align: right;">0.06665597012564134</td>
+      <td style = "text-align: right;">470.694</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">470.694</td>
+      <td style = "text-align: right;">-164.31698920802899</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">-164.31698920802899</td>
+    </tr>
+  </tbody>
+</table>
+<p>Notice that <code>Vm</code> now varies across buses (not all 1.0), and <code>Q_gen</code> has non-zero values.</p><p>Look at the line flows:</p><pre><code class="language-julia hljs">ac_results[&quot;flow_results&quot;]</code></pre><table>
+  <thead>
+    <tr class = "columnLabelRow">
+      <th style = "font-weight: bold; text-align: right;">flow_name</th>
+      <th style = "font-weight: bold; text-align: right;">bus_from</th>
+      <th style = "font-weight: bold; text-align: right;">bus_to</th>
+      <th style = "font-weight: bold; text-align: right;">P_from_to</th>
+      <th style = "font-weight: bold; text-align: right;">Q_from_to</th>
+      <th style = "font-weight: bold; text-align: right;">P_to_from</th>
+      <th style = "font-weight: bold; text-align: right;">Q_to_from</th>
+      <th style = "font-weight: bold; text-align: right;">P_losses</th>
+      <th style = "font-weight: bold; text-align: right;">Q_losses</th>
+      <th style = "font-weight: bold; text-align: right;">angle_difference</th>
+    </tr>
+    <tr class = "columnLabelRow">
+      <th style = "text-align: right;">String</th>
+      <th style = "text-align: right;">Int64</th>
+      <th style = "text-align: right;">Int64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">1-2</td>
+      <td style = "text-align: right;">1</td>
+      <td style = "text-align: right;">2</td>
+      <td style = "text-align: right;">219.04815651765563</td>
+      <td style = "text-align: right;">-41.538343627190756</td>
+      <td style = "text-align: right;">-217.84617277462783</td>
+      <td style = "text-align: right;">52.726508142521936</td>
+      <td style = "text-align: right;">1.2019837430278013</td>
+      <td style = "text-align: right;">11.188164515331177</td>
+      <td style = "text-align: right;">0.053698208633992855</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">1-4</td>
+      <td style = "text-align: right;">1</td>
+      <td style = "text-align: right;">4</td>
+      <td style = "text-align: right;">206.03176235568074</td>
+      <td style = "text-align: right;">32.25263490048205</td>
+      <td style = "text-align: right;">-204.89263500836265</td>
+      <td style = "text-align: right;">-21.615578151334624</td>
+      <td style = "text-align: right;">1.139127347318114</td>
+      <td style = "text-align: right;">10.637056749147423</td>
+      <td style = "text-align: right;">0.05377973212862824</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">1-10</td>
+      <td style = "text-align: right;">1</td>
+      <td style = "text-align: right;">10</td>
+      <td style = "text-align: right;">-215.0798358132005</td>
+      <td style = "text-align: right;">165.14902875652393</td>
+      <td style = "text-align: right;">215.48841730273134</td>
+      <td style = "text-align: right;">-164.66348802499908</td>
+      <td style = "text-align: right;">0.40858148953084594</td>
+      <td style = "text-align: right;">0.4855407315248472</td>
+      <td style = "text-align: right;">-0.012876237997013103</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">2-3</td>
+      <td style = "text-align: right;">2</td>
+      <td style = "text-align: right;">3</td>
+      <td style = "text-align: right;">-82.153855250951</td>
+      <td style = "text-align: right;">-151.33695655178607</td>
+      <td style = "text-align: right;">82.4232748938078</td>
+      <td style = "text-align: right;">151.82170300927572</td>
+      <td style = "text-align: right;">0.2694196428567941</td>
+      <td style = "text-align: right;">0.4847464574896376</td>
+      <td style = "text-align: right;">-0.006079066414110889</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">3-4</td>
+      <td style = "text-align: right;">3</td>
+      <td style = "text-align: right;">4</td>
+      <td style = "text-align: right;">-57.925274893807945</td>
+      <td style = "text-align: right;">267.75044645704486</td>
+      <td style = "text-align: right;">60.60738862294479</td>
+      <td style = "text-align: right;">-241.67008678435033</td>
+      <td style = "text-align: right;">2.682113729136848</td>
+      <td style = "text-align: right;">26.08035967269453</td>
+      <td style = "text-align: right;">0.006160589908746271</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">4-10</td>
+      <td style = "text-align: right;">4</td>
+      <td style = "text-align: right;">10</td>
+      <td style = "text-align: right;">-253.51319246391864</td>
+      <td style = "text-align: right;">15.812083986954987</td>
+      <td style = "text-align: right;">255.20569169372328</td>
+      <td style = "text-align: right;">0.3464988169711386</td>
+      <td style = "text-align: right;">1.6924992298046337</td>
+      <td style = "text-align: right;">16.158582803926123</td>
+      <td style = "text-align: right;">-0.06665597012564134</td>
+    </tr>
+  </tbody>
+</table>
+<p><code>Q_from_to</code> and <code>Q_to_from</code> now show reactive power flows, and <code>P_from_to</code> differs from <code>P_to_from</code> due to losses.</p><h2 id="Fast-Decoupled-AC-Power-Flow"><a class="docs-heading-anchor" href="#Fast-Decoupled-AC-Power-Flow">Fast Decoupled AC Power Flow</a><a id="Fast-Decoupled-AC-Power-Flow-1"></a><a class="docs-heading-anchor-permalink" href="#Fast-Decoupled-AC-Power-Flow" title="Permalink"></a></h2><p>The solver is an independent type parameter of the AC power flow. <a href="../../reference/api/public/#PowerFlows.ACPowerFlow"><code>ACPowerFlow</code></a><code>()</code> above used the default <a href="../../reference/api/public/#PowerFlows.NewtonRaphsonACPowerFlow"><code>NewtonRaphsonACPowerFlow</code></a> solver, which refactorizes the Jacobian every iteration. <a href="../../reference/api/public/#PowerFlows.FastDecoupledACPowerFlow"><code>FastDecoupledACPowerFlow</code></a> instead builds constant approximate Jacobian matrices (<span>$B&#39;$</span>/<span>$B&#39;&#39;$</span>) <strong>once</strong> and reuses them across all iterations and time steps — the fast decoupled power flow of Stott &amp; Alsac, equivalent to PSS/E&#39;s <code>FDNS</code>. It converges at a linear rate but at a fraction of the per-iteration cost, which makes it well suited to repeated solves (multi-period dispatch, contingency screening). Select it as a solver type parameter:</p><pre><code class="language-julia hljs">pf_fd = ACPowerFlow{FastDecoupledACPowerFlow}()</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">ACPolarPowerFlow{FastDecoupledACPowerFlow}(false, nothing, false, false, false, nothing, true, false, false, false, PowerNetworkMatrices.NetworkReduction[], 1, String[], false, Dict{Symbol, Any}())</code></pre><p>Solve it the same way as any other AC solver:</p><pre><code class="language-julia hljs">fd_results = solve_power_flow(pf_fd, sys)</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">Dict{String, DataFrame} with 3 entries:
+  &quot;flow_results&quot; =&gt; <span class="sgr1">6×10 DataFrame</span>…
+  &quot;bus_results&quot;  =&gt; <span class="sgr1">5×9 DataFrame</span>…
+  &quot;lcc_results&quot;  =&gt; <span class="sgr1">0×13 DataFrame</span>…</code></pre><p>The converged solution is identical to the Newton-Raphson result to tolerance: fast decoupled evaluates the <em>exact</em> mismatches every iteration, so only the convergence <em>rate</em> differs, never the solution. Compare the bus results:</p><pre><code class="language-julia hljs">fd_results[&quot;bus_results&quot;]</code></pre><table>
+  <thead>
+    <tr class = "columnLabelRow">
+      <th style = "font-weight: bold; text-align: right;">bus_number</th>
+      <th style = "font-weight: bold; text-align: right;">Vm</th>
+      <th style = "font-weight: bold; text-align: right;">θ</th>
+      <th style = "font-weight: bold; text-align: right;">P_gen</th>
+      <th style = "font-weight: bold; text-align: right;">P_load</th>
+      <th style = "font-weight: bold; text-align: right;">P_net</th>
+      <th style = "font-weight: bold; text-align: right;">Q_gen</th>
+      <th style = "font-weight: bold; text-align: right;">Q_load</th>
+      <th style = "font-weight: bold; text-align: right;">Q_net</th>
+    </tr>
+    <tr class = "columnLabelRow">
+      <th style = "text-align: right;">Int64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+      <th style = "text-align: right;">Float64</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">1</td>
+      <td style = "text-align: right;">1.07762</td>
+      <td style = "text-align: right;">0.0537797321284554</td>
+      <td style = "text-align: right;">210.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">210.0</td>
+      <td style = "text-align: right;">155.86199106421645</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">155.86199106421645</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">2</td>
+      <td style = "text-align: right;">1.0841946221314525</td>
+      <td style = "text-align: right;">8.152349384123624e-5</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">300.0</td>
+      <td style = "text-align: right;">-300.0</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">98.61</td>
+      <td style = "text-align: right;">-98.61</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">3</td>
+      <td style = "text-align: right;">1.1</td>
+      <td style = "text-align: right;">0.0061605899086595835</td>
+      <td style = "text-align: right;">324.498</td>
+      <td style = "text-align: right;">300.0</td>
+      <td style = "text-align: right;">24.497999999999998</td>
+      <td style = "text-align: right;">518.1821494566158</td>
+      <td style = "text-align: right;">98.61</td>
+      <td style = "text-align: right;">419.57214945661576</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">4</td>
+      <td style = "text-align: right;">1.06414</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">2.2015611506695176</td>
+      <td style = "text-align: right;">400.0</td>
+      <td style = "text-align: right;">-397.79843884933047</td>
+      <td style = "text-align: right;">-116.00444489698154</td>
+      <td style = "text-align: right;">131.47</td>
+      <td style = "text-align: right;">-247.47444489698154</td>
+    </tr>
+    <tr class = "dataRow">
+      <td style = "text-align: right;">10</td>
+      <td style = "text-align: right;">1.06907</td>
+      <td style = "text-align: right;">0.06665597012550893</td>
+      <td style = "text-align: right;">470.694</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">470.694</td>
+      <td style = "text-align: right;">-164.31698920807207</td>
+      <td style = "text-align: right;">0.0</td>
+      <td style = "text-align: right;">-164.31698920807207</td>
+    </tr>
+  </tbody>
+</table>
+<h3 id="Handoff-to-Newton-Raphson"><a class="docs-heading-anchor" href="#Handoff-to-Newton-Raphson">Handoff to Newton-Raphson</a><a id="Handoff-to-Newton-Raphson-1"></a><a class="docs-heading-anchor-permalink" href="#Handoff-to-Newton-Raphson" title="Permalink"></a></h3><p>Because the fast decoupled state is a valid iterate of the exact residual, it is also a good warm start for an exact-Newton solver. You can optionally run the cheap fast decoupled stage to a looser tolerance, then hand off to <a href="../../reference/api/public/#PowerFlows.NewtonRaphsonACPowerFlow"><code>NewtonRaphsonACPowerFlow</code></a> for final refinement, via <code>solver_settings</code>:</p><pre><code class="language-julia hljs">pf_handoff = ACPowerFlow{FastDecoupledACPowerFlow}(;
+    solver_settings = Dict(:handoff_solver =&gt; NewtonRaphsonACPowerFlow),
+)
+handoff_results = solve_power_flow(pf_handoff, sys)</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">Dict{String, DataFrame} with 3 entries:
+  &quot;flow_results&quot; =&gt; <span class="sgr1">6×10 DataFrame</span>…
+  &quot;bus_results&quot;  =&gt; <span class="sgr1">5×9 DataFrame</span>…
+  &quot;lcc_results&quot;  =&gt; <span class="sgr1">0×13 DataFrame</span>…</code></pre><p>This staging — fast decoupled as a cheap conditioner, Newton-Raphson as the closer — mirrors commercial practice. For the underlying math (<span>$B&#39;$</span>/<span>$B&#39;&#39;$</span>, the XB/BX schemes, the fixed-Jacobian variant, and a solver guidance table), see <a href="../../explanation/fast_decoupled/#Fast/Fixed-Decoupled-Power-Flow">Fast/Fixed Decoupled Power Flow</a>.</p><h2 id="When-AC-Power-Flow-Fails"><a class="docs-heading-anchor" href="#When-AC-Power-Flow-Fails">When AC Power Flow Fails</a><a id="When-AC-Power-Flow-Fails-1"></a><a class="docs-heading-anchor-permalink" href="#When-AC-Power-Flow-Fails" title="Permalink"></a></h2><p>Unlike DC power flow, AC power flow is iterative and not guaranteed to converge. Systems with high impedance lines, poor initial voltage profiles, or insufficient reactive power support can cause the solver to fail. When this happens, <code>solve_power_flow</code> returns <code>missing</code>: you&#39;ll also see a logged error. If you encounter convergence failures, consider using a more robust solver such as <a href="../../reference/api/public/#PowerFlows.TrustRegionACPowerFlow"><code>TrustRegionACPowerFlow</code></a> or <a href="../../reference/api/public/#PowerFlows.RobustHomotopyPowerFlow"><code>RobustHomotopyPowerFlow</code></a>.</p><h2 id="Next-Steps"><a class="docs-heading-anchor" href="#Next-Steps">Next Steps</a><a id="Next-Steps-1"></a><a class="docs-heading-anchor-permalink" href="#Next-Steps" title="Permalink"></a></h2><ul><li>Compare AC formulations and solvers at scale in <a href="../../how-tos/choose_ac_formulation_and_solver/#choose-ac-formulation-and-solver">How to choose an AC formulation and solver</a>.</li><li>Read <a href="../../explanation/models-and-solvers/#Evaluation-Models-vs.-Solver-Algorithms">Evaluation Models vs. Solver Algorithms</a> for the distinction between evaluation models and iterative solvers (polar, rectangular, and mixed).</li><li>For the mixed current–power balance formulation, see <a href="../../explanation/mixed_cpb_formulation/#Mixed-Current-Power-Balance-Formulation">Mixed Current-Power Balance Formulation</a>.</li><li>For the fast/fixed decoupled solver, see <a href="../../explanation/fast_decoupled/#Fast/Fixed-Decoupled-Power-Flow">Fast/Fixed Decoupled Power Flow</a>.</li></ul></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../../">« Welcome Page</a><a class="docs-footer-nextpage" href="../../how-tos/choose_ac_formulation_and_solver/">How to choose an AC formulation and solver »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.17.0 on <span class="colophon-date" title="Tuesday 23 June 2026 05:43">Tuesday 23 June 2026</span>. Using Julia version 1.12.6.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
