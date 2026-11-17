@@ -62,7 +62,7 @@ end
     exporter = PSSEExporter(sys, :v33, dir)
     write_export(exporter, "compensated"; overwrite = true)
     raw_path, metadata_path = get_psse_export_paths(joinpath(dir, "compensated"))
-    sys2 = PSY.System(raw_path, Dict(JSON3.read(metadata_path, Dict)))
+    sys2 = PSY.System(raw_path, Dict(JSON3.read(read(metadata_path, String), Dict)))
     compensator = only(PSY.get_components(PSY.SeriesCompensator, sys2))
     @test !PSY.get_bypassed(compensator)
     @test PSY.get_x(compensator, u"SU") ≈ PSY.get_x(
