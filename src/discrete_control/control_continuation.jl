@@ -759,9 +759,10 @@ function _control_continuation!(
     # reported by `get_controlled_device_results` and written back to PSY). The voltage is the
     # final one from `snap_and_restore!`, but `b_lim` and `current` come from the last
     # regulation pass, before the snap. The snap solve can move voltage after that pass, so the
-    # bound can be slightly stale.
+    # bound can be slightly stale. A failed solve leaves no valid voltage, so its devices are
+    # not saturated.
     for d in set.facts
-        classify_facts_saturation!(d, measured_value(d, data, ts))
+        d.saturated = ok && classify_facts_saturation!(d, measured_value(d, data, ts))
     end
     # Reported branch flows are computed from the arc-admittance matrices right after
     # this time step in `solve_power_flow!`; bring the moved branch devices' rows in
