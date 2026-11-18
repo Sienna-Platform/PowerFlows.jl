@@ -390,7 +390,7 @@ end
 function read_system_with_metadata(raw_path, metadata_path)
     # PSCB's re-import constructor requires a concrete Dict, while JSON3 can
     # return a JSON.Object when reading directly from a metadata file path.
-    md = Dict(JSON3.read(metadata_path, Dict))
+    md = Dict(JSON3.read(read(metadata_path, String), Dict))
     sys = System(raw_path, md)
     return sys
 end
@@ -454,8 +454,8 @@ function test_psse_export_strict_equality(
     exclude_metadata_keys = ["case_name"],
     exclude_export_settings_keys = ["original_name"],
 )
-    parsed1 = JSON3.read(metadata1, Dict)
-    parsed2 = JSON3.read(metadata2, Dict)
+    parsed1 = JSON3.read(read(metadata1, String), Dict)
+    parsed2 = JSON3.read(read(metadata2, String), Dict)
     case_name1 = parsed1["case_name"]
     case_name2 = parsed2["case_name"]
 
@@ -819,7 +819,7 @@ end
     @test isfile(raw_path)
     @test isfile(metadata_path)
 
-    md = JSON3.read(metadata_path, Dict)
+    md = JSON3.read(read(metadata_path, String), Dict)
     transformer_ckt_mapping = md["transformer_ckt_mapping"]
     branch_name_mapping = md["branch_name_mapping"]
 
@@ -904,7 +904,7 @@ end
     @test isfile(raw_path)
     @test isfile(metadata_path)
 
-    md = JSON3.read(metadata_path, Dict)
+    md = JSON3.read(read(metadata_path, String), Dict)
     branch_name_mapping = md["branch_name_mapping"]
     bus_number_mapping = md["bus_number_mapping"]
     I = bus_number_mapping["1"]
@@ -944,7 +944,7 @@ end
     @test isfile(raw_path)
     @test isfile(metadata_path)
 
-    md = JSON3.read(metadata_path, Dict)
+    md = JSON3.read(read(metadata_path, String), Dict)
     @test isempty(md["branch_name_mapping"])
 end
 

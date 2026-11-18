@@ -1662,6 +1662,38 @@ end
     @test f.saturated || abs(vmag - f.vset) <= PowerFlows.CONTROL_FACTS_SETPOINT_BAND
 end
 
+@testset "discrete control: a failed solve does not report FACTS saturation" begin
+    # Without the switched shunt, a 50 MVA STATCOM cannot hold the heavy Q load, so the
+    # Q-limited solve fails and leaves NaN voltages.
+    sys = System(100.0)
+    b1 = _add_simple_bus!(sys, 1, ACBusTypes.REF, 230, 1.0, 0.0)
+    b2 = _add_simple_bus!(sys, 2, ACBusTypes.PV, 230, 1.0, 0.0)
+    b3 = _add_simple_bus!(sys, 3, ACBusTypes.PQ, 230, 1.0, 0.0)
+    _add_simple_source!(sys, b1, 0.0, 0.0)
+    gen = _add_simple_thermal_standard!(sys, b2, 0.0, 0.0)
+    set_reactive_power_limits!(gen, (min = -0.5 * u"SU", max = 0.5 * u"SU"))
+    _add_simple_line!(sys, b1, b2, 0.01, 0.4, 0.0)
+    _add_simple_line!(sys, b2, b3, 0.01, 0.1, 0.0)
+    _add_simple_load!(sys, b3, 50.0, 200.0)
+    _add_facts_shunt!(sys, 3; max_shunt_current = 50.0)
+    pf = ACPolarPowerFlow(;
+        check_reactive_power_limits = true,
+        control_discrete_devices = true,
+    )
+    data = PowerFlowData(pf, sys)
+    tl = Test.TestLogger(; min_level = Logging.Warn)
+    converged = Logging.with_logger(tl) do
+        solve_power_flow!(data)
+    end
+    @test !converged
+    f = only(data.controlled_devices.facts)
+    @test isnan(PowerFlows.measured_value(f, data, 1))
+    @test !f.saturated
+    res = PowerFlows.get_controlled_device_results(data)
+    @test !only(res[res.family .== "FACTSControlDevice", :saturated])
+    @test !any(occursin("saturated", r.message) for r in tl.logs)
+end
+
 @testset "discrete control: FACTS regulation without Q limits settles" begin
     sys = _q_limited_shunt_system()
     _add_facts_shunt!(sys, 3; max_shunt_current = 20.0)
